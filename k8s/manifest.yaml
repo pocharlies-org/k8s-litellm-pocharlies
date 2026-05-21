@@ -1,0 +1,220 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: litellm
+  labels:
+    cnpg-backup: "true"   # triggers ClusterExternalSecret minio-backup-creds
+---
+# ── PostgreSQL (CloudNativePG) ────────────────────────────────────────────────
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: litellm-postgres
+  namespace: litellm
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  storage:
+    storageClass: longhorn
+    size: 10Gi
+  affinity:
+    nodeSelector:
+      kubernetes.io/hostname: ubuntu
+  postgresql:
+    parameters:
+      max_connections: "100"
+      shared_buffers: "128MB"
+  bootstrap:
+    initdb:
+      database: litellm
+      owner: litellm
+      secret:
+        name: litellm-postgres-creds
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://cnpg-backups/litellm-postgres/
+      endpointURL: http://minio-s3.minio.svc.cluster.local:9000
+      s3Credentials:
+        accessKeyId:
+          name: minio-backup-creds
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: minio-backup-creds
+          key: SECRET_ACCESS_KEY
+      wal:
+        compression: gzip
+---
+# ExternalSecret: litellm DB credentials (for CNPG initdb)
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-postgres-creds
+  namespace: litellm
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: litellm-postgres-creds
+    creationPolicy: Owner
+  data:
+    - secretKey: username
+      remoteRef: { key: secret/litellm, property: DB_USER }
+    - secretKey: password
+      remoteRef: { key: secret/litellm, property: DB_PASSWORD }
+---
+# LiteLLM Router — unified LLM API gateway
+# Image: ghcr.io/berriai/litellm:main-stable (amd64/arm64)
+# Router is stateless; state lives in litellm-postgres (Phase 9 — CloudNativePG cluster).
+# Until Phase 9, uses SQLite fallback (no team/key management features).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: litellm
+data:
+  config.yaml: |
+    model_list:
+      # VLLM — Qwen3 122B (dgx1, Phase 10)
+      - model_name: qwen3-122b
+        litellm_params:
+          model: openai/qwen3-122b
+          api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
+          api_key: EMPTY
+
+      # VLLM — Qwen3 35B (dgx2, Phase 10)
+      - model_name: qwen3-35b
+        litellm_params:
+          model: openai/qwen3-35b
+          api_base: http://vllm-35b.llm.svc.cluster.local:8000/v1
+          api_key: EMPTY
+
+      # llama.cpp fast (x86 GPU, Phase 10)
+      - model_name: llm-fast
+        litellm_params:
+          model: openai/llm-fast
+          api_base: http://llm-fast.litellm.svc.cluster.local:8210/v1
+          api_key: EMPTY
+
+      # Embeddings (bge-m3, dgx1, Phase 10)
+      - model_name: bge-m3-embedding
+        litellm_params:
+          model: openai/bge-m3-embedding
+          api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+          api_key: EMPTY
+
+      # Reranker
+      - model_name: bge-reranker-v2-m3
+        litellm_params:
+          model: openai/bge-reranker-v2-m3
+          api_base: http://bge-reranker.llm.svc.cluster.local:8000/v1
+          api_key: EMPTY
+
+    litellm_settings:
+      success_callback: []
+      drop_params: true
+      num_retries: 2
+      request_timeout: 300
+
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+      database_url: os.environ/DATABASE_URL
+      store_model_in_db: false
+---
+# Secrets via ExternalSecret (Vault path: secret/litellm)
+# vault kv put secret/litellm \
+#   LITELLM_MASTER_KEY=<random-32-char> \
+#   DATABASE_URL="postgresql://litellm:<pwd>@litellm-postgres-rw.litellm.svc.cluster.local:5432/litellm"
+# Note: DATABASE_URL uses CloudNativePG service (-rw suffix) once Phase 9 completes.
+# Until Phase 9: set DATABASE_URL to empty string to disable DB features.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-secrets
+  namespace: litellm
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: litellm-secrets
+    creationPolicy: Owner
+  data:
+    - secretKey: LITELLM_MASTER_KEY
+      remoteRef: { key: secret/litellm, property: LITELLM_MASTER_KEY }
+    - secretKey: DATABASE_URL
+      remoteRef: { key: secret/litellm, property: DATABASE_URL }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: litellm
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: litellm } }
+  template:
+    metadata: { labels: { app: litellm } }
+    spec:
+      enableServiceLinks: false
+      nodeSelector:
+        topology: lan
+        kubernetes.io/arch: amd64
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-stable
+          args:
+            - --config=/config/config.yaml
+            - --host=0.0.0.0
+            - --port=4000
+            - --detailed_debug
+          ports:
+            - { name: http, containerPort: 4000 }
+          env:
+            - { name: LITELLM_LOG, value: INFO }
+            - name: LITELLM_MASTER_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: DATABASE_URL, optional: true } }
+          volumeMounts:
+            - { name: config, mountPath: /config }
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits:   { memory: 3Gi }
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 4000 }
+            initialDelaySeconds: 20
+            periodSeconds: 15
+      volumes:
+        - name: config
+          configMap: { name: litellm-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: litellm
+spec:
+  selector: { app: litellm }
+  ports:
+    - { name: http, port: 4000, targetPort: 4000 }
+---
+# LAN access for internal services (no Authelia — API key protected)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: litellm-lan
+  namespace: litellm
+spec:
+  entryPoints: [websecure]
+  routes:
+    - match: Host(`litellm.lan.e-dani.com`)
+      kind: Rule
+      services:
+        - name: litellm
+          port: 4000
+  tls:
+    secretName: wildcard-lan-tls
