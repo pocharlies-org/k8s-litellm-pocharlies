@@ -639,6 +639,9 @@ metadata:
     # matching the firecrawl-public / whatsapp-public pattern.
     external-dns.alpha.kubernetes.io/hostname: litellm.e-dani.com
     external-dns.alpha.kubernetes.io/target: 57.129.17.172
+    # Cloudflare-proxied (orange cloud): Cloudflare fronts TLS and forwards to
+    # the origin. The origin does not serve :443 directly, so this is required.
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
 spec:
   entryPoints: [websecure]
   ingressClassName: traefik-edge
