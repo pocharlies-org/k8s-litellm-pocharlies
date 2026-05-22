@@ -35,52 +35,488 @@ metadata:
   namespace: litellm
 data:
   config.yaml: |
+    # LiteLLM static config - local/K8s models only. No cloud/paid models.
     model_list:
-      # VLLM — Qwen3 122B (dgx1, Phase 10)
+      # Reasoning/local tier: Qwen3.5-122B on DGX1/GX10, served by K8s.
+      - model_name: local
+        litellm_params:
+          model: openai/qwen35-122b
+          api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+          timeout: 300
+        model_info:
+          max_tokens: 262144
+          supports_function_calling: true
+          context_window: 262144
+      - model_name: qwen35-122b
+        litellm_params:
+          model: openai/qwen35-122b
+          api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+          timeout: 300
+        model_info:
+          max_tokens: 262144
+          supports_function_calling: true
+          context_window: 262144
       - model_name: qwen3-122b
         litellm_params:
-          model: openai/qwen3-122b
+          model: openai/qwen35-122b
           api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
-          api_key: EMPTY
+          api_key: not-used
+          timeout: 300
+        model_info:
+          max_tokens: 262144
+          supports_function_calling: true
+          context_window: 262144
 
-      # VLLM — Qwen3 35B (dgx2, Phase 10)
+      # Tooling tier: Qwen3.6-35B on DGX2/GX10, multimodal and tools.
+      - model_name: tooling
+        litellm_params:
+          model: openai/Qwen/Qwen3.6-35B-A3B-FP8
+          api_base: http://vllm-35b.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+          timeout: 600
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+          supports_vision: true
+          context_window: 262144
       - model_name: qwen3-35b
         litellm_params:
-          model: openai/qwen3-35b
+          model: openai/Qwen/Qwen3.6-35B-A3B-FP8
           api_base: http://vllm-35b.llm.svc.cluster.local:8000/v1
-          api_key: EMPTY
+          api_key: not-used
+          timeout: 600
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+          supports_vision: true
+          context_window: 262144
 
-      # llama.cpp fast (x86 GPU, Phase 10)
+      # Fast tier: llama.cpp on x86 GPU.
+      - model_name: fast
+        litellm_params:
+          model: openai/qwen35-9b
+          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
+          api_key: not-used
+          timeout: 60
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+          context_window: 32768
       - model_name: llm-fast
         litellm_params:
-          model: openai/llm-fast
+          model: openai/qwen35-9b
           api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: EMPTY
+          api_key: not-used
+          timeout: 60
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+          context_window: 32768
 
-      # Embeddings (bge-m3, dgx1, Phase 10)
+      # Virtual smart-router aliases. The custom callback intercepts requests
+      # to these names and rewrites them to fast/tooling/local by request shape.
+      - model_name: router
+        litellm_params:
+          model: openai/qwen35-9b
+          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
+          api_key: not-used
+          timeout: 60
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+      - model_name: auto
+        litellm_params:
+          model: openai/qwen35-9b
+          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
+          api_key: not-used
+          timeout: 60
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+
+      # Embeddings and reranker.
+      - model_name: bge-m3
+        litellm_params:
+          model: openai/bge-m3
+          api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+        model_info:
+          max_tokens: 8192
       - model_name: bge-m3-embedding
         litellm_params:
-          model: openai/bge-m3-embedding
+          model: openai/bge-m3
           api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
-          api_key: EMPTY
+          api_key: not-used
+        model_info:
+          max_tokens: 8192
 
-      # Reranker
+      - model_name: bge-reranker
+        litellm_params:
+          model: infinity/bge-reranker
+          api_base: http://bge-reranker.llm.svc.cluster.local:8000
+          api_key: not-used
+        model_info:
+          max_tokens: 8192
       - model_name: bge-reranker-v2-m3
         litellm_params:
-          model: openai/bge-reranker-v2-m3
-          api_base: http://bge-reranker.llm.svc.cluster.local:8000/v1
-          api_key: EMPTY
+          model: infinity/bge-reranker
+          api_base: http://bge-reranker.llm.svc.cluster.local:8000
+          api_key: not-used
+        model_info:
+          max_tokens: 8192
 
     litellm_settings:
-      success_callback: []
+      success_callback: ["db", "prometheus"]
+      failure_callback: ["prometheus"]
+      service_callback: ["prometheus_system"]
+      callbacks:
+        - litellm_strip_params.proxy_handler_instance
       drop_params: true
+      set_verbose: false
       num_retries: 2
       request_timeout: 300
 
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
       database_url: os.environ/DATABASE_URL
-      store_model_in_db: false
+      store_model_in_db: true
+      store_prompts_in_spend_logs: true
+      background_health_checks: true
+      enable_passthrough_logging: false
+
+    router_settings:
+      routing_strategy: simple-shuffle
+      timeout: 300
+      num_retries: 1
+      allowed_fails: 20
+      cooldown_time: 30
+      fallbacks:
+        - local: ["tooling"]
+        - tooling: ["local", "fast"]
+        - qwen35-122b: ["tooling"]
+        - qwen3-122b: ["tooling"]
+  litellm_strip_params.py: |
+    import json
+    import logging
+    import os
+    import time
+
+    import litellm
+    from litellm._uuid import uuid
+    from litellm.llms.infinity.rerank.transformation import InfinityRerankConfig
+    from litellm.types.rerank import (
+        RerankBilledUnits,
+        RerankResponse,
+        RerankResponseMeta,
+        RerankResponseResult,
+        RerankTokens,
+    )
+
+    log = logging.getLogger("litellm.active_tracking")
+    router_log = logging.getLogger("litellm.smart_router")
+
+    # Infinity/TEI rerank compatibility patches.
+    _original_transform_request = InfinityRerankConfig.transform_rerank_request
+
+    def _tei_transform_rerank_request(self, model, optional_rerank_params, headers):
+        result = _original_transform_request(self, model, optional_rerank_params, headers)
+        if "documents" in result:
+            result["texts"] = result.pop("documents")
+        return result
+
+    def _tei_transform_rerank_response(
+        self, model, raw_response, model_response, logging_obj,
+        api_key=None, request_data={}, optional_params={}, litellm_params={},
+    ):
+        raw = raw_response.json()
+        if isinstance(raw, list):
+            raw = {
+                "results": [
+                    {
+                        "index": r["index"],
+                        "relevance_score": r.get("relevance_score", r.get("score", 0)),
+                    }
+                    for r in raw
+                ]
+            }
+        results = raw.get("results", [])
+        rerank_results = [
+            RerankResponseResult(
+                index=int(r["index"]),
+                relevance_score=float(r.get("relevance_score", r.get("score", 0))),
+            )
+            for r in results
+        ]
+        usage = raw.get("usage", {})
+        return RerankResponse(
+            id=raw.get("id") or str(uuid.uuid4()),
+            results=rerank_results,
+            meta=RerankResponseMeta(
+                billed_units=RerankBilledUnits(total_tokens=usage.get("total_tokens", 0)),
+                tokens=RerankTokens(input_tokens=usage.get("prompt_tokens", 0)),
+            ),
+        )
+
+    InfinityRerankConfig.transform_rerank_request = _tei_transform_rerank_request
+    InfinityRerankConfig.transform_rerank_response = _tei_transform_rerank_response
+
+    ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
+    STALE_THRESHOLD = 600
+    _active = {}
+
+    def _flush_to_file():
+        try:
+            os.makedirs(os.path.dirname(ACTIVE_FILE), exist_ok=True)
+            tmp = ACTIVE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(_active, f)
+            os.replace(tmp, ACTIVE_FILE)
+        except Exception as e:
+            log.debug("flush_to_file error: %s", e)
+
+    def _track_start(request_id, key_alias, model, call_type):
+        now = time.time()
+        stale = [k for k, v in _active.items() if now - v.get("ts", 0) > STALE_THRESHOLD]
+        for k in stale:
+            del _active[k]
+        _active[request_id] = {
+            "alias": key_alias,
+            "model": model,
+            "call_type": call_type,
+            "ts": now,
+        }
+        _flush_to_file()
+
+    def _track_end(request_id):
+        if request_id in _active:
+            del _active[request_id]
+            _flush_to_file()
+
+    ROUTER_MODELS = {"router", "auto"}
+
+    MODEL_MAP = {
+        "SIMPLE": {
+            "model": "openai/qwen35-9b",
+            "api_base": "http://llm-fast.llm.svc.cluster.local:8210/v1",
+        },
+        "TOOLING": {
+            "model": "openai/Qwen/Qwen3.6-35B-A3B-FP8",
+            "api_base": "http://vllm-35b.llm.svc.cluster.local:8000/v1",
+        },
+        "REASONING": {
+            "model": "openai/qwen35-122b",
+            "api_base": "http://vllm-122b.llm.svc.cluster.local:8000/v1",
+        },
+    }
+
+    FAST_CTX_LIMIT = 73000
+    THINK_MARKERS = ("/think", "[think]")
+
+    def _approx_input_tokens(data):
+        total = 0
+        for m in data.get("messages") or []:
+            c = m.get("content", "")
+            if isinstance(c, str):
+                total += len(c)
+            elif isinstance(c, list):
+                for p in c:
+                    if isinstance(p, dict):
+                        total += len(p.get("text", ""))
+        return total // 4
+
+    def _last_user_message_index_and_text(data):
+        messages = data.get("messages") or []
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.get("role") == "user":
+                c = m.get("content", "")
+                if isinstance(c, str):
+                    return i, c
+                if isinstance(c, list):
+                    texts = [
+                        p.get("text", "")
+                        for p in c
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    ]
+                    return i, " ".join(texts)
+        return -1, ""
+
+    def _has_tools(data):
+        return bool(data.get("tools") or data.get("functions") or data.get("function_call"))
+
+    def _wants_reasoning(data):
+        if data.get("reasoning_effort"):
+            return True
+        r = data.get("reasoning")
+        return isinstance(r, dict) and bool(r.get("effort"))
+
+    def _has_part_type(data, names):
+        for m in data.get("messages") or []:
+            c = m.get("content")
+            if isinstance(c, list):
+                for p in c:
+                    if isinstance(p, dict) and p.get("type") in names:
+                        return True
+        return False
+
+    def _has_think_marker(text):
+        if not text:
+            return False
+        low = text.lstrip().lower()
+        return any(low.startswith(m) for m in THINK_MARKERS)
+
+    def _strip_think_marker(text):
+        if not text:
+            return text
+        lead_len = len(text) - len(text.lstrip())
+        stripped = text[lead_len:]
+        low = stripped.lower()
+        for marker in THINK_MARKERS:
+            if low.startswith(marker):
+                rest = stripped[len(marker):].lstrip(" :\t\n")
+                return text[:lead_len] + rest
+        return text
+
+    def _strip_think_from_last_user(data):
+        idx, last = _last_user_message_index_and_text(data)
+        if idx < 0 or not _has_think_marker(last):
+            return
+        msg = data["messages"][idx]
+        c = msg.get("content")
+        if isinstance(c, str):
+            data["messages"][idx] = {**msg, "content": _strip_think_marker(c)}
+        elif isinstance(c, list):
+            new_parts = []
+            stripped_once = False
+            for p in c:
+                if (
+                    not stripped_once
+                    and isinstance(p, dict)
+                    and p.get("type") == "text"
+                    and _has_think_marker(p.get("text", ""))
+                ):
+                    new_parts.append({**p, "text": _strip_think_marker(p.get("text", ""))})
+                    stripped_once = True
+                else:
+                    new_parts.append(p)
+            data["messages"][idx] = {**msg, "content": new_parts}
+
+    def _classify_request_shape(data):
+        _, last = _last_user_message_index_and_text(data)
+        has_think = _has_think_marker(last)
+        has_image = _has_part_type(data, {"image", "image_url"})
+        has_video = _has_part_type(data, {"video", "video_url"})
+        big_input = _approx_input_tokens(data) > FAST_CTX_LIMIT
+
+        if has_think:
+            return "REASONING", True
+        if _wants_reasoning(data):
+            return "REASONING", False
+        if _has_tools(data) or has_image or has_video or big_input:
+            return "TOOLING", False
+        return "SIMPLE", False
+
+    class StripUnsupportedParams(litellm.integrations.custom_logger.CustomLogger):
+        STRIP_PARAMS = {"reasoningSummary", "reasoning_summary"}
+
+        async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+            for p in self.STRIP_PARAMS:
+                data.pop(p, None)
+
+            requested_model = data.get("model", "")
+            litellm_params = data.get("litellm_params", {})
+            proxy_model = (
+                litellm_params.get("proxy_server_request", {})
+                .get("body", {})
+                .get("model", "")
+            )
+            is_router_request = requested_model in ROUTER_MODELS or proxy_model in ROUTER_MODELS
+
+            if is_router_request:
+                category, marker_present = _classify_request_shape(data)
+                if marker_present:
+                    _strip_think_from_last_user(data)
+                target = MODEL_MAP[category]
+                data["model"] = target["model"]
+                data["api_base"] = target["api_base"]
+                data["api_key"] = "not-used"
+                data.setdefault("metadata", {})
+                data["metadata"]["_router_category"] = category
+                data["metadata"]["_router_original_model"] = proxy_model or requested_model
+                data["metadata"]["_router_resolved_model"] = target["model"]
+                data["metadata"]["_router_resolved_base"] = target["api_base"]
+
+                _, last_text = _last_user_message_index_and_text(data)
+                preview = (last_text or "")[:120].replace("\n", " ")
+                tok_est = _approx_input_tokens(data)
+                reasons = []
+                if marker_present:
+                    reasons.append("think_marker")
+                if _wants_reasoning(data):
+                    reasons.append("reasoning_effort")
+                if _has_tools(data):
+                    reasons.append(f"tools={len(data.get('tools') or [])}")
+                if tok_est > FAST_CTX_LIMIT:
+                    reasons.append(f"ctx={tok_est}>{FAST_CTX_LIMIT}")
+                if _has_part_type(data, {"image", "image_url"}):
+                    reasons.append("image")
+                if _has_part_type(data, {"video", "video_url"}):
+                    reasons.append("video")
+                router_log.warning(
+                    "router: %s -> %s | orig=%r reasons=%s tok~%d msgs=%d last_user=%r",
+                    category,
+                    target["model"],
+                    proxy_model or requested_model,
+                    reasons or ["default"],
+                    tok_est,
+                    len(data.get("messages") or []),
+                    preview,
+                )
+
+            key_alias = getattr(user_api_key_dict, "key_alias", None) or "unknown"
+            model = data.get("model", "unknown")
+            tracking_id = str(uuid.uuid4())
+            data.setdefault("metadata", {})
+            data["metadata"]["_tracking_id"] = tracking_id
+            try:
+                _track_start(tracking_id, key_alias, model, call_type)
+            except Exception as e:
+                log.debug("track_start error: %s", e)
+
+            return data
+
+        def pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+            for p in self.STRIP_PARAMS:
+                data.pop(p, None)
+            return data
+
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            tracking_id = (
+                kwargs.get("litellm_params", {})
+                .get("metadata", {})
+                .get("_tracking_id")
+            )
+            if tracking_id:
+                try:
+                    _track_end(tracking_id)
+                except Exception as e:
+                    log.debug("track_end error: %s", e)
+
+        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+            tracking_id = (
+                kwargs.get("litellm_params", {})
+                .get("metadata", {})
+                .get("_tracking_id")
+            )
+            if tracking_id:
+                try:
+                    _track_end(tracking_id)
+                except Exception as e:
+                    log.debug("track_end error: %s", e)
+
+    proxy_handler_instance = StripUnsupportedParams()
 ---
 # Secrets via ExternalSecret (Vault path: secret/litellm)
 # vault kv put secret/litellm \
@@ -134,6 +570,8 @@ spec:
             - { name: http, containerPort: 4000, hostPort: 4000 }
           env:
             - { name: LITELLM_LOG, value: INFO }
+            - { name: PYTHONPATH, value: /app }
+            - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
             - name: _DBUSER
@@ -144,6 +582,8 @@ spec:
               value: "postgresql://$(_DBUSER):$(_DBPASS)@postgres-shared-rw.databases.svc.cluster.local:5432/litellm"
           volumeMounts:
             - { name: config, mountPath: /config }
+            - { name: config, mountPath: /app/litellm_strip_params.py, subPath: litellm_strip_params.py, readOnly: true }
+            - { name: tracking, mountPath: /shared/tracking }
           resources:
             requests: { cpu: 200m, memory: 512Mi }
             limits:   { memory: 3Gi }
@@ -154,6 +594,10 @@ spec:
       volumes:
         - name: config
           configMap: { name: litellm-config }
+        - name: tracking
+          hostPath:
+            path: /home/dibanez/dgx-tracking
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
