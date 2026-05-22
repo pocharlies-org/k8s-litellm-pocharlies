@@ -548,7 +548,10 @@ spec:
     rollingUpdate: null
   selector: { matchLabels: { app: litellm } }
   template:
-    metadata: { labels: { app: litellm } }
+    metadata:
+      labels: { app: litellm }
+      annotations:
+        config.k8s.e-dani.com/revision: smart-router-20260522-2
     spec:
       enableServiceLinks: false
       nodeSelector:
@@ -605,6 +608,7 @@ spec:
   selector: { app: litellm }
   ports:
     - { name: http, port: 4000, targetPort: 4000 }
+---
 # LAN access for internal services (no Authelia — API key protected)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
