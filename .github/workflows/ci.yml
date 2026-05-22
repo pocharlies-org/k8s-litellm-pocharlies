@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  pull_request:
+    branches: ["**"]
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  standard:
+    uses: pocharlies/k8s-gitops-pocharlies/.github/workflows/reusable-ci.yml@main
+    with:
+      runner: arc-litellm
+      run_node: false
+      run_docker_build: false
+      kustomize_paths: ". k8s"
+    secrets: inherit
