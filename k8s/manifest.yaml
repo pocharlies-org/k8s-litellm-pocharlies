@@ -121,6 +121,7 @@ spec:
       nodeSelector:
         topology: lan
         kubernetes.io/arch: amd64
+        kubernetes.io/hostname: ubuntu
       containers:
         - name: litellm
           image: ghcr.io/berriai/litellm:main-stable
@@ -130,7 +131,7 @@ spec:
             - --port=4000
             - --detailed_debug
           ports:
-            - { name: http, containerPort: 4000 }
+            - { name: http, containerPort: 4000, hostPort: 4000 }
           env:
             - { name: LITELLM_LOG, value: INFO }
             - name: LITELLM_MASTER_KEY
