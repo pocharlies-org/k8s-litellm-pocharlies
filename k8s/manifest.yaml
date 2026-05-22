@@ -252,8 +252,8 @@ data:
     # Infinity/TEI rerank compatibility patches.
     _original_transform_request = InfinityRerankConfig.transform_rerank_request
 
-    def _tei_transform_rerank_request(self, model, optional_rerank_params, headers):
-        result = _original_transform_request(self, model, optional_rerank_params, headers)
+    def _tei_transform_rerank_request(self, model, optional_rerank_params, headers, *args, **kwargs):
+        result = _original_transform_request(self, model, optional_rerank_params, headers, *args, **kwargs)
         if "documents" in result:
             result["texts"] = result.pop("documents")
         return result
@@ -583,7 +583,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: bge-fallbacks-20260522-1
+        config.k8s.e-dani.com/revision: bge-fallbacks-20260522-2
     spec:
       enableServiceLinks: false
       nodeSelector:
