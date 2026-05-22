@@ -549,6 +549,8 @@ metadata:
   namespace: litellm
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector: { matchLabels: { app: litellm } }
   template:
     metadata: { labels: { app: litellm } }
