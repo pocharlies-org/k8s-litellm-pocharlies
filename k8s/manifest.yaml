@@ -178,5 +178,4 @@ spec:
       services:
         - name: litellm
           port: 4000
-  tls:
-    secretName: wildcard-lan-tls
+  tls: {}
