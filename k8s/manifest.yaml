@@ -58,17 +58,6 @@ data:
           max_tokens: 262144
           supports_function_calling: true
           context_window: 262144
-      - model_name: qwen3-122b
-        litellm_params:
-          model: openai/qwen35-122b
-          api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 300
-        model_info:
-          max_tokens: 262144
-          supports_function_calling: true
-          context_window: 262144
-
       # Tooling tier: Qwen3.6-35B on DGX2/GX10, multimodal and tools.
       - model_name: tooling
         litellm_params:
@@ -81,7 +70,7 @@ data:
           supports_function_calling: true
           supports_vision: true
           context_window: 262144
-      - model_name: qwen3-35b
+      - model_name: qwen36-35b
         litellm_params:
           model: openai/Qwen/Qwen3.6-35B-A3B-FP8
           api_base: http://vllm-35b.llm.svc.cluster.local:8000/v1
@@ -225,7 +214,7 @@ data:
         - local: ["tooling"]
         - tooling: ["local", "fast"]
         - qwen35-122b: ["tooling"]
-        - qwen3-122b: ["tooling"]
+        - qwen36-35b: ["local", "fast"]
         - bge-m3: ["bge-m3-cpu"]
         - bge-m3-embedding: ["bge-m3-embedding-cpu"]
         - bge-reranker: ["bge-reranker-cpu"]
@@ -581,7 +570,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: litellm-metrics-20260522-1
+        config.k8s.e-dani.com/revision: qwen-aliases-20260522-1
     spec:
       enableServiceLinks: false
       nodeSelector:
