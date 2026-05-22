@@ -5,47 +5,7 @@ metadata:
   name: litellm
   labels:
     cnpg-backup: "true"   # triggers ClusterExternalSecret minio-backup-creds
----
-# ── PostgreSQL (CloudNativePG) ────────────────────────────────────────────────
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata:
-  name: litellm-postgres
-  namespace: litellm
-spec:
-  instances: 1
-  imageName: ghcr.io/cloudnative-pg/postgresql:16
-  storage:
-    storageClass: longhorn
-    size: 10Gi
-  affinity:
-    nodeSelector:
-      kubernetes.io/hostname: ubuntu
-  postgresql:
-    parameters:
-      max_connections: "100"
-      shared_buffers: "128MB"
-  bootstrap:
-    initdb:
-      database: litellm
-      owner: litellm
-      secret:
-        name: litellm-postgres-creds
-  backup:
-    barmanObjectStore:
-      destinationPath: s3://cnpg-backups/litellm-postgres/
-      endpointURL: http://minio-s3.minio.svc.cluster.local:9000
-      s3Credentials:
-        accessKeyId:
-          name: minio-backup-creds
-          key: ACCESS_KEY_ID
-        secretAccessKey:
-          name: minio-backup-creds
-          key: SECRET_ACCESS_KEY
-      wal:
-        compression: gzip
----
-# ExternalSecret: litellm DB credentials (for CNPG initdb)
+# ExternalSecret: litellm DB credentials in shared PostgreSQL
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
