@@ -493,11 +493,8 @@ data:
             return data
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-            tracking_id = (
-                kwargs.get("litellm_params", {})
-                .get("metadata", {})
-                .get("_tracking_id")
-            )
+            metadata = (kwargs.get("litellm_params") or {}).get("metadata") or {}
+            tracking_id = metadata.get("_tracking_id")
             if tracking_id:
                 try:
                     _track_end(tracking_id)
@@ -505,11 +502,8 @@ data:
                     log.debug("track_end error: %s", e)
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-            tracking_id = (
-                kwargs.get("litellm_params", {})
-                .get("metadata", {})
-                .get("_tracking_id")
-            )
+            metadata = (kwargs.get("litellm_params") or {}).get("metadata") or {}
+            tracking_id = metadata.get("_tracking_id")
             if tracking_id:
                 try:
                     _track_end(tracking_id)
