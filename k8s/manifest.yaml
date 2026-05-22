@@ -634,6 +634,11 @@ kind: IngressRoute
 metadata:
   name: litellm-lan
   namespace: litellm
+  annotations:
+    # external-dns publishes the public A record to the edge target,
+    # matching the firecrawl-public / whatsapp-public pattern.
+    external-dns.alpha.kubernetes.io/hostname: litellm.e-dani.com
+    external-dns.alpha.kubernetes.io/target: 57.129.17.172
 spec:
   entryPoints: [websecure]
   ingressClassName: traefik-edge
