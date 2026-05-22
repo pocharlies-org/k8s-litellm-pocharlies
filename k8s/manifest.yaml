@@ -628,19 +628,15 @@ spec:
   ports:
     - { name: http, port: 4000, targetPort: 4000 }
 ---
-# LAN access for internal services (no Authelia — API key protected)
+# Public access for external callers. Internal services must use the LAN route below.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
-  name: litellm-lan
+  name: litellm-public
   namespace: litellm
   annotations:
-    # external-dns publishes the public A record to the edge target,
-    # matching the firecrawl-public / whatsapp-public pattern.
     external-dns.alpha.kubernetes.io/hostname: litellm.e-dani.com
     external-dns.alpha.kubernetes.io/target: 57.129.17.172
-    # Cloudflare-proxied (orange cloud): Cloudflare fronts TLS and forwards to
-    # the origin. The origin does not serve :443 directly, so this is required.
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
 spec:
   entryPoints: [websecure]
@@ -653,3 +649,23 @@ spec:
           port: 4000
   tls:
     store: { name: default, namespace: traefik-edge }
+---
+# LAN access for internal services (no Authelia — API key protected)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: litellm-lan
+  namespace: litellm
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: litellm.lan.e-dani.com
+    external-dns.alpha.kubernetes.io/target: 192.168.50.240
+spec:
+  entryPoints: [websecure]
+  routes:
+    - match: Host(`litellm.lan.e-dani.com`)
+      kind: Rule
+      services:
+        - name: litellm
+          port: 4000
+  tls:
+    store: { name: default, namespace: traefik-lan }
