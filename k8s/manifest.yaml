@@ -68,8 +68,7 @@ spec:
 ---
 # LiteLLM Router — unified LLM API gateway
 # Image: ghcr.io/berriai/litellm:main-stable (amd64/arm64)
-# Router is stateless; state lives in litellm-postgres (Phase 9 — CloudNativePG cluster).
-# Until Phase 9, uses SQLite fallback (no team/key management features).
+# Router is stateless; state lives in the shared PostgreSQL cluster.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -127,9 +126,7 @@ data:
 # Secrets via ExternalSecret (Vault path: secret/litellm)
 # vault kv put secret/litellm \
 #   LITELLM_MASTER_KEY=<random-32-char> \
-#   DATABASE_URL="postgresql://litellm:<pwd>@litellm-postgres-rw.litellm.svc.cluster.local:5432/litellm"
-# Note: DATABASE_URL uses CloudNativePG service (-rw suffix) once Phase 9 completes.
-# Until Phase 9: set DATABASE_URL to empty string to disable DB features.
+#   DATABASE_URL="postgresql://litellm:<pwd>@postgres-shared-rw.databases.svc.cluster.local:5432/litellm"
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -179,8 +176,12 @@ spec:
             - { name: LITELLM_LOG, value: INFO }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
+            - name: _DBUSER
+              valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
+            - name: _DBPASS
+              valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: password } }
             - name: DATABASE_URL
-              valueFrom: { secretKeyRef: { name: litellm-secrets, key: DATABASE_URL, optional: true } }
+              value: "postgresql://$(_DBUSER):$(_DBPASS)@postgres-shared-rw.databases.svc.cluster.local:5432/litellm"
           volumeMounts:
             - { name: config, mountPath: /config }
           resources:
