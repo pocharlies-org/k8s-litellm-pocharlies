@@ -144,10 +144,24 @@ data:
           api_key: not-used
         model_info:
           max_tokens: 8192
+      - model_name: bge-m3-cpu
+        litellm_params:
+          model: openai/bge-m3
+          api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+        model_info:
+          max_tokens: 8192
       - model_name: bge-m3-embedding
         litellm_params:
           model: openai/bge-m3
           api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+        model_info:
+          max_tokens: 8192
+      - model_name: bge-m3-embedding-cpu
+        litellm_params:
+          model: openai/bge-m3
+          api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
           api_key: not-used
         model_info:
           max_tokens: 8192
@@ -159,10 +173,24 @@ data:
           api_key: not-used
         model_info:
           max_tokens: 8192
+      - model_name: bge-reranker-cpu
+        litellm_params:
+          model: infinity/bge-reranker
+          api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
+          api_key: not-used
+        model_info:
+          max_tokens: 8192
       - model_name: bge-reranker-v2-m3
         litellm_params:
           model: infinity/bge-reranker
           api_base: http://bge-reranker.llm.svc.cluster.local:8000
+          api_key: not-used
+        model_info:
+          max_tokens: 8192
+      - model_name: bge-reranker-v2-m3-cpu
+        litellm_params:
+          model: infinity/bge-reranker
+          api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
           api_key: not-used
         model_info:
           max_tokens: 8192
@@ -197,6 +225,10 @@ data:
         - tooling: ["local", "fast"]
         - qwen35-122b: ["tooling"]
         - qwen3-122b: ["tooling"]
+        - bge-m3: ["bge-m3-cpu"]
+        - bge-m3-embedding: ["bge-m3-embedding-cpu"]
+        - bge-reranker: ["bge-reranker-cpu"]
+        - bge-reranker-v2-m3: ["bge-reranker-v2-m3-cpu"]
   litellm_strip_params.py: |
     import json
     import logging
