@@ -3,8 +3,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: litellm
-  labels:
-    cnpg-backup: "true"   # triggers ClusterExternalSecret minio-backup-creds
+---
 # ExternalSecret: litellm DB credentials in shared PostgreSQL
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
