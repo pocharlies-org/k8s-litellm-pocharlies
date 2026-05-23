@@ -579,7 +579,7 @@ spec:
         kubernetes.io/hostname: ubuntu
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm:main-stable
+          image: ghcr.io/berriai/litellm:v1.85.1
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
