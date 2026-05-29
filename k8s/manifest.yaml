@@ -603,6 +603,8 @@ spec:
             - --host=0.0.0.0
             - --port=4000
             - --detailed_debug
+            - --use_v2_migration_resolver
+            - --enforce_prisma_migration_check
           ports:
             - { name: http, containerPort: 4000, hostPort: 4000 }
           env:
