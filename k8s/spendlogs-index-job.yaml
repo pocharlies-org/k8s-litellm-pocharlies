@@ -1,0 +1,48 @@
+# Schema-migration hook: ensures the partial index that keeps the dashboard's
+# "recent errors" / status=fail spend-log query fast. LiteLLM's Prisma schema
+# (upstream) has no index on status, so a 50-row status='failure' fetch does
+# ~6.6k random heap reads on the 3 GB LiteLLM_SpendLogs table → 9-12s. This
+# partial index (failures only, ~2 MB) makes it ~50ms.
+#
+# Runs as an ArgoCD PostSync hook so it's re-applied after every sync and
+# survives a DB rebuild. CREATE INDEX CONCURRENTLY IF NOT EXISTS is idempotent
+# (no-op once present) and never locks the table. DB wiring mirrors the litellm
+# Deployment exactly (postgres-shared-rw via litellm-postgres-creds) so it
+# always targets the same database LiteLLM writes to.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: litellm-spendlogs-failures-index
+  namespace: litellm
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels: { app: litellm-spendlogs-index }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: postgres:16-alpine
+          command: ["sh", "-ec"]
+          args:
+            - |
+              echo "ensuring LiteLLM_SpendLogs_failures_idx (idempotent, CONCURRENTLY)..."
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+                'CREATE INDEX CONCURRENTLY IF NOT EXISTS "LiteLLM_SpendLogs_failures_idx" ON "LiteLLM_SpendLogs" ("startTime" DESC) WHERE status = '"'"'failure'"'"';'
+              echo "ok."
+          env:
+            # Same DB wiring as the litellm Deployment (postgres-shared-rw).
+            - name: _DBUSER
+              valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
+            - name: _DBPASS
+              valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: password } }
+            - name: DATABASE_URL
+              value: "postgresql://$(_DBUSER):$(_DBPASS)@postgres-shared-rw.databases.svc.cluster.local:5432/litellm"
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { memory: 128Mi }
