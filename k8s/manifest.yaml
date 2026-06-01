@@ -756,7 +756,7 @@ spec:
   tls:
     store: { name: default, namespace: traefik-edge }
 ---
-# LAN access for internal services (no Authelia — API key protected)
+# LAN access for internal services (no SSO middleware — API key protected)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
