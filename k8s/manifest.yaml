@@ -49,7 +49,7 @@ data:
           api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 96
+          max_parallel_requests: 8
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -61,7 +61,7 @@ data:
           api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 96
+          max_parallel_requests: 8
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -93,6 +93,11 @@ data:
           max_tokens: 262144
           supports_function_calling: true
           context_window: 262144
+      # 2026-06-02 cap reduced 96→8 (LB) / 96→16 (direct) based on stress bench:
+      # FlashInfer+MTP-3 hangs/Xid-31 above c=16 on NVFP4 35B in current memory
+      # layout. Test: c=8/12/16 PASS clean (193 tok/s peak), c=20 → DGX1 Xid 31
+      # + restart + throughput collapse 193→107. Workflow finding: wf_5e0512e3.
+
       # Tooling tier: Qwen3.6-35B on DGX1+DGX2, multimodal and tools.
       # Two NVFP4 backings, one per node, LB across both. LiteLLM
       # round-robins between them; if one scales to 0, LiteLLM marks it
@@ -107,7 +112,7 @@ data:
           api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 96
+          max_parallel_requests: 8
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -121,7 +126,7 @@ data:
           api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 96
+          max_parallel_requests: 8
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -133,7 +138,7 @@ data:
           api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 96
+          max_parallel_requests: 16
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -146,7 +151,7 @@ data:
           api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 96
+          max_parallel_requests: 16
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -158,7 +163,7 @@ data:
           api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 96
+          max_parallel_requests: 16
         model_info:
           max_tokens: 32768
           supports_function_calling: true
