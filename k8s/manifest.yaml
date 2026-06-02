@@ -667,8 +667,10 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: Recreate
-    rollingUpdate: null
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector: { matchLabels: { app: litellm } }
   template:
     metadata:
@@ -678,9 +680,8 @@ spec:
     spec:
       enableServiceLinks: false
       nodeSelector:
-        topology: lan
         kubernetes.io/arch: amd64
-        kubernetes.io/hostname: ubuntu
+        node-pool: ks5-nvme
       containers:
         - name: litellm
           image: ghcr.io/berriai/litellm:v1.85.1
