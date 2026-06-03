@@ -421,16 +421,13 @@ data:
 
     MODEL_MAP = {
         "SIMPLE": {
-            "model": "openai/qwen35-9b",
-            "api_base": "http://llm-fast.llm.svc.cluster.local:8210/v1",
+            "model": "fast",
         },
         "TOOLING": {
-            "model": "openai/Qwen/Qwen3.6-35B-A3B-FP8",
-            "api_base": "http://vllm-35b.llm.svc.cluster.local:8000/v1",
+            "model": "tooling",
         },
         "REASONING": {
-            "model": "openai/qwen35-122b",
-            "api_base": "http://vllm-122b.llm.svc.cluster.local:8000/v1",
+            "model": "local",
         },
     }
 
@@ -563,13 +560,13 @@ data:
                     _strip_think_from_last_user(data)
                 target = MODEL_MAP[category]
                 data["model"] = target["model"]
-                data["api_base"] = target["api_base"]
-                data["api_key"] = "not-used"
+                data.pop("api_base", None)
+                data.pop("api_key", None)
                 data.setdefault("metadata", {})
                 data["metadata"]["_router_category"] = category
                 data["metadata"]["_router_original_model"] = proxy_model or requested_model
                 data["metadata"]["_router_resolved_model"] = target["model"]
-                data["metadata"]["_router_resolved_base"] = target["api_base"]
+                data["metadata"]["_router_resolved_base"] = "model_list"
 
                 _, last_text = _last_user_message_index_and_text(data)
                 preview = (last_text or "")[:120].replace("\n", " ")
