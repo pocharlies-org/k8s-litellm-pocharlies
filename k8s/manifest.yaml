@@ -216,6 +216,20 @@ data:
           max_tokens: 32768
           supports_function_calling: true
           context_window: 32768
+      # Direct real-model name for the fast tier — lets the benchmark dashboard
+      # launch + label runs by the canonical model id (qwen35-9b) instead of the
+      # drifting `fast` role alias. Same llm-fast (x86 llama.cpp) backend.
+      # NOTE: llm-fast may be scaled to 0 — scale it up before benchmarking 9B.
+      - model_name: qwen35-9b
+        litellm_params:
+          model: openai/qwen35-9b
+          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
+          api_key: not-used
+          timeout: 60
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+          context_window: 32768
 
       # Virtual smart-router aliases. The custom callback intercepts requests
       # to these names and rewrites them to fast/tooling/local by request shape.
