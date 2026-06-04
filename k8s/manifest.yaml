@@ -213,7 +213,11 @@ data:
           model: openai/qwen35-9b
           api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
           api_key: not-used
-          timeout: 60
+          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
+          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
+          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
+          # made no progress. 300s gives a stuck slot time to drain.
+          timeout: 300
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -223,7 +227,11 @@ data:
           model: openai/qwen35-9b
           api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
           api_key: not-used
-          timeout: 60
+          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
+          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
+          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
+          # made no progress. 300s gives a stuck slot time to drain.
+          timeout: 300
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -237,7 +245,11 @@ data:
           model: openai/qwen35-9b
           api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
           api_key: not-used
-          timeout: 60
+          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
+          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
+          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
+          # made no progress. 300s gives a stuck slot time to drain.
+          timeout: 300
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -250,7 +262,11 @@ data:
           model: openai/qwen35-9b
           api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
           api_key: not-used
-          timeout: 60
+          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
+          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
+          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
+          # made no progress. 300s gives a stuck slot time to drain.
+          timeout: 300
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -259,7 +275,11 @@ data:
           model: openai/qwen35-9b
           api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
           api_key: not-used
-          timeout: 60
+          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
+          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
+          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
+          # made no progress. 300s gives a stuck slot time to drain.
+          timeout: 300
         model_info:
           max_tokens: 32768
           supports_function_calling: true
