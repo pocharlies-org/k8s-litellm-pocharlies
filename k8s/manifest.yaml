@@ -55,21 +55,20 @@ data:
           supports_function_calling: true
           supports_vision: true
           context_window: 262144
-      # 2026-06-03 DISABLED — DGX2 is temporarily running Unsloth Qwen3.6-27B-NVFP4
-      # for vision tests (svc vllm-35b-nvfp4-dgx2 is scaled to 0). Uncomment to
-      # restore the dual-LB once 35B-NVFP4 is scaled back up on DGX2.
-      # - model_name: local
-      #   litellm_params:
-      #     model: openai/qwen36-35b-nvfp4
-      #     api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-      #     api_key: not-used
-      #     timeout: 600
-      #     max_parallel_requests: 8
-      #   model_info:
-      #     max_tokens: 32768
-      #     supports_function_calling: true
-      #     supports_vision: true
-      #     context_window: 262144
+      # 2026-06-04 RE-ENABLED — DGX2 back on 35B-NVFP4 (27B vision bench done);
+      # dual-NVFP4 LB restored so a DGX1 NVFP4 Xid/crash fails over to DGX2.
+      - model_name: local
+        litellm_params:
+          model: openai/qwen36-35b-nvfp4
+          api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+          timeout: 600
+          max_parallel_requests: 8
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+          supports_vision: true
+          context_window: 262144
       # 2026-06-01 DISABLED — DGX1 migrated to 35B NVFP4. To re-enable 122B as local:
       # scale vllm-122b deploy to 1 (ai repo) + uncomment this block + ArgoCD sync. ~5min spin-up.
       # - model_name: local
@@ -109,21 +108,20 @@ data:
       #   • NVFP4 on DGX1 (vllm-35b-nvfp4)      — same model, same quant,
       #                                            ≈1pp quality delta vs
       #                                            FP8 in bench.
-      # 2026-06-03 DISABLED — DGX2 is temporarily running 27B-NVFP4 for vision
-      # tests. The svc vllm-35b-nvfp4-dgx2 is scaled to 0, so this LB entry was
-      # producing 502s 50% of the time. Re-enable when 35B-NVFP4 returns to DGX2.
-      # - model_name: tooling
-      #   litellm_params:
-      #     model: openai/qwen36-35b-nvfp4
-      #     api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-      #     api_key: not-used
-      #     timeout: 600
-      #     max_parallel_requests: 8
-      #   model_info:
-      #     max_tokens: 32768
-      #     supports_function_calling: true
-      #     supports_vision: true
-      #     context_window: 262144
+      # 2026-06-04 RE-ENABLED — DGX2 back on 35B-NVFP4; dual-node LB across
+      # DGX1+DGX2 (round-robin, auto-failover if one node's NVFP4 crashes).
+      - model_name: tooling
+        litellm_params:
+          model: openai/qwen36-35b-nvfp4
+          api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+          timeout: 600
+          max_parallel_requests: 8
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+          supports_vision: true
+          context_window: 262144
       # DGX1 NVFP4 tooling backend re-enabled 2026-06-01: DGX1 migrated to 35B NVFP4
       # (122B scaled to 0). Both DGX1 + DGX2 NVFP4 backings active for tooling LB.
       - model_name: tooling
@@ -164,19 +162,19 @@ data:
           supports_function_calling: true
           supports_vision: true
           context_window: 262144
-      # 2026-06-03 DISABLED — DGX2 svc is scaled to 0 (27B-NVFP4 running there).
-      # - model_name: qwen36-35b-nvfp4-dgx2
-      #   litellm_params:
-      #     model: openai/qwen36-35b-nvfp4
-      #     api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-      #     api_key: not-used
-      #     timeout: 600
-      #     max_parallel_requests: 16
-      #   model_info:
-      #     max_tokens: 32768
-      #     supports_function_calling: true
-      #     supports_vision: true
-      #     context_window: 262144
+      # 2026-06-04 RE-ENABLED — DGX2 back on 35B-NVFP4. Direct alias to the DGX2 backend.
+      - model_name: qwen36-35b-nvfp4-dgx2
+        litellm_params:
+          model: openai/qwen36-35b-nvfp4
+          api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+          api_key: not-used
+          timeout: 600
+          max_parallel_requests: 16
+        model_info:
+          max_tokens: 32768
+          supports_function_calling: true
+          supports_vision: true
+          context_window: 262144
 
       # 2026-06-03 ADDED — Unsloth Qwen3.6-27B-NVFP4 on DGX2 (vision-enabled multimodal).
       # Direct alias only; NOT added to `tooling` LB because 35B is decisively faster
