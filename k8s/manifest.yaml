@@ -36,34 +36,21 @@ metadata:
 data:
   config.yaml: |
     # LiteLLM static config - local/K8s models only. No cloud/paid models.
-    # 2026-06-01: tooling + local both LB across 2 NVFP4 backends (DGX1 + DGX2).
-    # 122B available as rollback on-demand — see commented `local` block below
-    # for re-enable steps.
+    # 2026-06-07 standard routing:
+    #   local   -> Qwen3.6-27B NVFP4 on DGX2 (default reasoning/local model)
+    #   tooling -> Qwen3.6-35B NVFP4 on DGX1 (tools/multimodal/coding-oriented tier)
+    # 122B remains available as a direct rollback/on-demand alias.
     model_list:
-      # Reasoning/local tier: soft-fallback to NVFP4 pool (DGX1+DGX2).
+      # Reasoning/local tier: resident Qwen3.6-27B on DGX2.
       # The original 122B-backed `local` entry is kept commented below for
       # one-step rollback (scale vllm-122b → 1 + uncomment + ArgoCD sync).
       - model_name: local
         litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
+          model: openai/qwen36-27b-nvfp4
+          api_base: http://vllm-27b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 8
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-      # 2026-06-04 RE-ENABLED — DGX2 back on 35B-NVFP4 (27B vision bench done);
-      # dual-NVFP4 LB restored so a DGX1 NVFP4 Xid/crash fails over to DGX2.
-      - model_name: local
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 8
+          max_parallel_requests: 16
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -100,64 +87,27 @@ data:
       # layout. Test: c=8/12/16 PASS clean (193 tok/s peak), c=20 → DGX1 Xid 31
       # + restart + throughput collapse 193→107. Workflow finding: wf_5e0512e3.
 
-      # Tooling tier: Qwen3.6-35B on DGX1+DGX2, multimodal and tools.
-      # Two NVFP4 backings, one per node, LB across both. LiteLLM
-      # round-robins between them; if one scales to 0, LiteLLM marks it
-      # unhealthy and routes all traffic to the survivor automatically.
-      #   • NVFP4 on DGX2 (vllm-35b-nvfp4-dgx2) — 2-2.5x faster than FP8
-      #   • NVFP4 on DGX1 (vllm-35b-nvfp4)      — same model, same quant,
-      #                                            ≈1pp quality delta vs
-      #                                            FP8 in bench.
-      # 2026-06-04 RE-ENABLED — DGX2 back on 35B-NVFP4; dual-node LB across
-      # DGX1+DGX2 (round-robin, auto-failover if one node's NVFP4 crashes).
-      - model_name: tooling
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 8
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-      # DGX1 NVFP4 tooling backend re-enabled 2026-06-01: DGX1 migrated to 35B NVFP4
-      # (122B scaled to 0). Both DGX1 + DGX2 NVFP4 backings active for tooling LB.
+      # Tooling tier: Qwen3.6-35B on DGX1, tuned for tools/coding/multimodal routes.
       - model_name: tooling
         litellm_params:
           model: openai/qwen36-35b-nvfp4
           api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 8
+          max_parallel_requests: 16
         model_info:
           max_tokens: 32768
           supports_function_calling: true
           supports_vision: true
           context_window: 262144
-      # 2026-06-04 — qwen36-35b LB across DGX1+DGX2 NVFP4 (same as local/tooling). The 27B
-      # is intentionally NOT load-balanced: single DGX2 instance, served as qwen36-27b-nvfp4.
-      # cap 8/backend (16 total) per the FlashInfer+MTP Xid finding (c≤16 safe per NVFP4 35B).
+      # qwen36-35b resolves to the standard tooling backend.
       - model_name: qwen36-35b
         litellm_params:
           model: openai/qwen36-35b-nvfp4
           api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
           api_key: not-used
           timeout: 600
-          max_parallel_requests: 8
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-      - model_name: qwen36-35b
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 8
+          max_parallel_requests: 16
         model_info:
           max_tokens: 32768
           supports_function_calling: true
@@ -176,24 +126,7 @@ data:
           supports_function_calling: true
           supports_vision: true
           context_window: 262144
-      # 2026-06-04 RE-ENABLED — DGX2 back on 35B-NVFP4. Direct alias to the DGX2 backend.
-      - model_name: qwen36-35b-nvfp4-dgx2
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 16
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-
-      # 2026-06-03 ADDED — Unsloth Qwen3.6-27B-NVFP4 on DGX2 (vision-enabled multimodal).
-      # Direct alias only; NOT added to `tooling` LB because 35B is decisively faster
-      # (3.5x per-stream c=1, 1.9x agg c=16 — A/B bench 2026-06-03). Use for vision
-      # tests and any task explicitly requesting the 27B dense.
+      # Direct-access alias for the default local backend.
       - model_name: qwen36-27b-nvfp4
         litellm_params:
           model: openai/qwen36-27b-nvfp4
@@ -386,10 +319,12 @@ data:
       allowed_fails: 20
       cooldown_time: 30
       fallbacks:
-        - local: ["tooling"]
+        - local: ["tooling", "fast"]
         - tooling: ["local", "fast"]
         - qwen35-122b: ["tooling"]
+        - qwen36-27b-nvfp4: ["tooling", "fast"]
         - qwen36-35b: ["local", "fast"]
+        - qwen36-35b-nvfp4: ["local", "fast"]
         - bge-m3: ["bge-m3-cpu"]
         - bge-m3-embedding: ["bge-m3-embedding-cpu"]
         - bge-reranker: ["bge-reranker-cpu"]
