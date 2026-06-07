@@ -679,7 +679,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: qwen-aliases-20260522-1
+        config.k8s.e-dani.com/revision: standard-local27-tooling35-20260607
     spec:
       enableServiceLinks: false
       nodeSelector:
