@@ -874,7 +874,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: standard-local27-tooling35-20260607
+        config.k8s.e-dani.com/revision: local35-while-27b-disabled-20260613
     spec:
       enableServiceLinks: false
       nodeSelector:
