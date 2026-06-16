@@ -35,270 +35,163 @@ metadata:
   namespace: litellm
 data:
   config.yaml: |
-    # LiteLLM static config - local/K8s models only. No cloud/paid models.
-    # 2026-06-13 standard routing while DGX2 27B is disabled:
-    #   local   -> Qwen3.6-35B NVFP4 on DGX1 (healthy local/reasoning fallback)
-    #   tooling -> Qwen3.6-35B NVFP4 on DGX1 (tools/multimodal/coding-oriented tier)
-    # 122B remains available as a direct rollback/on-demand alias.
     model_list:
-      # Reasoning/local tier: temporarily use DGX1 35B while DGX2 27B is
-      # disabled after SystemOOM during startup.
-      # The original 122B-backed `local` entry is kept commented below for
-      # one-step rollback (scale vllm-122b → 1 + uncomment + ArgoCD sync).
-      - model_name: local
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 16
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-      # 2026-06-01 DISABLED — DGX1 migrated to 35B NVFP4. To re-enable 122B as local:
-      # scale vllm-122b deploy to 1 (ai repo) + uncomment this block + ArgoCD sync. ~5min spin-up.
-      # - model_name: local
-      #   litellm_params:
-      #     model: openai/qwen35-122b
-      #     api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
-      #     api_key: not-used
-      #     timeout: 300
-      #     # 122B is the slow/heavy reasoning tier — cap concurrent calls low.
-      #     max_parallel_requests: 4
-      #   model_info:
-      #     max_tokens: 262144
-      #     supports_function_calling: true
-      #     context_window: 262144
-      - model_name: qwen35-122b
-        litellm_params:
-          model: openai/qwen35-122b
-          api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 300
-          # Same 122B backend as alias `local` — same low concurrency cap.
-          max_parallel_requests: 4
-        model_info:
-          max_tokens: 262144
-          supports_function_calling: true
-          context_window: 262144
-      # 2026-06-02 cap reduced 96→8 (LB) / 96→16 (direct) based on stress bench:
-      # FlashInfer+MTP-3 hangs/Xid-31 above c=16 on NVFP4 35B in current memory
-      # layout. Test: c=8/12/16 PASS clean (193 tok/s peak), c=20 → DGX1 Xid 31
-      # + restart + throughput collapse 193→107. Workflow finding: wf_5e0512e3.
-
-      # Tooling tier: Qwen3.6-35B on DGX1, tuned for tools/coding/multimodal routes.
-      - model_name: tooling
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 16
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-      # qwen36-35b resolves to the standard tooling backend.
-      - model_name: qwen36-35b
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 16
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-      # Direct-access alias for the DGX1 NVFP4 variant (bypasses the tooling LB).
-      - model_name: qwen36-35b-nvfp4
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 16
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-      # 2026-06-13 compatibility alias: callers asking for the disabled 27B get
-      # the healthy 35B backend instead of burning a failed attempt against a
-      # scaled-to-0 Service. Restore the 27B api_base only after DGX2 is stable.
-      - model_name: qwen36-27b-nvfp4
-        litellm_params:
-          model: openai/qwen36-35b-nvfp4
-          api_base: http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 16
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-
-      # Fast tier: llama.cpp on x86 GPU.
-      - model_name: fast
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
-          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
-          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
-          # made no progress. 300s gives a stuck slot time to drain.
-          timeout: 300
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          context_window: 32768
-      - model_name: llm-fast
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
-          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
-          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
-          # made no progress. 300s gives a stuck slot time to drain.
-          timeout: 300
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          context_window: 32768
-      # Direct real-model name for the fast tier — lets the benchmark dashboard
-      # launch + label runs by the canonical model id (qwen35-9b) instead of the
-      # drifting `fast` role alias. Same llm-fast (x86 llama.cpp) backend.
-      # NOTE: llm-fast may be scaled to 0 — scale it up before benchmarking 9B.
-      - model_name: qwen35-9b
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
-          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
-          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
-          # made no progress. 300s gives a stuck slot time to drain.
-          timeout: 300
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          context_window: 32768
-
-      # Virtual smart-router aliases. The custom callback intercepts requests
-      # to these names and rewrites them to fast/tooling/local by request shape.
-      - model_name: router
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
-          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
-          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
-          # made no progress. 300s gives a stuck slot time to drain.
-          timeout: 300
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-      - model_name: auto
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          # 2026-06-04 60→300: long-output bench tasks (math_hard max_gen=2048,
-          # mmlu_pro 1024, AIME 8192) queued behind PARALLEL=8 slots and
-          # blew past the 60s cap → 60+ timeouts on the fast suite Job that
-          # made no progress. 300s gives a stuck slot time to drain.
-          timeout: 300
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-
-      # Embeddings and reranker.
-      - model_name: bge-m3
-        litellm_params:
-          model: openai/bge-m3
-          api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-        model_info:
-          mode: embedding
-          max_tokens: 8192
-      - model_name: bge-m3-cpu
-        litellm_params:
-          model: openai/bge-m3
-          api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-        model_info:
-          mode: embedding
-          max_tokens: 8192
-      - model_name: bge-m3-embedding
-        litellm_params:
-          model: openai/bge-m3
-          api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-        model_info:
-          mode: embedding
-          max_tokens: 8192
-      - model_name: bge-m3-embedding-cpu
-        litellm_params:
-          model: openai/bge-m3
-          api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-        model_info:
-          mode: embedding
-          max_tokens: 8192
-
-      - model_name: bge-reranker
-        litellm_params:
-          model: infinity/bge-reranker
-          api_base: http://bge-reranker.llm.svc.cluster.local:8000
-          api_key: not-used
-        model_info:
-          mode: rerank
-          max_tokens: 8192
-      - model_name: bge-reranker-cpu
-        litellm_params:
-          model: infinity/bge-reranker
-          api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
-          api_key: not-used
-        model_info:
-          mode: rerank
-          max_tokens: 8192
-      - model_name: bge-reranker-v2-m3
-        litellm_params:
-          model: infinity/bge-reranker
-          api_base: http://bge-reranker.llm.svc.cluster.local:8000
-          api_key: not-used
-        model_info:
-          mode: rerank
-          max_tokens: 8192
-      - model_name: bge-reranker-v2-m3-cpu
-        litellm_params:
-          model: infinity/bge-reranker
-          api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
-          api_key: not-used
-        model_info:
-          mode: rerank
-          max_tokens: 8192
-
+    - model_name: local
+      litellm_params:
+        model: openai/gemma4-31b
+        api_base: http://vllm-gemma4-31b-mtp-dgx1.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 16
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: gemma4-31b
+      litellm_params:
+        model: openai/gemma4-31b
+        api_base: http://vllm-gemma4-31b-mtp-dgx1.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 16
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: tooling
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 32
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: fast
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 32
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: gemma4-26b-a4b-nvfp4
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 32
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: router
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 32
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: auto
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 32
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: bge-m3
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+    - model_name: bge-m3-cpu
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+    - model_name: bge-m3-embedding
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+    - model_name: bge-m3-embedding-cpu
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+    - model_name: bge-reranker
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_key: not-used
+      model_info:
+        mode: rerank
+        max_tokens: 8192
+    - model_name: bge-reranker-cpu
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
+        api_key: not-used
+      model_info:
+        mode: rerank
+        max_tokens: 8192
+    - model_name: bge-reranker-v2-m3
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_key: not-used
+      model_info:
+        mode: rerank
+        max_tokens: 8192
+    - model_name: bge-reranker-v2-m3-cpu
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
+        api_key: not-used
+      model_info:
+        mode: rerank
+        max_tokens: 8192
     litellm_settings:
-      success_callback: ["db", "prometheus"]
-      failure_callback: ["prometheus"]
-      service_callback: ["prometheus_system"]
+      success_callback:
+      - db
+      - prometheus
+      failure_callback:
+      - prometheus
+      service_callback:
+      - prometheus_system
       callbacks:
-        - litellm_strip_params.proxy_handler_instance
+      - litellm_strip_params.proxy_handler_instance
       drop_params: true
       set_verbose: false
       require_auth_for_metrics_endpoint: false
       num_retries: 2
       request_timeout: 600
-
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
       database_url: os.environ/DATABASE_URL
@@ -306,15 +199,9 @@ data:
       store_prompts_in_spend_logs: true
       background_health_checks: true
       enable_passthrough_logging: false
-      # Bound LiteLLM_SpendLogs growth (was 3.1 GB in 7 days). Auto-purge rows
-      # older than 30d, sweep daily — keeps prompts for the dashboard Logs tab
-      # while capping the table that was starving /health/readiness.
-      maximum_spend_logs_retention_period: "30d"
-      maximum_spend_logs_retention_interval: "1d"
-      # Batch spend writes every 60s (default 10s) so the update_spend job
-      # stops backing up ("maximum number of running instances reached").
+      maximum_spend_logs_retention_period: 30d
+      maximum_spend_logs_retention_interval: 1d
       proxy_batch_write_at: 60
-
     router_settings:
       routing_strategy: simple-shuffle
       timeout: 600
@@ -322,16 +209,18 @@ data:
       allowed_fails: 20
       cooldown_time: 30
       fallbacks:
-        - local: ["fast"]
-        - tooling: ["fast"]
-        - qwen35-122b: ["tooling"]
-        - qwen36-27b-nvfp4: ["fast"]
-        - qwen36-35b: ["fast"]
-        - qwen36-35b-nvfp4: ["fast"]
-        - bge-m3: ["bge-m3-cpu"]
-        - bge-m3-embedding: ["bge-m3-embedding-cpu"]
-        - bge-reranker: ["bge-reranker-cpu"]
-        - bge-reranker-v2-m3: ["bge-reranker-v2-m3-cpu"]
+      - local:
+        - tooling
+      - tooling:
+        - fast
+      - bge-m3:
+        - bge-m3-cpu
+      - bge-m3-embedding:
+        - bge-m3-embedding-cpu
+      - bge-reranker:
+        - bge-reranker-cpu
+      - bge-reranker-v2-m3:
+        - bge-reranker-v2-m3-cpu
   litellm_strip_params.py: |
     import json
     import logging
