@@ -1,0 +1,166 @@
+---
+# llm-tool-proxy: OpenAI-compatible tool-calling proxy in front of LiteLLM.
+# Migrated from systemd --user on sauvage. Stateless, amd64, replicas:2.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: llm-tool-proxy-secrets
+  namespace: litellm
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: vault-backend
+  target:
+    name: llm-tool-proxy-secrets
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  dataFrom:
+    - extract:
+        key: skirmshop/llm-tool-proxy
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-tool-proxy-config
+  namespace: litellm
+data:
+  # --- URLs remapped to in-cluster endpoints ---
+  # LiteLLM OpenAI-compatible API (svc litellm.litellm:4000).
+  LITELLM_UPSTREAM_URL: "http://litellm.litellm.svc.cluster.local:4000"
+  # faster-whisper: kept on external ingress. The in-cluster stt-turbo.llm:8000
+  # is a different image (large-v3 STT) with an unverified API/auth contract, so
+  # we do NOT blind-swap it here. Remap later once compatibility is confirmed.
+  FASTER_WHISPER_URL: "https://dgx.e-dani.com"
+  # TTS_URL was empty in the systemd env; preserved. In-cluster candidate when
+  # wired: http://omnivoice-tts.llm.svc.cluster.local:8000
+  TTS_URL: ""
+  # TTS scratch dir -> emptyDir mount.
+  TTS_OUTPUT_DIR: "/tmp/tts"
+  # --- non-URL config copied verbatim ---
+  LAZY_TOOLING_MODEL: "tooling"
+  LAZY_TOOLING_MODEL_FALLBACKS: "tooling,fast"
+  LAZY_UPSTREAM_TIMEOUT_MS: "30000"
+  MYSHOPIFY_DOMAIN: "ymimst-yh.myshopify.com"
+  OPENCLAW_LAZY_TOOLS: "1"
+  PICQER_SUBDOMAIN: "skirmshop"
+  SPOTIFY_REDIRECT_URI: "http://localhost:8888/callback"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-tool-proxy
+  namespace: litellm
+  labels:
+    app: llm-tool-proxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm-tool-proxy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: llm-tool-proxy
+    spec:
+      imagePullSecrets:
+        - name: harbor-pull
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: llm-tool-proxy
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        # node:20-alpine "node" user is uid/gid 1000; numeric so kubelet can
+        # verify non-root under runAsNonRoot.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: llm-tool-proxy
+          image: harbor.lan.e-dani.com/homelab/llm-tool-proxy:k8s-20260617-1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 4001
+          envFrom:
+            - secretRef:
+                name: llm-tool-proxy-secrets
+            - configMapRef:
+                name: llm-tool-proxy-config
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4001
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4001
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Writable scratch under read-only rootfs; covers TTS_OUTPUT_DIR
+            # (/tmp/tts) and any tool tmp usage.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-tool-proxy
+  namespace: litellm
+  labels:
+    app: llm-tool-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app: llm-tool-proxy
+  ports:
+    - name: http
+      port: 4001
+      targetPort: 4001
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: llm-tool-proxy
+  namespace: litellm
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: llm-tool-proxy
