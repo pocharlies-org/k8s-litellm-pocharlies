@@ -90,7 +90,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: llm-tool-proxy
-          image: harbor.lan.e-dani.com/homelab/llm-tool-proxy:k8s-20260617-1
+          image: harbor.e-dani.com/homelab/llm-tool-proxy:k8s-20260617-1
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
