@@ -384,14 +384,31 @@ data:
                     return i, " ".join(texts)
         return -1, ""
 
+    def _proxy_body(data):
+        # LiteLLM keeps the ORIGINAL client request (model, tools, reasoning,
+        # messages) under litellm_params.proxy_server_request.body — top-level
+        # `data` may have these stripped/transformed by the time the pre-call
+        # hook runs. The router already reads proxy_model from here; tools and
+        # reasoning must be read from the same place or they go undetected
+        # (symptom: tool-bearing requests mis-route to SIMPLE/fast).
+        lp = data.get("litellm_params") or {}
+        return (lp.get("proxy_server_request") or {}).get("body") or {}
+
     def _has_tools(data):
-        return bool(data.get("tools") or data.get("functions") or data.get("function_call"))
+        b = _proxy_body(data)
+        return bool(
+            data.get("tools") or data.get("functions") or data.get("function_call")
+            or b.get("tools") or b.get("functions") or b.get("function_call")
+        )
 
     def _wants_reasoning(data):
-        if data.get("reasoning_effort"):
+        b = _proxy_body(data)
+        if data.get("reasoning_effort") or b.get("reasoning_effort"):
             return True
-        r = data.get("reasoning")
-        return isinstance(r, dict) and bool(r.get("effort"))
+        for r in (data.get("reasoning"), b.get("reasoning")):
+            if isinstance(r, dict) and r.get("effort"):
+                return True
+        return False
 
     def _has_part_type(data, names):
         for m in data.get("messages") or []:
