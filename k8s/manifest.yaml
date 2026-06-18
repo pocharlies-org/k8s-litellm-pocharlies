@@ -770,7 +770,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: local35-while-27b-disabled-20260613
+        config.k8s.e-dani.com/revision: fast-gemma4-e4b-20260618
     spec:
       enableServiceLinks: false
       nodeSelector:
