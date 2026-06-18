@@ -211,8 +211,15 @@ data:
       fallbacks:
       - local:
         - tooling
+      # 2026-06-18: cross-GPU redundancy. tooling/fast both map to gemma4-26b @ DGX2; on a 26b
+      # stall/saturation they now fail over to local (gemma4-31b @ DGX1, a different node) instead
+      # of dead-ending. Previously `tooling` only fell back to `fast` (same 26b) and `fast` had NO
+      # fallback ("No fallback model group found for fast" mid-stream errors) → brain synthesis died.
       - tooling:
+        - local
         - fast
+      - fast:
+        - local
       - bge-m3:
         - bge-m3-cpu
       - bge-m3-embedding:
