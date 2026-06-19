@@ -234,6 +234,37 @@ data:
       model_info:
         mode: rerank
         max_tokens: 8192
+    # ── Audio: Whisper STT + OmniVoice TTS (OSS passthrough; for CloudBlue & clients) ──
+    # One LiteLLM key now covers chat + embeddings + STT + TTS. Backends are ClusterIP-only;
+    # LiteLLM stays the single public, key-authed, budgeted front door (no separate exposure).
+    - model_name: stt-turbo
+      litellm_params:
+        model: openai/whisper-large-v3
+        api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_transcription
+    - model_name: whisper-1            # OpenAI-SDK-compatible alias -> same Whisper backend
+      litellm_params:
+        model: openai/whisper-large-v3
+        api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_transcription
+    - model_name: omnivoice-tts
+      litellm_params:
+        model: openai/omnivoice
+        api_base: http://omnivoice-tts-dgx2-static.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_speech
+    - model_name: tts-1               # OpenAI-SDK-compatible alias -> same OmniVoice backend
+      litellm_params:
+        model: openai/omnivoice
+        api_base: http://omnivoice-tts-dgx2-static.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_speech
     litellm_settings:
       success_callback:
       - db
