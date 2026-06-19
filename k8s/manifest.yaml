@@ -38,22 +38,57 @@ data:
     model_list:
     - model_name: local
       litellm_params:
-        model: openai/gemma4-31b
-        api_base: http://vllm-gemma4-31b-mtp-dgx1.llm.svc.cluster.local:8000/v1
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 8
+        max_parallel_requests: 4
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: local
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    # 2026-06-19: compatibility alias while the real 31B deployment is scaled down.
+    # Both entries serve the dual-node Gemma-4-26B pool.
+    - model_name: gemma4-31b
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
       model_info:
         max_tokens: 32768
         supports_function_calling: true
         context_window: 262144
     - model_name: gemma4-31b
       litellm_params:
-        model: openai/gemma4-31b
-        api_base: http://vllm-gemma4-31b-mtp-dgx1.llm.svc.cluster.local:8000/v1
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 8
+        max_parallel_requests: 4
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: tooling
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
       model_info:
         max_tokens: 32768
         supports_function_calling: true
@@ -64,7 +99,7 @@ data:
         api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 16
+        max_parallel_requests: 4
       model_info:
         max_tokens: 32768
         supports_function_calling: true
@@ -83,10 +118,32 @@ data:
     - model_name: gemma4-26b-a4b-nvfp4
       litellm_params:
         model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: gemma4-26b-a4b-nvfp4
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
         api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 16
+        max_parallel_requests: 4
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: router
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
       model_info:
         max_tokens: 32768
         supports_function_calling: true
@@ -97,7 +154,18 @@ data:
         api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 16
+        max_parallel_requests: 4
+      model_info:
+        max_tokens: 32768
+        supports_function_calling: true
+        context_window: 262144
+    - model_name: auto
+      litellm_params:
+        model: openai/gemma4-26b-a4b-nvfp4
+        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
       model_info:
         max_tokens: 32768
         supports_function_calling: true
@@ -108,7 +176,7 @@ data:
         api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 16
+        max_parallel_requests: 4
       model_info:
         max_tokens: 32768
         supports_function_calling: true
@@ -210,16 +278,13 @@ data:
       cooldown_time: 30
       fallbacks:
       - local:
-        - tooling
-      # 2026-06-18: cross-GPU redundancy. tooling/fast both map to gemma4-26b @ DGX2; on a 26b
-      # stall/saturation they now fail over to local (gemma4-31b @ DGX1, a different node) instead
-      # of dead-ending. Previously `tooling` only fell back to `fast` (same 26b) and `fast` had NO
-      # fallback ("No fallback model group found for fast" mid-stream errors) → brain synthesis died.
-      - tooling:
-        - local
         - fast
-      - fast:
-        - local
+      # 2026-06-19: local/tooling/router/auto/gemma4-26b now load-balance across two physical
+      # Gemma-4-26B backends (DGX1 + DGX2), 4 concurrent seqs each for long-context traffic.
+      # Avoid alias-to-alias fallbacks between local/tooling because they hit the same physical pool
+      # and can amplify retries under saturation.
+      - tooling:
+        - fast
       - bge-m3:
         - bge-m3-cpu
       - bge-m3-embedding:
