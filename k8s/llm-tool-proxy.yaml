@@ -39,8 +39,10 @@ data:
   TTS_OUTPUT_DIR: "/tmp/tts"
   # --- non-URL config copied verbatim ---
   LAZY_TOOLING_MODEL: "tooling"
-  LAZY_TOOLING_MODEL_FALLBACKS: "tooling,fast"
-  LAZY_UPSTREAM_TIMEOUT_MS: "30000"
+  # OpenClaw/Synapse tool calls must not fall back to the small text-only tier.
+  LAZY_TOOLING_MODEL_FALLBACKS: "tooling"
+  # Brain/MOA + tool planning can exceed 30s; keep proxy timeout below LiteLLM's 600s.
+  LAZY_UPSTREAM_TIMEOUT_MS: "120000"
   MYSHOPIFY_DOMAIN: "ymimst-yh.myshopify.com"
   OPENCLAW_LAZY_TOOLS: "1"
   PICQER_SUBDOMAIN: "skirmshop"
