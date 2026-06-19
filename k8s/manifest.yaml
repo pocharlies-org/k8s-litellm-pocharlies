@@ -835,7 +835,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: fast-gemma4-e4b-20260618
+        config.k8s.e-dani.com/revision: gemma26-dual-dgx-20260619
     spec:
       enableServiceLinks: false
       nodeSelector:
