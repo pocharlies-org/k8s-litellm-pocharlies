@@ -69,6 +69,8 @@ spec:
     metadata:
       labels:
         app: llm-tool-proxy
+      annotations:
+        config.k8s.e-dani.com/revision: tooling-only-gemma26-20260619
     spec:
       imagePullSecrets:
         - name: harbor-pull

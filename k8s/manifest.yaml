@@ -819,7 +819,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: gemma26-dual-dgx-20260619
+        config.k8s.e-dani.com/revision: tooling-only-gemma26-20260619
     spec:
       enableServiceLinks: false
       nodeSelector:
