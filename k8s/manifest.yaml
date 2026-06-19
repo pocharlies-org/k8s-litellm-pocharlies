@@ -259,6 +259,22 @@ data:
       maximum_spend_logs_retention_period: 30d
       maximum_spend_logs_retention_interval: 1d
       proxy_batch_write_at: 60
+      # ── CloudBlue JWT auth (Keycloak realm edani, client_credentials) ──
+      # ADDITIVE: sk- master/virtual keys keep working — LiteLLM only enters the JWT
+      # path for 3-part bearer tokens; sk- keys (0 dots) fall through to key auth
+      # (verified at source, litellm v1.85.1 user_api_key_auth/handle_jwt is_jwt()).
+      # enforce_rbac MUST live INSIDE litellm_jwtauth (NOT general_settings): it is the
+      # gate that 403-rejects any edani token that does not resolve to a team — e.g.
+      # human Google-SSO tokens, which carry no team_id claim. Do not move it.
+      enable_jwt_auth: true
+      litellm_jwtauth:
+        team_id_jwt_field: "team_id"   # only the cloudblue-dedicated Keycloak scope injects this claim
+        team_id_default: null          # never set — a default team would re-open fail-open admission
+        team_id_upsert: false          # team must pre-exist (team "cloudblue" pre-created via /team/new)
+        user_id_jwt_field: null        # client_credentials tokens have no human user
+        end_user_id_jwt_field: null    # no end-user lookup
+        enforce_rbac: true             # reject any JWT that does not resolve to a team/user/role
+        public_key_ttl: 600            # JWKS cache seconds
     router_settings:
       routing_strategy: simple-shuffle
       timeout: 600
@@ -849,6 +865,11 @@ spec:
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: password } }
             - name: DATABASE_URL
               value: "postgresql://$(_DBUSER):$(_DBPASS)@postgres-shared-rw.databases.svc.cluster.local:5432/litellm"
+            # CloudBlue JWT auth: validate edani-realm tokens. JWKS fetched in-cluster;
+            # issuer/audience pinned so a generic edani token (no aud=litellm) is rejected.
+            - { name: JWT_PUBLIC_KEY_URL, value: "http://keycloak.keycloak.svc.cluster.local/realms/edani/protocol/openid-connect/certs" }
+            - { name: JWT_AUDIENCE, value: "litellm" }
+            - { name: JWT_ISSUER, value: "https://auth-next.e-dani.com/realms/edani" }
           volumeMounts:
             - { name: config, mountPath: /config }
             - { name: config, mountPath: /app/litellm_strip_params.py, subPath: litellm_strip_params.py, readOnly: true }
