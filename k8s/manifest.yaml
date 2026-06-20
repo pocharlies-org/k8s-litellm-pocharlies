@@ -47,34 +47,13 @@ data:
         max_tokens: 32768
         supports_function_calling: true
         context_window: 262144
-    - model_name: local
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
     # 2026-06-19: compatibility alias while the real 31B deployment is scaled down.
-    # Both entries serve the dual-node Gemma-4-26B pool.
+    # DGX1 is the always-on baseline; DGX2 is added dynamically by
+    # litellm-dgx-backend-sync only while its Kubernetes endpoints are ready.
     - model_name: gemma4-31b
       litellm_params:
         model: openai/gemma4-26b-a4b-nvfp4
         api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
-    - model_name: gemma4-31b
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
         max_parallel_requests: 4
@@ -93,32 +72,10 @@ data:
         max_tokens: 32768
         supports_function_calling: true
         context_window: 262144
-    - model_name: tooling
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
     - model_name: gemma4-26b-a4b-nvfp4
       litellm_params:
         model: openai/gemma4-26b-a4b-nvfp4
         api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
-    - model_name: gemma4-26b-a4b-nvfp4
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
         max_parallel_requests: 4
@@ -137,32 +94,10 @@ data:
         max_tokens: 32768
         supports_function_calling: true
         context_window: 262144
-    - model_name: router
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
     - model_name: auto
       litellm_params:
         model: openai/gemma4-26b-a4b-nvfp4
         api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
-    - model_name: auto
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
         max_parallel_requests: 4
@@ -833,6 +768,377 @@ spec:
     - secretKey: DATABASE_URL
       remoteRef: { key: secret/litellm, property: DATABASE_URL }
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: litellm
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: llm
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: llm
+subjects:
+  - kind: ServiceAccount
+    name: litellm-dgx-backend-sync
+    namespace: litellm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: litellm-dgx-backend-sync
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: litellm
+data:
+  sync.py: |
+    from __future__ import annotations
+
+    import json
+    import logging
+    import os
+    import ssl
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from typing import Any
+
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    log = logging.getLogger("litellm-dgx-backend-sync")
+
+    K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "llm")
+    K8S_SERVICE = os.getenv(
+        "K8S_SERVICE",
+        "vllm-gemma4-26b-a4b-nvfp4-dgx2",
+    )
+    LITELLM_BASE_URL = os.getenv(
+        "LITELLM_BASE_URL",
+        "http://litellm.litellm.svc.cluster.local:4000",
+    ).rstrip("/")
+    LITELLM_MASTER_KEY = os.getenv("LITELLM_MASTER_KEY", "").strip()
+    INTERVAL_SECONDS = float(os.getenv("SYNC_INTERVAL_SECONDS", "10"))
+    READY_GRACE_SECONDS = float(os.getenv("READY_GRACE_SECONDS", "20"))
+    REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
+
+    DGX2_API_BASE = (
+        "http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1"
+    )
+    BASE_MODEL = "openai/gemma4-26b-a4b-nvfp4"
+    MODEL_ALIASES = (
+        "local",
+        "gemma4-31b",
+        "tooling",
+        "gemma4-26b-a4b-nvfp4",
+        "router",
+        "auto",
+    )
+    MODEL_ID_PREFIX = "dgx2-gemma4-26b-a4b-nvfp4"
+
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    K8S_HOST = os.getenv("KUBERNETES_SERVICE_HOST")
+    K8S_PORT = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+
+
+    def _read_file(path: str) -> str:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+
+
+    def _ssl_context() -> ssl.SSLContext:
+        if os.path.exists(CA_PATH):
+            return ssl.create_default_context(cafile=CA_PATH)
+        return ssl.create_default_context()
+
+
+    K8S_CONTEXT = _ssl_context()
+
+
+    def _request_json(
+        method: str,
+        url: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        data = None
+        req_headers = dict(headers or {})
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            req_headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{method} {url} -> HTTP {exc.code}: {raw[:500]}") from exc
+        if not raw:
+            return {}
+        return json.loads(raw)
+
+
+    def _k8s_get(path: str) -> Any:
+        if not K8S_HOST:
+            raise RuntimeError("KUBERNETES_SERVICE_HOST is not set")
+        token = _read_file(TOKEN_PATH)
+        url = f"https://{K8S_HOST}:{K8S_PORT}{path}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS, context=K8S_CONTEXT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
+    def _endpoint_condition_ready(endpoint: dict[str, Any]) -> bool:
+        conditions = endpoint.get("conditions") or {}
+        if conditions.get("terminating") is True:
+            return False
+        if conditions.get("ready") is False:
+            return False
+        if conditions.get("serving") is False:
+            return False
+        return bool(endpoint.get("addresses"))
+
+
+    def _endpointslice_ready() -> bool:
+        selector = urllib.parse.urlencode(
+            {"labelSelector": f"kubernetes.io/service-name={K8S_SERVICE}"}
+        )
+        data = _k8s_get(
+            f"/apis/discovery.k8s.io/v1/namespaces/{K8S_NAMESPACE}/endpointslices?{selector}"
+        )
+        ready_addresses: list[str] = []
+        for item in data.get("items", []):
+            for endpoint in item.get("endpoints", []):
+                if _endpoint_condition_ready(endpoint):
+                    ready_addresses.extend(endpoint.get("addresses") or [])
+        if ready_addresses:
+            log.debug("ready EndpointSlice addresses for %s: %s", K8S_SERVICE, ready_addresses)
+            return True
+        return False
+
+
+    def _legacy_endpoints_ready() -> bool:
+        data = _k8s_get(f"/api/v1/namespaces/{K8S_NAMESPACE}/endpoints/{K8S_SERVICE}")
+        for subset in data.get("subsets", []) or []:
+            if subset.get("addresses"):
+                return True
+        return False
+
+
+    def endpoint_ready() -> bool | None:
+        try:
+            return _endpointslice_ready() or _legacy_endpoints_ready()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return False
+            log.warning("Kubernetes readiness query failed: HTTP %s", exc.code)
+            return None
+        except Exception as exc:
+            log.warning("Kubernetes readiness query failed: %s", exc)
+            return None
+
+
+    def _litellm_headers() -> dict[str, str]:
+        if not LITELLM_MASTER_KEY:
+            return {}
+        return {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
+
+
+    def managed_model_id(alias: str) -> str:
+        return f"{MODEL_ID_PREFIX}-{alias}"
+
+
+    def desired_deployments() -> list[dict[str, Any]]:
+        deployments = []
+        for alias in MODEL_ALIASES:
+            deployments.append(
+                {
+                    "model_name": alias,
+                    "litellm_params": {
+                        "model": BASE_MODEL,
+                        "api_base": DGX2_API_BASE,
+                        "api_key": "not-used",
+                        "timeout": 600,
+                        "max_parallel_requests": 4,
+                    },
+                    "model_info": {
+                        "id": managed_model_id(alias),
+                        "max_tokens": 32768,
+                        "supports_function_calling": True,
+                        "context_window": 262144,
+                        "managed_by": "litellm-dgx-backend-sync",
+                        "backend": "dgx2",
+                        "k8s_namespace": K8S_NAMESPACE,
+                        "k8s_service": K8S_SERVICE,
+                    },
+                }
+            )
+        return deployments
+
+
+    def current_model_ids() -> set[str]:
+        data = _request_json(
+            "GET",
+            f"{LITELLM_BASE_URL}/model/info",
+            headers=_litellm_headers(),
+        )
+        items = data.get("data", data) if isinstance(data, dict) else data
+        ids: set[str] = set()
+        for item in items or []:
+            info = item.get("model_info") or {}
+            model_id = info.get("id") or item.get("model_id") or item.get("id")
+            if model_id:
+                ids.add(str(model_id))
+        return ids
+
+
+    def add_model(deployment: dict[str, Any]) -> None:
+        model_id = deployment["model_info"]["id"]
+        try:
+            _request_json(
+                "POST",
+                f"{LITELLM_BASE_URL}/model/new",
+                payload=deployment,
+                headers=_litellm_headers(),
+            )
+            log.info("enabled DGX2 backend %s for alias %s", model_id, deployment["model_name"])
+        except RuntimeError as exc:
+            msg = str(exc).lower()
+            if "already" in msg and "exist" in msg:
+                log.info("DGX2 backend %s already exists", model_id)
+                return
+            raise
+
+
+    def delete_model(model_id: str) -> None:
+        try:
+            _request_json(
+                "POST",
+                f"{LITELLM_BASE_URL}/model/delete",
+                payload={"id": model_id},
+                headers=_litellm_headers(),
+            )
+            log.info("disabled DGX2 backend %s", model_id)
+        except RuntimeError as exc:
+            msg = str(exc).lower()
+            if "not found" in msg or "does not exist" in msg:
+                log.info("DGX2 backend %s already absent", model_id)
+                return
+            raise
+
+
+    def reconcile(enable_dgx2: bool) -> None:
+        desired = desired_deployments()
+        managed_ids = {d["model_info"]["id"] for d in desired}
+        existing = current_model_ids()
+        if enable_dgx2:
+            for deployment in desired:
+                if deployment["model_info"]["id"] not in existing:
+                    add_model(deployment)
+        else:
+            for model_id in sorted(managed_ids & existing):
+                delete_model(model_id)
+
+
+    def main() -> None:
+        log.info(
+            "starting sync: service=%s/%s litellm=%s interval=%ss ready_grace=%ss",
+            K8S_NAMESPACE,
+            K8S_SERVICE,
+            LITELLM_BASE_URL,
+            INTERVAL_SECONDS,
+            READY_GRACE_SECONDS,
+        )
+        ready_since: float | None = None
+        last_desired: bool | None = None
+        while True:
+            ready = endpoint_ready()
+            if ready is None:
+                time.sleep(INTERVAL_SECONDS)
+                continue
+            now = time.monotonic()
+            if ready:
+                if ready_since is None:
+                    ready_since = now
+                desired = now - ready_since >= READY_GRACE_SECONDS
+            else:
+                ready_since = None
+                desired = False
+            try:
+                reconcile(desired)
+                if desired != last_desired:
+                    log.info("desired DGX2 routing state changed: enabled=%s", desired)
+                    last_desired = desired
+            except Exception as exc:
+                log.warning("reconcile failed: %s", exc)
+            time.sleep(INTERVAL_SECONDS)
+
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: litellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm-dgx-backend-sync
+  template:
+    metadata:
+      labels:
+        app: litellm-dgx-backend-sync
+    spec:
+      serviceAccountName: litellm-dgx-backend-sync
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        node-pool: ks5-nvme
+      containers:
+        - name: sync
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/app/sync.py"]
+          env:
+            - { name: LITELLM_BASE_URL, value: "http://litellm.litellm.svc.cluster.local:4000" }
+            - { name: K8S_NAMESPACE, value: "llm" }
+            - { name: K8S_SERVICE, value: "vllm-gemma4-26b-a4b-nvfp4-dgx2" }
+            - { name: SYNC_INTERVAL_SECONDS, value: "10" }
+            - { name: READY_GRACE_SECONDS, value: "20" }
+            - name: LITELLM_MASTER_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
+          volumeMounts:
+            - { name: sync, mountPath: /app, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: sync
+          configMap: { name: litellm-dgx-backend-sync }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -850,7 +1156,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: tooling-only-gemma26-20260619
+        config.k8s.e-dani.com/revision: dgx2-dynamic-backend-sync-20260620
     spec:
       enableServiceLinks: false
       nodeSelector:
