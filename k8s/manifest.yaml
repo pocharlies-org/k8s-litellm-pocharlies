@@ -927,8 +927,14 @@ data:
             f"/apis/discovery.k8s.io/v1/namespaces/{K8S_NAMESPACE}/endpointslices?{selector}"
         )
         ready_addresses: list[str] = []
-        for item in data.get("items", []):
-            for endpoint in item.get("endpoints", []):
+        # NOTE: a scaled-to-zero Service still leaves an EndpointSlice whose
+        # `endpoints` (and `ports`) fields are JSON null, not []. dict.get(k, [])
+        # only substitutes the default when the key is ABSENT, so `null` slips
+        # through and `for endpoint in None` raised TypeError every cycle,
+        # wedging the controller into the `ready is None` skip-branch forever
+        # (it never reconciled DGX2 in or out). Use `or []` to coerce null too.
+        for item in data.get("items") or []:
+            for endpoint in item.get("endpoints") or []:
                 if _endpoint_condition_ready(endpoint):
                     ready_addresses.extend(endpoint.get("addresses") or [])
         if ready_addresses:
