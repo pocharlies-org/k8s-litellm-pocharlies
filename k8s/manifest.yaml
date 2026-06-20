@@ -36,75 +36,9 @@ metadata:
 data:
   config.yaml: |
     model_list:
-    - model_name: local
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
-    # 2026-06-19: compatibility alias while the real 31B deployment is scaled down.
-    # DGX1 is the always-on baseline; DGX2 is added dynamically by
-    # litellm-dgx-backend-sync only while its Kubernetes endpoints are ready.
-    - model_name: gemma4-31b
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
-    - model_name: tooling
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
-    - model_name: gemma4-26b-a4b-nvfp4
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
-    - model_name: router
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
-    - model_name: auto
-      litellm_params:
-        model: openai/gemma4-26b-a4b-nvfp4
-        api_base: http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-      model_info:
-        max_tokens: 32768
-        supports_function_calling: true
-        context_window: 262144
+    # Chat aliases are registered by litellm-dgx-backend-sync only while each
+    # vLLM Service has ready Kubernetes endpoints. This avoids routing local,
+    # tooling, router, or auto to a baseline pod that is still pulling/starting.
     - model_name: bge-m3
       litellm_params:
         model: openai/bge-m3
@@ -827,10 +761,6 @@ data:
     log = logging.getLogger("litellm-dgx-backend-sync")
 
     K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "llm")
-    K8S_SERVICE = os.getenv(
-        "K8S_SERVICE",
-        "vllm-gemma4-26b-a4b-nvfp4-dgx2",
-    )
     LITELLM_BASE_URL = os.getenv(
         "LITELLM_BASE_URL",
         "http://litellm.litellm.svc.cluster.local:4000",
@@ -840,9 +770,6 @@ data:
     READY_GRACE_SECONDS = float(os.getenv("READY_GRACE_SECONDS", "20"))
     REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 
-    DGX2_API_BASE = (
-        "http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1"
-    )
     BASE_MODEL = "openai/gemma4-26b-a4b-nvfp4"
     MODEL_ALIASES = (
         "local",
@@ -852,7 +779,32 @@ data:
         "router",
         "auto",
     )
-    MODEL_ID_PREFIX = "dgx2-gemma4-26b-a4b-nvfp4"
+    BACKENDS = (
+        {
+            "name": "dgx1",
+            "service": os.getenv(
+                "K8S_SERVICE_DGX1",
+                "vllm-gemma4-26b-a4b-nvfp4-dgx1",
+            ),
+            "api_base": os.getenv(
+                "DGX1_API_BASE",
+                "http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx1-gemma4-26b-a4b-nvfp4",
+        },
+        {
+            "name": "dgx2",
+            "service": os.getenv(
+                "K8S_SERVICE_DGX2",
+                os.getenv("K8S_SERVICE", "vllm-gemma4-26b-a4b-nvfp4-dgx2"),
+            ),
+            "api_base": os.getenv(
+                "DGX2_API_BASE",
+                "http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx2-gemma4-26b-a4b-nvfp4",
+        },
+    )
 
     TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -919,9 +871,9 @@ data:
         return bool(endpoint.get("addresses"))
 
 
-    def _endpointslice_ready() -> bool:
+    def _endpointslice_ready(service: str) -> bool:
         selector = urllib.parse.urlencode(
-            {"labelSelector": f"kubernetes.io/service-name={K8S_SERVICE}"}
+            {"labelSelector": f"kubernetes.io/service-name={service}"}
         )
         data = _k8s_get(
             f"/apis/discovery.k8s.io/v1/namespaces/{K8S_NAMESPACE}/endpointslices?{selector}"
@@ -938,29 +890,29 @@ data:
                 if _endpoint_condition_ready(endpoint):
                     ready_addresses.extend(endpoint.get("addresses") or [])
         if ready_addresses:
-            log.debug("ready EndpointSlice addresses for %s: %s", K8S_SERVICE, ready_addresses)
+            log.debug("ready EndpointSlice addresses for %s: %s", service, ready_addresses)
             return True
         return False
 
 
-    def _legacy_endpoints_ready() -> bool:
-        data = _k8s_get(f"/api/v1/namespaces/{K8S_NAMESPACE}/endpoints/{K8S_SERVICE}")
+    def _legacy_endpoints_ready(service: str) -> bool:
+        data = _k8s_get(f"/api/v1/namespaces/{K8S_NAMESPACE}/endpoints/{service}")
         for subset in data.get("subsets", []) or []:
             if subset.get("addresses"):
                 return True
         return False
 
 
-    def endpoint_ready() -> bool | None:
+    def endpoint_ready(service: str) -> bool | None:
         try:
-            return _endpointslice_ready() or _legacy_endpoints_ready()
+            return _endpointslice_ready(service) or _legacy_endpoints_ready(service)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return False
-            log.warning("Kubernetes readiness query failed: HTTP %s", exc.code)
+            log.warning("Kubernetes readiness query failed for %s: HTTP %s", service, exc.code)
             return None
         except Exception as exc:
-            log.warning("Kubernetes readiness query failed: %s", exc)
+            log.warning("Kubernetes readiness query failed for %s: %s", service, exc)
             return None
 
 
@@ -970,11 +922,11 @@ data:
         return {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
 
 
-    def managed_model_id(alias: str) -> str:
-        return f"{MODEL_ID_PREFIX}-{alias}"
+    def managed_model_id(backend: dict[str, str], alias: str) -> str:
+        return f"{backend['id_prefix']}-{alias}"
 
 
-    def desired_deployments() -> list[dict[str, Any]]:
+    def desired_deployments(backend: dict[str, str]) -> list[dict[str, Any]]:
         deployments = []
         for alias in MODEL_ALIASES:
             deployments.append(
@@ -982,20 +934,20 @@ data:
                     "model_name": alias,
                     "litellm_params": {
                         "model": BASE_MODEL,
-                        "api_base": DGX2_API_BASE,
+                        "api_base": backend["api_base"],
                         "api_key": "not-used",
                         "timeout": 600,
                         "max_parallel_requests": 4,
                     },
                     "model_info": {
-                        "id": managed_model_id(alias),
+                        "id": managed_model_id(backend, alias),
                         "max_tokens": 32768,
                         "supports_function_calling": True,
                         "context_window": 262144,
                         "managed_by": "litellm-dgx-backend-sync",
-                        "backend": "dgx2",
+                        "backend": backend["name"],
                         "k8s_namespace": K8S_NAMESPACE,
-                        "k8s_service": K8S_SERVICE,
+                        "k8s_service": backend["service"],
                     },
                 }
             )
@@ -1027,11 +979,12 @@ data:
                 payload=deployment,
                 headers=_litellm_headers(),
             )
-            log.info("enabled DGX2 backend %s for alias %s", model_id, deployment["model_name"])
+            backend = (deployment.get("model_info") or {}).get("backend", "unknown").upper()
+            log.info("enabled %s backend %s for alias %s", backend, model_id, deployment["model_name"])
         except RuntimeError as exc:
             msg = str(exc).lower()
             if "already" in msg and "exist" in msg:
-                log.info("DGX2 backend %s already exists", model_id)
+                log.info("backend %s already exists", model_id)
                 return
             raise
 
@@ -1044,20 +997,20 @@ data:
                 payload={"id": model_id},
                 headers=_litellm_headers(),
             )
-            log.info("disabled DGX2 backend %s", model_id)
+            log.info("disabled backend %s", model_id)
         except RuntimeError as exc:
             msg = str(exc).lower()
             if "not found" in msg or "does not exist" in msg:
-                log.info("DGX2 backend %s already absent", model_id)
+                log.info("backend %s already absent", model_id)
                 return
             raise
 
 
-    def reconcile(enable_dgx2: bool) -> None:
-        desired = desired_deployments()
+    def reconcile_backend(backend: dict[str, str], enable: bool) -> None:
+        desired = desired_deployments(backend)
         managed_ids = {d["model_info"]["id"] for d in desired}
         existing = current_model_ids()
-        if enable_dgx2:
+        if enable:
             for deployment in desired:
                 if deployment["model_info"]["id"] not in existing:
                     add_model(deployment)
@@ -1068,35 +1021,37 @@ data:
 
     def main() -> None:
         log.info(
-            "starting sync: service=%s/%s litellm=%s interval=%ss ready_grace=%ss",
+            "starting sync: namespace=%s services=%s litellm=%s interval=%ss ready_grace=%ss",
             K8S_NAMESPACE,
-            K8S_SERVICE,
+            ",".join(f"{b['name']}={b['service']}" for b in BACKENDS),
             LITELLM_BASE_URL,
             INTERVAL_SECONDS,
             READY_GRACE_SECONDS,
         )
-        ready_since: float | None = None
-        last_desired: bool | None = None
+        ready_since: dict[str, float | None] = {b["name"]: None for b in BACKENDS}
+        last_desired: dict[str, bool | None] = {b["name"]: None for b in BACKENDS}
         while True:
-            ready = endpoint_ready()
-            if ready is None:
-                time.sleep(INTERVAL_SECONDS)
-                continue
             now = time.monotonic()
-            if ready:
-                if ready_since is None:
-                    ready_since = now
-                desired = now - ready_since >= READY_GRACE_SECONDS
-            else:
-                ready_since = None
-                desired = False
-            try:
-                reconcile(desired)
-                if desired != last_desired:
-                    log.info("desired DGX2 routing state changed: enabled=%s", desired)
-                    last_desired = desired
-            except Exception as exc:
-                log.warning("reconcile failed: %s", exc)
+            for backend in BACKENDS:
+                name = backend["name"]
+                service = backend["service"]
+                ready = endpoint_ready(service)
+                if ready is None:
+                    continue
+                if ready:
+                    if ready_since[name] is None:
+                        ready_since[name] = now
+                    desired = now - (ready_since[name] or now) >= READY_GRACE_SECONDS
+                else:
+                    ready_since[name] = None
+                    desired = False
+                try:
+                    reconcile_backend(backend, desired)
+                    if desired != last_desired[name]:
+                        log.info("desired %s routing state changed: enabled=%s", name.upper(), desired)
+                        last_desired[name] = desired
+                except Exception as exc:
+                    log.warning("reconcile failed for %s/%s: %s", K8S_NAMESPACE, service, exc)
             time.sleep(INTERVAL_SECONDS)
 
 
