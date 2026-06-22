@@ -163,8 +163,14 @@ data:
       routing_strategy: simple-shuffle
       timeout: 600
       num_retries: 1
-      allowed_fails: 20
-      cooldown_time: 30
+      # 2026-06-22: a wedged vLLM backend (EngineCore deadlock; /health still 200)
+      # used to keep eating ~50% of chat traffic because it took 20 fails before
+      # any cooldown and the cooldown was only 30s. Eject faster and keep it out
+      # longer; the vLLM engine-watchdog liveness probe restarts the wedged pod
+      # (-> EndpointSlice NotReady -> litellm-dgx-backend-sync removes it) within
+      # ~4 min, so this only has to cover that window.
+      allowed_fails: 3
+      cooldown_time: 120
       fallbacks:
       # 2026-06-19: all chat aliases now ride the dual Gemma-4-26B tooling pool
       # directly. Do not fall back to small/fast text-only models for tool calls,
