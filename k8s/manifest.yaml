@@ -172,9 +172,9 @@ data:
       allowed_fails: 3
       cooldown_time: 120
       fallbacks:
-      # 2026-06-19: all chat aliases now ride the dual Gemma-4-26B tooling pool
-      # directly. Do not fall back to small/fast text-only models for tool calls,
-      # long-context prompts, or OpenClaw/Synapse traffic.
+      # 2026-06-27: chat fallbacks stay disabled for tooling/router/auto because
+      # they are dynamically registered to the Qwen3.6-35B DGX2 resident only
+      # while its vLLM Service has ready endpoints.
       - bge-m3:
         - bge-m3-cpu
       - bge-m3-embedding:
@@ -776,40 +776,70 @@ data:
     READY_GRACE_SECONDS = float(os.getenv("READY_GRACE_SECONDS", "20"))
     REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
 
-    BASE_MODEL = "openai/gemma4-26b-a4b-nvfp4"
-    MODEL_ALIASES = (
+    GEMMA_ALIASES = (
         "local",
         "gemma4-31b",
-        "tooling",
         "gemma4-26b-a4b-nvfp4",
+    )
+    QWEN36_35B_ALIASES = (
+        "tooling",
         "router",
         "auto",
+        "qwen36-35b",
+        "qwen36-35b-nvfp4",
+        "qwen36-35b-nvfp4-dgx2",
+        "qwen-36-35b",
     )
     BACKENDS = (
         {
-            "name": "dgx1",
+            "name": "gemma-dgx1",
+            "label": "DGX1_GEMMA4_26B",
+            "backend": "dgx1",
+            "base_model": "openai/gemma4-26b-a4b-nvfp4",
+            "aliases": GEMMA_ALIASES,
             "service": os.getenv(
-                "K8S_SERVICE_DGX1",
+                "K8S_SERVICE_GEMMA_DGX1",
                 "vllm-gemma4-26b-a4b-nvfp4-dgx1",
             ),
             "api_base": os.getenv(
-                "DGX1_API_BASE",
+                "GEMMA_DGX1_API_BASE",
                 "http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1",
             ),
             "id_prefix": "dgx1-gemma4-26b-a4b-nvfp4",
+            "max_parallel_requests": 4,
+            "supports_function_calling": True,
+            "supports_vision": True,
         },
         {
-            "name": "dgx2",
+            "name": "qwen36-35b-dgx2",
+            "label": "DGX2_QWEN36_35B",
+            "backend": "dgx2",
+            "base_model": "openai/qwen36-35b-nvfp4",
+            "aliases": QWEN36_35B_ALIASES,
             "service": os.getenv(
-                "K8S_SERVICE_DGX2",
-                os.getenv("K8S_SERVICE", "vllm-gemma4-26b-a4b-nvfp4-dgx2"),
+                "K8S_SERVICE_QWEN36_35B_DGX2",
+                "vllm-35b-nvfp4-dgx2",
             ),
             "api_base": os.getenv(
-                "DGX2_API_BASE",
-                "http://vllm-gemma4-26b-a4b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
+                "QWEN36_35B_DGX2_API_BASE",
+                "http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
             ),
-            "id_prefix": "dgx2-gemma4-26b-a4b-nvfp4",
+            "id_prefix": "dgx2-qwen36-35b-nvfp4",
+            "max_parallel_requests": 8,
+            "supports_function_calling": True,
+            "supports_vision": True,
         },
+    )
+    # These model IDs were managed by earlier versions of this controller. Remove
+    # them so `tooling` cannot silently load-balance across mixed Gemma and Qwen
+    # backends after the DGX2 resident is restored to Qwen3.6-35B.
+    RETIRED_MANAGED_IDS = (
+        "dgx1-gemma4-26b-a4b-nvfp4-tooling",
+        "dgx1-gemma4-26b-a4b-nvfp4-router",
+        "dgx1-gemma4-26b-a4b-nvfp4-auto",
+    )
+    RETIRED_MANAGED_ID_PREFIXES = (
+        "dgx2-gemma4-26b-a4b-nvfp4-",
     )
 
     TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -928,30 +958,31 @@ data:
         return {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
 
 
-    def managed_model_id(backend: dict[str, str], alias: str) -> str:
+    def managed_model_id(backend: dict[str, Any], alias: str) -> str:
         return f"{backend['id_prefix']}-{alias}"
 
 
-    def desired_deployments(backend: dict[str, str]) -> list[dict[str, Any]]:
+    def desired_deployments(backend: dict[str, Any]) -> list[dict[str, Any]]:
         deployments = []
-        for alias in MODEL_ALIASES:
+        for alias in backend["aliases"]:
             deployments.append(
                 {
                     "model_name": alias,
                     "litellm_params": {
-                        "model": BASE_MODEL,
+                        "model": backend["base_model"],
                         "api_base": backend["api_base"],
                         "api_key": "not-used",
                         "timeout": 600,
-                        "max_parallel_requests": 4,
+                        "max_parallel_requests": backend["max_parallel_requests"],
                     },
                     "model_info": {
                         "id": managed_model_id(backend, alias),
                         "max_tokens": 32768,
-                        "supports_function_calling": True,
+                        "supports_function_calling": backend["supports_function_calling"],
+                        "supports_vision": backend["supports_vision"],
                         "context_window": 262144,
                         "managed_by": "litellm-dgx-backend-sync",
-                        "backend": backend["name"],
+                        "backend": backend["backend"],
                         "k8s_namespace": K8S_NAMESPACE,
                         "k8s_service": backend["service"],
                     },
@@ -1012,10 +1043,30 @@ data:
             raise
 
 
-    def reconcile_backend(backend: dict[str, str], enable: bool) -> None:
+    def cleanup_retired_models(existing: set[str] | None = None) -> None:
+        existing_ids = set(existing if existing is not None else current_model_ids())
+        retired = {model_id for model_id in RETIRED_MANAGED_IDS if model_id in existing_ids}
+        for prefix in RETIRED_MANAGED_ID_PREFIXES:
+            retired.update(model_id for model_id in existing_ids if model_id.startswith(prefix))
+        for model_id in sorted(retired):
+            delete_model(model_id)
+
+
+    def reconcile_backend(backend: dict[str, Any], enable: bool) -> None:
         desired = desired_deployments(backend)
         managed_ids = {d["model_info"]["id"] for d in desired}
         existing = current_model_ids()
+        cleanup_retired_models(existing)
+        existing = current_model_ids()
+        active_prefix = f"{backend['id_prefix']}-"
+        stale_ids = {
+            model_id
+            for model_id in existing
+            if model_id.startswith(active_prefix) and model_id not in managed_ids
+        }
+        for model_id in sorted(stale_ids):
+            delete_model(model_id)
+        existing -= stale_ids
         if enable:
             for deployment in desired:
                 if deployment["model_info"]["id"] not in existing:
@@ -1092,7 +1143,8 @@ spec:
           env:
             - { name: LITELLM_BASE_URL, value: "http://litellm.litellm.svc.cluster.local:4000" }
             - { name: K8S_NAMESPACE, value: "llm" }
-            - { name: K8S_SERVICE, value: "vllm-gemma4-26b-a4b-nvfp4-dgx2" }
+            - { name: K8S_SERVICE_GEMMA_DGX1, value: "vllm-gemma4-26b-a4b-nvfp4-dgx1" }
+            - { name: K8S_SERVICE_QWEN36_35B_DGX2, value: "vllm-35b-nvfp4-dgx2" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
             - { name: READY_GRACE_SECONDS, value: "20" }
             - name: LITELLM_MASTER_KEY
