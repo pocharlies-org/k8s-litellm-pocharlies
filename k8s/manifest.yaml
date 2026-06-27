@@ -786,6 +786,9 @@ data:
         "router",
         "auto",
         "qwen36-35b",
+        # Contractual alias: explicit model+purpose name expected by clients that
+        # pin the tooling route to the Qwen3.6-35B resident on DGX2.
+        "qwen36-35b-tooling",
         "qwen36-35b-nvfp4",
         "qwen36-35b-nvfp4-dgx2",
         "qwen-36-35b",
