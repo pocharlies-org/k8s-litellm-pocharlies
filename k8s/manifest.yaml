@@ -173,8 +173,9 @@ data:
       cooldown_time: 120
       fallbacks:
       # 2026-06-27: chat fallbacks stay disabled for tooling/router/auto because
-      # they are dynamically registered to the Qwen3.6-35B DGX2 resident only
-      # while its vLLM Service has ready endpoints.
+      # they are dynamically registered by litellm-dgx-backend-sync to the
+      # Qwen3.6-35B residents (DGX1 base always-on + optional DGX2) and load-balance
+      # across whichever vLLM Services currently have ready endpoints.
       - bge-m3:
         - bge-m3-cpu
       - bge-m3-embedding:
@@ -781,18 +782,36 @@ data:
         "gemma4-31b",
         "gemma4-26b-a4b-nvfp4",
     )
-    QWEN36_35B_ALIASES = (
+    QWEN36_35B_SHARED_ALIASES = (
         "tooling",
         "router",
         "auto",
         "qwen36-35b",
         # Contractual alias: explicit model+purpose name expected by clients that
-        # pin the tooling route to the Qwen3.6-35B resident on DGX2.
+        # pin the tooling route to the Qwen3.6-35B pool.
         "qwen36-35b-tooling",
         "qwen36-35b-nvfp4",
-        "qwen36-35b-nvfp4-dgx2",
         "qwen-36-35b",
     )
+    QWEN36_35B_DGX1_ALIASES = QWEN36_35B_SHARED_ALIASES + (
+        "qwen36-35b-nvfp4-dgx1",
+    )
+    QWEN36_35B_DGX2_ALIASES = QWEN36_35B_SHARED_ALIASES + (
+        "qwen36-35b-nvfp4-dgx2",
+    )
+    # Qwen3.6-35B NVFP4 topology:
+    #   - DGX1 (`qwen36-35b-dgx1`) is the BASE, always-on resident. Its Service
+    #     (`vllm-35b-nvfp4`) is expected to stay Ready, so it is the floor of the
+    #     tooling/router/auto/qwen36 routes and never gets evicted.
+    #   - DGX2 (`qwen36-35b-dgx2`) is OPTIONAL/evictable: ComfyUI/Trellis/video
+    #     workloads can claim DGX2 and take its vLLM Service NotReady.
+    # Both backends register the SAME shared aliases under DISTINCT id_prefixes, so
+    # LiteLLM (routing_strategy: simple-shuffle) load-balances tooling/router/auto
+    # and the generic qwen36 aliases across whichever backends are currently
+    # registered. Backend-specific aliases (...-dgx1/...-dgx2) are registered only
+    # on their own node. When DGX2 is evicted its EndpointSlice goes NotReady,
+    # reconcile_backend(dgx2, enable=False) deletes the DGX2 model IDs, and shared
+    # aliases collapse onto DGX1 alone. No restart/config reload is required.
     BACKENDS = (
         {
             "name": "gemma-dgx1",
@@ -814,11 +833,37 @@ data:
             "supports_vision": True,
         },
         {
+            # DGX1 base, always-on Qwen3.6-35B resident. Floor of the
+            # tooling/router/auto/qwen36 routes; load-balances with DGX2 when both
+            # are Ready and serves alone when DGX2 is evicted (ComfyUI/Trellis/video).
+            "name": "qwen36-35b-dgx1",
+            "label": "DGX1_QWEN36_35B",
+            "backend": "dgx1",
+            "base_model": "openai/qwen36-35b-nvfp4",
+            "aliases": QWEN36_35B_DGX1_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN36_35B_DGX1",
+                "vllm-35b-nvfp4",
+            ),
+            "api_base": os.getenv(
+                "QWEN36_35B_DGX1_API_BASE",
+                "http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx1-qwen36-35b-nvfp4",
+            "max_parallel_requests": 8,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
+        {
+            # DGX2 optional/evictable Qwen3.6-35B resident. Readiness-gated: when its
+            # vLLM Service loses Ready endpoints (DGX2 claimed by ComfyUI/Trellis/
+            # video), reconcile_backend disables only the DGX2 IDs and the aliases
+            # fall back to the DGX1 base above.
             "name": "qwen36-35b-dgx2",
             "label": "DGX2_QWEN36_35B",
             "backend": "dgx2",
             "base_model": "openai/qwen36-35b-nvfp4",
-            "aliases": QWEN36_35B_ALIASES,
+            "aliases": QWEN36_35B_DGX2_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_QWEN36_35B_DGX2",
                 "vllm-35b-nvfp4-dgx2",
@@ -834,14 +879,23 @@ data:
         },
     )
     # These model IDs were managed by earlier versions of this controller. Remove
-    # them so `tooling` cannot silently load-balance across mixed Gemma and Qwen
-    # backends after the DGX2 resident is restored to Qwen3.6-35B.
+    # them so tooling/router/auto load-balance ONLY across the Qwen3.6-35B residents
+    # (DGX1 base + optional DGX2) and a stale Gemma deployment can never sneak back
+    # into those routes. Gemma is intentionally confined to GEMMA_ALIASES
+    # (local/gemma*) and must never own a tooling/router/auto ID on either DGX.
     RETIRED_MANAGED_IDS = (
         "dgx1-gemma4-26b-a4b-nvfp4-tooling",
         "dgx1-gemma4-26b-a4b-nvfp4-router",
         "dgx1-gemma4-26b-a4b-nvfp4-auto",
     )
     RETIRED_MANAGED_ID_PREFIXES = (
+        # DGX2 no longer runs Gemma at all, so purge any leftover Gemma ID there,
+        # regardless of alias. DO NOT add the dgx1 Gemma prefix here: gemma-dgx1 is
+        # an ACTIVE backend (local/gemma* under dgx1-gemma4-26b-a4b-nvfp4-*), and a
+        # broad prefix would delete its live deployments every cycle. The three
+        # retired dgx1 Gemma tooling/router/auto IDs are listed explicitly above.
+        # The live Qwen prefixes (dgx{1,2}-qwen36-35b-nvfp4-) are intentionally
+        # absent so both residents stay registered.
         "dgx2-gemma4-26b-a4b-nvfp4-",
     )
 
@@ -1147,6 +1201,9 @@ spec:
             - { name: LITELLM_BASE_URL, value: "http://litellm.litellm.svc.cluster.local:4000" }
             - { name: K8S_NAMESPACE, value: "llm" }
             - { name: K8S_SERVICE_GEMMA_DGX1, value: "vllm-gemma4-26b-a4b-nvfp4-dgx1" }
+            # DGX1 base, always-on Qwen3.6-35B resident (load-balances with DGX2).
+            - { name: K8S_SERVICE_QWEN36_35B_DGX1, value: "vllm-35b-nvfp4" }
+            # DGX2 optional/evictable Qwen3.6-35B resident (readiness-gated).
             - { name: K8S_SERVICE_QWEN36_35B_DGX2, value: "vllm-35b-nvfp4-dgx2" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
             - { name: READY_GRACE_SECONDS, value: "20" }
