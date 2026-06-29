@@ -784,6 +784,7 @@ data:
     )
     QWEN36_27B_DENSE_ALIASES = (
         "dense",
+        "dense-reasoning",
     )
     QWEN36_35B_SHARED_ALIASES = (
         "tooling",
@@ -793,6 +794,7 @@ data:
         # Contractual alias: explicit model+purpose name expected by clients that
         # pin the tooling route to the Qwen3.6-35B pool.
         "qwen36-35b-tooling",
+        "qwen36-35b-reasoning",
         "qwen36-35b-nvfp4",
         "qwen-36-35b",
     )
@@ -882,7 +884,7 @@ data:
         },
         {
             # DGX2 test backend for Qwen3.6-27B dense NVFP4. It intentionally
-            # owns only the `dense` alias so tooling/router/auto continue to use
+            # owns only the dense aliases so tooling/router/auto continue to use
             # the Qwen3.6-35B residents.
             "name": "qwen36-27b-dense-dgx2",
             "label": "DGX2_QWEN36_27B_DENSE",
@@ -1211,6 +1213,8 @@ spec:
     metadata:
       labels:
         app: litellm-dgx-backend-sync
+      annotations:
+        config.k8s.e-dani.com/revision: qwen36-sampling-profiles-20260630
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -1230,7 +1234,8 @@ spec:
             - { name: K8S_SERVICE_QWEN36_35B_DGX1, value: "vllm-35b-nvfp4" }
             # DGX2 optional/evictable Qwen3.6-35B resident (readiness-gated).
             - { name: K8S_SERVICE_QWEN36_35B_DGX2, value: "vllm-35b-nvfp4-dgx2" }
-            # DGX2 Qwen3.6-27B dense NVFP4 test backend exposed as LiteLLM `dense`.
+            # DGX2 Qwen3.6-27B dense NVFP4 test backend exposed as LiteLLM
+            # `dense` plus its reasoning sampling alias.
             - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX2, value: "vllm-qwen36-27b-nvfp4-dgx2" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
             - { name: READY_GRACE_SECONDS, value: "20" }
