@@ -278,6 +278,36 @@ data:
             del _active[request_id]
             _flush_to_file()
 
+    def _metadata_candidates(payload):
+        if not isinstance(payload, dict):
+            return []
+
+        candidates = [
+            payload.get("metadata"),
+            payload.get("litellm_metadata"),
+        ]
+
+        litellm_params = payload.get("litellm_params")
+        if isinstance(litellm_params, dict):
+            candidates.extend(
+                [
+                    litellm_params.get("metadata"),
+                    litellm_params.get("litellm_metadata"),
+                ]
+            )
+
+        return [m for m in candidates if isinstance(m, dict)]
+
+    def _track_end_from_payload(payload, source):
+        for metadata in _metadata_candidates(payload):
+            tracking_id = metadata.get("_tracking_id")
+            if tracking_id:
+                try:
+                    _track_end(tracking_id)
+                except Exception as e:
+                    log.debug("track_end %s error: %s", source, e)
+                return
+
     def _auth_field(user_api_key_dict, name):
         if isinstance(user_api_key_dict, dict):
             return user_api_key_dict.get(name)
@@ -481,6 +511,17 @@ data:
                 litellm_params.setdefault("metadata", {})
                 if isinstance(litellm_params["metadata"], dict):
                     litellm_params["metadata"]["_tracking_id"] = tracking_id
+            logging_obj = data.get("litellm_logging_obj")
+            model_call_details = getattr(logging_obj, "model_call_details", None)
+            if isinstance(model_call_details, dict):
+                model_call_details.setdefault("metadata", {})
+                if isinstance(model_call_details["metadata"], dict):
+                    model_call_details["metadata"]["_tracking_id"] = tracking_id
+                model_call_details.setdefault("litellm_params", {})
+                if isinstance(model_call_details["litellm_params"], dict):
+                    model_call_details["litellm_params"].setdefault("metadata", {})
+                    if isinstance(model_call_details["litellm_params"]["metadata"], dict):
+                        model_call_details["litellm_params"]["metadata"]["_tracking_id"] = tracking_id
             try:
                 _track_start(tracking_id, key_alias, model, call_type)
             except Exception as e:
@@ -494,26 +535,33 @@ data:
             return data
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-            metadata = (kwargs.get("litellm_params") or {}).get("metadata") or {}
-            if not metadata:
-                metadata = kwargs.get("metadata") or {}
-            tracking_id = metadata.get("_tracking_id")
-            if tracking_id:
-                try:
-                    _track_end(tracking_id)
-                except Exception as e:
-                    log.debug("track_end error: %s", e)
+            _track_end_from_payload(kwargs, "log_success")
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-            metadata = (kwargs.get("litellm_params") or {}).get("metadata") or {}
-            if not metadata:
-                metadata = kwargs.get("metadata") or {}
-            tracking_id = metadata.get("_tracking_id")
-            if tracking_id:
-                try:
-                    _track_end(tracking_id)
-                except Exception as e:
-                    log.debug("track_end error: %s", e)
+            _track_end_from_payload(kwargs, "log_failure")
+
+        async def async_post_call_success_hook(self, data, user_api_key_dict, response):
+            _track_end_from_payload(data, "proxy_success")
+            return None
+
+        async def async_post_call_failure_hook(
+            self,
+            request_data,
+            original_exception,
+            user_api_key_dict,
+            traceback_str=None,
+        ):
+            _track_end_from_payload(request_data, "proxy_failure")
+            return None
+
+        async def async_post_call_success_deployment_hook(
+            self,
+            request_data,
+            response,
+            call_type,
+        ):
+            _track_end_from_payload(request_data, "deployment_success")
+            return None
 
     proxy_handler_instance = StripUnsupportedParams()
   active_requests_api.py: |
@@ -1276,7 +1324,7 @@ spec:
       labels: { app: litellm }
       annotations:
         config.k8s.e-dani.com/revision: dgx2-dynamic-backend-sync-20260620
-        active-requests-api/revision: "20260702-active-request-tracking-fix"
+        active-requests-api/revision: "20260702-responses-stream-tracking-fix"
     spec:
       enableServiceLinks: false
       nodeSelector:
