@@ -477,6 +477,10 @@ data:
             tracking_id = str(uuid.uuid4())
             data.setdefault("metadata", {})
             data["metadata"]["_tracking_id"] = tracking_id
+            if isinstance(litellm_params, dict):
+                litellm_params.setdefault("metadata", {})
+                if isinstance(litellm_params["metadata"], dict):
+                    litellm_params["metadata"]["_tracking_id"] = tracking_id
             try:
                 _track_start(tracking_id, key_alias, model, call_type)
             except Exception as e:
@@ -491,6 +495,8 @@ data:
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
             metadata = (kwargs.get("litellm_params") or {}).get("metadata") or {}
+            if not metadata:
+                metadata = kwargs.get("metadata") or {}
             tracking_id = metadata.get("_tracking_id")
             if tracking_id:
                 try:
@@ -500,6 +506,8 @@ data:
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
             metadata = (kwargs.get("litellm_params") or {}).get("metadata") or {}
+            if not metadata:
+                metadata = kwargs.get("metadata") or {}
             tracking_id = metadata.get("_tracking_id")
             if tracking_id:
                 try:
@@ -1268,6 +1276,7 @@ spec:
       labels: { app: litellm }
       annotations:
         config.k8s.e-dani.com/revision: dgx2-dynamic-backend-sync-20260620
+        active-requests-api/revision: "20260702-active-request-tracking-fix"
     spec:
       enableServiceLinks: false
       nodeSelector:
@@ -1289,6 +1298,7 @@ spec:
             - { name: LITELLM_LOG, value: INFO }
             - { name: PYTHONPATH, value: /app }
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
+            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "120" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
             - name: _DBUSER
@@ -1321,7 +1331,7 @@ spec:
             - { name: active, containerPort: 4001 }
           env:
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
-            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "600" }
+            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "120" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
           volumeMounts:
