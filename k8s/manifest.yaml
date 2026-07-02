@@ -38,7 +38,8 @@ data:
     model_list:
     # Chat aliases are registered by litellm-dgx-backend-sync only while each
     # vLLM Service has ready Kubernetes endpoints. This avoids routing local,
-    # tooling, router, or auto to a baseline pod that is still pulling/starting.
+    # tooling, router, litellmrouter, or auto to a baseline pod that is still
+    # pulling/starting.
     - model_name: bge-m3
       litellm_params:
         model: openai/bge-m3
@@ -324,64 +325,127 @@ data:
                 return "master"
         return "unknown"
 
-    ROUTER_MODELS = {"router", "auto"}
+    # Model aliases that trigger the smart router; requests to any of them get
+    # re-pointed at a concrete sampling alias from MODEL_MAP by request shape.
+    # "litellmrouter" is the Codex-facing name (~/.codex/litellmrouter.config.toml).
+    ROUTER_MODELS = {"router", "auto", "litellmrouter"}
 
+    # Routing matrix: the request shape (simple vs tooling) picks the pool and
+    # the reasoning signal picks the sampling alias within that pool. All four
+    # targets are contractual aliases registered by litellm-dgx-backend-sync.
+    # dense/dense-reasoning live only on the evictable DGX2 27B backend, so
+    # they declare a Qwen3.6-35B fallback for when the sync deregisters them
+    # (DGX2 claimed by ComfyUI/Trellis/video); the 35B pool keeps a DGX1 floor.
     MODEL_MAP = {
         "SIMPLE": {
-            "model": "tooling",
+            "model": "dense",
+            "fallback": "qwen36-35b-tooling",
         },
         "TOOLING": {
-            "model": "tooling",
+            "model": "qwen36-35b-tooling",
         },
         "REASONING": {
-            "model": "tooling",
+            "model": "qwen36-35b-reasoning",
+        },
+        "REASONING_SIMPLE": {
+            "model": "dense-reasoning",
+            "fallback": "qwen36-35b-reasoning",
         },
     }
 
     FAST_CTX_LIMIT = 73000
     THINK_MARKERS = ("/think", "[think]")
+    # Codex/agent clients attach a reasoning effort to EVERY call; only a
+    # deliberate medium+ effort counts as a reasoning signal so that ambient
+    # minimal/low efforts still route by request shape.
+    REASONING_EFFORT_SIGNAL = {"medium", "high", "xhigh"}
+    # Content part types across Chat Completions and Responses API payloads.
+    TEXT_PART_TYPES = {"text", "input_text", "output_text"}
+    IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
+    VIDEO_PART_TYPES = {"video", "video_url", "input_video"}
+
+    def _message_entries(data):
+        """Chat `messages` and Responses-API `input` normalized to one list.
+
+        Responses `input` can be a bare string (implicit user message) or a
+        list of items where only message items carry a role; non-message items
+        (function_call, reasoning, item_reference, ...) are skipped here.
+        """
+        entries = []
+        msgs = data.get("messages")
+        if isinstance(msgs, list):
+            entries.extend(m for m in msgs if isinstance(m, dict))
+        inp = data.get("input")
+        if isinstance(inp, str):
+            entries.append({"role": "user", "content": inp})
+        elif isinstance(inp, list):
+            entries.extend(
+                item for item in inp if isinstance(item, dict) and item.get("role")
+            )
+        return entries
+
+    def _entry_text(entry):
+        if not isinstance(entry, dict):
+            return ""
+        c = entry.get("content", "")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return " ".join(
+                p.get("text") or ""
+                for p in c
+                if isinstance(p, dict) and p.get("type") in TEXT_PART_TYPES
+            )
+        return ""
+
+    def _last_user_entry(data):
+        for entry in reversed(_message_entries(data)):
+            if entry.get("role") == "user":
+                return entry
+        return None
 
     def _approx_input_tokens(data):
         total = 0
-        for m in data.get("messages") or []:
-            c = m.get("content", "")
+        for entry in _message_entries(data):
+            c = entry.get("content", "")
             if isinstance(c, str):
                 total += len(c)
             elif isinstance(c, list):
                 for p in c:
                     if isinstance(p, dict):
-                        total += len(p.get("text", ""))
+                        total += len(p.get("text") or "")
         return total // 4
 
-    def _last_user_message_index_and_text(data):
-        messages = data.get("messages") or []
-        for i in range(len(messages) - 1, -1, -1):
-            m = messages[i]
-            if m.get("role") == "user":
-                c = m.get("content", "")
-                if isinstance(c, str):
-                    return i, c
-                if isinstance(c, list):
-                    texts = [
-                        p.get("text", "")
-                        for p in c
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    ]
-                    return i, " ".join(texts)
-        return -1, ""
-
     def _has_tools(data):
-        return bool(data.get("tools") or data.get("functions") or data.get("function_call"))
+        if data.get("tools") or data.get("functions") or data.get("function_call"):
+            return True
+        inp = data.get("input")
+        if isinstance(inp, list):
+            for item in inp:
+                if isinstance(item, dict) and str(item.get("type") or "").startswith("function_call"):
+                    return True
+        for m in data.get("messages") or []:
+            if isinstance(m, dict) and (m.get("tool_calls") or m.get("role") == "tool"):
+                return True
+        return False
+
+    def _reasoning_effort_value(data):
+        effort = data.get("reasoning_effort")
+        if not effort:
+            r = data.get("reasoning")
+            if isinstance(r, dict):
+                effort = r.get("effort")
+        return str(effort).lower() if effort else ""
 
     def _wants_reasoning(data):
-        if data.get("reasoning_effort"):
+        thinking = data.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "enabled":
             return True
-        r = data.get("reasoning")
-        return isinstance(r, dict) and bool(r.get("effort"))
+        return _reasoning_effort_value(data) in REASONING_EFFORT_SIGNAL
 
     def _has_part_type(data, names):
-        for m in data.get("messages") or []:
-            c = m.get("content")
+        for entry in _message_entries(data):
+            c = entry.get("content")
             if isinstance(c, list):
                 for p in c:
                     if isinstance(p, dict) and p.get("type") in names:
@@ -389,10 +453,17 @@ data:
         return False
 
     def _has_think_marker(text):
+        # A marker only counts at a word boundary: "/think" / "/think: x" yes,
+        # "/thinking about it" no (would otherwise misroute AND mutate text).
         if not text:
             return False
         low = text.lstrip().lower()
-        return any(low.startswith(m) for m in THINK_MARKERS)
+        for m in THINK_MARKERS:
+            if low.startswith(m):
+                rest = low[len(m):]
+                if not rest or not rest[0].isalnum():
+                    return True
+        return False
 
     def _strip_think_marker(text):
         if not text:
@@ -402,47 +473,74 @@ data:
         low = stripped.lower()
         for marker in THINK_MARKERS:
             if low.startswith(marker):
-                rest = stripped[len(marker):].lstrip(" :\t\n")
-                return text[:lead_len] + rest
+                rest = stripped[len(marker):]
+                if rest and rest[:1].isalnum():
+                    continue
+                return text[:lead_len] + rest.lstrip(" :\t\n")
         return text
 
     def _strip_think_from_last_user(data):
-        idx, last = _last_user_message_index_and_text(data)
-        if idx < 0 or not _has_think_marker(last):
+        inp = data.get("input")
+        if isinstance(inp, str):
+            if _has_think_marker(inp):
+                data["input"] = _strip_think_marker(inp)
             return
-        msg = data["messages"][idx]
-        c = msg.get("content")
+        entry = _last_user_entry(data)
+        if entry is None or not _has_think_marker(_entry_text(entry)):
+            return
+        c = entry.get("content")
         if isinstance(c, str):
-            data["messages"][idx] = {**msg, "content": _strip_think_marker(c)}
+            entry["content"] = _strip_think_marker(c)
         elif isinstance(c, list):
-            new_parts = []
-            stripped_once = False
             for p in c:
                 if (
-                    not stripped_once
-                    and isinstance(p, dict)
-                    and p.get("type") == "text"
-                    and _has_think_marker(p.get("text", ""))
+                    isinstance(p, dict)
+                    and p.get("type") in TEXT_PART_TYPES
+                    and _has_think_marker(p.get("text") or "")
                 ):
-                    new_parts.append({**p, "text": _strip_think_marker(p.get("text", ""))})
-                    stripped_once = True
-                else:
-                    new_parts.append(p)
-            data["messages"][idx] = {**msg, "content": new_parts}
+                    p["text"] = _strip_think_marker(p.get("text") or "")
+                    break
+
+    def _alias_has_deployments(alias):
+        """Whether the proxy router currently has deployments for the alias.
+
+        Fails open (True) so a litellm-internals change can never take the
+        route down: the request then behaves exactly like a direct call to
+        the mapped alias.
+        """
+        try:
+            from litellm.proxy.proxy_server import llm_router
+        except Exception:
+            return True
+        if llm_router is None:
+            return True
+        try:
+            return bool(llm_router.get_model_list(model_name=alias))
+        except Exception:
+            return True
 
     def _classify_request_shape(data):
-        _, last = _last_user_message_index_and_text(data)
-        has_think = _has_think_marker(last)
-        has_image = _has_part_type(data, {"image", "image_url"})
-        has_video = _has_part_type(data, {"video", "video_url"})
-        big_input = _approx_input_tokens(data) > FAST_CTX_LIMIT
+        """Return (category, think_marker_present) keyed into MODEL_MAP.
 
+        Priority: explicit think marker > tooling shape > reasoning params.
+        The marker is deliberate per-request intent, so it always wins; tool /
+        vision / large-context requests otherwise need the tooling pool even
+        when ambient reasoning params ride along (Codex attaches an effort to
+        every call); reasoning params alone only upgrade simple requests.
+        """
+        has_think = _has_think_marker(_entry_text(_last_user_entry(data)))
+        toolingish = (
+            _has_tools(data)
+            or _has_part_type(data, IMAGE_PART_TYPES)
+            or _has_part_type(data, VIDEO_PART_TYPES)
+            or _approx_input_tokens(data) > FAST_CTX_LIMIT
+        )
         if has_think:
-            return "REASONING", True
-        if _wants_reasoning(data):
-            return "REASONING", False
-        if _has_tools(data) or has_image or has_video or big_input:
+            return ("REASONING" if toolingish else "REASONING_SIMPLE"), True
+        if toolingish:
             return "TOOLING", False
+        if _wants_reasoning(data):
+            return "REASONING_SIMPLE", False
         return "SIMPLE", False
 
     class StripUnsupportedParams(litellm.integrations.custom_logger.CustomLogger):
@@ -466,39 +564,48 @@ data:
                 if marker_present:
                     _strip_think_from_last_user(data)
                 target = MODEL_MAP[category]
-                data["model"] = target["model"]
+                resolved_model = target["model"]
+                fallback_model = target.get("fallback")
+                if fallback_model and not _alias_has_deployments(resolved_model):
+                    router_log.warning(
+                        "router: target %r has no live deployments; degrading to %r",
+                        resolved_model,
+                        fallback_model,
+                    )
+                    resolved_model = fallback_model
+                data["model"] = resolved_model
                 data.pop("api_base", None)
                 data.pop("api_key", None)
                 data.setdefault("metadata", {})
                 data["metadata"]["_router_category"] = category
                 data["metadata"]["_router_original_model"] = proxy_model or requested_model
-                data["metadata"]["_router_resolved_model"] = target["model"]
+                data["metadata"]["_router_resolved_model"] = resolved_model
                 data["metadata"]["_router_resolved_base"] = "model_list"
 
-                _, last_text = _last_user_message_index_and_text(data)
-                preview = (last_text or "")[:120].replace("\n", " ")
+                preview = _entry_text(_last_user_entry(data))[:120].replace("\n", " ")
                 tok_est = _approx_input_tokens(data)
                 reasons = []
                 if marker_present:
                     reasons.append("think_marker")
-                if _wants_reasoning(data):
-                    reasons.append("reasoning_effort")
+                effort = _reasoning_effort_value(data)
+                if effort:
+                    reasons.append(f"effort={effort}")
                 if _has_tools(data):
                     reasons.append(f"tools={len(data.get('tools') or [])}")
                 if tok_est > FAST_CTX_LIMIT:
                     reasons.append(f"ctx={tok_est}>{FAST_CTX_LIMIT}")
-                if _has_part_type(data, {"image", "image_url"}):
+                if _has_part_type(data, IMAGE_PART_TYPES):
                     reasons.append("image")
-                if _has_part_type(data, {"video", "video_url"}):
+                if _has_part_type(data, VIDEO_PART_TYPES):
                     reasons.append("video")
                 router_log.warning(
                     "router: %s -> %s | orig=%r reasons=%s tok~%d msgs=%d last_user=%r",
                     category,
-                    target["model"],
+                    resolved_model,
                     proxy_model or requested_model,
                     reasons or ["default"],
                     tok_est,
-                    len(data.get("messages") or []),
+                    len(_message_entries(data)),
                     preview,
                 )
 
@@ -846,6 +953,11 @@ data:
         "tooling",
         "router",
         "auto",
+        # Codex-facing smart-router alias (profile `litellmrouter`). The
+        # strip-params hook re-points it per request shape; registering it
+        # here keeps the alias servable from the 35B floor even if the hook
+        # rewrite is ever disabled.
+        "litellmrouter",
         "qwen36-35b",
         # Contractual alias: explicit model+purpose name expected by clients that
         # pin the tooling route to the Qwen3.6-35B pool.
@@ -1270,7 +1382,7 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: qwen36-sampling-profiles-20260630
+        config.k8s.e-dani.com/revision: litellmrouter-alias-20260702
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -1323,7 +1435,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: dgx2-dynamic-backend-sync-20260620
+        config.k8s.e-dani.com/revision: smart-router-categories-20260702
         active-requests-api/revision: "20260702-responses-stream-tracking-fix"
     spec:
       enableServiceLinks: false
