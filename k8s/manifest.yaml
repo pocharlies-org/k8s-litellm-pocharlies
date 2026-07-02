@@ -522,23 +522,40 @@ data:
     def _classify_request_shape(data):
         """Return (category, think_marker_present) keyed into MODEL_MAP.
 
-        Priority: explicit think marker > tooling shape > reasoning params.
-        The marker is deliberate per-request intent, so it always wins; tool /
-        vision / large-context requests otherwise need the tooling pool even
-        when ambient reasoning params ride along (Codex attaches an effort to
-        every call); reasoning params alone only upgrade simple requests.
+        Priority: explicit think marker > heavy pool (multimodal / huge context)
+        > tools > reasoning params > simple.
+
+        The marker is deliberate per-request intent, so it always wins. The
+        "heavy pool" — image, video, or context beyond FAST_CTX_LIMIT — MUST run
+        on the Qwen3.6-35B tooling pool: the 27B dense backend is not multimodal
+        and its prefill throughput (~725 tok/s, measured 2026-07-02) makes very
+        large contexts prohibitively slow (73k tokens ≈ 100s cold), which is
+        exactly what FAST_CTX_LIMIT guards against.
+
+        Plain tool-calling, however, now routes to `dense` (the SIMPLE pool):
+        benchmarked 2026-07-02, dense out-scored qwen36-35b-tooling on both
+        single tool-calls (5/5 vs 3/5) and agentic tool-loops (3/3 vs 2/3), and
+        qwen even false-refused a needle retrieval. A tool_call is tiny to decode
+        (~30 tokens) so dense's slower decode barely shows, and a stable Codex
+        prefix is prefix-cached so per-turn prefill is only the delta. The SIMPLE
+        entry keeps `qwen36-35b-tooling` as its fallback, so a DGX2 eviction of
+        the dense backend still degrades tool traffic to the 35B pool. Ambient
+        reasoning params (Codex attaches an effort to every call) no longer force
+        tool requests off dense; reasoning params alone only upgrade simple
+        (non-tool) requests.
         """
         has_think = _has_think_marker(_entry_text(_last_user_entry(data)))
-        toolingish = (
-            _has_tools(data)
-            or _has_part_type(data, IMAGE_PART_TYPES)
+        heavy_pool = (
+            _has_part_type(data, IMAGE_PART_TYPES)
             or _has_part_type(data, VIDEO_PART_TYPES)
             or _approx_input_tokens(data) > FAST_CTX_LIMIT
         )
         if has_think:
-            return ("REASONING" if toolingish else "REASONING_SIMPLE"), True
-        if toolingish:
+            return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), True
+        if heavy_pool:
             return "TOOLING", False
+        if _has_tools(data):
+            return "SIMPLE", False
         if _wants_reasoning(data):
             return "REASONING_SIMPLE", False
         return "SIMPLE", False
