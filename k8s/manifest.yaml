@@ -1549,8 +1549,8 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: smart-router-categories-20260702
-        active-requests-api/revision: "20260702-responses-stream-tracking-fix"
+        config.k8s.e-dani.com/revision: smart-router-direct-dense-20260703
+        active-requests-api/revision: "20260703-responses-stream-drain-hooks"
     spec:
       enableServiceLinks: false
       terminationGracePeriodSeconds: 720
