@@ -323,7 +323,9 @@ data:
     # Model aliases that trigger the smart router; requests to any of them get
     # re-pointed at a concrete sampling alias from MODEL_MAP by request shape.
     # "litellmrouter" is the Codex-facing name (~/.codex/litellmrouter.config.toml).
-    ROUTER_MODELS = {"router", "auto", "litellmrouter"}
+    # `dense` aliases are included because LiteLLM rejects an unregistered model
+    # before router fallbacks can run; the hook degrades them while DGX2 is away.
+    ROUTER_MODELS = {"router", "auto", "litellmrouter", "dense", "dense-reasoning"}
 
     # Routing matrix: the request shape (simple vs tooling) picks the pool and
     # the reasoning signal picks the sampling alias within that pool. All four
@@ -514,7 +516,7 @@ data:
         except Exception:
             return True
 
-    def _classify_request_shape(data):
+    def _classify_request_shape(data, original_model=""):
         """Return (category, think_marker_present) keyed into MODEL_MAP.
 
         Priority: explicit think marker > heavy pool (multimodal / huge context)
@@ -547,6 +549,8 @@ data:
         )
         if has_think:
             return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), True
+        if original_model == "dense-reasoning":
+            return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), False
         if heavy_pool:
             return "TOOLING", False
         if _has_tools(data):
@@ -572,7 +576,7 @@ data:
             is_router_request = requested_model in ROUTER_MODELS or proxy_model in ROUTER_MODELS
 
             if is_router_request:
-                category, marker_present = _classify_request_shape(data)
+                category, marker_present = _classify_request_shape(data, proxy_model or requested_model)
                 if marker_present:
                     _strip_think_from_last_user(data)
                 target = MODEL_MAP[category]
@@ -656,12 +660,26 @@ data:
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
             _track_end_from_payload(kwargs, "log_success")
 
+        async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
+            _track_end_from_payload(kwargs, "log_stream")
+
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
             _track_end_from_payload(kwargs, "log_failure")
 
         async def async_post_call_success_hook(self, data, user_api_key_dict, response):
             _track_end_from_payload(data, "proxy_success")
             return None
+
+        async def async_post_call_success_deployment_hook(self, request_data, response, call_type):
+            _track_end_from_payload(request_data, "deployment_success")
+            return response
+
+        async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
+            try:
+                async for chunk in response:
+                    yield chunk
+            finally:
+                _track_end_from_payload(request_data, "streaming_iterator")
 
         async def async_post_call_failure_hook(
             self,
