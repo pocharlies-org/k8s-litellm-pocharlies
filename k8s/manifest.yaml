@@ -48,26 +48,10 @@ data:
       model_info:
         mode: embedding
         max_tokens: 8192
-    - model_name: bge-m3-cpu
-      litellm_params:
-        model: openai/bge-m3
-        api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-      model_info:
-        mode: embedding
-        max_tokens: 8192
     - model_name: bge-m3-embedding
       litellm_params:
         model: openai/bge-m3
         api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-      model_info:
-        mode: embedding
-        max_tokens: 8192
-    - model_name: bge-m3-embedding-cpu
-      litellm_params:
-        model: openai/bge-m3
-        api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
         api_key: not-used
       model_info:
         mode: embedding
@@ -80,26 +64,10 @@ data:
       model_info:
         mode: rerank
         max_tokens: 8192
-    - model_name: bge-reranker-cpu
-      litellm_params:
-        model: infinity/bge-reranker
-        api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
-        api_key: not-used
-      model_info:
-        mode: rerank
-        max_tokens: 8192
     - model_name: bge-reranker-v2-m3
       litellm_params:
         model: infinity/bge-reranker
         api_base: http://bge-reranker.llm.svc.cluster.local:8000
-        api_key: not-used
-      model_info:
-        mode: rerank
-        max_tokens: 8192
-    - model_name: bge-reranker-v2-m3-cpu
-      litellm_params:
-        model: infinity/bge-reranker
-        api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
@@ -172,19 +140,14 @@ data:
       # ~4 min, so this only has to cover that window.
       allowed_fails: 3
       cooldown_time: 120
-      fallbacks:
       # 2026-06-27: chat fallbacks stay disabled for tooling/router/auto because
       # they are dynamically registered by litellm-dgx-backend-sync to the
       # Qwen3.6-35B residents (DGX1 base always-on + optional DGX2) and load-balance
       # across whichever vLLM Services currently have ready endpoints.
-      - bge-m3:
-        - bge-m3-cpu
-      - bge-m3-embedding:
-        - bge-m3-embedding-cpu
-      - bge-reranker:
-        - bge-reranker-cpu
-      - bge-reranker-v2-m3:
-        - bge-reranker-v2-m3-cpu
+      # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
+      # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
+      # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
+      fallbacks: []
   litellm_strip_params.py: |
     import json
     import logging
