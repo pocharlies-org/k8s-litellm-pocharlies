@@ -140,14 +140,19 @@ data:
       # ~4 min, so this only has to cover that window.
       allowed_fails: 3
       cooldown_time: 120
-      # 2026-06-27: chat fallbacks stay disabled for tooling/router/auto because
-      # they are dynamically registered by litellm-dgx-backend-sync to the
-      # Qwen3.6-35B residents (DGX1 base always-on + optional DGX2) and load-balance
-      # across whichever vLLM Services currently have ready endpoints.
+      # 2026-06-27: tooling/router/auto do not need chat fallbacks because they
+      # are dynamically registered by litellm-dgx-backend-sync to the Qwen3.6-35B
+      # residents (DGX1 base always-on + optional DGX2) and load-balance across
+      # whichever vLLM Services currently have ready endpoints.
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
-      fallbacks: []
+      # Direct dense clients (Qwen Code fast model / safety classifier) still need
+      # a fallback because the dense 27B backend is evictable and may be scaled to
+      # zero while DGX2 is claimed by image/video workloads.
+      fallbacks:
+      - dense: ["qwen36-35b-tooling"]
+      - dense-reasoning: ["qwen36-35b-reasoning"]
   litellm_strip_params.py: |
     import json
     import logging
@@ -211,7 +216,7 @@ data:
     InfinityRerankConfig.transform_rerank_response = _tei_transform_rerank_response
 
     ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
-    STALE_THRESHOLD = int(os.environ.get("LITELLM_ACTIVE_STALE_AFTER_SEC", "600"))
+    STALE_THRESHOLD = int(os.environ.get("LITELLM_ACTIVE_STALE_AFTER_SEC", "900"))
     _active = {}
 
     def _flush_to_file():
@@ -262,15 +267,42 @@ data:
 
         return [m for m in candidates if isinstance(m, dict)]
 
-    def _track_end_from_payload(payload, source):
-        for metadata in _metadata_candidates(payload):
-            tracking_id = metadata.get("_tracking_id")
-            if tracking_id:
-                try:
-                    _track_end(tracking_id)
-                except Exception as e:
-                    log.debug("track_end %s error: %s", source, e)
+    def _tracking_id_candidates(payload, max_depth=5):
+        seen = set()
+
+        def walk(obj, depth):
+            if depth > max_depth:
                 return
+            obj_id = id(obj)
+            if obj_id in seen:
+                return
+            seen.add(obj_id)
+
+            if isinstance(obj, dict):
+                tracking_id = obj.get("_tracking_id")
+                if tracking_id:
+                    yield tracking_id
+                for metadata in _metadata_candidates(obj):
+                    tracking_id = metadata.get("_tracking_id")
+                    if tracking_id:
+                        yield tracking_id
+                for value in obj.values():
+                    if isinstance(value, (dict, list, tuple)):
+                        yield from walk(value, depth + 1)
+            elif isinstance(obj, (list, tuple)):
+                for value in obj:
+                    if isinstance(value, (dict, list, tuple)):
+                        yield from walk(value, depth + 1)
+
+        yield from walk(payload, 0)
+
+    def _track_end_from_payload(payload, source):
+        for tracking_id in _tracking_id_candidates(payload):
+            try:
+                _track_end(tracking_id)
+            except Exception as e:
+                log.debug("track_end %s error: %s", source, e)
+            return
 
     def _auth_field(user_api_key_dict, name):
         if isinstance(user_api_key_dict, dict):
@@ -651,6 +683,90 @@ data:
             return None
 
     proxy_handler_instance = StripUnsupportedParams()
+  litellm_drain.py: |
+    from __future__ import annotations
+
+    import json
+    import os
+    import time
+    from datetime import datetime, timezone
+    from typing import Any
+
+    ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
+    STALE_AFTER_SEC = int(os.environ.get("LITELLM_ACTIVE_STALE_AFTER_SEC", "900"))
+    DRAIN_TIMEOUT_SEC = int(os.environ.get("LITELLM_DRAIN_TIMEOUT_SEC", "660"))
+    POLL_SEC = int(os.environ.get("LITELLM_DRAIN_POLL_SEC", "5"))
+    FINAL_SLEEP_SEC = int(os.environ.get("LITELLM_DRAIN_FINAL_SLEEP_SEC", "5"))
+
+
+    def _started_sec(value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            raw = float(value)
+            return raw / 1000.0 if raw > 1e12 else raw
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                num = float(raw)
+                return num / 1000.0 if num > 1e12 else num
+            except ValueError:
+                try:
+                    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc).timestamp()
+        return None
+
+
+    def _iter_rows(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, dict) and "active" in payload:
+            payload = payload.get("active")
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            return [item for item in payload.values() if isinstance(item, dict)]
+        return []
+
+
+    def active_count() -> int:
+        try:
+            with open(ACTIVE_FILE, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except FileNotFoundError:
+            return 0
+        except Exception as exc:
+            print(f"litellm drain: could not read {ACTIVE_FILE}: {exc}; continuing shutdown", flush=True)
+            return 0
+
+        now = time.time()
+        count = 0
+        for row in _iter_rows(payload):
+            started = _started_sec(row.get("ts") or row.get("started_at") or row.get("start_time"))
+            if started is None or now - started <= STALE_AFTER_SEC:
+                count += 1
+        return count
+
+
+    deadline = time.time() + DRAIN_TIMEOUT_SEC
+    while True:
+        active = active_count()
+        if active <= 0:
+            print("litellm drain: no active requests; shutdown can continue", flush=True)
+            break
+        remaining = int(deadline - time.time())
+        if remaining <= 0:
+            print(f"litellm drain: timed out with {active} active request(s); shutdown continuing", flush=True)
+            break
+        print(f"litellm drain: waiting for {active} active request(s), {remaining}s left", flush=True)
+        time.sleep(min(POLL_SEC, max(1, remaining)))
+
+    if FINAL_SLEEP_SEC > 0:
+        time.sleep(FINAL_SLEEP_SEC)
   active_requests_api.py: |
     from __future__ import annotations
 
@@ -674,7 +790,7 @@ data:
             return default
 
 
-    STALE_AFTER_SEC = _env_int("LITELLM_ACTIVE_STALE_AFTER_SEC", 600)
+    STALE_AFTER_SEC = _env_int("LITELLM_ACTIVE_STALE_AFTER_SEC", 900)
 
 
     def _parse_started_at(value: Any) -> tuple[float | None, str | None]:
@@ -1419,6 +1535,7 @@ spec:
         active-requests-api/revision: "20260702-responses-stream-tracking-fix"
     spec:
       enableServiceLinks: false
+      terminationGracePeriodSeconds: 720
       nodeSelector:
         kubernetes.io/arch: amd64
         node-pool: ks5-nvme
@@ -1438,7 +1555,8 @@ spec:
             - { name: LITELLM_LOG, value: INFO }
             - { name: PYTHONPATH, value: /app }
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
-            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "120" }
+            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
+            - { name: LITELLM_DRAIN_TIMEOUT_SEC, value: "660" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
             - name: _DBUSER
@@ -1454,6 +1572,10 @@ spec:
           resources:
             requests: { cpu: 200m, memory: 512Mi }
             limits:   { memory: 3Gi }
+          lifecycle:
+            preStop:
+              exec:
+                command: ["python", "/config/litellm_drain.py"]
           readinessProbe:
             httpGet: { path: /health/readiness, port: 4000 }
             initialDelaySeconds: 20
@@ -1471,7 +1593,7 @@ spec:
             - { name: active, containerPort: 4001 }
           env:
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
-            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "120" }
+            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
           volumeMounts:
