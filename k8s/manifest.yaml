@@ -149,14 +149,12 @@ data:
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
       # Direct dense clients (Qwen Code fast model / safety classifier) still need
       # a fallback because the dense 27B backend is evictable and may be scaled to
-      # zero while DGX2 is claimed by image/video workloads. Tooling also falls
-      # back to dense for transient Qwen36/vLLM 400s from malformed tool payloads;
-      # this only helps when the dense backend is healthy.
+      # zero while DGX2 is claimed by image/video workloads. Do not fall Qwen36
+      # aliases back to dense: when dense is scaled to zero that creates noisy
+      # qwen36 -> dense -> qwen36 retry loops and hides the real upstream error.
       fallbacks:
       - dense: ["qwen36-35b-tooling"]
       - dense-reasoning: ["qwen36-35b-reasoning"]
-      - qwen36-35b-tooling: ["dense"]
-      - qwen36-35b-reasoning: ["dense-reasoning"]
   litellm_strip_params.py: |
     import json
     import logging
@@ -1553,7 +1551,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: smart-router-direct-dense-20260703
+        config.k8s.e-dani.com/revision: no-qwen36-to-dense-fallback-20260703
         active-requests-api/revision: "20260703-responses-stream-drain-hooks"
     spec:
       enableServiceLinks: false
