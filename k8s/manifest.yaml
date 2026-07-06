@@ -140,10 +140,10 @@ data:
       # ~4 min, so this only has to cover that window.
       allowed_fails: 3
       cooldown_time: 120
-      # 2026-06-27: tooling/router/auto do not need chat fallbacks because they
-      # are dynamically registered by litellm-dgx-backend-sync to the Qwen3.6-35B
-      # residents (DGX1 base always-on + optional DGX2) and load-balance across
-      # whichever vLLM Services currently have ready endpoints.
+      # 2026-06-27: tooling/router/auto are dynamically registered by
+      # litellm-dgx-backend-sync to the Qwen3.6-35B residents (DGX1 base
+      # always-on + optional DGX2) and load-balance across whichever vLLM
+      # Services currently have ready endpoints.
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -152,9 +152,21 @@ data:
       # zero while DGX2 is claimed by image/video workloads. Do not fall Qwen36
       # aliases back to dense: when dense is scaled to zero that creates noisy
       # qwen36 -> dense -> qwen36 retry loops and hides the real upstream error.
+      # 2026-07-06: Qwen36 35B can still degenerate mid-stream under large
+      # agentic loads; LiteLLM raises MidStreamFallbackError after repeated
+      # chunks. Cover the real 35B aliases with non-dense fallbacks so streaming
+      # clients recover instead of surfacing a hard error.
       fallbacks:
       - dense: ["qwen36-35b-tooling"]
       - dense-reasoning: ["qwen36-35b-reasoning"]
+      - qwen36-35b-tooling: ["qwen36-35b-reasoning", "qwen36-35b"]
+      - tooling: ["qwen36-35b-reasoning", "qwen36-35b"]
+      - qwen36-35b-reasoning: ["qwen36-35b"]
+      - router: ["qwen36-35b"]
+      - litellmrouter: ["qwen36-35b"]
+      - auto: ["qwen36-35b"]
+      - qwen36-35b-nvfp4: ["qwen36-35b"]
+      - qwen-36-35b: ["qwen36-35b"]
   litellm_strip_params.py: |
     import json
     import logging
@@ -1088,6 +1100,9 @@ data:
     QWEN36_35B_DGX2_ALIASES = QWEN36_35B_SHARED_ALIASES + (
         "qwen36-35b-nvfp4-dgx2",
     )
+    QWEN36_REPEAT_GUARD_PARAMS = {
+        "repetition_penalty": float(os.getenv("QWEN36_REPETITION_PENALTY", "1.08")),
+    }
     # Qwen3.6-35B NVFP4 topology:
     #   - DGX1 (`qwen36-35b-dgx1`) is the BASE, always-on resident. Its Service
     #     (`vllm-35b-nvfp4`) is expected to stay Ready, so it is the floor of the
@@ -1330,6 +1345,13 @@ data:
         return f"{backend['id_prefix']}-{alias}"
 
 
+    def extra_litellm_params(backend: dict[str, Any], alias: str) -> dict[str, Any]:
+        base_model = str(backend.get("base_model") or "")
+        if base_model.startswith("openai/qwen36-"):
+            return dict(QWEN36_REPEAT_GUARD_PARAMS)
+        return {}
+
+
     def desired_deployments(backend: dict[str, Any]) -> list[dict[str, Any]]:
         deployments = []
         for alias in backend["aliases"]:
@@ -1342,6 +1364,7 @@ data:
                         "api_key": "not-used",
                         "timeout": 600,
                         "max_parallel_requests": backend["max_parallel_requests"],
+                        **extra_litellm_params(backend, alias),
                     },
                     "model_info": {
                         "id": managed_model_id(backend, alias),
@@ -1498,7 +1521,7 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: litellmrouter-alias-20260702
+        config.k8s.e-dani.com/revision: qwen36-stream-fallbacks-20260706
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -1551,7 +1574,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: no-qwen36-to-dense-fallback-20260703
+        config.k8s.e-dani.com/revision: qwen36-stream-fallbacks-20260706
         active-requests-api/revision: "20260703-responses-stream-drain-hooks"
     spec:
       enableServiceLinks: false
