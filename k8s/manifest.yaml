@@ -107,8 +107,10 @@ data:
       success_callback:
       - db
       - prometheus
+      - langfuse
       failure_callback:
       - prometheus
+      - langfuse
       service_callback:
       - prometheus_system
       callbacks:
@@ -118,6 +120,13 @@ data:
       require_auth_for_metrics_endpoint: false
       num_retries: 2
       request_timeout: 600
+      # Langfuse privacy (conservative default): redact prompt/response CONTENT from
+      # ALL logging callbacks — Langfuse still gets traces, latency, cost, tokens, model
+      # and tags, just no message text. NOTE: this ALSO redacts content in the DB
+      # spend-logs (store_prompts_in_spend_logs below still writes each row, but the
+      # message body shows as "redacted-by-litellm"). To send full prompt/response
+      # content for prompt-quality debugging, set this to false or delete the line.
+      turn_off_message_logging: true
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
       database_url: os.environ/DATABASE_URL
@@ -999,6 +1008,13 @@ spec:
       remoteRef: { key: secret/litellm, property: LITELLM_MASTER_KEY }
     - secretKey: DATABASE_URL
       remoteRef: { key: secret/litellm, property: DATABASE_URL }
+    # Langfuse project keys (pk-lf-/sk-lf-) — the SAME pair Langfuse bootstraps
+    # head-lessly (secret/langfuse INIT_PROJECT_*). Add to Vault: vault kv patch
+    # secret/litellm LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-...
+    - secretKey: LANGFUSE_PUBLIC_KEY
+      remoteRef: { key: secret/litellm, property: LANGFUSE_PUBLIC_KEY }
+    - secretKey: LANGFUSE_SECRET_KEY
+      remoteRef: { key: secret/litellm, property: LANGFUSE_SECRET_KEY }
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -1602,6 +1618,14 @@ spec:
             - { name: LITELLM_DRAIN_TIMEOUT_SEC, value: "660" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
+            # Langfuse native callback (LLM tracing). Points at the in-cluster web
+            # service directly (bypasses the SSO edge). Keys from litellm-secrets ESO.
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LANGFUSE_PUBLIC_KEY } }
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LANGFUSE_SECRET_KEY } }
+            - name: LANGFUSE_HOST
+              value: "http://langfuse-web.langfuse.svc.cluster.local:3000"
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS
