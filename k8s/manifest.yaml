@@ -120,13 +120,12 @@ data:
       require_auth_for_metrics_endpoint: false
       num_retries: 2
       request_timeout: 600
-      # Langfuse privacy (conservative default): redact prompt/response CONTENT from
-      # ALL logging callbacks — Langfuse still gets traces, latency, cost, tokens, model
-      # and tags, just no message text. NOTE: this ALSO redacts content in the DB
-      # spend-logs (store_prompts_in_spend_logs below still writes each row, but the
-      # message body shows as "redacted-by-litellm"). To send full prompt/response
-      # content for prompt-quality debugging, set this to false or delete the line.
-      turn_off_message_logging: true
+      # Content logging ENABLED (2026-07-09): full prompt/response text flows to Langfuse
+      # traces AND the DB spend-logs — needed for prompt debugging + LLM-as-a-judge evals.
+      # Langfuse is SSO-gated (Keycloak) + homelab, so the privacy risk is low. To redact
+      # content again (traces keep latency/cost/tokens/tags; body -> "redacted-by-litellm"),
+      # set this back to true.
+      turn_off_message_logging: false
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
       database_url: os.environ/DATABASE_URL
