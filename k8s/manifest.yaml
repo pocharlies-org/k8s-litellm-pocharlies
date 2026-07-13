@@ -167,6 +167,7 @@ data:
       fallbacks:
       - dense: ["qwen36-35b-tooling"]
       - dense-reasoning: ["qwen36-35b-reasoning"]
+      - taxonomy: ["qwen36-35b-tooling"]
       - qwen36-35b-tooling: ["qwen36-35b-reasoning", "qwen36-35b"]
       - tooling: ["qwen36-35b-reasoning", "qwen36-35b"]
       - qwen36-35b-reasoning: ["qwen36-35b"]
@@ -347,7 +348,7 @@ data:
     # "litellmrouter" is the Codex-facing name (~/.codex/litellmrouter.config.toml).
     # `dense` aliases are included because LiteLLM rejects an unregistered model
     # before router fallbacks can run; the hook degrades them while DGX2 is away.
-    ROUTER_MODELS = {"router", "auto", "litellmrouter", "dense", "dense-reasoning"}
+    ROUTER_MODELS = {"router", "auto", "litellmrouter", "dense", "dense-reasoning", "taxonomy"}
 
     # Routing matrix: the request shape (simple vs tooling) picks the pool and
     # the reasoning signal picks the sampling alias within that pool. All four
@@ -1091,6 +1092,10 @@ data:
     QWEN36_27B_DENSE_ALIASES = (
         "dense",
         "dense-reasoning",
+        # Dedicated Skirmshop taxonomy route. The strip-params hook maps its
+        # normal JSON classification calls to `dense`, with the 35B fallback in
+        # MODEL_MAP when DGX2 is unavailable.
+        "taxonomy",
     )
     QWEN36_35B_SHARED_ALIASES = (
         "tooling",
@@ -1203,15 +1208,18 @@ data:
             "name": "qwen36-27b-dense-dgx2",
             "label": "DGX2_QWEN36_27B_DENSE",
             "backend": "dgx2",
-            "base_model": "openai/qwen36-27b-nvfp4",
+            "base_model": os.getenv(
+                "QWEN36_27B_DENSE_MODEL",
+                "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv",
+            ),
             "aliases": QWEN36_27B_DENSE_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_QWEN36_27B_DENSE_DGX2",
-                "vllm-qwen36-27b-nvfp4-dgx2",
+                "vllm-qwen36-27b-nvfp4-v024-f2-dgx2",
             ),
             "api_base": os.getenv(
                 "QWEN36_27B_DENSE_DGX2_API_BASE",
-                "http://vllm-qwen36-27b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
+                "http://vllm-qwen36-27b-nvfp4-v024-f2-dgx2.llm.svc.cluster.local:8000/v1",
             ),
             "id_prefix": "dgx2-qwen36-27b-dense-nvfp4",
             "max_parallel_requests": 8,
@@ -1556,9 +1564,10 @@ spec:
             - { name: K8S_SERVICE_QWEN36_35B_DGX1, value: "vllm-35b-nvfp4" }
             # DGX2 optional/evictable Qwen3.6-35B resident (readiness-gated).
             - { name: K8S_SERVICE_QWEN36_35B_DGX2, value: "vllm-35b-nvfp4-dgx2" }
-            # DGX2 Qwen3.6-27B dense NVFP4 test backend exposed as LiteLLM
-            # `dense` plus its reasoning sampling alias.
-            - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX2, value: "vllm-qwen36-27b-nvfp4-dgx2" }
+            # Active DGX2 Qwen3.6-27B dense F2 backend exposed as `dense`,
+            # `dense-reasoning`, and the dedicated `taxonomy` alias.
+            - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX2, value: "vllm-qwen36-27b-nvfp4-v024-f2-dgx2" }
+            - { name: QWEN36_27B_DENSE_MODEL, value: "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
             - { name: READY_GRACE_SECONDS, value: "20" }
             - name: LITELLM_MASTER_KEY
