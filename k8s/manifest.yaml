@@ -35,177 +35,97 @@ metadata:
   namespace: litellm
 data:
   config.yaml: |
-    # LiteLLM static config - local/K8s models only. No cloud/paid models.
     model_list:
-      # Reasoning/local tier: Qwen3.5-122B on DGX1/GX10, served by K8s.
-      - model_name: local
-        litellm_params:
-          model: openai/qwen35-122b
-          api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 300
-        model_info:
-          max_tokens: 262144
-          supports_function_calling: true
-          context_window: 262144
-      - model_name: qwen35-122b
-        litellm_params:
-          model: openai/qwen35-122b
-          api_base: http://vllm-122b.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 300
-        model_info:
-          max_tokens: 262144
-          supports_function_calling: true
-          context_window: 262144
-      # Tooling tier: Qwen3.6-35B on DGX2/GX10, multimodal and tools.
-      - model_name: tooling
-        litellm_params:
-          model: openai/Qwen/Qwen3.6-35B-A3B-FP8
-          api_base: http://vllm-35b.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 96
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-      - model_name: qwen36-35b
-        litellm_params:
-          model: openai/Qwen/Qwen3.6-35B-A3B-FP8
-          api_base: http://vllm-35b.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-          timeout: 600
-          max_parallel_requests: 96
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          supports_vision: true
-          context_window: 262144
-
-      # Fast tier: llama.cpp on x86 GPU.
-      - model_name: fast
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          timeout: 60
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          context_window: 32768
-      - model_name: llm-fast
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          timeout: 60
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-          context_window: 32768
-
-      # Virtual smart-router aliases. The custom callback intercepts requests
-      # to these names and rewrites them to fast/tooling/local by request shape.
-      - model_name: router
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          timeout: 60
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-      - model_name: auto
-        litellm_params:
-          model: openai/qwen35-9b
-          api_base: http://llm-fast.llm.svc.cluster.local:8210/v1
-          api_key: not-used
-          timeout: 60
-        model_info:
-          max_tokens: 32768
-          supports_function_calling: true
-
-      # Embeddings and reranker.
-      - model_name: bge-m3
-        litellm_params:
-          model: openai/bge-m3
-          api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-        model_info:
-          mode: embedding
-          max_tokens: 8192
-      - model_name: bge-m3-cpu
-        litellm_params:
-          model: openai/bge-m3
-          api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-        model_info:
-          mode: embedding
-          max_tokens: 8192
-      - model_name: bge-m3-embedding
-        litellm_params:
-          model: openai/bge-m3
-          api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-        model_info:
-          mode: embedding
-          max_tokens: 8192
-      - model_name: bge-m3-embedding-cpu
-        litellm_params:
-          model: openai/bge-m3
-          api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
-          api_key: not-used
-        model_info:
-          mode: embedding
-          max_tokens: 8192
-
-      - model_name: bge-reranker
-        litellm_params:
-          model: infinity/bge-reranker
-          api_base: http://bge-reranker.llm.svc.cluster.local:8000
-          api_key: not-used
-        model_info:
-          mode: rerank
-          max_tokens: 8192
-      - model_name: bge-reranker-cpu
-        litellm_params:
-          model: infinity/bge-reranker
-          api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
-          api_key: not-used
-        model_info:
-          mode: rerank
-          max_tokens: 8192
-      - model_name: bge-reranker-v2-m3
-        litellm_params:
-          model: infinity/bge-reranker
-          api_base: http://bge-reranker.llm.svc.cluster.local:8000
-          api_key: not-used
-        model_info:
-          mode: rerank
-          max_tokens: 8192
-      - model_name: bge-reranker-v2-m3-cpu
-        litellm_params:
-          model: infinity/bge-reranker
-          api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
-          api_key: not-used
-        model_info:
-          mode: rerank
-          max_tokens: 8192
-
+    # Chat aliases are registered by litellm-dgx-backend-sync only while each
+    # vLLM Service has ready Kubernetes endpoints. This avoids routing local,
+    # tooling, router, litellmrouter, or auto to a baseline pod that is still
+    # pulling/starting.
+    - model_name: bge-m3
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+    - model_name: bge-m3-embedding
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+    - model_name: bge-reranker
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_key: not-used
+      model_info:
+        mode: rerank
+        max_tokens: 8192
+    - model_name: bge-reranker-v2-m3
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_key: not-used
+      model_info:
+        mode: rerank
+        max_tokens: 8192
+    # ── Audio: Whisper STT + OmniVoice TTS (OSS passthrough; for CloudBlue & clients) ──
+    # One LiteLLM key now covers chat + embeddings + STT + TTS. Backends are ClusterIP-only;
+    # LiteLLM stays the single public, key-authed, budgeted front door (no separate exposure).
+    - model_name: stt-turbo
+      litellm_params:
+        model: openai/whisper-large-v3
+        api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_transcription
+    - model_name: whisper-1            # OpenAI-SDK-compatible alias -> same Whisper backend
+      litellm_params:
+        model: openai/whisper-large-v3
+        api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_transcription
+    - model_name: omnivoice-tts
+      litellm_params:
+        model: openai/omnivoice
+        api_base: http://omnivoice-tts-dgx2-static.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_speech
+    - model_name: tts-1               # OpenAI-SDK-compatible alias -> same OmniVoice backend
+      litellm_params:
+        model: openai/omnivoice
+        api_base: http://omnivoice-tts-dgx2-static.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_speech
     litellm_settings:
-      success_callback: ["db", "prometheus"]
-      failure_callback: ["prometheus"]
-      service_callback: ["prometheus_system"]
+      success_callback:
+      - db
+      - prometheus
+      - langfuse
+      failure_callback:
+      - prometheus
+      - langfuse
+      service_callback:
+      - prometheus_system
       callbacks:
-        - litellm_strip_params.proxy_handler_instance
+      - litellm_strip_params.proxy_handler_instance
       drop_params: true
       set_verbose: false
       require_auth_for_metrics_endpoint: false
       num_retries: 2
       request_timeout: 600
-
+      # Content logging ENABLED (2026-07-09): full prompt/response text flows to Langfuse
+      # traces AND the DB spend-logs — needed for prompt debugging + LLM-as-a-judge evals.
+      # Langfuse is SSO-gated (Keycloak) + homelab, so the privacy risk is low. To redact
+      # content again (traces keep latency/cost/tokens/tags; body -> "redacted-by-litellm"),
+      # set this back to true.
+      turn_off_message_logging: false
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
       database_url: os.environ/DATABASE_URL
@@ -213,30 +133,48 @@ data:
       store_prompts_in_spend_logs: true
       background_health_checks: true
       enable_passthrough_logging: false
-      # Bound LiteLLM_SpendLogs growth (was 3.1 GB in 7 days). Auto-purge rows
-      # older than 30d, sweep daily — keeps prompts for the dashboard Logs tab
-      # while capping the table that was starving /health/readiness.
-      maximum_spend_logs_retention_period: "30d"
-      maximum_spend_logs_retention_interval: "1d"
-      # Batch spend writes every 60s (default 10s) so the update_spend job
-      # stops backing up ("maximum number of running instances reached").
+      maximum_spend_logs_retention_period: 30d
+      maximum_spend_logs_retention_interval: 1d
       proxy_batch_write_at: 60
-
     router_settings:
       routing_strategy: simple-shuffle
       timeout: 600
       num_retries: 1
-      allowed_fails: 20
-      cooldown_time: 30
+      # 2026-06-22: a wedged vLLM backend (EngineCore deadlock; /health still 200)
+      # used to keep eating ~50% of chat traffic because it took 20 fails before
+      # any cooldown and the cooldown was only 30s. Eject faster and keep it out
+      # longer; the vLLM engine-watchdog liveness probe restarts the wedged pod
+      # (-> EndpointSlice NotReady -> litellm-dgx-backend-sync removes it) within
+      # ~4 min, so this only has to cover that window.
+      allowed_fails: 3
+      cooldown_time: 120
+      # 2026-06-27: tooling/router/auto are dynamically registered by
+      # litellm-dgx-backend-sync to the Qwen3.6-35B residents (DGX1 base
+      # always-on + optional DGX2) and load-balance across whichever vLLM
+      # Services currently have ready endpoints.
+      # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
+      # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
+      # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
+      # Direct dense clients (Qwen Code fast model / safety classifier) still need
+      # a fallback because the dense 27B backend is evictable and may be scaled to
+      # zero while DGX2 is claimed by image/video workloads. Do not fall Qwen36
+      # aliases back to dense: when dense is scaled to zero that creates noisy
+      # qwen36 -> dense -> qwen36 retry loops and hides the real upstream error.
+      # 2026-07-06: Qwen36 35B can still degenerate mid-stream under large
+      # agentic loads; LiteLLM raises MidStreamFallbackError after repeated
+      # chunks. Cover the real 35B aliases with non-dense fallbacks so streaming
+      # clients recover instead of surfacing a hard error.
       fallbacks:
-        - local: ["tooling"]
-        - tooling: ["local", "fast"]
-        - qwen35-122b: ["tooling"]
-        - qwen36-35b: ["local", "fast"]
-        - bge-m3: ["bge-m3-cpu"]
-        - bge-m3-embedding: ["bge-m3-embedding-cpu"]
-        - bge-reranker: ["bge-reranker-cpu"]
-        - bge-reranker-v2-m3: ["bge-reranker-v2-m3-cpu"]
+      - dense: ["qwen36-35b-tooling"]
+      - dense-reasoning: ["qwen36-35b-reasoning"]
+      - qwen36-35b-tooling: ["qwen36-35b-reasoning", "qwen36-35b"]
+      - tooling: ["qwen36-35b-reasoning", "qwen36-35b"]
+      - qwen36-35b-reasoning: ["qwen36-35b"]
+      - router: ["qwen36-35b"]
+      - litellmrouter: ["qwen36-35b"]
+      - auto: ["qwen36-35b"]
+      - qwen36-35b-nvfp4: ["qwen36-35b"]
+      - qwen-36-35b: ["qwen36-35b"]
   litellm_strip_params.py: |
     import json
     import logging
@@ -300,7 +238,7 @@ data:
     InfinityRerankConfig.transform_rerank_response = _tei_transform_rerank_response
 
     ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
-    STALE_THRESHOLD = 600
+    STALE_THRESHOLD = int(os.environ.get("LITELLM_ACTIVE_STALE_AFTER_SEC", "900"))
     _active = {}
 
     def _flush_to_file():
@@ -331,67 +269,202 @@ data:
             del _active[request_id]
             _flush_to_file()
 
-    ROUTER_MODELS = {"router", "auto"}
+    def _metadata_candidates(payload):
+        if not isinstance(payload, dict):
+            return []
 
+        candidates = [
+            payload.get("metadata"),
+            payload.get("litellm_metadata"),
+        ]
+
+        litellm_params = payload.get("litellm_params")
+        if isinstance(litellm_params, dict):
+            candidates.extend(
+                [
+                    litellm_params.get("metadata"),
+                    litellm_params.get("litellm_metadata"),
+                ]
+            )
+
+        return [m for m in candidates if isinstance(m, dict)]
+
+    def _tracking_id_candidates(payload, max_depth=5):
+        seen = set()
+
+        def walk(obj, depth):
+            if depth > max_depth:
+                return
+            obj_id = id(obj)
+            if obj_id in seen:
+                return
+            seen.add(obj_id)
+
+            if isinstance(obj, dict):
+                tracking_id = obj.get("_tracking_id")
+                if tracking_id:
+                    yield tracking_id
+                for metadata in _metadata_candidates(obj):
+                    tracking_id = metadata.get("_tracking_id")
+                    if tracking_id:
+                        yield tracking_id
+                for value in obj.values():
+                    if isinstance(value, (dict, list, tuple)):
+                        yield from walk(value, depth + 1)
+            elif isinstance(obj, (list, tuple)):
+                for value in obj:
+                    if isinstance(value, (dict, list, tuple)):
+                        yield from walk(value, depth + 1)
+
+        yield from walk(payload, 0)
+
+    def _track_end_from_payload(payload, source):
+        for tracking_id in _tracking_id_candidates(payload):
+            try:
+                _track_end(tracking_id)
+            except Exception as e:
+                log.debug("track_end %s error: %s", source, e)
+            return
+
+    def _auth_field(user_api_key_dict, name):
+        if isinstance(user_api_key_dict, dict):
+            return user_api_key_dict.get(name)
+        return getattr(user_api_key_dict, name, None)
+
+    def _resolve_key_label(user_api_key_dict):
+        for name in ("key_alias", "key_name"):
+            value = _auth_field(user_api_key_dict, name)
+            if value:
+                return str(value)
+        for name in ("token", "api_key"):
+            value = _auth_field(user_api_key_dict, name)
+            if value and str(value).startswith("litellm_proxy_master"):
+                return "master"
+        return "unknown"
+
+    # Model aliases that trigger the smart router; requests to any of them get
+    # re-pointed at a concrete sampling alias from MODEL_MAP by request shape.
+    # "litellmrouter" is the Codex-facing name (~/.codex/litellmrouter.config.toml).
+    # `dense` aliases are included because LiteLLM rejects an unregistered model
+    # before router fallbacks can run; the hook degrades them while DGX2 is away.
+    ROUTER_MODELS = {"router", "auto", "litellmrouter", "dense", "dense-reasoning"}
+
+    # Routing matrix: the request shape (simple vs tooling) picks the pool and
+    # the reasoning signal picks the sampling alias within that pool. All four
+    # targets are contractual aliases registered by litellm-dgx-backend-sync.
+    # dense/dense-reasoning live only on the evictable DGX2 27B backend, so
+    # they declare a Qwen3.6-35B fallback for when the sync deregisters them
+    # (DGX2 claimed by ComfyUI/Trellis/video); the 35B pool keeps a DGX1 floor.
     MODEL_MAP = {
         "SIMPLE": {
-            "model": "openai/qwen35-9b",
-            "api_base": "http://llm-fast.llm.svc.cluster.local:8210/v1",
+            "model": "dense",
+            "fallback": "qwen36-35b-tooling",
         },
         "TOOLING": {
-            "model": "openai/Qwen/Qwen3.6-35B-A3B-FP8",
-            "api_base": "http://vllm-35b.llm.svc.cluster.local:8000/v1",
+            "model": "qwen36-35b-tooling",
         },
         "REASONING": {
-            "model": "openai/qwen35-122b",
-            "api_base": "http://vllm-122b.llm.svc.cluster.local:8000/v1",
+            "model": "qwen36-35b-reasoning",
+        },
+        "REASONING_SIMPLE": {
+            "model": "dense-reasoning",
+            "fallback": "qwen36-35b-reasoning",
         },
     }
 
     FAST_CTX_LIMIT = 73000
     THINK_MARKERS = ("/think", "[think]")
+    # Codex/agent clients attach a reasoning effort to EVERY call; only a
+    # deliberate medium+ effort counts as a reasoning signal so that ambient
+    # minimal/low efforts still route by request shape.
+    REASONING_EFFORT_SIGNAL = {"medium", "high", "xhigh"}
+    # Content part types across Chat Completions and Responses API payloads.
+    TEXT_PART_TYPES = {"text", "input_text", "output_text"}
+    IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
+    VIDEO_PART_TYPES = {"video", "video_url", "input_video"}
+
+    def _message_entries(data):
+        """Chat `messages` and Responses-API `input` normalized to one list.
+
+        Responses `input` can be a bare string (implicit user message) or a
+        list of items where only message items carry a role; non-message items
+        (function_call, reasoning, item_reference, ...) are skipped here.
+        """
+        entries = []
+        msgs = data.get("messages")
+        if isinstance(msgs, list):
+            entries.extend(m for m in msgs if isinstance(m, dict))
+        inp = data.get("input")
+        if isinstance(inp, str):
+            entries.append({"role": "user", "content": inp})
+        elif isinstance(inp, list):
+            entries.extend(
+                item for item in inp if isinstance(item, dict) and item.get("role")
+            )
+        return entries
+
+    def _entry_text(entry):
+        if not isinstance(entry, dict):
+            return ""
+        c = entry.get("content", "")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return " ".join(
+                p.get("text") or ""
+                for p in c
+                if isinstance(p, dict) and p.get("type") in TEXT_PART_TYPES
+            )
+        return ""
+
+    def _last_user_entry(data):
+        for entry in reversed(_message_entries(data)):
+            if entry.get("role") == "user":
+                return entry
+        return None
 
     def _approx_input_tokens(data):
         total = 0
-        for m in data.get("messages") or []:
-            c = m.get("content", "")
+        for entry in _message_entries(data):
+            c = entry.get("content", "")
             if isinstance(c, str):
                 total += len(c)
             elif isinstance(c, list):
                 for p in c:
                     if isinstance(p, dict):
-                        total += len(p.get("text", ""))
+                        total += len(p.get("text") or "")
         return total // 4
 
-    def _last_user_message_index_and_text(data):
-        messages = data.get("messages") or []
-        for i in range(len(messages) - 1, -1, -1):
-            m = messages[i]
-            if m.get("role") == "user":
-                c = m.get("content", "")
-                if isinstance(c, str):
-                    return i, c
-                if isinstance(c, list):
-                    texts = [
-                        p.get("text", "")
-                        for p in c
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    ]
-                    return i, " ".join(texts)
-        return -1, ""
-
     def _has_tools(data):
-        return bool(data.get("tools") or data.get("functions") or data.get("function_call"))
+        if data.get("tools") or data.get("functions") or data.get("function_call"):
+            return True
+        inp = data.get("input")
+        if isinstance(inp, list):
+            for item in inp:
+                if isinstance(item, dict) and str(item.get("type") or "").startswith("function_call"):
+                    return True
+        for m in data.get("messages") or []:
+            if isinstance(m, dict) and (m.get("tool_calls") or m.get("role") == "tool"):
+                return True
+        return False
+
+    def _reasoning_effort_value(data):
+        effort = data.get("reasoning_effort")
+        if not effort:
+            r = data.get("reasoning")
+            if isinstance(r, dict):
+                effort = r.get("effort")
+        return str(effort).lower() if effort else ""
 
     def _wants_reasoning(data):
-        if data.get("reasoning_effort"):
+        thinking = data.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "enabled":
             return True
-        r = data.get("reasoning")
-        return isinstance(r, dict) and bool(r.get("effort"))
+        return _reasoning_effort_value(data) in REASONING_EFFORT_SIGNAL
 
     def _has_part_type(data, names):
-        for m in data.get("messages") or []:
-            c = m.get("content")
+        for entry in _message_entries(data):
+            c = entry.get("content")
             if isinstance(c, list):
                 for p in c:
                     if isinstance(p, dict) and p.get("type") in names:
@@ -399,10 +472,17 @@ data:
         return False
 
     def _has_think_marker(text):
+        # A marker only counts at a word boundary: "/think" / "/think: x" yes,
+        # "/thinking about it" no (would otherwise misroute AND mutate text).
         if not text:
             return False
         low = text.lstrip().lower()
-        return any(low.startswith(m) for m in THINK_MARKERS)
+        for m in THINK_MARKERS:
+            if low.startswith(m):
+                rest = low[len(m):]
+                if not rest or not rest[0].isalnum():
+                    return True
+        return False
 
     def _strip_think_marker(text):
         if not text:
@@ -412,47 +492,93 @@ data:
         low = stripped.lower()
         for marker in THINK_MARKERS:
             if low.startswith(marker):
-                rest = stripped[len(marker):].lstrip(" :\t\n")
-                return text[:lead_len] + rest
+                rest = stripped[len(marker):]
+                if rest and rest[:1].isalnum():
+                    continue
+                return text[:lead_len] + rest.lstrip(" :\t\n")
         return text
 
     def _strip_think_from_last_user(data):
-        idx, last = _last_user_message_index_and_text(data)
-        if idx < 0 or not _has_think_marker(last):
+        inp = data.get("input")
+        if isinstance(inp, str):
+            if _has_think_marker(inp):
+                data["input"] = _strip_think_marker(inp)
             return
-        msg = data["messages"][idx]
-        c = msg.get("content")
+        entry = _last_user_entry(data)
+        if entry is None or not _has_think_marker(_entry_text(entry)):
+            return
+        c = entry.get("content")
         if isinstance(c, str):
-            data["messages"][idx] = {**msg, "content": _strip_think_marker(c)}
+            entry["content"] = _strip_think_marker(c)
         elif isinstance(c, list):
-            new_parts = []
-            stripped_once = False
             for p in c:
                 if (
-                    not stripped_once
-                    and isinstance(p, dict)
-                    and p.get("type") == "text"
-                    and _has_think_marker(p.get("text", ""))
+                    isinstance(p, dict)
+                    and p.get("type") in TEXT_PART_TYPES
+                    and _has_think_marker(p.get("text") or "")
                 ):
-                    new_parts.append({**p, "text": _strip_think_marker(p.get("text", ""))})
-                    stripped_once = True
-                else:
-                    new_parts.append(p)
-            data["messages"][idx] = {**msg, "content": new_parts}
+                    p["text"] = _strip_think_marker(p.get("text") or "")
+                    break
 
-    def _classify_request_shape(data):
-        _, last = _last_user_message_index_and_text(data)
-        has_think = _has_think_marker(last)
-        has_image = _has_part_type(data, {"image", "image_url"})
-        has_video = _has_part_type(data, {"video", "video_url"})
-        big_input = _approx_input_tokens(data) > FAST_CTX_LIMIT
+    def _alias_has_deployments(alias):
+        """Whether the proxy router currently has deployments for the alias.
 
+        Fails open (True) so a litellm-internals change can never take the
+        route down: the request then behaves exactly like a direct call to
+        the mapped alias.
+        """
+        try:
+            from litellm.proxy.proxy_server import llm_router
+        except Exception:
+            return True
+        if llm_router is None:
+            return True
+        try:
+            return bool(llm_router.get_model_list(model_name=alias))
+        except Exception:
+            return True
+
+    def _classify_request_shape(data, original_model=""):
+        """Return (category, think_marker_present) keyed into MODEL_MAP.
+
+        Priority: explicit think marker > heavy pool (multimodal / huge context)
+        > tools > reasoning params > simple.
+
+        The marker is deliberate per-request intent, so it always wins. The
+        "heavy pool" — image, video, or context beyond FAST_CTX_LIMIT — MUST run
+        on the Qwen3.6-35B tooling pool: the 27B dense backend is not multimodal
+        and its prefill throughput (~725 tok/s, measured 2026-07-02) makes very
+        large contexts prohibitively slow (73k tokens ≈ 100s cold), which is
+        exactly what FAST_CTX_LIMIT guards against.
+
+        Plain tool-calling, however, now routes to `dense` (the SIMPLE pool):
+        benchmarked 2026-07-02, dense out-scored qwen36-35b-tooling on both
+        single tool-calls (5/5 vs 3/5) and agentic tool-loops (3/3 vs 2/3), and
+        qwen even false-refused a needle retrieval. A tool_call is tiny to decode
+        (~30 tokens) so dense's slower decode barely shows, and a stable Codex
+        prefix is prefix-cached so per-turn prefill is only the delta. The SIMPLE
+        entry keeps `qwen36-35b-tooling` as its fallback, so a DGX2 eviction of
+        the dense backend still degrades tool traffic to the 35B pool. Ambient
+        reasoning params (Codex attaches an effort to every call) no longer force
+        tool requests off dense; reasoning params alone only upgrade simple
+        (non-tool) requests.
+        """
+        has_think = _has_think_marker(_entry_text(_last_user_entry(data)))
+        heavy_pool = (
+            _has_part_type(data, IMAGE_PART_TYPES)
+            or _has_part_type(data, VIDEO_PART_TYPES)
+            or _approx_input_tokens(data) > FAST_CTX_LIMIT
+        )
         if has_think:
-            return "REASONING", True
-        if _wants_reasoning(data):
-            return "REASONING", False
-        if _has_tools(data) or has_image or has_video or big_input:
+            return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), True
+        if original_model == "dense-reasoning":
+            return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), False
+        if heavy_pool:
             return "TOOLING", False
+        if _has_tools(data):
+            return "SIMPLE", False
+        if _wants_reasoning(data):
+            return "REASONING_SIMPLE", False
         return "SIMPLE", False
 
     class StripUnsupportedParams(litellm.integrations.custom_logger.CustomLogger):
@@ -472,51 +598,75 @@ data:
             is_router_request = requested_model in ROUTER_MODELS or proxy_model in ROUTER_MODELS
 
             if is_router_request:
-                category, marker_present = _classify_request_shape(data)
+                category, marker_present = _classify_request_shape(data, proxy_model or requested_model)
                 if marker_present:
                     _strip_think_from_last_user(data)
                 target = MODEL_MAP[category]
-                data["model"] = target["model"]
-                data["api_base"] = target["api_base"]
-                data["api_key"] = "not-used"
+                resolved_model = target["model"]
+                fallback_model = target.get("fallback")
+                if fallback_model and not _alias_has_deployments(resolved_model):
+                    router_log.warning(
+                        "router: target %r has no live deployments; degrading to %r",
+                        resolved_model,
+                        fallback_model,
+                    )
+                    resolved_model = fallback_model
+                data["model"] = resolved_model
+                data.pop("api_base", None)
+                data.pop("api_key", None)
                 data.setdefault("metadata", {})
                 data["metadata"]["_router_category"] = category
                 data["metadata"]["_router_original_model"] = proxy_model or requested_model
-                data["metadata"]["_router_resolved_model"] = target["model"]
-                data["metadata"]["_router_resolved_base"] = target["api_base"]
+                data["metadata"]["_router_resolved_model"] = resolved_model
+                data["metadata"]["_router_resolved_base"] = "model_list"
 
-                _, last_text = _last_user_message_index_and_text(data)
-                preview = (last_text or "")[:120].replace("\n", " ")
+                preview = _entry_text(_last_user_entry(data))[:120].replace("\n", " ")
                 tok_est = _approx_input_tokens(data)
                 reasons = []
                 if marker_present:
                     reasons.append("think_marker")
-                if _wants_reasoning(data):
-                    reasons.append("reasoning_effort")
+                effort = _reasoning_effort_value(data)
+                if effort:
+                    reasons.append(f"effort={effort}")
                 if _has_tools(data):
                     reasons.append(f"tools={len(data.get('tools') or [])}")
                 if tok_est > FAST_CTX_LIMIT:
                     reasons.append(f"ctx={tok_est}>{FAST_CTX_LIMIT}")
-                if _has_part_type(data, {"image", "image_url"}):
+                if _has_part_type(data, IMAGE_PART_TYPES):
                     reasons.append("image")
-                if _has_part_type(data, {"video", "video_url"}):
+                if _has_part_type(data, VIDEO_PART_TYPES):
                     reasons.append("video")
                 router_log.warning(
                     "router: %s -> %s | orig=%r reasons=%s tok~%d msgs=%d last_user=%r",
                     category,
-                    target["model"],
+                    resolved_model,
                     proxy_model or requested_model,
                     reasons or ["default"],
                     tok_est,
-                    len(data.get("messages") or []),
+                    len(_message_entries(data)),
                     preview,
                 )
 
-            key_alias = getattr(user_api_key_dict, "key_alias", None) or "unknown"
+            key_alias = _resolve_key_label(user_api_key_dict)
             model = data.get("model", "unknown")
             tracking_id = str(uuid.uuid4())
             data.setdefault("metadata", {})
             data["metadata"]["_tracking_id"] = tracking_id
+            if isinstance(litellm_params, dict):
+                litellm_params.setdefault("metadata", {})
+                if isinstance(litellm_params["metadata"], dict):
+                    litellm_params["metadata"]["_tracking_id"] = tracking_id
+            logging_obj = data.get("litellm_logging_obj")
+            model_call_details = getattr(logging_obj, "model_call_details", None)
+            if isinstance(model_call_details, dict):
+                model_call_details.setdefault("metadata", {})
+                if isinstance(model_call_details["metadata"], dict):
+                    model_call_details["metadata"]["_tracking_id"] = tracking_id
+                model_call_details.setdefault("litellm_params", {})
+                if isinstance(model_call_details["litellm_params"], dict):
+                    model_call_details["litellm_params"].setdefault("metadata", {})
+                    if isinstance(model_call_details["litellm_params"]["metadata"], dict):
+                        model_call_details["litellm_params"]["metadata"]["_tracking_id"] = tracking_id
             try:
                 _track_start(tracking_id, key_alias, model, call_type)
             except Exception as e:
@@ -530,24 +680,309 @@ data:
             return data
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-            metadata = (kwargs.get("litellm_params") or {}).get("metadata") or {}
-            tracking_id = metadata.get("_tracking_id")
-            if tracking_id:
-                try:
-                    _track_end(tracking_id)
-                except Exception as e:
-                    log.debug("track_end error: %s", e)
+            _track_end_from_payload(kwargs, "log_success")
+
+        async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
+            _track_end_from_payload(kwargs, "log_stream")
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-            metadata = (kwargs.get("litellm_params") or {}).get("metadata") or {}
-            tracking_id = metadata.get("_tracking_id")
-            if tracking_id:
-                try:
-                    _track_end(tracking_id)
-                except Exception as e:
-                    log.debug("track_end error: %s", e)
+            _track_end_from_payload(kwargs, "log_failure")
+
+        async def async_post_call_success_hook(self, data, user_api_key_dict, response):
+            _track_end_from_payload(data, "proxy_success")
+            return None
+
+        async def async_post_call_success_deployment_hook(self, request_data, response, call_type):
+            _track_end_from_payload(request_data, "deployment_success")
+            return response
+
+        async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
+            try:
+                async for chunk in response:
+                    yield chunk
+            finally:
+                _track_end_from_payload(request_data, "streaming_iterator")
+
+        async def async_post_call_failure_hook(
+            self,
+            request_data,
+            original_exception,
+            user_api_key_dict,
+            traceback_str=None,
+        ):
+            _track_end_from_payload(request_data, "proxy_failure")
+            return None
+
+        async def async_post_call_success_deployment_hook(
+            self,
+            request_data,
+            response,
+            call_type,
+        ):
+            _track_end_from_payload(request_data, "deployment_success")
+            return None
 
     proxy_handler_instance = StripUnsupportedParams()
+  litellm_drain.py: |
+    from __future__ import annotations
+
+    import json
+    import os
+    import time
+    from datetime import datetime, timezone
+    from typing import Any
+
+    ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
+    STALE_AFTER_SEC = int(os.environ.get("LITELLM_ACTIVE_STALE_AFTER_SEC", "900"))
+    DRAIN_TIMEOUT_SEC = int(os.environ.get("LITELLM_DRAIN_TIMEOUT_SEC", "660"))
+    POLL_SEC = int(os.environ.get("LITELLM_DRAIN_POLL_SEC", "5"))
+    FINAL_SLEEP_SEC = int(os.environ.get("LITELLM_DRAIN_FINAL_SLEEP_SEC", "5"))
+
+
+    def _started_sec(value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            raw = float(value)
+            return raw / 1000.0 if raw > 1e12 else raw
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                num = float(raw)
+                return num / 1000.0 if num > 1e12 else num
+            except ValueError:
+                try:
+                    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc).timestamp()
+        return None
+
+
+    def _iter_rows(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, dict) and "active" in payload:
+            payload = payload.get("active")
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            return [item for item in payload.values() if isinstance(item, dict)]
+        return []
+
+
+    def active_count() -> int:
+        try:
+            with open(ACTIVE_FILE, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except FileNotFoundError:
+            return 0
+        except Exception as exc:
+            print(f"litellm drain: could not read {ACTIVE_FILE}: {exc}; continuing shutdown", flush=True)
+            return 0
+
+        now = time.time()
+        count = 0
+        for row in _iter_rows(payload):
+            started = _started_sec(row.get("ts") or row.get("started_at") or row.get("start_time"))
+            if started is None or now - started <= STALE_AFTER_SEC:
+                count += 1
+        return count
+
+
+    deadline = time.time() + DRAIN_TIMEOUT_SEC
+    while True:
+        active = active_count()
+        if active <= 0:
+            print("litellm drain: no active requests; shutdown can continue", flush=True)
+            break
+        remaining = int(deadline - time.time())
+        if remaining <= 0:
+            print(f"litellm drain: timed out with {active} active request(s); shutdown continuing", flush=True)
+            break
+        print(f"litellm drain: waiting for {active} active request(s), {remaining}s left", flush=True)
+        time.sleep(min(POLL_SEC, max(1, remaining)))
+
+    if FINAL_SLEEP_SEC > 0:
+        time.sleep(FINAL_SLEEP_SEC)
+  active_requests_api.py: |
+    from __future__ import annotations
+
+    import json
+    import os
+    import time
+    from datetime import datetime, timezone
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from typing import Any
+    from urllib.parse import urlparse
+
+    ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
+    MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "").strip()
+    PORT = int(os.environ.get("LITELLM_ACTIVE_PORT", "4001"))
+
+
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(os.environ.get(name, str(default)))
+        except ValueError:
+            return default
+
+
+    STALE_AFTER_SEC = _env_int("LITELLM_ACTIVE_STALE_AFTER_SEC", 900)
+
+
+    def _parse_started_at(value: Any) -> tuple[float | None, str | None]:
+        if value is None:
+            return None, None
+        if isinstance(value, (int, float)):
+            started_sec = float(value) / 1000.0 if value > 1e12 else float(value)
+            return started_sec, datetime.fromtimestamp(started_sec, tz=timezone.utc).isoformat()
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None, None
+            try:
+                numeric = float(raw)
+            except ValueError:
+                try:
+                    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    return None, None
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.astimezone(timezone.utc)
+                return dt.timestamp(), dt.isoformat()
+            started_sec = numeric / 1000.0 if numeric > 1e12 else numeric
+            return started_sec, datetime.fromtimestamp(started_sec, tz=timezone.utc).isoformat()
+        return None, None
+
+
+    def _iter_raw_requests(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, dict) and "active" in payload:
+            payload = payload.get("active")
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            rows: list[dict[str, Any]] = []
+            for request_id, info in payload.items():
+                if isinstance(info, dict):
+                    row = dict(info)
+                    row.setdefault("request_id", request_id)
+                    rows.append(row)
+            return rows
+        return []
+
+
+    def _normalize_alias(value: Any) -> str:
+        alias = str(value or "").strip()
+        if not alias:
+            return "unknown"
+        if alias.startswith("litellm_proxy_master"):
+            return "master"
+        return alias
+
+
+    def _normalize(payload: Any) -> list[dict[str, Any]]:
+        now = time.time()
+        items: list[dict[str, Any]] = []
+        for raw in _iter_raw_requests(payload):
+            request_id = raw.get("request_id") or raw.get("id")
+            if request_id is None:
+                continue
+            started_raw = raw.get("ts")
+            if started_raw is None:
+                started_raw = raw.get("started_at")
+            if started_raw is None:
+                started_raw = raw.get("start_time")
+            started_sec, started_iso = _parse_started_at(started_raw)
+            age_seconds = int(max(0, now - started_sec)) if started_sec is not None else None
+            if age_seconds is not None and age_seconds > STALE_AFTER_SEC:
+                continue
+            alias_raw = raw.get("key_alias")
+            if alias_raw is None:
+                alias_raw = raw.get("alias")
+            if alias_raw is None:
+                alias_raw = raw.get("key")
+            alias = _normalize_alias(alias_raw)
+            items.append(
+                {
+                    "request_id": str(request_id),
+                    "key_alias": alias,
+                    "alias": alias,
+                    "model": raw.get("model"),
+                    "call_type": raw.get("call_type"),
+                    "started_at": started_iso,
+                    "age_seconds": age_seconds,
+                    "ts": started_sec,
+                }
+            )
+        return items
+
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "LiteLLMActiveRequests/1.0"
+
+        def log_message(self, fmt: str, *args: Any) -> None:
+            return
+
+        def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _authorized(self) -> bool:
+            if not MASTER_KEY:
+                return True
+            return self.headers.get("Authorization", "") == f"Bearer {MASTER_KEY}"
+
+        def do_GET(self) -> None:
+            path = urlparse(self.path).path
+            if path == "/healthz":
+                self._send_json(200, {"ok": True})
+                return
+            if path != "/internal/active-requests":
+                self._send_json(404, {"error": "not_found"})
+                return
+            if not self._authorized():
+                self._send_json(401, {"error": "unauthorized"})
+                return
+
+            try:
+                with open(ACTIVE_FILE, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except FileNotFoundError:
+                payload = {}
+            except Exception as exc:
+                self._send_json(
+                    200,
+                    {
+                        "active": [],
+                        "source": "litellm-active-api",
+                        "stale_after_sec": STALE_AFTER_SEC,
+                        "error": str(exc),
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "active": _normalize(payload),
+                    "source": "litellm-active-api",
+                    "stale_after_sec": STALE_AFTER_SEC,
+                },
+            )
+
+
+    if __name__ == "__main__":
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        print(f"active-requests-api listening on :{PORT}", flush=True)
+        server.serve_forever()
 ---
 # Secrets via ExternalSecret (Vault path: secret/litellm)
 # vault kv put secret/litellm \
@@ -572,6 +1007,570 @@ spec:
       remoteRef: { key: secret/litellm, property: LITELLM_MASTER_KEY }
     - secretKey: DATABASE_URL
       remoteRef: { key: secret/litellm, property: DATABASE_URL }
+    # Langfuse project keys (pk-lf-/sk-lf-) — the SAME pair Langfuse bootstraps
+    # head-lessly (secret/langfuse INIT_PROJECT_*). Add to Vault: vault kv patch
+    # secret/litellm LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-...
+    - secretKey: LANGFUSE_PUBLIC_KEY
+      remoteRef: { key: secret/litellm, property: LANGFUSE_PUBLIC_KEY }
+    - secretKey: LANGFUSE_SECRET_KEY
+      remoteRef: { key: secret/litellm, property: LANGFUSE_SECRET_KEY }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: litellm
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: llm
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: llm
+subjects:
+  - kind: ServiceAccount
+    name: litellm-dgx-backend-sync
+    namespace: litellm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: litellm-dgx-backend-sync
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: litellm
+data:
+  sync.py: |
+    from __future__ import annotations
+
+    import json
+    import logging
+    import os
+    import ssl
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from typing import Any
+
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    log = logging.getLogger("litellm-dgx-backend-sync")
+
+    K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "llm")
+    LITELLM_BASE_URL = os.getenv(
+        "LITELLM_BASE_URL",
+        "http://litellm.litellm.svc.cluster.local:4000",
+    ).rstrip("/")
+    LITELLM_MASTER_KEY = os.getenv("LITELLM_MASTER_KEY", "").strip()
+    INTERVAL_SECONDS = float(os.getenv("SYNC_INTERVAL_SECONDS", "10"))
+    READY_GRACE_SECONDS = float(os.getenv("READY_GRACE_SECONDS", "20"))
+    REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
+
+    GEMMA_ALIASES = (
+        "local",
+        "gemma4-31b",
+        "gemma4-26b-a4b-nvfp4",
+    )
+    QWEN36_27B_DENSE_ALIASES = (
+        "dense",
+        "dense-reasoning",
+    )
+    QWEN36_35B_SHARED_ALIASES = (
+        "tooling",
+        "router",
+        "auto",
+        # Codex-facing smart-router alias (profile `litellmrouter`). The
+        # strip-params hook re-points it per request shape; registering it
+        # here keeps the alias servable from the 35B floor even if the hook
+        # rewrite is ever disabled.
+        "litellmrouter",
+        "qwen36-35b",
+        # Contractual alias: explicit model+purpose name expected by clients that
+        # pin the tooling route to the Qwen3.6-35B pool.
+        "qwen36-35b-tooling",
+        "qwen36-35b-reasoning",
+        "qwen36-35b-nvfp4",
+        "qwen-36-35b",
+    )
+    QWEN36_35B_DGX1_ALIASES = QWEN36_35B_SHARED_ALIASES + (
+        "qwen36-35b-nvfp4-dgx1",
+    )
+    QWEN36_35B_DGX2_ALIASES = QWEN36_35B_SHARED_ALIASES + (
+        "qwen36-35b-nvfp4-dgx2",
+    )
+    QWEN36_REPEAT_GUARD_PARAMS = {
+        "repetition_penalty": float(os.getenv("QWEN36_REPETITION_PENALTY", "1.08")),
+    }
+    # Qwen3.6-35B NVFP4 topology:
+    #   - DGX1 (`qwen36-35b-dgx1`) is the BASE, always-on resident. Its Service
+    #     (`vllm-35b-nvfp4`) is expected to stay Ready, so it is the floor of the
+    #     tooling/router/auto/qwen36 routes and never gets evicted.
+    #   - DGX2 (`qwen36-35b-dgx2`) is OPTIONAL/evictable: ComfyUI/Trellis/video
+    #     workloads can claim DGX2 and take its vLLM Service NotReady.
+    # Both backends register the SAME shared aliases under DISTINCT id_prefixes, so
+    # LiteLLM (routing_strategy: simple-shuffle) load-balances tooling/router/auto
+    # and the generic qwen36 aliases across whichever backends are currently
+    # registered. Backend-specific aliases (...-dgx1/...-dgx2) are registered only
+    # on their own node. When DGX2 is evicted its EndpointSlice goes NotReady,
+    # reconcile_backend(dgx2, enable=False) deletes the DGX2 model IDs, and shared
+    # aliases collapse onto DGX1 alone. No restart/config reload is required.
+    BACKENDS = (
+        {
+            "name": "gemma-dgx1",
+            "label": "DGX1_GEMMA4_26B",
+            "backend": "dgx1",
+            "base_model": "openai/gemma4-26b-a4b-nvfp4",
+            "aliases": GEMMA_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_GEMMA_DGX1",
+                "vllm-gemma4-26b-a4b-nvfp4-dgx1",
+            ),
+            "api_base": os.getenv(
+                "GEMMA_DGX1_API_BASE",
+                "http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx1-gemma4-26b-a4b-nvfp4",
+            "max_parallel_requests": 4,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
+        {
+            # DGX1 base, always-on Qwen3.6-35B resident. Floor of the
+            # tooling/router/auto/qwen36 routes; load-balances with DGX2 when both
+            # are Ready and serves alone when DGX2 is evicted (ComfyUI/Trellis/video).
+            "name": "qwen36-35b-dgx1",
+            "label": "DGX1_QWEN36_35B",
+            "backend": "dgx1",
+            "base_model": "openai/qwen36-35b-nvfp4",
+            "aliases": QWEN36_35B_DGX1_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN36_35B_DGX1",
+                "vllm-35b-nvfp4",
+            ),
+            "api_base": os.getenv(
+                "QWEN36_35B_DGX1_API_BASE",
+                "http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx1-qwen36-35b-nvfp4",
+            "max_parallel_requests": 8,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
+        {
+            # DGX2 optional/evictable Qwen3.6-35B resident. Readiness-gated: when its
+            # vLLM Service loses Ready endpoints (DGX2 claimed by ComfyUI/Trellis/
+            # video), reconcile_backend disables only the DGX2 IDs and the aliases
+            # fall back to the DGX1 base above.
+            "name": "qwen36-35b-dgx2",
+            "label": "DGX2_QWEN36_35B",
+            "backend": "dgx2",
+            "base_model": "openai/qwen36-35b-nvfp4",
+            "aliases": QWEN36_35B_DGX2_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN36_35B_DGX2",
+                "vllm-35b-nvfp4-dgx2",
+            ),
+            "api_base": os.getenv(
+                "QWEN36_35B_DGX2_API_BASE",
+                "http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx2-qwen36-35b-nvfp4",
+            "max_parallel_requests": 8,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
+        {
+            # DGX2 test backend for Qwen3.6-27B dense NVFP4. It intentionally
+            # owns only the dense aliases so tooling/router/auto continue to use
+            # the Qwen3.6-35B residents.
+            "name": "qwen36-27b-dense-dgx2",
+            "label": "DGX2_QWEN36_27B_DENSE",
+            "backend": "dgx2",
+            "base_model": "openai/qwen36-27b-nvfp4",
+            "aliases": QWEN36_27B_DENSE_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN36_27B_DENSE_DGX2",
+                "vllm-qwen36-27b-nvfp4-dgx2",
+            ),
+            "api_base": os.getenv(
+                "QWEN36_27B_DENSE_DGX2_API_BASE",
+                "http://vllm-qwen36-27b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx2-qwen36-27b-dense-nvfp4",
+            "max_parallel_requests": 8,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
+    )
+    # These model IDs were managed by earlier versions of this controller. Remove
+    # them so tooling/router/auto load-balance ONLY across the Qwen3.6-35B residents
+    # (DGX1 base + optional DGX2) and a stale Gemma deployment can never sneak back
+    # into those routes. Gemma is intentionally confined to GEMMA_ALIASES
+    # (local/gemma*) and must never own a tooling/router/auto ID on either DGX.
+    RETIRED_MANAGED_IDS = (
+        "dgx1-gemma4-26b-a4b-nvfp4-tooling",
+        "dgx1-gemma4-26b-a4b-nvfp4-router",
+        "dgx1-gemma4-26b-a4b-nvfp4-auto",
+    )
+    RETIRED_MANAGED_ID_PREFIXES = (
+        # DGX2 no longer runs Gemma at all, so purge any leftover Gemma ID there,
+        # regardless of alias. DO NOT add the dgx1 Gemma prefix here: gemma-dgx1 is
+        # an ACTIVE backend (local/gemma* under dgx1-gemma4-26b-a4b-nvfp4-*), and a
+        # broad prefix would delete its live deployments every cycle. The three
+        # retired dgx1 Gemma tooling/router/auto IDs are listed explicitly above.
+        # The live Qwen prefixes (dgx{1,2}-qwen36-35b-nvfp4-) are intentionally
+        # absent so both residents stay registered.
+        "dgx2-gemma4-26b-a4b-nvfp4-",
+    )
+
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    K8S_HOST = os.getenv("KUBERNETES_SERVICE_HOST")
+    K8S_PORT = os.getenv("KUBERNETES_SERVICE_PORT", "443")
+
+
+    def _read_file(path: str) -> str:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+
+
+    def _ssl_context() -> ssl.SSLContext:
+        if os.path.exists(CA_PATH):
+            return ssl.create_default_context(cafile=CA_PATH)
+        return ssl.create_default_context()
+
+
+    K8S_CONTEXT = _ssl_context()
+
+
+    def _request_json(
+        method: str,
+        url: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        data = None
+        req_headers = dict(headers or {})
+        if payload is not None:
+            data = json.dumps(payload).encode("utf-8")
+            req_headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"{method} {url} -> HTTP {exc.code}: {raw[:500]}") from exc
+        if not raw:
+            return {}
+        return json.loads(raw)
+
+
+    def _k8s_get(path: str) -> Any:
+        if not K8S_HOST:
+            raise RuntimeError("KUBERNETES_SERVICE_HOST is not set")
+        token = _read_file(TOKEN_PATH)
+        url = f"https://{K8S_HOST}:{K8S_PORT}{path}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS, context=K8S_CONTEXT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
+    def _endpoint_condition_ready(endpoint: dict[str, Any]) -> bool:
+        conditions = endpoint.get("conditions") or {}
+        if conditions.get("terminating") is True:
+            return False
+        if conditions.get("ready") is False:
+            return False
+        if conditions.get("serving") is False:
+            return False
+        return bool(endpoint.get("addresses"))
+
+
+    def _endpointslice_ready(service: str) -> bool:
+        selector = urllib.parse.urlencode(
+            {"labelSelector": f"kubernetes.io/service-name={service}"}
+        )
+        data = _k8s_get(
+            f"/apis/discovery.k8s.io/v1/namespaces/{K8S_NAMESPACE}/endpointslices?{selector}"
+        )
+        ready_addresses: list[str] = []
+        # NOTE: a scaled-to-zero Service still leaves an EndpointSlice whose
+        # `endpoints` (and `ports`) fields are JSON null, not []. dict.get(k, [])
+        # only substitutes the default when the key is ABSENT, so `null` slips
+        # through and `for endpoint in None` raised TypeError every cycle,
+        # wedging the controller into the `ready is None` skip-branch forever
+        # (it never reconciled DGX2 in or out). Use `or []` to coerce null too.
+        for item in data.get("items") or []:
+            for endpoint in item.get("endpoints") or []:
+                if _endpoint_condition_ready(endpoint):
+                    ready_addresses.extend(endpoint.get("addresses") or [])
+        if ready_addresses:
+            log.debug("ready EndpointSlice addresses for %s: %s", service, ready_addresses)
+            return True
+        return False
+
+
+    def _legacy_endpoints_ready(service: str) -> bool:
+        data = _k8s_get(f"/api/v1/namespaces/{K8S_NAMESPACE}/endpoints/{service}")
+        for subset in data.get("subsets", []) or []:
+            if subset.get("addresses"):
+                return True
+        return False
+
+
+    def endpoint_ready(service: str) -> bool | None:
+        try:
+            return _endpointslice_ready(service) or _legacy_endpoints_ready(service)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return False
+            log.warning("Kubernetes readiness query failed for %s: HTTP %s", service, exc.code)
+            return None
+        except Exception as exc:
+            log.warning("Kubernetes readiness query failed for %s: %s", service, exc)
+            return None
+
+
+    def _litellm_headers() -> dict[str, str]:
+        if not LITELLM_MASTER_KEY:
+            return {}
+        return {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
+
+
+    def managed_model_id(backend: dict[str, Any], alias: str) -> str:
+        return f"{backend['id_prefix']}-{alias}"
+
+
+    def extra_litellm_params(backend: dict[str, Any], alias: str) -> dict[str, Any]:
+        base_model = str(backend.get("base_model") or "")
+        if base_model.startswith("openai/qwen36-"):
+            return dict(QWEN36_REPEAT_GUARD_PARAMS)
+        return {}
+
+
+    def desired_deployments(backend: dict[str, Any]) -> list[dict[str, Any]]:
+        deployments = []
+        for alias in backend["aliases"]:
+            deployments.append(
+                {
+                    "model_name": alias,
+                    "litellm_params": {
+                        "model": backend["base_model"],
+                        "api_base": backend["api_base"],
+                        "api_key": "not-used",
+                        "timeout": 600,
+                        "max_parallel_requests": backend["max_parallel_requests"],
+                        **extra_litellm_params(backend, alias),
+                    },
+                    "model_info": {
+                        "id": managed_model_id(backend, alias),
+                        "max_tokens": 32768,
+                        "supports_function_calling": backend["supports_function_calling"],
+                        "supports_vision": backend["supports_vision"],
+                        "context_window": 262144,
+                        "managed_by": "litellm-dgx-backend-sync",
+                        "backend": backend["backend"],
+                        "k8s_namespace": K8S_NAMESPACE,
+                        "k8s_service": backend["service"],
+                    },
+                }
+            )
+        return deployments
+
+
+    def current_model_ids() -> set[str]:
+        data = _request_json(
+            "GET",
+            f"{LITELLM_BASE_URL}/model/info",
+            headers=_litellm_headers(),
+        )
+        items = data.get("data", data) if isinstance(data, dict) else data
+        ids: set[str] = set()
+        for item in items or []:
+            info = item.get("model_info") or {}
+            model_id = info.get("id") or item.get("model_id") or item.get("id")
+            if model_id:
+                ids.add(str(model_id))
+        return ids
+
+
+    def add_model(deployment: dict[str, Any]) -> None:
+        model_id = deployment["model_info"]["id"]
+        try:
+            _request_json(
+                "POST",
+                f"{LITELLM_BASE_URL}/model/new",
+                payload=deployment,
+                headers=_litellm_headers(),
+            )
+            backend = (deployment.get("model_info") or {}).get("backend", "unknown").upper()
+            log.info("enabled %s backend %s for alias %s", backend, model_id, deployment["model_name"])
+        except RuntimeError as exc:
+            msg = str(exc).lower()
+            if "already" in msg and "exist" in msg:
+                log.info("backend %s already exists", model_id)
+                return
+            raise
+
+
+    def delete_model(model_id: str) -> None:
+        try:
+            _request_json(
+                "POST",
+                f"{LITELLM_BASE_URL}/model/delete",
+                payload={"id": model_id},
+                headers=_litellm_headers(),
+            )
+            log.info("disabled backend %s", model_id)
+        except RuntimeError as exc:
+            msg = str(exc).lower()
+            if "not found" in msg or "does not exist" in msg:
+                log.info("backend %s already absent", model_id)
+                return
+            raise
+
+
+    def cleanup_retired_models(existing: set[str] | None = None) -> None:
+        existing_ids = set(existing if existing is not None else current_model_ids())
+        retired = {model_id for model_id in RETIRED_MANAGED_IDS if model_id in existing_ids}
+        for prefix in RETIRED_MANAGED_ID_PREFIXES:
+            retired.update(model_id for model_id in existing_ids if model_id.startswith(prefix))
+        for model_id in sorted(retired):
+            delete_model(model_id)
+
+
+    def reconcile_backend(backend: dict[str, Any], enable: bool) -> None:
+        desired = desired_deployments(backend)
+        managed_ids = {d["model_info"]["id"] for d in desired}
+        existing = current_model_ids()
+        cleanup_retired_models(existing)
+        existing = current_model_ids()
+        active_prefix = f"{backend['id_prefix']}-"
+        stale_ids = {
+            model_id
+            for model_id in existing
+            if model_id.startswith(active_prefix) and model_id not in managed_ids
+        }
+        for model_id in sorted(stale_ids):
+            delete_model(model_id)
+        existing -= stale_ids
+        if enable:
+            for deployment in desired:
+                if deployment["model_info"]["id"] not in existing:
+                    add_model(deployment)
+        else:
+            for model_id in sorted(managed_ids & existing):
+                delete_model(model_id)
+
+
+    def main() -> None:
+        log.info(
+            "starting sync: namespace=%s services=%s litellm=%s interval=%ss ready_grace=%ss",
+            K8S_NAMESPACE,
+            ",".join(f"{b['name']}={b['service']}" for b in BACKENDS),
+            LITELLM_BASE_URL,
+            INTERVAL_SECONDS,
+            READY_GRACE_SECONDS,
+        )
+        ready_since: dict[str, float | None] = {b["name"]: None for b in BACKENDS}
+        last_desired: dict[str, bool | None] = {b["name"]: None for b in BACKENDS}
+        while True:
+            now = time.monotonic()
+            for backend in BACKENDS:
+                name = backend["name"]
+                service = backend["service"]
+                ready = endpoint_ready(service)
+                if ready is None:
+                    continue
+                if ready:
+                    if ready_since[name] is None:
+                        ready_since[name] = now
+                    desired = now - (ready_since[name] or now) >= READY_GRACE_SECONDS
+                else:
+                    ready_since[name] = None
+                    desired = False
+                try:
+                    reconcile_backend(backend, desired)
+                    if desired != last_desired[name]:
+                        log.info("desired %s routing state changed: enabled=%s", name.upper(), desired)
+                        last_desired[name] = desired
+                except Exception as exc:
+                    log.warning("reconcile failed for %s/%s: %s", K8S_NAMESPACE, service, exc)
+            time.sleep(INTERVAL_SECONDS)
+
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-dgx-backend-sync
+  namespace: litellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm-dgx-backend-sync
+  template:
+    metadata:
+      labels:
+        app: litellm-dgx-backend-sync
+      annotations:
+        config.k8s.e-dani.com/revision: qwen36-stream-fallbacks-20260706
+    spec:
+      serviceAccountName: litellm-dgx-backend-sync
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        node-pool: ks5-nvme
+      containers:
+        - name: sync
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/app/sync.py"]
+          env:
+            - { name: LITELLM_BASE_URL, value: "http://litellm.litellm.svc.cluster.local:4000" }
+            - { name: K8S_NAMESPACE, value: "llm" }
+            - { name: K8S_SERVICE_GEMMA_DGX1, value: "vllm-gemma4-26b-a4b-nvfp4-dgx1" }
+            # DGX1 base, always-on Qwen3.6-35B resident (load-balances with DGX2).
+            - { name: K8S_SERVICE_QWEN36_35B_DGX1, value: "vllm-35b-nvfp4" }
+            # DGX2 optional/evictable Qwen3.6-35B resident (readiness-gated).
+            - { name: K8S_SERVICE_QWEN36_35B_DGX2, value: "vllm-35b-nvfp4-dgx2" }
+            # DGX2 Qwen3.6-27B dense NVFP4 test backend exposed as LiteLLM
+            # `dense` plus its reasoning sampling alias.
+            - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX2, value: "vllm-qwen36-27b-nvfp4-dgx2" }
+            - { name: SYNC_INTERVAL_SECONDS, value: "10" }
+            - { name: READY_GRACE_SECONDS, value: "20" }
+            - name: LITELLM_MASTER_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
+          volumeMounts:
+            - { name: sync, mountPath: /app, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: sync
+          configMap: { name: litellm-dgx-backend-sync }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -581,20 +1580,23 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: Recreate
-    rollingUpdate: null
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector: { matchLabels: { app: litellm } }
   template:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: qwen-aliases-20260522-1
+        config.k8s.e-dani.com/revision: qwen36-stream-fallbacks-20260706
+        active-requests-api/revision: "20260703-responses-stream-drain-hooks"
     spec:
       enableServiceLinks: false
+      terminationGracePeriodSeconds: 720
       nodeSelector:
-        topology: lan
         kubernetes.io/arch: amd64
-        kubernetes.io/hostname: ubuntu
+        node-pool: ks5-nvme
       containers:
         - name: litellm
           image: ghcr.io/berriai/litellm:v1.89.0
@@ -611,8 +1613,18 @@ spec:
             - { name: LITELLM_LOG, value: INFO }
             - { name: PYTHONPATH, value: /app }
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
+            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
+            - { name: LITELLM_DRAIN_TIMEOUT_SEC, value: "660" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
+            # Langfuse native callback (LLM tracing). Points at the in-cluster web
+            # service directly (bypasses the SSO edge). Keys from litellm-secrets ESO.
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LANGFUSE_PUBLIC_KEY } }
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LANGFUSE_SECRET_KEY } }
+            - name: LANGFUSE_HOST
+              value: "http://langfuse-web.langfuse.svc.cluster.local:3000"
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS
@@ -626,6 +1638,10 @@ spec:
           resources:
             requests: { cpu: 200m, memory: 512Mi }
             limits:   { memory: 3Gi }
+          lifecycle:
+            preStop:
+              exec:
+                command: ["python", "/config/litellm_drain.py"]
           readinessProbe:
             httpGet: { path: /health/readiness, port: 4000 }
             initialDelaySeconds: 20
@@ -635,6 +1651,27 @@ spec:
             # Service. 5s timeout + 5 failures tolerates the transient spikes.
             timeoutSeconds: 5
             failureThreshold: 5
+        - name: active-requests-api
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/active-api/active_requests_api.py"]
+          ports:
+            - { name: active, containerPort: 4001 }
+          env:
+            - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
+            - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
+            - name: LITELLM_MASTER_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
+          volumeMounts:
+            - { name: config, mountPath: /active-api, readOnly: true }
+            - { name: tracking, mountPath: /shared/tracking, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 4001 }
+            initialDelaySeconds: 2
+            periodSeconds: 10
       volumes:
         - name: config
           configMap: { name: litellm-config }
@@ -652,6 +1689,7 @@ spec:
   selector: { app: litellm }
   ports:
     - { name: http, port: 4000, targetPort: 4000 }
+    - { name: active, port: 4001, targetPort: 4001 }
 ---
 # Public access for external callers. Internal services must use the LAN route below.
 apiVersion: traefik.io/v1alpha1
@@ -675,7 +1713,7 @@ spec:
   tls:
     store: { name: default, namespace: traefik-edge }
 ---
-# LAN access for internal services (no Authelia — API key protected)
+# LAN access for internal services (no SSO middleware — API key protected)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
