@@ -21,7 +21,10 @@ def test_dense_uncensored_is_direct_single_backend_without_fallback():
 def test_openclaw_team_permission_is_reconciled_without_removing_models():
     text = MANIFEST.read_text()
     assert 'OPENCLAW_TEAM_ID, value: "openclaw"' in text
-    assert 'OPENCLAW_TEAM_REQUIRED_MODELS, value: "dense-uncensored"' in text
+    assert (
+        'OPENCLAW_TEAM_REQUIRED_MODELS, value: '
+        '"dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1"'
+    ) in text
     block = text[
         text.index("def reconcile_required_team_models"):
         text.index("def managed_model_id")

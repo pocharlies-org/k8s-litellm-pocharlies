@@ -1597,7 +1597,13 @@ data:
                 if ready:
                     if ready_since[name] is None:
                         ready_since[name] = now
-                    desired = now - (ready_since[name] or now) >= READY_GRACE_SECONDS
+                    if now - (ready_since[name] or now) < READY_GRACE_SECONDS:
+                        # A controller restart has no durable ready_since state. Keep
+                        # the last known-good registrations through this warm-up
+                        # interval instead of deleting every live alias and creating
+                        # a transient routing outage on each restart.
+                        continue
+                    desired = True
                 else:
                     ready_since[name] = None
                     desired = False
@@ -1660,7 +1666,10 @@ spec:
             # Durable least-privilege reconciliation for the existing OpenClaw
             # team. The controller only unions this fixed explicit alias.
             - { name: OPENCLAW_TEAM_ID, value: "openclaw" }
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "dense-uncensored" }
+            # The Skirmshop agent pins read-only price lookups to the permanent
+            # DGX1 dense F2 backend. Keep that explicit model in the existing
+            # team allowlist rather than widening access to every managed alias.
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
