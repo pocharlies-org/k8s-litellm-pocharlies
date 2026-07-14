@@ -1064,6 +1064,7 @@ data:
     REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
     TEAM_RECONCILE_SECONDS = float(os.getenv("TEAM_RECONCILE_SECONDS", "300"))
     OPENCLAW_TEAM_ID = os.getenv("OPENCLAW_TEAM_ID", "").strip()
+    OPENCLAW_KEY_ALIAS = os.getenv("OPENCLAW_KEY_ALIAS", "").strip()
     OPENCLAW_TEAM_REQUIRED_MODELS = tuple(
         model.strip()
         for model in os.getenv("OPENCLAW_TEAM_REQUIRED_MODELS", "").split(",")
@@ -1427,19 +1428,49 @@ data:
         for model in OPENCLAW_TEAM_REQUIRED_MODELS:
             if model not in desired:
                 desired.append(model)
-        if desired == current:
+        if desired != current:
+            _request_json(
+                "POST",
+                f"{LITELLM_BASE_URL}/team/update",
+                payload={"team_id": OPENCLAW_TEAM_ID, "models": desired},
+                headers=_litellm_headers(),
+            )
+            log.info(
+                "updated team %s model access with required models: %s",
+                OPENCLAW_TEAM_ID,
+                ",".join(OPENCLAW_TEAM_REQUIRED_MODELS),
+            )
+
+        # LiteLLM evaluates a virtual key's own allowlist before its team
+        # allowlist. Reconcile only the named OpenClaw production key, never
+        # every key belonging to the team.
+        if not OPENCLAW_KEY_ALIAS:
             return
-        _request_json(
-            "POST",
-            f"{LITELLM_BASE_URL}/team/update",
-            payload={"team_id": OPENCLAW_TEAM_ID, "models": desired},
-            headers=_litellm_headers(),
-        )
-        log.info(
-            "updated team %s model access with required models: %s",
-            OPENCLAW_TEAM_ID,
-            ",".join(OPENCLAW_TEAM_REQUIRED_MODELS),
-        )
+        for key in data.get("keys", []) if isinstance(data, dict) else []:
+            if key.get("key_alias") != OPENCLAW_KEY_ALIAS:
+                continue
+            key_token = str(key.get("token") or "")
+            if not key_token:
+                log.warning("OpenClaw key %s has no updatable token", OPENCLAW_KEY_ALIAS)
+                continue
+            key_current = [str(model) for model in (key.get("models") or [])]
+            key_desired = list(key_current)
+            for model in OPENCLAW_TEAM_REQUIRED_MODELS:
+                if model not in key_desired:
+                    key_desired.append(model)
+            if key_desired == key_current:
+                continue
+            _request_json(
+                "POST",
+                f"{LITELLM_BASE_URL}/key/update",
+                payload={"key": key_token, "models": key_desired},
+                headers=_litellm_headers(),
+            )
+            log.info(
+                "updated OpenClaw key %s model access with required models: %s",
+                OPENCLAW_KEY_ALIAS,
+                ",".join(OPENCLAW_TEAM_REQUIRED_MODELS),
+            )
 
 
     def managed_model_id(backend: dict[str, Any], alias: str) -> str:
@@ -1670,6 +1701,7 @@ spec:
             # DGX1 dense F2 backend. Keep that explicit model in the existing
             # team allowlist rather than widening access to every managed alias.
             - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1" }
+            - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
