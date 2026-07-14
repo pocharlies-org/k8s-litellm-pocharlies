@@ -1062,6 +1062,13 @@ data:
     INTERVAL_SECONDS = float(os.getenv("SYNC_INTERVAL_SECONDS", "10"))
     READY_GRACE_SECONDS = float(os.getenv("READY_GRACE_SECONDS", "20"))
     REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "10"))
+    TEAM_RECONCILE_SECONDS = float(os.getenv("TEAM_RECONCILE_SECONDS", "300"))
+    OPENCLAW_TEAM_ID = os.getenv("OPENCLAW_TEAM_ID", "").strip()
+    OPENCLAW_TEAM_REQUIRED_MODELS = tuple(
+        model.strip()
+        for model in os.getenv("OPENCLAW_TEAM_REQUIRED_MODELS", "").split(",")
+        if model.strip()
+    )
 
     GEMMA_ALIASES = (
         "local",
@@ -1400,6 +1407,41 @@ data:
         return {"Authorization": f"Bearer {LITELLM_MASTER_KEY}"}
 
 
+    def reconcile_required_team_models() -> None:
+        """Keep fixed team permissions compatible with managed explicit aliases.
+
+        This only widens one configured existing team by a fixed model list. It
+        never creates teams, removes permissions, or accepts caller input.
+        """
+        if not OPENCLAW_TEAM_ID or not OPENCLAW_TEAM_REQUIRED_MODELS:
+            return
+        query = urllib.parse.urlencode({"team_id": OPENCLAW_TEAM_ID})
+        data = _request_json(
+            "GET",
+            f"{LITELLM_BASE_URL}/team/info?{query}",
+            headers=_litellm_headers(),
+        )
+        team = data.get("team_info", data) if isinstance(data, dict) else {}
+        current = [str(model) for model in (team.get("models") or [])]
+        desired = list(current)
+        for model in OPENCLAW_TEAM_REQUIRED_MODELS:
+            if model not in desired:
+                desired.append(model)
+        if desired == current:
+            return
+        _request_json(
+            "POST",
+            f"{LITELLM_BASE_URL}/team/update",
+            payload={"team_id": OPENCLAW_TEAM_ID, "models": desired},
+            headers=_litellm_headers(),
+        )
+        log.info(
+            "updated team %s model access with required models: %s",
+            OPENCLAW_TEAM_ID,
+            ",".join(OPENCLAW_TEAM_REQUIRED_MODELS),
+        )
+
+
     def managed_model_id(backend: dict[str, Any], alias: str) -> str:
         return f"{backend['id_prefix']}-{alias}"
 
@@ -1537,8 +1579,15 @@ data:
         )
         ready_since: dict[str, float | None] = {b["name"]: None for b in BACKENDS}
         last_desired: dict[str, bool | None] = {b["name"]: None for b in BACKENDS}
+        next_team_reconcile = 0.0
         while True:
             now = time.monotonic()
+            if now >= next_team_reconcile:
+                try:
+                    reconcile_required_team_models()
+                except Exception as exc:
+                    log.warning("team model access reconcile failed: %s", exc)
+                next_team_reconcile = now + TEAM_RECONCILE_SECONDS
             for backend in BACKENDS:
                 name = backend["name"]
                 service = backend["service"]
@@ -1580,7 +1629,7 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: dense-dual-dgx-20260714
+        config.k8s.e-dani.com/revision: dense-uncensored-team-access-20260714
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -1608,6 +1657,11 @@ spec:
             - { name: QWEN36_27B_UNCENSORED_MODEL, value: "openai/qwen36-27b-uncensored-nvfp4" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
             - { name: READY_GRACE_SECONDS, value: "20" }
+            # Durable least-privilege reconciliation for the existing OpenClaw
+            # team. The controller only unions this fixed explicit alias.
+            - { name: OPENCLAW_TEAM_ID, value: "openclaw" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "dense-uncensored" }
+            - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
           volumeMounts:
