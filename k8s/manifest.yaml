@@ -1099,6 +1099,10 @@ data:
     QWEN36_27B_DENSE_DGX2_ALIASES = QWEN36_27B_DENSE_ALIASES + (
         "qwen36-27b-nvfp4-v024-f2-dgx2",
     )
+    # Deliberately isolated: this alias is registered by exactly one readiness-
+    # gated backend and is NOT part of ROUTER_MODELS, MODEL_MAP, the dense pool,
+    # or any LiteLLM fallback chain. If DGX2 uncensored is down, calls fail.
+    QWEN36_27B_UNCENSORED_ALIASES = ("dense-uncensored",)
     QWEN36_35B_DGX1_ALIASES = QWEN36_35B_SHARED_ALIASES + (
         "qwen36-35b-nvfp4-dgx1",
     )
@@ -1229,6 +1233,31 @@ data:
                 "http://vllm-qwen36-27b-nvfp4-v024-f2-dgx2.llm.svc.cluster.local:8000/v1",
             ),
             "id_prefix": "dgx2-qwen36-27b-dense-nvfp4",
+            "max_parallel_requests": 8,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
+        {
+            # Explicit-only DGX2 uncensored resident. Never share aliases with
+            # dense/tooling and never add a fallback: absence of a Ready
+            # EndpointSlice removes dense-uncensored from LiteLLM entirely.
+            "name": "qwen36-27b-uncensored-dgx2",
+            "label": "DGX2_QWEN36_27B_UNCENSORED",
+            "backend": "dgx2",
+            "base_model": os.getenv(
+                "QWEN36_27B_UNCENSORED_MODEL",
+                "openai/qwen36-27b-uncensored-nvfp4",
+            ),
+            "aliases": QWEN36_27B_UNCENSORED_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN36_27B_UNCENSORED_DGX2",
+                "vllm-qwen36-27b-uncensored-dgx2",
+            ),
+            "api_base": os.getenv(
+                "QWEN36_27B_UNCENSORED_DGX2_API_BASE",
+                "http://vllm-qwen36-27b-uncensored-dgx2.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx2-qwen36-27b-uncensored-nvfp4",
             "max_parallel_requests": 8,
             "supports_function_calling": True,
             "supports_vision": True,
@@ -1574,6 +1603,9 @@ spec:
             - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX1, value: "vllm-qwen36-27b-nvfp4-v024-f2-dgx1" }
             - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX2, value: "vllm-qwen36-27b-nvfp4-v024-f2-dgx2" }
             - { name: QWEN36_27B_DENSE_MODEL, value: "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv" }
+            # Isolated explicit alias: one DGX2 backend, no fallback.
+            - { name: K8S_SERVICE_QWEN36_27B_UNCENSORED_DGX2, value: "vllm-qwen36-27b-uncensored-dgx2" }
+            - { name: QWEN36_27B_UNCENSORED_MODEL, value: "openai/qwen36-27b-uncensored-nvfp4" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
             - { name: READY_GRACE_SECONDS, value: "20" }
             - name: LITELLM_MASTER_KEY
