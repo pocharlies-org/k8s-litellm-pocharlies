@@ -148,34 +148,15 @@ data:
       # ~4 min, so this only has to cover that window.
       allowed_fails: 3
       cooldown_time: 120
-      # 2026-06-27: tooling/router/auto are dynamically registered by
-      # litellm-dgx-backend-sync to the Qwen3.6-35B residents (DGX1 base
-      # always-on + optional DGX2) and load-balance across whichever vLLM
-      # Services currently have ready endpoints.
+      # 2026-07-14: dense/tooling/router aliases are dynamically registered by
+      # litellm-dgx-backend-sync to one homogeneous Qwen3.6-27B dense F2 pool:
+      # DGX1 is the always-on floor and DGX2 joins whenever its GPU is free.
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
-      # Direct dense clients (Qwen Code fast model / safety classifier) still need
-      # a fallback because the dense 27B backend is evictable and may be scaled to
-      # zero while DGX2 is claimed by image/video workloads. Do not fall Qwen36
-      # aliases back to dense: when dense is scaled to zero that creates noisy
-      # qwen36 -> dense -> qwen36 retry loops and hides the real upstream error.
-      # 2026-07-06: Qwen36 35B can still degenerate mid-stream under large
-      # agentic loads; LiteLLM raises MidStreamFallbackError after repeated
-      # chunks. Cover the real 35B aliases with non-dense fallbacks so streaming
-      # clients recover instead of surfacing a hard error.
-      fallbacks:
-      - dense: ["qwen36-35b-tooling"]
-      - dense-reasoning: ["qwen36-35b-reasoning"]
-      - taxonomy: ["qwen36-35b-tooling"]
-      - qwen36-35b-tooling: ["qwen36-35b-reasoning", "qwen36-35b"]
-      - tooling: ["qwen36-35b-reasoning", "qwen36-35b"]
-      - qwen36-35b-reasoning: ["qwen36-35b"]
-      - router: ["qwen36-35b"]
-      - litellmrouter: ["qwen36-35b"]
-      - auto: ["qwen36-35b"]
-      - qwen36-35b-nvfp4: ["qwen36-35b"]
-      - qwen-36-35b: ["qwen36-35b"]
+      # No cross-alias fallback is needed: each alias has the same DGX1 floor
+      # and optional DGX2 deployment. Avoid alias-to-alias retry loops when the
+      # only active backend is unhealthy.
   litellm_strip_params.py: |
     import json
     import logging
@@ -346,26 +327,33 @@ data:
     # Model aliases that trigger the smart router; requests to any of them get
     # re-pointed at a concrete sampling alias from MODEL_MAP by request shape.
     # "litellmrouter" is the Codex-facing name (~/.codex/litellmrouter.config.toml).
-    # `dense` aliases are included because LiteLLM rejects an unregistered model
-    # before router fallbacks can run; the hook degrades them while DGX2 is away.
-    ROUTER_MODELS = {"router", "auto", "litellmrouter", "dense", "dense-reasoning", "taxonomy"}
+    # Compatibility aliases are included so legacy tooling/qwen36 callers are
+    # normalized onto the same dense F2 pool before LiteLLM selects a backend.
+    ROUTER_MODELS = {
+        "router", "auto", "litellmrouter", "dense", "dense-reasoning", "taxonomy",
+        # Compatibility names retained while the 35B engine is retired. They
+        # are request aliases only; every category below resolves to dense F2.
+        "tooling", "qwen36-35b", "qwen36-35b-tooling",
+        "qwen36-35b-reasoning", "qwen36-35b-nvfp4", "qwen-36-35b",
+    }
 
-    # Routing matrix: the request shape (simple vs tooling) picks the pool and
-    # the reasoning signal picks the sampling alias within that pool. All four
-    # targets are contractual aliases registered by litellm-dgx-backend-sync.
-    # dense/dense-reasoning live only on the evictable DGX2 27B backend, so
-    # they declare a Qwen3.6-35B fallback for when the sync deregisters them
-    # (DGX2 claimed by ComfyUI/Trellis/video); the 35B pool keeps a DGX1 floor.
+    # All request shapes use the same 27B dense F2 pool. The reasoning signal
+    # still selects the sampling alias, but tooling no longer selects a second
+    # resident model.
     MODEL_MAP = {
         "SIMPLE": {
             "model": "dense",
+            # During the one-GPU replacement window the old 35B alias remains
+            # available until dense starts; after cutover both names share F2.
             "fallback": "qwen36-35b-tooling",
         },
         "TOOLING": {
-            "model": "qwen36-35b-tooling",
+            "model": "dense",
+            "fallback": "qwen36-35b-tooling",
         },
         "REASONING": {
-            "model": "qwen36-35b-reasoning",
+            "model": "dense-reasoning",
+            "fallback": "qwen36-35b-reasoning",
         },
         "REASONING_SIMPLE": {
             "model": "dense-reasoning",
@@ -542,27 +530,18 @@ data:
     def _classify_request_shape(data, original_model=""):
         """Return (category, think_marker_present) keyed into MODEL_MAP.
 
-        Priority: explicit think marker > heavy pool (multimodal / huge context)
-        > tools > reasoning params > simple.
+        Priority: explicit think marker > multimodal / huge context > tools >
+        reasoning params > simple. Categories only select dense sampling now;
+        they no longer split traffic across different resident models.
 
-        The marker is deliberate per-request intent, so it always wins. The
-        "heavy pool" — image, video, or context beyond FAST_CTX_LIMIT — MUST run
-        on the Qwen3.6-35B tooling pool: the 27B dense backend is not multimodal
-        and its prefill throughput (~725 tok/s, measured 2026-07-02) makes very
-        large contexts prohibitively slow (73k tokens ≈ 100s cold), which is
-        exactly what FAST_CTX_LIMIT guards against.
-
-        Plain tool-calling, however, now routes to `dense` (the SIMPLE pool):
-        benchmarked 2026-07-02, dense out-scored qwen36-35b-tooling on both
-        single tool-calls (5/5 vs 3/5) and agentic tool-loops (3/3 vs 2/3), and
-        qwen even false-refused a needle retrieval. A tool_call is tiny to decode
-        (~30 tokens) so dense's slower decode barely shows, and a stable Codex
-        prefix is prefix-cached so per-turn prefill is only the delta. The SIMPLE
-        entry keeps `qwen36-35b-tooling` as its fallback, so a DGX2 eviction of
-        the dense backend still degrades tool traffic to the 35B pool. Ambient
-        reasoning params (Codex attaches an effort to every call) no longer force
-        tool requests off dense; reasoning params alone only upgrade simple
-        (non-tool) requests.
+        The marker is deliberate per-request intent, so it always wins. Plain
+        tool-calling remains on `dense`: benchmarked 2026-07-02, it out-scored
+        qwen36-35b-tooling on both single tool-calls (5/5 vs 3/5) and agentic
+        loops (3/3 vs 2/3). Multimodal and long-context requests now use the
+        same dense F2 engine as well; the category is retained so policy can be
+        changed later without breaking client aliases. Ambient reasoning params
+        (Codex attaches an effort to every call) do not force tool requests into
+        reasoning mode.
         """
         has_think = _has_think_marker(_entry_text(_last_user_entry(data)))
         heavy_pool = (
@@ -572,7 +551,7 @@ data:
         )
         if has_think:
             return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), True
-        if original_model == "dense-reasoning":
+        if original_model in {"dense-reasoning", "qwen36-35b-reasoning"}:
             return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), False
         if heavy_pool:
             return "TOOLING", False
@@ -1089,15 +1068,7 @@ data:
         "gemma4-31b",
         "gemma4-26b-a4b-nvfp4",
     )
-    QWEN36_27B_DENSE_ALIASES = (
-        "dense",
-        "dense-reasoning",
-        # Dedicated Skirmshop taxonomy route. The strip-params hook maps its
-        # normal JSON classification calls to `dense`, with the 35B fallback in
-        # MODEL_MAP when DGX2 is unavailable.
-        "taxonomy",
-    )
-    QWEN36_35B_SHARED_ALIASES = (
+    QWEN36_COMPAT_ALIASES = (
         "tooling",
         "router",
         "auto",
@@ -1113,6 +1084,20 @@ data:
         "qwen36-35b-reasoning",
         "qwen36-35b-nvfp4",
         "qwen-36-35b",
+    )
+    QWEN36_27B_DENSE_ALIASES = (
+        "dense",
+        "dense-reasoning",
+        "taxonomy",
+    ) + QWEN36_COMPAT_ALIASES
+    # Kept only as a rollback contract. With both 35B deployments at zero these
+    # IDs are removed; the compatibility aliases above are owned by dense F2.
+    QWEN36_35B_SHARED_ALIASES = QWEN36_COMPAT_ALIASES
+    QWEN36_27B_DENSE_DGX1_ALIASES = QWEN36_27B_DENSE_ALIASES + (
+        "qwen36-27b-nvfp4-v024-f2-dgx1",
+    )
+    QWEN36_27B_DENSE_DGX2_ALIASES = QWEN36_27B_DENSE_ALIASES + (
+        "qwen36-27b-nvfp4-v024-f2-dgx2",
     )
     QWEN36_35B_DGX1_ALIASES = QWEN36_35B_SHARED_ALIASES + (
         "qwen36-35b-nvfp4-dgx1",
@@ -1202,9 +1187,31 @@ data:
             "supports_vision": True,
         },
         {
-            # DGX2 test backend for Qwen3.6-27B dense NVFP4. It intentionally
-            # owns only the dense aliases so tooling/router/auto continue to use
-            # the Qwen3.6-35B residents.
+            # DGX1 permanent floor for the homogeneous dense F2 pool.
+            "name": "qwen36-27b-dense-dgx1",
+            "label": "DGX1_QWEN36_27B_DENSE",
+            "backend": "dgx1",
+            "base_model": os.getenv(
+                "QWEN36_27B_DENSE_MODEL",
+                "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv",
+            ),
+            "aliases": QWEN36_27B_DENSE_DGX1_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN36_27B_DENSE_DGX1",
+                "vllm-qwen36-27b-nvfp4-v024-f2-dgx1",
+            ),
+            "api_base": os.getenv(
+                "QWEN36_27B_DENSE_DGX1_API_BASE",
+                "http://vllm-qwen36-27b-nvfp4-v024-f2-dgx1.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx1-qwen36-27b-dense-nvfp4",
+            "max_parallel_requests": 8,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
+        {
+            # DGX2 optional dense F2 twin. The GPU arbiter can keep it at zero
+            # while Trellis/image/video work is active; aliases then use DGX1.
             "name": "qwen36-27b-dense-dgx2",
             "label": "DGX2_QWEN36_27B_DENSE",
             "backend": "dgx2",
@@ -1212,7 +1219,7 @@ data:
                 "QWEN36_27B_DENSE_MODEL",
                 "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv",
             ),
-            "aliases": QWEN36_27B_DENSE_ALIASES,
+            "aliases": QWEN36_27B_DENSE_DGX2_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_QWEN36_27B_DENSE_DGX2",
                 "vllm-qwen36-27b-nvfp4-v024-f2-dgx2",
@@ -1544,7 +1551,7 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: qwen36-stream-fallbacks-20260706
+        config.k8s.e-dani.com/revision: dense-dual-dgx-20260714
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -1560,12 +1567,11 @@ spec:
             - { name: LITELLM_BASE_URL, value: "http://litellm.litellm.svc.cluster.local:4000" }
             - { name: K8S_NAMESPACE, value: "llm" }
             - { name: K8S_SERVICE_GEMMA_DGX1, value: "vllm-gemma4-26b-a4b-nvfp4-dgx1" }
-            # DGX1 base, always-on Qwen3.6-35B resident (load-balances with DGX2).
+            # Retired 35B services are retained as a scale-to-zero rollback path.
             - { name: K8S_SERVICE_QWEN36_35B_DGX1, value: "vllm-35b-nvfp4" }
-            # DGX2 optional/evictable Qwen3.6-35B resident (readiness-gated).
             - { name: K8S_SERVICE_QWEN36_35B_DGX2, value: "vllm-35b-nvfp4-dgx2" }
-            # Active DGX2 Qwen3.6-27B dense F2 backend exposed as `dense`,
-            # `dense-reasoning`, and the dedicated `taxonomy` alias.
+            # DGX1 permanent floor plus the optional DGX2 dense F2 twin.
+            - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX1, value: "vllm-qwen36-27b-nvfp4-v024-f2-dgx1" }
             - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX2, value: "vllm-qwen36-27b-nvfp4-v024-f2-dgx2" }
             - { name: QWEN36_27B_DENSE_MODEL, value: "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
@@ -1598,7 +1604,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: qwen36-stream-fallbacks-20260706
+        config.k8s.e-dani.com/revision: dense-dual-dgx-20260714
         active-requests-api/revision: "20260703-responses-stream-drain-hooks"
     spec:
       enableServiceLinks: false
