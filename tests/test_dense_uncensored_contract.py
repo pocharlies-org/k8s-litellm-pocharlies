@@ -21,6 +21,7 @@ def test_dense_uncensored_is_direct_single_backend_without_fallback():
 def test_openclaw_team_permission_is_reconciled_without_removing_models():
     text = MANIFEST.read_text()
     assert 'OPENCLAW_TEAM_ID, value: "openclaw"' in text
+    assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
     assert (
         'OPENCLAW_TEAM_REQUIRED_MODELS, value: '
         '"dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1"'
@@ -33,6 +34,9 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert 'f"{LITELLM_BASE_URL}/team/update"' in block
     assert 'desired = list(current)' in block
     assert 'payload={"team_id": OPENCLAW_TEAM_ID, "models": desired}' in block
+    assert 'if key.get("key_alias") != OPENCLAW_KEY_ALIAS:' in block
+    assert 'f"{LITELLM_BASE_URL}/key/update"' in block
+    assert 'payload={"key": key_token, "models": key_desired}' in block
     assert "/team/new" not in block
 
 

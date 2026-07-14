@@ -19,3 +19,4 @@ def test_openclaw_team_has_only_the_explicit_dgx1_price_lookup_route_added():
     text = MANIFEST.read_text()
 
     assert 'OPENCLAW_TEAM_REQUIRED_MODELS, value: "dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1"' in text
+    assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
