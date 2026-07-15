@@ -1076,6 +1076,12 @@ data:
         "gemma4-31b",
         "gemma4-26b-a4b-nvfp4",
     )
+    # Canary-only direct aliases. `tooling` is deliberately absent until the
+    # parser, functional, performance, and soak gates have passed.
+    ORNITH_CANARY_ALIASES = (
+        "ornith-canary",
+        "ornith-1.0",
+    )
     QWEN36_COMPAT_ALIASES = (
         "tooling",
         "router",
@@ -1134,6 +1140,29 @@ data:
     # reconcile_backend(dgx2, enable=False) deletes the DGX2 model IDs, and shared
     # aliases collapse onto DGX1 alone. No restart/config reload is required.
     BACKENDS = (
+        {
+            # DGX1 Ornith canary. These aliases are explicit and are never
+            # referenced by MODEL_MAP or a fallback chain during validation.
+            "name": "ornith-dgx1",
+            "label": "DGX1_ORNITH_35B",
+            "backend": "dgx1",
+            "base_model": "openai/ornith-1.0-35b-nvfp4-mtp",
+            "aliases": ORNITH_CANARY_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_ORNITH_DGX1",
+                "vllm-ornith-35b-nvfp4-mtp-dgx1",
+            ),
+            "api_base": os.getenv(
+                "ORNITH_DGX1_API_BASE",
+                "http://vllm-ornith-35b-nvfp4-mtp-dgx1.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "dgx1-ornith-35b-nvfp4-mtp",
+            "max_parallel_requests": 4,
+            "max_tokens": 16384,
+            "context_window": 65536,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
         {
             "name": "gemma-dgx1",
             "label": "DGX1_GEMMA4_26B",
@@ -1500,10 +1529,10 @@ data:
                     },
                     "model_info": {
                         "id": managed_model_id(backend, alias),
-                        "max_tokens": 32768,
+                        "max_tokens": backend.get("max_tokens", 32768),
                         "supports_function_calling": backend["supports_function_calling"],
                         "supports_vision": backend["supports_vision"],
-                        "context_window": 262144,
+                        "context_window": backend.get("context_window", 262144),
                         "managed_by": "litellm-dgx-backend-sync",
                         "backend": backend["backend"],
                         "k8s_namespace": K8S_NAMESPACE,
@@ -1666,7 +1695,7 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: dense-uncensored-team-access-20260714
+        config.k8s.e-dani.com/revision: ornith-canary-20260715
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -1682,6 +1711,7 @@ spec:
             - { name: LITELLM_BASE_URL, value: "http://litellm.litellm.svc.cluster.local:4000" }
             - { name: K8S_NAMESPACE, value: "llm" }
             - { name: K8S_SERVICE_GEMMA_DGX1, value: "vllm-gemma4-26b-a4b-nvfp4-dgx1" }
+            - { name: K8S_SERVICE_ORNITH_DGX1, value: "vllm-ornith-35b-nvfp4-mtp-dgx1" }
             # Retired 35B services are retained as a scale-to-zero rollback path.
             - { name: K8S_SERVICE_QWEN36_35B_DGX1, value: "vllm-35b-nvfp4" }
             - { name: K8S_SERVICE_QWEN36_35B_DGX2, value: "vllm-35b-nvfp4-dgx2" }
@@ -1697,10 +1727,9 @@ spec:
             # Durable least-privilege reconciliation for the existing OpenClaw
             # team. The controller only unions this fixed explicit alias.
             - { name: OPENCLAW_TEAM_ID, value: "openclaw" }
-            # The Skirmshop agent pins read-only price lookups to the permanent
-            # DGX1 dense F2 backend. Keep that explicit model in the existing
-            # team allowlist rather than widening access to every managed alias.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1" }
+            # Fixed explicit routes required during the canary. The reconciler
+            # only unions these names; it never removes existing permissions.
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
