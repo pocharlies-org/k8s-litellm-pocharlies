@@ -367,7 +367,9 @@ data:
     }
 
     COMPACTION_LOCAL_ALIAS = "compaction-local"
-    SERIAL_TOOL_MODELS = {COMPACTION_LOCAL_ALIAS, "tooling", "ornith-canary", "ornith-1.0"}
+    COMPACTION_LOCAL_TEMPERATURE = 0.2
+    COMPACTION_LOCAL_TOP_P = 0.8
+    COMPACTION_LOCAL_MAX_TOKENS = 16384
     OPENCLAW_REQUEST_BUDGET_SECONDS = 600.0
     FAST_CTX_LIMIT = 73000
     THINK_MARKERS = ("/think", "[think]")
@@ -475,8 +477,14 @@ data:
             )
         return attempt
 
-    def _apply_direct_model_policy(data):
-        """Preserve direct aliases and apply their request-scoped limits."""
+    def _apply_compaction_local_policy(data):
+        """Preserve the alias and enforce the complete compaction payload.
+
+        OpenClaw 2026.6.11 does not copy provider model params into its
+        compaction request. Apply them here once, before routing, so the exact
+        same request kwargs survive a native fallback from Qwen to Ornith.
+        Direct `tooling` requests are deliberately untouched.
+        """
         requested_model = data.get("model", "")
         litellm_params = data.get("litellm_params", {})
         proxy_model = (
@@ -487,9 +495,50 @@ data:
             else ""
         )
         original_model = proxy_model or requested_model
-        if requested_model in SERIAL_TOOL_MODELS or original_model in SERIAL_TOOL_MODELS:
-            data["parallel_tool_calls"] = False
         if requested_model == COMPACTION_LOCAL_ALIAS or original_model == COMPACTION_LOCAL_ALIAS:
+            # Strip caller attempts to set the Qwen-only template kwarg. The
+            # selected Qwen deployment re-adds `false`; the Ornith deployment
+            # intentionally has no such parameter, so fallback cannot leak it.
+            data.pop("chat_template_kwargs", None)
+            request_extra_body = data.get("extra_body")
+            if isinstance(request_extra_body, dict) and "chat_template_kwargs" in request_extra_body:
+                request_extra_body = dict(request_extra_body)
+                request_extra_body.pop("chat_template_kwargs", None)
+                if request_extra_body:
+                    data["extra_body"] = request_extra_body
+                else:
+                    data.pop("extra_body", None)
+            requested_max_tokens = data.get("max_tokens", COMPACTION_LOCAL_MAX_TOKENS)
+            if isinstance(requested_max_tokens, bool):
+                raise ValueError("compaction-local max_tokens must be a positive integer")
+            try:
+                requested_max_tokens = int(requested_max_tokens)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("compaction-local max_tokens must be a positive integer") from exc
+            if requested_max_tokens <= 0:
+                raise ValueError("compaction-local max_tokens must be a positive integer")
+
+            data["temperature"] = COMPACTION_LOCAL_TEMPERATURE
+            data["top_p"] = COMPACTION_LOCAL_TOP_P
+            data["max_tokens"] = min(requested_max_tokens, COMPACTION_LOCAL_MAX_TOKENS)
+            # Clamp alternate token-budget spellings too if a client supplied
+            # them, preventing a second field from bypassing the 16384 cap.
+            for token_key in ("max_completion_tokens", "max_output_tokens"):
+                if token_key not in data:
+                    continue
+                token_value = data[token_key]
+                if isinstance(token_value, bool):
+                    raise ValueError(f"compaction-local {token_key} must be a positive integer")
+                try:
+                    token_value = int(token_value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"compaction-local {token_key} must be a positive integer"
+                    ) from exc
+                if token_value <= 0:
+                    raise ValueError(f"compaction-local {token_key} must be a positive integer")
+                data[token_key] = min(token_value, COMPACTION_LOCAL_MAX_TOKENS)
+            data["parallel_tool_calls"] = False
             data["timeout"] = _compaction_attempt_timeout_seconds()
             data["num_retries"] = 0
         return requested_model, proxy_model
@@ -610,7 +659,7 @@ data:
             litellm_params = data.get("litellm_params", {})
             # Exactly two possible compaction calls: Qwen primary, then Ornith.
             # The shared helper also covers the synchronous hook path.
-            requested_model, proxy_model = _apply_direct_model_policy(data)
+            requested_model, proxy_model = _apply_compaction_local_policy(data)
 
             is_router_request = requested_model in ROUTER_MODELS or proxy_model in ROUTER_MODELS
 
@@ -686,7 +735,7 @@ data:
         def pre_call_hook(self, user_api_key_dict, cache, data, call_type):
             for p in self.STRIP_PARAMS:
                 data.pop(p, None)
-            _apply_direct_model_policy(data)
+            _apply_compaction_local_policy(data)
             return data
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
@@ -1568,8 +1617,13 @@ data:
         if alias == "compaction-local":
             # The request hook also sets zero retries. Persist it on the sole
             # primary deployment so non-proxy Router entrypoints cannot expand
-            # the two-attempt budget either.
+            # the two-attempt budget either. Qwen3.6/vLLM accepts this template
+            # kwarg and uses it to guarantee non-thinking output. Keep it
+            # deployment-specific: the Ornith fallback must never inherit it.
             params["num_retries"] = 0
+            params["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
         return params
 
 

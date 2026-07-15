@@ -1,6 +1,9 @@
 import asyncio
+import json
 import logging
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,7 @@ QWEN_MODEL_ID = "dgx2-qwen36-27b-dense-nvfp4-compaction-local"
 ORNITH_MODEL_ID = "dgx1-ornith-35b-nvfp4-mtp-256k-tooling"
 
 logging.getLogger("LiteLLM Router").setLevel(logging.CRITICAL)
+MISSING = object()
 
 
 def router_settings():
@@ -29,15 +33,28 @@ def router_settings():
     return config["router_settings"]
 
 
-def model(model_name, model_id, mock_response):
+def model(
+    model_name,
+    model_id,
+    mock_response=MISSING,
+    api_base=None,
+    upstream_model=None,
+    extra_body=None,
+):
+    litellm_params = {
+        "model": upstream_model or f"openai/{model_name}",
+        "api_key": "unit-test",
+        "num_retries": 0,
+    }
+    if mock_response is not MISSING:
+        litellm_params["mock_response"] = mock_response
+    if api_base is not None:
+        litellm_params["api_base"] = api_base
+    if extra_body is not None:
+        litellm_params["extra_body"] = extra_body
     return {
         "model_name": model_name,
-        "litellm_params": {
-            "model": f"openai/{model_name}",
-            "api_key": "unit-test",
-            "mock_response": mock_response,
-            "num_retries": 0,
-        },
+        "litellm_params": litellm_params,
         "model_info": {
             "id": model_id,
             "max_input_tokens": 262144,
@@ -52,6 +69,17 @@ def make_router(primary_response="qwen-ok", include_primary=True):
     if include_primary:
         model_list.append(model("compaction-local", QWEN_MODEL_ID, primary_response))
     model_list.append(model("tooling", ORNITH_MODEL_ID, "ornith-ok"))
+    return Router(
+        model_list=model_list,
+        fallbacks=settings["fallbacks"],
+        max_fallbacks=settings["max_fallbacks"],
+        enable_pre_call_checks=settings["enable_pre_call_checks"],
+        num_retries=settings["num_retries"],
+    )
+
+
+def router_from_models(model_list):
+    settings = router_settings()
     return Router(
         model_list=model_list,
         fallbacks=settings["fallbacks"],
@@ -160,31 +188,212 @@ def embedded_hook_namespace(tmp_path):
     return namespace
 
 
-def test_hook_preserves_compaction_name_serializes_tools_and_guards_budget(monkeypatch, tmp_path):
-    monkeypatch.setenv("COMPACTION_LOCAL_ATTEMPT_TIMEOUT_SECONDS", "249")
-    monkeypatch.setenv("COMPACTION_LOCAL_MARGIN_SECONDS", "100")
-    hook = embedded_hook_namespace(tmp_path)["proxy_handler_instance"]
+@pytest.fixture
+def openai_payload_server():
+    payloads = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            payloads.append(json.loads(self.rfile.read(length)))
+            response = {
+                "id": "chatcmpl-unit",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "ornith-unit",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+            raw = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, format, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1", payloads
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def compaction_payload(hook, *, async_hook, max_tokens=99999):
     data = {
         "model": "compaction-local",
         "messages": [{"role": "user", "content": "compact"}],
-        "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "unit test",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "max_tokens": max_tokens,
+        "parallel_tool_calls": True,
+        "chat_template_kwargs": {"enable_thinking": True},
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
         "litellm_params": {},
     }
+    if async_hook:
+        return asyncio.run(hook.async_pre_call_hook({}, None, data, "completion"))
+    return hook.pre_call_hook({}, None, data, "completion")
 
-    result = asyncio.run(hook.async_pre_call_hook({}, None, data, "completion"))
+
+def run_policy_payload(router, payload, **extra):
+    async def complete_and_flush_callbacks():
+        response = await router.acompletion(
+            model=payload["model"],
+            messages=payload["messages"],
+            tools=payload["tools"],
+            temperature=payload["temperature"],
+            top_p=payload["top_p"],
+            max_tokens=payload["max_tokens"],
+            parallel_tool_calls=payload["parallel_tool_calls"],
+            num_retries=payload["num_retries"],
+            timeout=payload["timeout"],
+            **extra,
+        )
+        await asyncio.sleep(0.05)
+        return response
+
+    return asyncio.run(complete_and_flush_callbacks())
+
+
+def test_hooks_enforce_compaction_payload_and_leave_direct_tooling_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setenv("COMPACTION_LOCAL_ATTEMPT_TIMEOUT_SECONDS", "249")
+    monkeypatch.setenv("COMPACTION_LOCAL_MARGIN_SECONDS", "100")
+    hook = embedded_hook_namespace(tmp_path)["proxy_handler_instance"]
+    result = compaction_payload(hook, async_hook=True)
 
     assert result["model"] == "compaction-local"
+    assert result["temperature"] == 0.2
+    assert result["top_p"] == 0.8
+    assert result["max_tokens"] == 16384
     assert result["parallel_tool_calls"] is False
     assert result["num_retries"] == 0
     assert result["timeout"] == 249
+    assert "chat_template_kwargs" not in result
+    assert "extra_body" not in result
 
-    sync_data = {
+    sync_result = compaction_payload(hook, async_hook=False, max_tokens=4096)
+    assert sync_result["model"] == "compaction-local"
+    assert sync_result["temperature"] == 0.2
+    assert sync_result["top_p"] == 0.8
+    assert sync_result["max_tokens"] == 4096
+    assert sync_result["parallel_tool_calls"] is False
+    assert sync_result["num_retries"] == 0
+    assert sync_result["timeout"] == 249
+    assert "chat_template_kwargs" not in sync_result
+    assert "extra_body" not in sync_result
+
+    direct_tooling = {
         "model": "tooling",
         "messages": [],
         "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 8192,
+        "parallel_tool_calls": True,
         "litellm_params": {},
     }
-    assert hook.pre_call_hook({}, None, sync_data, "completion")["parallel_tool_calls"] is False
+    direct_result = hook.pre_call_hook({}, None, direct_tooling, "completion")
+    assert direct_result["temperature"] == 0.7
+    assert direct_result["top_p"] == 0.9
+    assert direct_result["max_tokens"] == 8192
+    assert direct_result["parallel_tool_calls"] is True
+    assert "num_retries" not in direct_result
+    assert "timeout" not in direct_result
+
+
+def test_qwen_primary_receives_real_enforced_payload(
+    monkeypatch, tmp_path, openai_payload_server
+):
+    monkeypatch.setenv("COMPACTION_LOCAL_ATTEMPT_TIMEOUT_SECONDS", "249")
+    monkeypatch.setenv("COMPACTION_LOCAL_MARGIN_SECONDS", "100")
+    hook = embedded_hook_namespace(tmp_path)["proxy_handler_instance"]
+    api_base, captured = openai_payload_server
+    router = router_from_models(
+        [
+            model(
+                "compaction-local",
+                QWEN_MODEL_ID,
+                api_base=api_base,
+                upstream_model="openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv",
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            ),
+            model("tooling", ORNITH_MODEL_ID, "ornith-ok"),
+        ]
+    )
+
+    response = run_policy_payload(router, compaction_payload(hook, async_hook=True))
+
+    assert_model_id(response, QWEN_MODEL_ID, 0)
+    assert len(captured) == 1
+    assert captured[0]["model"] == "qwen36-27b-nvfp4-v024-f2-nvfp4kv"
+    assert captured[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured[0]["temperature"] == 0.2
+    assert captured[0]["top_p"] == 0.8
+    assert captured[0]["max_tokens"] == 16384
+    assert captured[0]["parallel_tool_calls"] is False
+
+
+def test_mock_fallback_ornith_receives_same_real_enforced_payload(
+    monkeypatch, tmp_path, openai_payload_server
+):
+    monkeypatch.setenv("COMPACTION_LOCAL_ATTEMPT_TIMEOUT_SECONDS", "249")
+    monkeypatch.setenv("COMPACTION_LOCAL_MARGIN_SECONDS", "100")
+    hook = embedded_hook_namespace(tmp_path)["proxy_handler_instance"]
+    api_base, captured = openai_payload_server
+    router = router_from_models(
+        [
+            model(
+                "compaction-local",
+                QWEN_MODEL_ID,
+                "qwen-ok",
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            ),
+            model(
+                "tooling",
+                ORNITH_MODEL_ID,
+                api_base=api_base,
+                upstream_model="openai/ornith-1.0-35b-nvfp4-mtp",
+            ),
+        ]
+    )
+
+    response = run_policy_payload(
+        router,
+        compaction_payload(hook, async_hook=False),
+        mock_testing_fallbacks=True,
+    )
+
+    assert_model_id(response, ORNITH_MODEL_ID, 1)
+    assert len(captured) == 1
+    assert captured[0]["model"] == "ornith-1.0-35b-nvfp4-mtp"
+    assert "chat_template_kwargs" not in captured[0]
+    assert captured[0]["temperature"] == 0.2
+    assert captured[0]["top_p"] == 0.8
+    assert captured[0]["max_tokens"] == 16384
+    assert captured[0]["parallel_tool_calls"] is False
 
 
 def test_hook_blocks_compaction_when_budget_is_unset_or_not_strictly_under_600(

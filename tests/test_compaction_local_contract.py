@@ -103,6 +103,10 @@ def test_compaction_and_tooling_deployment_metadata_is_256k_and_serial():
         assert row["model_info"]["context_window"] == 262144
         assert row["model_info"]["supports_parallel_function_calling"] is False
     assert primary["litellm_params"]["num_retries"] == 0
+    assert primary["litellm_params"]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+    assert "extra_body" not in tooling["litellm_params"]
 
 
 def test_hook_preserves_compaction_name_and_has_no_dense_fallback_rewrite():
@@ -119,9 +123,12 @@ def test_hook_preserves_compaction_name_and_has_no_dense_fallback_rewrite():
     assert '"tooling"' not in router_block
     assert '"fallback"' not in model_map_block
     assert "_alias_has_deployments" not in text
-    assert "_apply_direct_model_policy(data)" in hook_block
+    assert "_apply_compaction_local_policy(data)" in hook_block
     sync_hook = text[text.index("def pre_call_hook"):text.index("async def async_log_success_event")]
-    assert "_apply_direct_model_policy(data)" in sync_hook
+    assert "_apply_compaction_local_policy(data)" in sync_hook
+    assert "COMPACTION_LOCAL_TEMPERATURE = 0.2" in text
+    assert "COMPACTION_LOCAL_TOP_P = 0.8" in text
+    assert "COMPACTION_LOCAL_MAX_TOKENS = 16384" in text
 
 
 def test_proxy_ha_is_explicitly_blocked_until_shared_state_is_safe():
