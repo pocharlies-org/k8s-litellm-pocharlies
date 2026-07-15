@@ -15,12 +15,12 @@ def test_ready_grace_keeps_existing_models_during_controller_restart():
     assert "desired = True" in main_block
 
 
-def test_openclaw_team_has_canary_and_explicit_operational_routes():
+def test_openclaw_team_has_logical_and_explicit_operational_routes():
     text = MANIFEST.read_text()
 
     assert (
         'OPENCLAW_TEAM_REQUIRED_MODELS, value: '
-        '"ornith-canary,ornith-1.0,dense-uncensored,'
+        '"tooling,dense,dense-reasoning,ornith-canary,ornith-1.0,dense-uncensored,'
         'qwen36-27b-nvfp4-v024-f2-dgx1"'
     ) in text
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
