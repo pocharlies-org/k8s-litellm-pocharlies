@@ -76,6 +76,9 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         steps = job["steps"]
 
         self.assertEqual(job["runs-on"], "ubuntu-24.04")
+        self.assertEqual(job["timeout-minutes"], 10)
+        checkout = next(step for step in steps if step.get("uses") == CHECKOUT_ACTION)
+        self.assertEqual(checkout["with"], {"persist-credentials": False})
         action_uses = [step["uses"] for step in steps if "uses" in step]
         self.assertEqual(action_uses, [CHECKOUT_ACTION, SETUP_PYTHON_ACTION])
         for action in action_uses:
