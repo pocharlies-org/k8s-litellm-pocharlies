@@ -10,7 +10,7 @@ MANIFEST = ROOT / "k8s" / "manifest.yaml"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 LOCK = ROOT / ".github" / "requirements" / "litellm-network-contract.txt"
 
-CHECKOUT_ACTION = "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
+CHECKOUT_ACTION = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 SETUP_PYTHON_ACTION = (
     "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
 )
@@ -31,11 +31,14 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
 
     def test_litellm_uses_service_networking_without_a_host_port(self):
         deployment = self.resource("Deployment", "litellm")
-        containers = deployment["spec"]["template"]["spec"]["containers"]
+        pod_template = deployment["spec"]["template"]
+        pod_spec = pod_template["spec"]
+        containers = pod_spec["containers"]
         litellm = next(
             container for container in containers if container["name"] == "litellm"
         )
 
+        self.assertFalse(pod_spec.get("hostNetwork", False))
         self.assertIn({"name": "http", "containerPort": 4000}, litellm["ports"])
         self.assertTrue(
             all(
@@ -46,8 +49,23 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         )
 
         service = self.resource("Service", "litellm")
+        service_spec = service["spec"]
+        deployment_selector = deployment["spec"]["selector"]["matchLabels"]
+        pod_labels = pod_template["metadata"]["labels"]
+
+        self.assertEqual(deployment_selector, pod_labels)
+        self.assertEqual(service_spec["selector"], pod_labels)
+        self.assertEqual(service_spec.get("type", "ClusterIP"), "ClusterIP")
+        self.assertNotEqual(service_spec.get("clusterIP"), "None")
+        self.assertNotIn("externalIPs", service_spec)
+        self.assertNotIn("externalName", service_spec)
+        self.assertNotIn("loadBalancerIP", service_spec)
+        self.assertTrue(
+            all("nodePort" not in port for port in service_spec["ports"])
+        )
+
         http_port = next(
-            port for port in service["spec"]["ports"] if port["name"] == "http"
+            port for port in service_spec["ports"] if port["name"] == "http"
         )
         self.assertEqual(http_port["port"], 4000)
         self.assertEqual(http_port["targetPort"], 4000)
