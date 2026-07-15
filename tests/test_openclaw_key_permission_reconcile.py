@@ -9,6 +9,7 @@ MANIFEST = Path(__file__).parents[1] / "k8s" / "manifest.yaml"
 DGX1_ALIAS = "qwen36-27b-nvfp4-v024-f2-dgx1"
 REQUIRED_MODELS = (
     "tooling",
+    "compaction-local",
     "dense",
     "dense-reasoning",
     "ornith-canary",
@@ -77,6 +78,7 @@ def test_reconciler_updates_only_the_named_openclaw_virtual_key():
                 "qwen36-35b-tooling",
                 "dense",
                 "tooling",
+                "compaction-local",
                 "dense-reasoning",
                 "ornith-canary",
                 "ornith-1.0",

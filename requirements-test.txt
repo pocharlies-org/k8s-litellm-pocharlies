@@ -1,0 +1,4 @@
+# Match the deployed proxy image; runtime fallback semantics are contract-tested.
+litellm==1.85.1
+pytest>=8,<10
+PyYAML>=6,<7

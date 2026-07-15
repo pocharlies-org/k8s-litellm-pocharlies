@@ -24,7 +24,7 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
     assert (
         'OPENCLAW_TEAM_REQUIRED_MODELS, value: '
-        '"tooling,dense,dense-reasoning,ornith-canary,ornith-1.0,dense-uncensored,'
+        '"tooling,compaction-local,dense,dense-reasoning,ornith-canary,ornith-1.0,dense-uncensored,'
         'qwen36-27b-nvfp4-v024-f2-dgx1"'
     ) in text
     block = text[

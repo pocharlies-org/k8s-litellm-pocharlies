@@ -140,6 +140,14 @@ data:
       routing_strategy: simple-shuffle
       timeout: 600
       num_retries: 1
+      max_fallbacks: 1
+      enable_pre_call_checks: true
+      # Dedicated OpenClaw compaction route. This is deliberately not a
+      # fallback for `dense`: Qwen DGX2 is the sole primary and Ornith DGX1 is
+      # the sole, terminal fallback. There is no default/cloud/inverse edge.
+      fallbacks:
+        - compaction-local:
+            - tooling
       # 2026-06-22: a wedged vLLM backend (EngineCore deadlock; /health still 200)
       # used to keep eating ~50% of chat traffic because it took 20 fails before
       # any cooldown and the cooldown was only 30s. Eject faster and keep it out
@@ -148,15 +156,14 @@ data:
       # ~4 min, so this only has to cover that window.
       allowed_fails: 3
       cooldown_time: 120
-      # 2026-07-14: dense/tooling/router aliases are dynamically registered by
+      # 2026-07-14: dense/router aliases are dynamically registered by
       # litellm-dgx-backend-sync to one homogeneous Qwen3.6-27B dense F2 pool:
       # DGX1 is the always-on floor and DGX2 joins whenever its GPU is free.
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
-      # No cross-alias fallback is needed: each alias has the same DGX1 floor
-      # and optional DGX2 deployment. Avoid alias-to-alias retry loops when the
-      # only active backend is unhealthy.
+      # No other cross-alias fallback is configured. `tooling` is a direct
+      # Ornith DGX1 alias and the terminal target of the one edge above.
   litellm_strip_params.py: |
     import json
     import logging
@@ -329,8 +336,10 @@ data:
     # "litellmrouter" is the Codex-facing name (~/.codex/litellmrouter.config.toml).
     # Compatibility aliases are included so legacy qwen36 callers are
     # normalized onto the same dense F2 pool before LiteLLM selects a backend.
-    # `tooling` is deliberately absent: it is a direct Ornith alias and must
-    # never be rewritten or fall back to the Qwen dense pool.
+    # `tooling` and `compaction-local` are deliberately absent. `tooling` is a
+    # direct Ornith alias; `compaction-local` must retain its logical name so
+    # LiteLLM can make exactly one native fallback hop to `tooling` when its
+    # readiness-gated Qwen DGX2 deployment is absent or fails.
     ROUTER_MODELS = {
         "router", "auto", "litellmrouter", "dense", "dense-reasoning", "taxonomy",
         # Compatibility names retained while the 35B engine is retired. They
@@ -345,24 +354,21 @@ data:
     MODEL_MAP = {
         "SIMPLE": {
             "model": "dense",
-            # During the one-GPU replacement window the old 35B alias remains
-            # available until dense starts; after cutover both names share F2.
-            "fallback": "qwen36-35b-tooling",
         },
         "TOOLING": {
             "model": "dense",
-            "fallback": "qwen36-35b-tooling",
         },
         "REASONING": {
             "model": "dense-reasoning",
-            "fallback": "qwen36-35b-reasoning",
         },
         "REASONING_SIMPLE": {
             "model": "dense-reasoning",
-            "fallback": "qwen36-35b-reasoning",
         },
     }
 
+    COMPACTION_LOCAL_ALIAS = "compaction-local"
+    SERIAL_TOOL_MODELS = {COMPACTION_LOCAL_ALIAS, "tooling", "ornith-canary", "ornith-1.0"}
+    OPENCLAW_REQUEST_BUDGET_SECONDS = 600.0
     FAST_CTX_LIMIT = 73000
     THINK_MARKERS = ("/think", "[think]")
     # Codex/agent clients attach a reasoning effort to EVERY call; only a
@@ -439,6 +445,55 @@ data:
                 return True
         return False
 
+    def _compaction_attempt_timeout_seconds():
+        """Return the benchmarked per-attempt timeout or fail closed.
+
+        One primary attempt plus one fallback attempt and a caller margin must
+        fit strictly inside OpenClaw's 600 second request budget. Values remain
+        intentionally unset until a 245K benchmark supplies evidence; choosing
+        a shorter production default here could make valid 256K requests fail.
+        """
+        attempt_raw = os.getenv("COMPACTION_LOCAL_ATTEMPT_TIMEOUT_SECONDS", "").strip()
+        margin_raw = os.getenv("COMPACTION_LOCAL_MARGIN_SECONDS", "").strip()
+        if not attempt_raw or not margin_raw:
+            raise ValueError(
+                "compaction-local is blocked until benchmarked "
+                "COMPACTION_LOCAL_ATTEMPT_TIMEOUT_SECONDS and "
+                "COMPACTION_LOCAL_MARGIN_SECONDS are configured"
+            )
+        try:
+            attempt = float(attempt_raw)
+            margin = float(margin_raw)
+        except ValueError as exc:
+            raise ValueError("compaction-local timeout budget values must be numeric") from exc
+        if attempt <= 0 or margin < 0:
+            raise ValueError("compaction-local attempt must be positive and margin non-negative")
+        if (2 * attempt) + margin >= OPENCLAW_REQUEST_BUDGET_SECONDS:
+            raise ValueError(
+                "compaction-local budget must satisfy "
+                "2*attempt_timeout + margin < OpenClaw request budget"
+            )
+        return attempt
+
+    def _apply_direct_model_policy(data):
+        """Preserve direct aliases and apply their request-scoped limits."""
+        requested_model = data.get("model", "")
+        litellm_params = data.get("litellm_params", {})
+        proxy_model = (
+            litellm_params.get("proxy_server_request", {})
+            .get("body", {})
+            .get("model", "")
+            if isinstance(litellm_params, dict)
+            else ""
+        )
+        original_model = proxy_model or requested_model
+        if requested_model in SERIAL_TOOL_MODELS or original_model in SERIAL_TOOL_MODELS:
+            data["parallel_tool_calls"] = False
+        if requested_model == COMPACTION_LOCAL_ALIAS or original_model == COMPACTION_LOCAL_ALIAS:
+            data["timeout"] = _compaction_attempt_timeout_seconds()
+            data["num_retries"] = 0
+        return requested_model, proxy_model
+
     def _reasoning_effort_value(data):
         effort = data.get("reasoning_effort")
         if not effort:
@@ -511,24 +566,6 @@ data:
                     p["text"] = _strip_think_marker(p.get("text") or "")
                     break
 
-    def _alias_has_deployments(alias):
-        """Whether the proxy router currently has deployments for the alias.
-
-        Fails open (True) so a litellm-internals change can never take the
-        route down: the request then behaves exactly like a direct call to
-        the mapped alias.
-        """
-        try:
-            from litellm.proxy.proxy_server import llm_router
-        except Exception:
-            return True
-        if llm_router is None:
-            return True
-        try:
-            return bool(llm_router.get_model_list(model_name=alias))
-        except Exception:
-            return True
-
     def _classify_request_shape(data, original_model=""):
         """Return (category, think_marker_present) keyed into MODEL_MAP.
 
@@ -570,13 +607,11 @@ data:
             for p in self.STRIP_PARAMS:
                 data.pop(p, None)
 
-            requested_model = data.get("model", "")
             litellm_params = data.get("litellm_params", {})
-            proxy_model = (
-                litellm_params.get("proxy_server_request", {})
-                .get("body", {})
-                .get("model", "")
-            )
+            # Exactly two possible compaction calls: Qwen primary, then Ornith.
+            # The shared helper also covers the synchronous hook path.
+            requested_model, proxy_model = _apply_direct_model_policy(data)
+
             is_router_request = requested_model in ROUTER_MODELS or proxy_model in ROUTER_MODELS
 
             if is_router_request:
@@ -585,14 +620,6 @@ data:
                     _strip_think_from_last_user(data)
                 target = MODEL_MAP[category]
                 resolved_model = target["model"]
-                fallback_model = target.get("fallback")
-                if fallback_model and not _alias_has_deployments(resolved_model):
-                    router_log.warning(
-                        "router: target %r has no live deployments; degrading to %r",
-                        resolved_model,
-                        fallback_model,
-                    )
-                    resolved_model = fallback_model
                 data["model"] = resolved_model
                 data.pop("api_base", None)
                 data.pop("api_key", None)
@@ -659,6 +686,7 @@ data:
         def pre_call_hook(self, user_api_key_dict, cache, data, call_type):
             for p in self.STRIP_PARAMS:
                 data.pop(p, None)
+            _apply_direct_model_policy(data)
             return data
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
@@ -1079,13 +1107,15 @@ data:
         "gemma4-26b-a4b-nvfp4",
     )
     # Direct Ornith aliases. `tooling` is the promoted production role; all
-    # three names share exactly one readiness-gated DGX1 backend and no
-    # LiteLLM fallback chain.
+    # three names share exactly one readiness-gated DGX1 backend. `tooling`
+    # never falls back elsewhere: it is the terminal target of the one-way
+    # compaction-local fallback.
     ORNITH_TOOLING_ALIASES = (
         "tooling",
         "ornith-canary",
         "ornith-1.0",
     )
+    COMPACTION_LOCAL_ALIASES = ("compaction-local",)
     QWEN36_COMPAT_ALIASES = (
         "router",
         "auto",
@@ -1115,7 +1145,7 @@ data:
     )
     QWEN36_27B_DENSE_DGX2_ALIASES = QWEN36_27B_DENSE_ALIASES + (
         "qwen36-27b-nvfp4-v024-f2-dgx2",
-    )
+    ) + COMPACTION_LOCAL_ALIASES
     # Deliberately isolated: this alias is registered by exactly one readiness-
     # gated backend and is NOT part of ROUTER_MODELS, MODEL_MAP, the dense pool,
     # or any LiteLLM fallback chain. If DGX2 uncensored is down, calls fail.
@@ -1145,7 +1175,8 @@ data:
     BACKENDS = (
         {
             # DGX1 Ornith production tooling backend. These aliases are direct
-            # and are never referenced by MODEL_MAP or a fallback chain.
+            # and never source a fallback or participate in MODEL_MAP. `tooling`
+            # is only the terminal target of compaction-local.
             "name": "ornith-dgx1",
             "label": "DGX1_ORNITH_35B",
             "backend": "dgx1",
@@ -1167,6 +1198,7 @@ data:
             "max_input_tokens": 262144,
             "context_window": 262144,
             "supports_function_calling": True,
+            "supports_parallel_function_calling": False,
             "supports_vision": True,
         },
         {
@@ -1258,7 +1290,10 @@ data:
         },
         {
             # DGX2 optional dense F2 twin. The GPU arbiter can keep it at zero
-            # while Trellis/image/video work is active; aliases then use DGX1.
+            # while Trellis/image/video work is active; dense aliases then use
+            # DGX1. `compaction-local` is registered only by this DGX2 backend;
+            # when it has zero endpoints LiteLLM preserves the requested group
+            # name and follows its one explicit fallback to Ornith `tooling`.
             "name": "qwen36-27b-dense-dgx2",
             "label": "DGX2_QWEN36_27B_DENSE",
             "backend": "dgx2",
@@ -1277,7 +1312,10 @@ data:
             ),
             "id_prefix": "dgx2-qwen36-27b-dense-nvfp4",
             "max_parallel_requests": 8,
+            "max_input_tokens": 262144,
+            "context_window": 262144,
             "supports_function_calling": True,
+            "supports_parallel_function_calling": False,
             "supports_vision": True,
         },
         {
@@ -1333,6 +1371,9 @@ data:
         # absent so both residents stay registered.
         "dgx2-gemma4-26b-a4b-nvfp4-",
     )
+    MANUAL_ALIAS_ORPHAN_ID = "793b8450-a1f9-4f18-991f-e70c5a665b30"
+    MANUAL_ALIAS_ORPHAN_EXPECTED_ALIAS = "compaction-local"
+    MANUAL_ALIAS_ORPHAN_EXPECTED_MANAGER = "manual-alias-revive"
 
     TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -1521,9 +1562,15 @@ data:
 
     def extra_litellm_params(backend: dict[str, Any], alias: str) -> dict[str, Any]:
         base_model = str(backend.get("base_model") or "")
+        params: dict[str, Any] = {}
         if base_model.startswith("openai/qwen36-"):
-            return dict(QWEN36_REPEAT_GUARD_PARAMS)
-        return {}
+            params.update(QWEN36_REPEAT_GUARD_PARAMS)
+        if alias == "compaction-local":
+            # The request hook also sets zero retries. Persist it on the sole
+            # primary deployment so non-proxy Router entrypoints cannot expand
+            # the two-attempt budget either.
+            params["num_retries"] = 0
+        return params
 
 
     def desired_deployments(backend: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1548,6 +1595,10 @@ data:
                             backend.get("context_window", 262144),
                         ),
                         "supports_function_calling": backend["supports_function_calling"],
+                        "supports_parallel_function_calling": backend.get(
+                            "supports_parallel_function_calling",
+                            backend["supports_function_calling"],
+                        ),
                         "supports_vision": backend["supports_vision"],
                         "context_window": backend.get("context_window", 262144),
                         "managed_by": "litellm-dgx-backend-sync",
@@ -1560,20 +1611,60 @@ data:
         return deployments
 
 
-    def current_model_ids() -> set[str]:
+    def current_model_rows() -> list[dict[str, Any]]:
         data = _request_json(
             "GET",
             f"{LITELLM_BASE_URL}/model/info",
             headers=_litellm_headers(),
         )
         items = data.get("data", data) if isinstance(data, dict) else data
+        return [item for item in (items or []) if isinstance(item, dict)]
+
+
+    def current_model_ids(rows: list[dict[str, Any]] | None = None) -> set[str]:
         ids: set[str] = set()
-        for item in items or []:
+        for item in current_model_rows() if rows is None else rows:
             info = item.get("model_info") or {}
             model_id = info.get("id") or item.get("model_id") or item.get("id")
             if model_id:
                 ids.add(str(model_id))
         return ids
+
+
+    def purge_manual_alias_orphan(rows: list[dict[str, Any]] | None = None) -> bool:
+        """Delete only the one known manual compaction alias row.
+
+        A reused UUID or unexpected ownership/alias is a hard stop. Silently
+        deleting it would turn a narrowly scoped migration into an unsafe
+        generic database mutation. Absence is success, making restarts
+        idempotent.
+        """
+        candidates = []
+        for item in current_model_rows() if rows is None else rows:
+            info = item.get("model_info") or {}
+            model_id = info.get("id") or item.get("model_id") or item.get("id")
+            if str(model_id or "") == MANUAL_ALIAS_ORPHAN_ID:
+                candidates.append(item)
+        if not candidates:
+            return False
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f"orphan migration blocked: UUID {MANUAL_ALIAS_ORPHAN_ID} is not unique"
+            )
+        item = candidates[0]
+        info = item.get("model_info") or {}
+        alias = str(item.get("model_name") or "")
+        manager = str(info.get("managed_by") or "")
+        if (
+            alias != MANUAL_ALIAS_ORPHAN_EXPECTED_ALIAS
+            or manager != MANUAL_ALIAS_ORPHAN_EXPECTED_MANAGER
+        ):
+            raise RuntimeError(
+                "orphan migration blocked: exact UUID ownership/alias contract mismatch"
+            )
+        delete_model(MANUAL_ALIAS_ORPHAN_ID)
+        log.info("purged expected manual compaction alias orphan %s", MANUAL_ALIAS_ORPHAN_ID)
+        return True
 
 
     def add_model(deployment: dict[str, Any]) -> None:
@@ -1646,6 +1737,9 @@ data:
 
 
     def main() -> None:
+        # Run once before any broad reconciliation. A mismatch terminates the
+        # controller fail-closed; a later restart observes absence and is a no-op.
+        purge_manual_alias_orphan()
         log.info(
             "starting sync: namespace=%s services=%s litellm=%s interval=%ss ready_grace=%ss",
             K8S_NAMESPACE,
@@ -1746,7 +1840,7 @@ spec:
             - { name: OPENCLAW_TEAM_ID, value: "openclaw" }
             # Fixed logical and explicit routes required by OpenClaw. The
             # reconciler only unions these names; it never removes permissions.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "tooling,dense,dense-reasoning,ornith-canary,ornith-1.0,dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "tooling,compaction-local,dense,dense-reasoning,ornith-canary,ornith-1.0,dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
@@ -1765,6 +1859,12 @@ kind: Deployment
 metadata:
   name: litellm
   namespace: litellm
+  annotations:
+    # Fail-closed HA gate: PostgreSQL is shared, but router cooldown has no
+    # shared Redis and active-request drain state is a node-local hostPath.
+    # Do not claim two-replica safety until both blockers are removed and tested.
+    ha.litellm.e-dani.com/status: blocked
+    ha.litellm.e-dani.com/blockers: shared-redis-cooldown,node-local-hostpath-tracking
 spec:
   replicas: 1
   strategy:
@@ -1803,6 +1903,11 @@ spec:
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
             - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
             - { name: LITELLM_DRAIN_TIMEOUT_SEC, value: "660" }
+            # Intentionally unset pending the 245K benchmark. The request hook
+            # blocks only compaction-local until both values satisfy
+            # 2*attempt+margin < 600; all established aliases remain available.
+            - { name: COMPACTION_LOCAL_ATTEMPT_TIMEOUT_SECONDS, value: "" }
+            - { name: COMPACTION_LOCAL_MARGIN_SECONDS, value: "" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
             # Langfuse native callback (LLM tracing). Points at the in-cluster web

@@ -27,8 +27,23 @@ jobs:
       kustomize_paths: ". k8s"
     secrets: inherit
 
+  contract-tests:
+    name: LiteLLM 1.85.1 contract tests
+    runs-on: arc-k8s
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pinned proxy test dependencies
+        run: python -m pip install --requirement requirements-test.txt
+      - name: Run controller, fallback, context and HA contracts
+        run: python -m pytest -q
+
   release:
-    needs: [ci]
+    needs: [ci, contract-tests]
     uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-manifest-release.yml@main
     with:
       runner: arc-k8s

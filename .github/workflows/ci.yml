@@ -44,3 +44,18 @@ jobs:
           -r .github/requirements/litellm-network-contract.txt
       - name: Run LiteLLM network contract
         run: python -m unittest tests/test_litellm_network_contract.py
+
+  contract-tests:
+    name: LiteLLM 1.85.1 contract tests
+    runs-on: arc-k8s
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pinned proxy test dependencies
+        run: python -m pip install --requirement requirements-test.txt
+      - name: Run controller, fallback, context and HA contracts
+        run: python -m pytest -q
