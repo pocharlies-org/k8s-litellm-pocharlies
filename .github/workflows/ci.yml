@@ -20,3 +20,24 @@ jobs:
       run_docker_build: false
       kustomize_paths: ". k8s"
     secrets: inherit
+
+  litellm-network-contract:
+    name: LiteLLM network contract
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Require x86_64 runner
+        run: test "$(uname -m)" = "x86_64"
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - name: Install locked test dependency
+        run: >-
+          python -m pip install --require-hashes --only-binary=PyYAML
+          -r .github/requirements/litellm-network-contract.txt
+      - name: Run LiteLLM network contract
+        run: python -m unittest tests/test_litellm_network_contract.py
