@@ -1779,7 +1779,7 @@ spec:
             - --use_v2_migration_resolver
             - --enforce_prisma_migration_check
           ports:
-            - { name: http, containerPort: 4000, hostPort: 4000 }
+            - { name: http, containerPort: 4000 }
           env:
             - { name: LITELLM_LOG, value: INFO }
             - { name: PYTHONPATH, value: /app }
