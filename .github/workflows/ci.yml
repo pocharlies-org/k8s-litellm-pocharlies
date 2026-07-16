@@ -11,15 +11,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   standard:
-    uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-ci.yml@main
+    uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-ci.yml@ac96743b1e29b361c6d07d01d9ba0910d6cc1905
     with:
       runner: arc-k8s
       run_node: false
       run_docker_build: false
       kustomize_paths: ". k8s"
-    secrets: inherit
 
   litellm-network-contract:
     name: LiteLLM network contract
@@ -49,9 +51,13 @@ jobs:
     name: LiteLLM 1.85.1 contract tests
     runs-on: arc-k8s
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
           cache: pip
