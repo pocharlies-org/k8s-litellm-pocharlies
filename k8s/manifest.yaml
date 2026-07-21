@@ -130,7 +130,13 @@ data:
       master_key: os.environ/LITELLM_MASTER_KEY
       database_url: os.environ/DATABASE_URL
       store_model_in_db: true
-      store_prompts_in_spend_logs: true
+      # 2026-07-21: prompts OFF in SpendLogs — full prompt/response duplication of
+      # what Langfuse already stores had grown the table to 21 GB (~38 KB/row) and
+      # made retention DELETEs time out. SpendLogs is accounting only.
+      store_prompts_in_spend_logs: false
+      # DB down must degrade auth (restricted internal token), not kill inference.
+      # Incident 2026-07-20: postgres-shared out for 9h => litellm hard-down.
+      allow_requests_on_db_unavailable: true
       background_health_checks: true
       enable_passthrough_logging: false
       maximum_spend_logs_retention_period: 30d
@@ -1814,12 +1820,16 @@ spec:
               exec:
                 command: ["python", "/config/litellm_drain.py"]
           readinessProbe:
-            httpGet: { path: /health/readiness, port: 4000 }
+            # /health/liveliness (always 200 while the server loop is alive), NOT
+            # /health/readiness: readiness does a DB round-trip and returns 503
+            # when postgres is down, which pulled litellm out of the Service for
+            # 9h on 2026-07-20 while inference itself was fine. With
+            # allow_requests_on_db_unavailable the proxy serves through DB
+            # outages; DB health is alerted via SharedDatastoreUnreachable
+            # (k8s-observability) instead of endpoint removal.
+            httpGet: { path: /health/liveliness, port: 4000 }
             initialDelaySeconds: 20
             periodSeconds: 15
-            # /health/readiness does a DB round-trip; under spend-aggregation
-            # load it exceeds the 1s default and flaps the pod out of the
-            # Service. 5s timeout + 5 failures tolerates the transient spikes.
             timeoutSeconds: 5
             failureThreshold: 5
         - name: active-requests-api

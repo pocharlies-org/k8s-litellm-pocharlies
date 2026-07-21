@@ -34,6 +34,14 @@ spec:
               echo "ensuring LiteLLM_SpendLogs_failures_idx (idempotent, CONCURRENTLY)..."
               psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
                 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "LiteLLM_SpendLogs_failures_idx" ON "LiteLLM_SpendLogs" ("startTime" DESC) WHERE status = '"'"'failure'"'"';'
+              # Full startTime index: the retention job deletes via
+              # "WHERE startTime < cutoff LIMIT n" subselects; without this index
+              # each batch seq-scanned the (once 21 GB) table, timed out, and after
+              # 3 failed batches the whole cleanup run aborted — rows outlived the
+              # 30d policy by 3+ weeks (found 2026-07-21).
+              echo "ensuring LiteLLM_SpendLogs_starttime_idx (idempotent, CONCURRENTLY)..."
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c \
+                'CREATE INDEX CONCURRENTLY IF NOT EXISTS "LiteLLM_SpendLogs_starttime_idx" ON "LiteLLM_SpendLogs" ("startTime");'
               echo "ok."
           env:
             # Same DB wiring as the litellm Deployment (postgres-shared-rw).
