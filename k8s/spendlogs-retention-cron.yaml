@@ -1,0 +1,51 @@
+# Deterministic SpendLogs retention. LiteLLM's own cleanup task
+# (maximum_spend_logs_retention_period/interval) never pruned in this
+# deployment — found 2026-07-21 with rows 3+ weeks past the 30d policy and a
+# 21 GB table. Rather than depend on the in-process apscheduler/pod-lock path,
+# a plain SQL CronJob deletes expired rows in bounded batches every night.
+# Batches keep each DELETE short-lived; the upstream startTime index makes the
+# subselect an index scan. DB wiring mirrors the litellm Deployment.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: litellm-spendlogs-retention
+  namespace: litellm
+spec:
+  schedule: "40 3 * * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels: { app: litellm-spendlogs-retention }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: psql
+              image: postgres:16-alpine
+              command: ["sh", "-ec"]
+              args:
+                - |
+                  total=0
+                  while :; do
+                    n=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc \
+                      'WITH del AS (DELETE FROM "LiteLLM_SpendLogs" WHERE request_id IN (SELECT request_id FROM "LiteLLM_SpendLogs" WHERE "startTime" < now() - interval '"'"'30 days'"'"' LIMIT 5000) RETURNING 1) SELECT count(*) FROM del;')
+                    total=$((total + n))
+                    [ "$n" -eq 0 ] && break
+                  done
+                  echo "spendlogs-retention: deleted $total rows older than 30d"
+              env:
+                - name: _DBUSER
+                  valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
+                - name: _DBPASS
+                  valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: password } }
+                - name: DATABASE_URL
+                  value: "postgresql://$(_DBUSER):$(_DBPASS)@postgres-shared-rw.databases.svc.cluster.local:5432/litellm"
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits:   { memory: 128Mi }
