@@ -333,8 +333,9 @@ data:
     # Model aliases that trigger the smart router; requests to any of them get
     # re-pointed at a concrete sampling alias from MODEL_MAP by request shape.
     # "litellmrouter" is the Codex-facing name (~/.codex/litellmrouter.config.toml).
-    # Compatibility aliases are included so legacy tooling/qwen36 callers are
-    # normalized onto the same dense F2 pool before LiteLLM selects a backend.
+    # 2026-07-22 cutover (Daniel): tooling/router/auto/litellmrouter and every
+    # qwen36-35b* compatibility alias resolve to the Ornith pool (DGX1, alias
+    # `tooling`); dense/dense-reasoning/taxonomy stay on the 27B dense F2 pool.
     ROUTER_MODELS = {
         "router", "auto", "litellmrouter", "dense", "dense-reasoning", "taxonomy",
         # Compatibility names retained while the 35B engine is retired. They
@@ -343,9 +344,12 @@ data:
         "qwen36-35b-reasoning", "qwen36-35b-nvfp4", "qwen-36-35b",
     }
 
-    # All request shapes use the same 27B dense F2 pool. The reasoning signal
-    # still selects the sampling alias, but tooling no longer selects a second
-    # resident model.
+    # Aliases that stay on the 27B dense F2 pool. Every other ROUTER_MODELS
+    # name resolves to the Ornith pool below.
+    DENSE_POOL_MODELS = {"dense", "dense-reasoning", "taxonomy"}
+
+    # Dense-pool request shapes (direct dense/dense-reasoning/taxonomy calls)
+    # keep resolving inside the 27B dense F2 pool.
     MODEL_MAP = {
         "SIMPLE": {
             "model": "dense",
@@ -365,6 +369,18 @@ data:
             "model": "dense-reasoning",
             "fallback": "qwen36-35b-reasoning",
         },
+    }
+
+    # Ornith pool (2026-07-22 cutover): tooling/router/auto/litellmrouter and
+    # the qwen36-35b* compatibility aliases resolve to `tooling`, which the
+    # backend-sync registers on the DGX1 Ornith deployment. If Ornith has no
+    # live deployments (pod restart / eviction) the existing
+    # _alias_has_deployments guard degrades to the dense pool automatically.
+    ORNITH_MODEL_MAP = {
+        "SIMPLE": {"model": "tooling", "fallback": "dense"},
+        "TOOLING": {"model": "tooling", "fallback": "dense"},
+        "REASONING": {"model": "tooling", "fallback": "dense-reasoning"},
+        "REASONING_SIMPLE": {"model": "tooling", "fallback": "dense-reasoning"},
     }
 
     FAST_CTX_LIMIT = 73000
@@ -587,7 +603,13 @@ data:
                 category, marker_present = _classify_request_shape(data, proxy_model or requested_model)
                 if marker_present:
                     _strip_think_from_last_user(data)
-                target = MODEL_MAP[category]
+                requested_alias = proxy_model or requested_model
+                target_map = (
+                    MODEL_MAP
+                    if requested_alias in DENSE_POOL_MODELS
+                    else ORNITH_MODEL_MAP
+                )
+                target = target_map[category]
                 resolved_model = target["model"]
                 fallback_model = target.get("fallback")
                 if fallback_model and not _alias_has_deployments(resolved_model):
@@ -1082,8 +1104,7 @@ data:
         "gemma4-31b",
         "gemma4-26b-a4b-nvfp4",
     )
-    # Canary-only direct aliases. `tooling` is deliberately absent until the
-    # parser, functional, performance, and soak gates have passed.
+    # Direct aliases for the Ornith deployment.
     ORNITH_CANARY_ALIASES = (
         "ornith-canary",
         "ornith-1.0",
@@ -1109,10 +1130,15 @@ data:
         "dense",
         "dense-reasoning",
         "taxonomy",
-    ) + QWEN36_COMPAT_ALIASES
-    # Kept only as a rollback contract. With both 35B deployments at zero these
-    # IDs are removed; the compatibility aliases above are owned by dense F2.
-    QWEN36_35B_SHARED_ALIASES = QWEN36_COMPAT_ALIASES
+    )
+    # 2026-07-22 cutover (Daniel): the compatibility aliases are owned by the
+    # DGX1 Ornith backend (gates passed: parser/tooling battery 370, speed
+    # 170 tok/s @8K). Ornith registers them; dense keeps only its own names.
+    ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES
+    # Rollback contract only: the idle 35B deployments now register just their
+    # node-specific names so a benchmark scale-up cannot silently rejoin the
+    # tooling/router/auto pool next to Ornith.
+    QWEN36_35B_SHARED_ALIASES = ()
     QWEN36_27B_DENSE_DGX1_ALIASES = QWEN36_27B_DENSE_ALIASES + (
         "qwen36-27b-nvfp4-v024-f2-dgx1",
     )
@@ -1147,13 +1173,13 @@ data:
     # aliases collapse onto DGX1 alone. No restart/config reload is required.
     BACKENDS = (
         {
-            # DGX1 Ornith canary. These aliases are explicit and are never
-            # referenced by MODEL_MAP or a fallback chain during validation.
+            # DGX1 Ornith production resident: owns tooling/router/auto and
+            # the qwen36-35b* compatibility aliases (2026-07-22 cutover).
             "name": "ornith-dgx1",
             "label": "DGX1_ORNITH_35B",
             "backend": "dgx1",
             "base_model": "openai/ornith-1.0-35b-nvfp4-mtp",
-            "aliases": ORNITH_CANARY_ALIASES,
+            "aliases": ORNITH_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_ORNITH_DGX1",
                 "vllm-ornith-35b-nvfp4-mtp-dgx1",
@@ -1165,7 +1191,7 @@ data:
             "id_prefix": "dgx1-ornith-35b-nvfp4-mtp",
             "max_parallel_requests": 4,
             "max_tokens": 16384,
-            "context_window": 65536,
+            "context_window": 262144,
             "supports_function_calling": True,
             "supports_vision": True,
         },
@@ -1701,7 +1727,7 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: ornith-canary-20260715
+        config.k8s.e-dani.com/revision: ornith-prod-cutover-20260722
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -1766,7 +1792,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: dense-dual-dgx-20260714
+        config.k8s.e-dani.com/revision: ornith-prod-cutover-20260722
         active-requests-api/revision: "20260703-responses-stream-drain-hooks"
     spec:
       enableServiceLinks: false
