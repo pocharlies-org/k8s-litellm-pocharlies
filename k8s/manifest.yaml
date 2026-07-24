@@ -1145,10 +1145,17 @@ data:
     QWEN36_27B_DENSE_DGX2_ALIASES = QWEN36_27B_DENSE_ALIASES + (
         "qwen36-27b-nvfp4-v024-f2-dgx2",
     )
-    # Deliberately isolated: this alias is registered by exactly one readiness-
-    # gated backend and is NOT part of ROUTER_MODELS, MODEL_MAP, the dense pool,
-    # or any LiteLLM fallback chain. If DGX2 uncensored is down, calls fail.
-    QWEN36_27B_UNCENSORED_ALIASES = ("dense-uncensored",)
+    # 2026-07-24 (Daniel): the DGX2 uncensored 27B is now the standing dense
+    # resident, so it co-owns the `dense`/`dense-reasoning` route in addition to
+    # its explicit `dense-uncensored` name. DGX2 runs exactly one 27B at a time
+    # (uncensored here, or the censored F2 pool via QWEN36_27B_DENSE_*_ALIASES),
+    # and both register `dense`, so the `dense` alias always follows whichever
+    # 27B is Ready instead of degrading to the 35B Ornith floor. The 35B floor
+    # remains only the MODEL_MAP fallback when no 27B is Ready.
+    # `dense-uncensored` itself stays the explicit, un-fallbacked alias (never in
+    # ROUTER_MODELS/MODEL_MAP): if DGX2 uncensored is down, direct
+    # `dense-uncensored` calls still fail hard.
+    QWEN36_27B_UNCENSORED_ALIASES = ("dense-uncensored", "dense", "dense-reasoning")
     QWEN36_35B_DGX1_ALIASES = QWEN36_35B_SHARED_ALIASES + (
         "qwen36-35b-nvfp4-dgx1",
     )
@@ -1307,9 +1314,13 @@ data:
             "supports_vision": True,
         },
         {
-            # Explicit-only DGX2 uncensored resident. Never share aliases with
-            # dense/tooling and never add a fallback: absence of a Ready
-            # EndpointSlice removes dense-uncensored from LiteLLM entirely.
+            # DGX2 uncensored resident, now the standing dense pool member: it
+            # registers `dense`/`dense-reasoning` (shared with the censored F2
+            # pool; only one 27B is Ready at a time) plus its explicit
+            # `dense-uncensored` name. `dense-uncensored` itself takes no
+            # fallback — absence of a Ready EndpointSlice removes it from LiteLLM
+            # entirely — while `dense`/`dense-reasoning` keep the MODEL_MAP 35B
+            # fallback for when no 27B is Ready.
             "name": "qwen36-27b-uncensored-dgx2",
             "label": "DGX2_QWEN36_27B_UNCENSORED",
             "backend": "dgx2",
