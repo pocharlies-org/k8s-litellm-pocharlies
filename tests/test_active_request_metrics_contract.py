@@ -82,6 +82,25 @@ def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
         assert request["ttft_ms"] == 1000
 
 
+def test_tracker_reads_usage_preserved_before_litellm_strips_the_chunk():
+    tracker_module = _exec_module(
+        _config_data()["active_request_tracking.py"],
+        "active_request_tracking_hidden_usage_contract",
+    )
+
+    assert tracker_module["usage_from_response"](
+        {
+            "usage": None,
+            "_hidden_params": {
+                "live_usage": {
+                    "prompt_tokens": 3490,
+                    "completion_tokens": 34,
+                }
+            },
+        }
+    ) == (3490, 34)
+
+
 def test_sidecar_preserves_exact_metrics(monkeypatch):
     active_api = _exec_module(
         _config_data()["active_requests_api.py"],
@@ -117,7 +136,12 @@ def test_hook_and_deployment_load_exact_metrics_tracker():
     hook = _config_data()["litellm_strip_params.py"]
 
     assert "from active_request_tracking import (" in hook
+    assert (
+        "from litellm.litellm_core_utils.streaming_handler "
+        "import CustomStreamWrapper"
+    ) in hook
     assert "enable_continuous_usage(data)" in hook
+    assert "_preserve_live_usage_chunks()" in hook
     assert "_update_tracking_from_payload(kwargs, response_obj)" in hook
     assert '_track_end_from_payload(kwargs, "log_stream")' not in hook
     assert (
@@ -125,7 +149,7 @@ def test_hook_and_deployment_load_exact_metrics_tracker():
         "subPath: active_request_tracking.py"
     ) in text
     assert (
-        'active-requests-api/revision: "20260725-exact-request-metrics"'
+        'active-requests-api/revision: "20260725-exact-stream-usage"'
         in text
     )
 

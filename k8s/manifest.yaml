@@ -169,6 +169,7 @@ data:
 
     import litellm
     from litellm._uuid import uuid
+    from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
     from litellm.llms.infinity.rerank.transformation import InfinityRerankConfig
     from litellm.types.rerank import (
         RerankBilledUnits,
@@ -186,6 +187,43 @@ data:
 
     log = logging.getLogger("litellm.active_tracking")
     router_log = logging.getLogger("litellm.smart_router")
+
+    def _usage_snapshot(usage):
+        if isinstance(usage, dict):
+            return dict(usage)
+        if hasattr(usage, "model_dump"):
+            return usage.model_dump()
+        return {
+            name: getattr(usage, name)
+            for name in (
+                "prompt_tokens",
+                "completion_tokens",
+                "input_tokens",
+                "output_tokens",
+            )
+            if getattr(usage, name, None) is not None
+        }
+
+    def _preserve_live_usage_chunks():
+        """Keep provider usage across LiteLLM 1.85 chunk sanitization."""
+        original = CustomStreamWrapper.chunk_creator
+        if getattr(original, "_active_request_usage_patch", False):
+            return
+
+        def wrapped(self, *args, **kwargs):
+            chunk = original(self, *args, **kwargs)
+            if chunk is None:
+                return None
+            usage = getattr(chunk, "usage", None)
+            hidden_params = getattr(chunk, "_hidden_params", None)
+            if usage is not None and isinstance(hidden_params, dict):
+                hidden_params["live_usage"] = _usage_snapshot(usage)
+            return chunk
+
+        wrapped._active_request_usage_patch = True
+        CustomStreamWrapper.chunk_creator = wrapped
+
+    _preserve_live_usage_chunks()
 
     # Infinity/TEI rerank compatibility patches.
     _original_transform_request = InfinityRerankConfig.transform_rerank_request
@@ -937,8 +975,12 @@ data:
         """Extract cumulative input/output token counts from a response."""
         if isinstance(response_obj, dict):
             usage = response_obj.get("usage")
+            hidden_params = response_obj.get("_hidden_params")
         else:
             usage = getattr(response_obj, "usage", None)
+            hidden_params = getattr(response_obj, "_hidden_params", None)
+        if usage is None and isinstance(hidden_params, dict):
+            usage = hidden_params.get("live_usage")
         if usage is None:
             return None, None
         return (
@@ -2238,7 +2280,7 @@ spec:
       labels: { app: litellm }
       annotations:
         config.k8s.e-dani.com/revision: ornith-prod-cutover-20260722
-        active-requests-api/revision: "20260725-exact-request-metrics"
+        active-requests-api/revision: "20260725-exact-stream-usage"
     spec:
       enableServiceLinks: false
       terminationGracePeriodSeconds: 720
