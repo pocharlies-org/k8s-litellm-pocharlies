@@ -164,10 +164,8 @@ data:
       # and optional DGX2 deployment. Avoid alias-to-alias retry loops when the
       # only active backend is unhealthy.
   litellm_strip_params.py: |
-    import json
     import logging
     import os
-    import time
 
     import litellm
     from litellm._uuid import uuid
@@ -178,6 +176,12 @@ data:
         RerankResponseMeta,
         RerankResponseResult,
         RerankTokens,
+    )
+    from active_request_tracking import (
+        ActiveRequestTracker,
+        enable_continuous_usage,
+        resolve_server_id,
+        usage_from_response,
     )
 
     log = logging.getLogger("litellm.active_tracking")
@@ -227,35 +231,13 @@ data:
 
     ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
     STALE_THRESHOLD = int(os.environ.get("LITELLM_ACTIVE_STALE_AFTER_SEC", "900"))
-    _active = {}
-
-    def _flush_to_file():
-        try:
-            os.makedirs(os.path.dirname(ACTIVE_FILE), exist_ok=True)
-            tmp = ACTIVE_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(_active, f)
-            os.replace(tmp, ACTIVE_FILE)
-        except Exception as e:
-            log.debug("flush_to_file error: %s", e)
-
-    def _track_start(request_id, key_alias, model, call_type):
-        now = time.time()
-        stale = [k for k, v in _active.items() if now - v.get("ts", 0) > STALE_THRESHOLD]
-        for k in stale:
-            del _active[k]
-        _active[request_id] = {
-            "alias": key_alias,
-            "model": model,
-            "call_type": call_type,
-            "ts": now,
-        }
-        _flush_to_file()
+    request_tracker = ActiveRequestTracker(
+        ACTIVE_FILE,
+        stale_threshold=STALE_THRESHOLD,
+    )
 
     def _track_end(request_id):
-        if request_id in _active:
-            del _active[request_id]
-            _flush_to_file()
+        request_tracker.end(request_id)
 
     def _metadata_candidates(payload):
         if not isinstance(payload, dict):
@@ -306,6 +288,77 @@ data:
 
         yield from walk(payload, 0)
 
+    def _tracking_id_from_payload(payload):
+        for tracking_id in _tracking_id_candidates(payload):
+            return tracking_id
+        return None
+
+    def _backend_from_payload(payload, max_depth=6):
+        """Find the exact vLLM deployment selected by LiteLLM."""
+        seen = set()
+
+        def walk(value, depth, inherited_model=None):
+            if depth > max_depth:
+                return None
+            value_id = id(value)
+            if value_id in seen:
+                return None
+            seen.add(value_id)
+
+            if isinstance(value, dict):
+                model = (
+                    value.get("model")
+                    or value.get("model_name")
+                    or inherited_model
+                )
+                for name in ("api_base", "base_url"):
+                    api_base = value.get(name)
+                    if resolve_server_id(model, api_base):
+                        return model, api_base
+                for nested in value.values():
+                    if isinstance(nested, (dict, list, tuple)):
+                        found = walk(nested, depth + 1, model)
+                        if found:
+                            return found
+            elif isinstance(value, (list, tuple)):
+                for nested in value:
+                    if isinstance(nested, (dict, list, tuple)):
+                        found = walk(nested, depth + 1, inherited_model)
+                        if found:
+                            return found
+            return None
+
+        return walk(payload, 0)
+
+    def _update_tracking_from_payload(
+        payload,
+        response_obj=None,
+        *,
+        force_flush=False,
+    ):
+        tracking_id = _tracking_id_from_payload(payload)
+        if not tracking_id:
+            return None
+
+        backend = _backend_from_payload(payload)
+        if backend:
+            model, api_base = backend
+            request_tracker.update_backend(
+                tracking_id,
+                model=model,
+                api_base=api_base,
+            )
+
+        prompt_tokens, completion_tokens = usage_from_response(response_obj)
+        if prompt_tokens is not None or completion_tokens is not None:
+            request_tracker.update_usage(
+                tracking_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                force_flush=force_flush,
+            )
+        return tracking_id
+
     def _track_end_from_payload(payload, source):
         for tracking_id in _tracking_id_candidates(payload):
             try:
@@ -343,7 +396,6 @@ data:
         "tooling", "qwen36-35b", "qwen36-35b-tooling",
         "qwen36-35b-reasoning", "qwen36-35b-nvfp4", "qwen-36-35b",
     }
-
     # Aliases that stay on the 27B dense F2 pool. Every other ROUTER_MODELS
     # name resolves to the Ornith pool below.
     DENSE_POOL_MODELS = {"dense", "dense-reasoning", "taxonomy"}
@@ -657,6 +709,12 @@ data:
 
             key_alias = _resolve_key_label(user_api_key_dict)
             model = data.get("model", "unknown")
+            api_base = (
+                data.get("api_base")
+                or (litellm_params or {}).get("api_base")
+            )
+            if _is_local_vllm_request(model, proxy_model, api_base):
+                enable_continuous_usage(data)
             tracking_id = str(uuid.uuid4())
             data.setdefault("metadata", {})
             data["metadata"]["_tracking_id"] = tracking_id
@@ -676,7 +734,13 @@ data:
                     if isinstance(model_call_details["litellm_params"]["metadata"], dict):
                         model_call_details["litellm_params"]["metadata"]["_tracking_id"] = tracking_id
             try:
-                _track_start(tracking_id, key_alias, model, call_type)
+                request_tracker.start(
+                    tracking_id,
+                    key_alias=key_alias,
+                    model=model,
+                    call_type=call_type,
+                    api_base=api_base,
+                )
             except Exception as e:
                 log.debug("track_start error: %s", e)
 
@@ -688,25 +752,44 @@ data:
             return data
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            try:
+                _update_tracking_from_payload(
+                    kwargs,
+                    response_obj,
+                    force_flush=True,
+                )
+            except Exception as e:
+                log.debug("track_success_usage error: %s", e)
             _track_end_from_payload(kwargs, "log_success")
 
         async def async_log_stream_event(self, kwargs, response_obj, start_time, end_time):
-            _track_end_from_payload(kwargs, "log_stream")
+            try:
+                _update_tracking_from_payload(kwargs, response_obj)
+            except Exception as e:
+                log.debug("track_stream error: %s", e)
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
             _track_end_from_payload(kwargs, "log_failure")
 
         async def async_post_call_success_hook(self, data, user_api_key_dict, response):
+            try:
+                _update_tracking_from_payload(
+                    data,
+                    response,
+                    force_flush=True,
+                )
+            except Exception as e:
+                log.debug("track_proxy_success_usage error: %s", e)
             _track_end_from_payload(data, "proxy_success")
             return None
-
-        async def async_post_call_success_deployment_hook(self, request_data, response, call_type):
-            _track_end_from_payload(request_data, "deployment_success")
-            return response
 
         async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
             try:
                 async for chunk in response:
+                    try:
+                        _update_tracking_from_payload(request_data, chunk)
+                    except Exception as e:
+                        log.debug("track_iterator_chunk error: %s", e)
                     yield chunk
             finally:
                 _track_end_from_payload(request_data, "streaming_iterator")
@@ -727,10 +810,356 @@ data:
             response,
             call_type,
         ):
+            try:
+                _update_tracking_from_payload(
+                    request_data,
+                    response,
+                    force_flush=True,
+                )
+            except Exception as e:
+                log.debug("track_deployment_success_usage error: %s", e)
             _track_end_from_payload(request_data, "deployment_success")
-            return None
+            return response
+
+    LOCAL_VLLM_ALIASES = ROUTER_MODELS | {
+        "local",
+        "dense-uncensored",
+        "ornith",
+        "ornith-1.0",
+        "ornith-canary",
+        "qwen36-27b-nvfp4-v024-f2-dgx1",
+    }
+
+    def _is_local_vllm_request(model, proxy_model, api_base):
+        if resolve_server_id(model, api_base):
+            return True
+        return str(proxy_model or model or "") in LOCAL_VLLM_ALIASES
 
     proxy_handler_instance = StripUnsupportedParams()
+  active_request_tracking.py: |
+    """Exact, best-effort telemetry for requests currently handled by LiteLLM."""
+    from __future__ import annotations
+
+    import copy
+    import json
+    import os
+    import re
+    import threading
+    import time
+    from collections import deque
+    from typing import Any, Callable, Deque, Dict, Optional, Tuple
+    from urllib.parse import urlparse
+
+
+    SERVER_BY_MODEL_AND_BASE = {
+        (
+            "local",
+            "http://192.168.50.140:8200/v1",
+        ): "vllm-122b",
+        (
+            "qwen35-122b",
+            "http://192.168.50.140:8200/v1",
+        ): "vllm-122b",
+        (
+            "openai/qwen35-122b",
+            "http://192.168.50.140:8200/v1",
+        ): "vllm-122b",
+        (
+            "tooling",
+            "http://192.168.50.141:8200/v1",
+        ): "vllm-35b",
+        (
+            "dense-uncensored",
+            "http://192.168.50.141:8200/v1",
+        ): "vllm-35b",
+        (
+            "openai/Qwen/Qwen3.6-35B-A3B-FP8",
+            "http://192.168.50.141:8200/v1",
+        ): "vllm-35b",
+        (
+            "fast",
+            "http://192.168.50.142:8210/v1",
+        ): "vllm-9b",
+        (
+            "openai/qwen35-9b",
+            "http://192.168.50.142:8210/v1",
+        ): "vllm-9b",
+    }
+
+
+    def _normalise_api_base(api_base: Any) -> str:
+        return str(api_base or "").rstrip("/")
+
+
+    def resolve_server_id(model: Any, api_base: Any) -> Optional[str]:
+        """Return the dashboard ID for an exact known vLLM backend."""
+        normalized_base = _normalise_api_base(api_base)
+        try:
+            host = urlparse(normalized_base).hostname or ""
+        except (TypeError, ValueError):
+            host = ""
+        service_name = host.split(".", 1)[0].lower()
+        if re.fullmatch(r"vllm-[a-z0-9-]+", service_name):
+            return service_name
+        return SERVER_BY_MODEL_AND_BASE.get(
+            (str(model or ""), normalized_base)
+        )
+
+
+    def enable_continuous_usage(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Ask compatible streaming backends for cumulative usage per chunk."""
+        if data.get("stream") is not True:
+            return data
+        options = dict(data.get("stream_options") or {})
+        options["include_usage"] = True
+        options["continuous_usage_stats"] = True
+        data["stream_options"] = options
+        return data
+
+
+    def _usage_value(usage: Any, *names: str) -> Optional[int]:
+        for name in names:
+            if isinstance(usage, dict):
+                value = usage.get(name)
+            else:
+                value = getattr(usage, name, None)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+
+    def usage_from_response(
+        response_obj: Any,
+    ) -> Tuple[Optional[int], Optional[int]]:
+        """Extract cumulative input/output token counts from a response."""
+        if isinstance(response_obj, dict):
+            usage = response_obj.get("usage")
+        else:
+            usage = getattr(response_obj, "usage", None)
+        if usage is None:
+            return None, None
+        return (
+            _usage_value(usage, "prompt_tokens", "input_tokens"),
+            _usage_value(usage, "completion_tokens", "output_tokens"),
+        )
+
+
+    class ActiveRequestTracker:
+        """Thread-safe active-request registry persisted as atomic JSON."""
+
+        def __init__(
+            self,
+            active_file: str,
+            *,
+            stale_threshold: float = 600,
+            flush_interval_s: float = 0.25,
+            speed_window_s: float = 2.0,
+            clock: Callable[[], float] = time.time,
+        ):
+            self.active_file = active_file
+            self.stale_threshold = stale_threshold
+            self.flush_interval_s = flush_interval_s
+            self.speed_window_s = speed_window_s
+            self.clock = clock
+            self._records: Dict[str, Dict[str, Any]] = {}
+            self._samples: Dict[str, Deque[Tuple[float, int]]] = {}
+            self._last_flush_at: Optional[float] = None
+            self._lock = threading.RLock()
+
+        def start(
+            self,
+            request_id: str,
+            *,
+            key_alias: Any,
+            model: Any,
+            call_type: Any,
+            api_base: Any,
+        ) -> Dict[str, Any]:
+            now = self.clock()
+            with self._lock:
+                self._discard_stale_locked(now)
+                self._records[request_id] = {
+                    "request_id": request_id,
+                    "source": "litellm",
+                    "alias": str(key_alias or "unknown"),
+                    "model": str(model or "unknown"),
+                    "call_type": str(call_type or "unknown"),
+                    "server_id": resolve_server_id(model, api_base),
+                    "ts": now,
+                    "first_token_ts": None,
+                    "last_sample_ts": None,
+                    "prompt_tokens": None,
+                    "completion_tokens": None,
+                    "output_speed_tps": None,
+                    "ttft_ms": None,
+                }
+                self._samples[request_id] = deque()
+                self._flush_locked(now, force=True)
+                return copy.deepcopy(self._records[request_id])
+
+        def update_usage(
+            self,
+            request_id: str,
+            *,
+            prompt_tokens: Optional[int],
+            completion_tokens: Optional[int],
+            force_flush: bool = False,
+        ) -> Optional[Dict[str, Any]]:
+            now = self.clock()
+            with self._lock:
+                record = self._records.get(request_id)
+                if record is None:
+                    return None
+
+                first_usage = (
+                    record["prompt_tokens"] is None
+                    and record["completion_tokens"] is None
+                )
+                if prompt_tokens is not None:
+                    prompt_tokens = max(0, int(prompt_tokens))
+                    previous_prompt = record["prompt_tokens"]
+                    if previous_prompt is None or prompt_tokens > previous_prompt:
+                        record["prompt_tokens"] = prompt_tokens
+
+                if completion_tokens is not None:
+                    completion_tokens = max(0, int(completion_tokens))
+                    previous_completion = record["completion_tokens"]
+                    if (
+                        previous_completion is not None
+                        and completion_tokens < previous_completion
+                    ):
+                        completion_tokens = previous_completion
+                    record["completion_tokens"] = completion_tokens
+                    record["last_sample_ts"] = now
+
+                    if (
+                        completion_tokens > 0
+                        and record["first_token_ts"] is None
+                    ):
+                        record["first_token_ts"] = now
+                        record["ttft_ms"] = max(
+                            0,
+                            int(round((now - record["ts"]) * 1000)),
+                        )
+
+                    samples = self._samples.setdefault(request_id, deque())
+                    samples.append((now, completion_tokens))
+                    while (
+                        len(samples) > 1
+                        and now - samples[0][0] > self.speed_window_s
+                    ):
+                        samples.popleft()
+                    if len(samples) >= 2:
+                        oldest_ts, oldest_tokens = samples[0]
+                        newest_ts, newest_tokens = samples[-1]
+                        duration = newest_ts - oldest_ts
+                        if duration > 0:
+                            record["output_speed_tps"] = round(
+                                max(
+                                    0,
+                                    newest_tokens - oldest_tokens,
+                                )
+                                / duration,
+                                2,
+                            )
+
+                self._flush_locked(
+                    now,
+                    force=force_flush or first_usage,
+                )
+                return copy.deepcopy(record)
+
+        def update_backend(
+            self,
+            request_id: str,
+            *,
+            model: Any,
+            api_base: Any,
+        ) -> Optional[Dict[str, Any]]:
+            server_id = resolve_server_id(model, api_base)
+            now = self.clock()
+            with self._lock:
+                record = self._records.get(request_id)
+                if record is None:
+                    return None
+
+                changed = False
+                if server_id and record.get("server_id") != server_id:
+                    record["server_id"] = server_id
+                    changed = True
+                if model and str(model) != record.get("model"):
+                    record["model"] = str(model)
+                    changed = True
+                if changed:
+                    self._flush_locked(now, force=True)
+                return copy.deepcopy(record)
+
+        def end(self, request_id: str) -> None:
+            now = self.clock()
+            with self._lock:
+                removed = self._records.pop(request_id, None)
+                self._samples.pop(request_id, None)
+                if removed is not None:
+                    self._flush_locked(now, force=True)
+
+        def snapshot(self) -> Dict[str, Dict[str, Any]]:
+            now = self.clock()
+            with self._lock:
+                removed = self._discard_stale_locked(now)
+                if removed:
+                    self._flush_locked(now, force=True)
+                return copy.deepcopy(self._records)
+
+        def _discard_stale_locked(self, now: float) -> bool:
+            stale = [
+                request_id
+                for request_id, record in self._records.items()
+                if (
+                    now - float(record.get("ts", 0))
+                    > self.stale_threshold
+                )
+            ]
+            for request_id in stale:
+                self._records.pop(request_id, None)
+                self._samples.pop(request_id, None)
+            return bool(stale)
+
+        def _flush_locked(self, now: float, *, force: bool) -> None:
+            if (
+                not force
+                and self._last_flush_at is not None
+                and now - self._last_flush_at < self.flush_interval_s
+            ):
+                return
+
+            directory = os.path.dirname(self.active_file) or "."
+            os.makedirs(directory, exist_ok=True)
+            temporary = "{}.{}.tmp".format(
+                self.active_file,
+                os.getpid(),
+            )
+            try:
+                with open(
+                    temporary,
+                    "w",
+                    encoding="utf-8",
+                ) as handle:
+                    json.dump(
+                        self._records,
+                        handle,
+                        separators=(",", ":"),
+                    )
+                os.replace(temporary, self.active_file)
+                self._last_flush_at = now
+            finally:
+                try:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+                except OSError:
+                    pass
   litellm_drain.py: |
     from __future__ import annotations
 
@@ -921,6 +1350,11 @@ data:
                     "alias": alias,
                     "model": raw.get("model"),
                     "call_type": raw.get("call_type"),
+                    "server_id": raw.get("server_id"),
+                    "prompt_tokens": raw.get("prompt_tokens"),
+                    "completion_tokens": raw.get("completion_tokens"),
+                    "output_speed_tps": raw.get("output_speed_tps"),
+                    "ttft_ms": raw.get("ttft_ms"),
                     "started_at": started_iso,
                     "age_seconds": age_seconds,
                     "ts": started_sec,
@@ -1804,7 +2238,7 @@ spec:
       labels: { app: litellm }
       annotations:
         config.k8s.e-dani.com/revision: ornith-prod-cutover-20260722
-        active-requests-api/revision: "20260703-responses-stream-drain-hooks"
+        active-requests-api/revision: "20260725-exact-request-metrics"
     spec:
       enableServiceLinks: false
       terminationGracePeriodSeconds: 720
@@ -1848,6 +2282,7 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /config }
             - { name: config, mountPath: /app/litellm_strip_params.py, subPath: litellm_strip_params.py, readOnly: true }
+            - { name: config, mountPath: /app/active_request_tracking.py, subPath: active_request_tracking.py, readOnly: true }
             - { name: tracking, mountPath: /shared/tracking }
           resources:
             requests: { cpu: 200m, memory: 512Mi }
