@@ -47,6 +47,7 @@ def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
         )
         tracker.start(
             "request-1",
+            trace_id="trace-123",
             key_alias="openclaw-qwen36-prod",
             model="tooling",
             call_type="acompletion",
@@ -75,6 +76,7 @@ def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
         )
 
         request = json.loads(active_file.read_text())["request-1"]
+        assert request["trace_id"] == "trace-123"
         assert request["server_id"] == "vllm-ornith-35b-nvfp4-mtp-dgx1"
         assert request["prompt_tokens"] == 3490
         assert request["completion_tokens"] == 34
@@ -111,6 +113,7 @@ def test_sidecar_preserves_exact_metrics(monkeypatch):
     normalized = active_api["_normalize"](
         {
             "request-1": {
+                "trace_id": "trace-123",
                 "alias": "openclaw-qwen36-prod",
                 "model": "tooling",
                 "call_type": "acompletion",
@@ -124,6 +127,7 @@ def test_sidecar_preserves_exact_metrics(monkeypatch):
         }
     )
 
+    assert normalized[0]["trace_id"] == "trace-123"
     assert normalized[0]["server_id"] == "vllm-ornith-35b-nvfp4-mtp-dgx1"
     assert normalized[0]["prompt_tokens"] == 3490
     assert normalized[0]["completion_tokens"] == 34
@@ -143,13 +147,15 @@ def test_hook_and_deployment_load_exact_metrics_tracker():
     assert "enable_continuous_usage(data)" in hook
     assert "_preserve_live_usage_chunks()" in hook
     assert "_update_tracking_from_payload(kwargs, response_obj)" in hook
+    assert "def _litellm_trace_id(data):" in hook
+    assert "trace_id=_litellm_trace_id(data)" in hook
     assert '_track_end_from_payload(kwargs, "log_stream")' not in hook
     assert (
         "mountPath: /app/active_request_tracking.py, "
         "subPath: active_request_tracking.py"
     ) in text
     assert (
-        'active-requests-api/revision: "20260725-exact-stream-usage"'
+        'active-requests-api/revision: "20260726-request-history-trace"'
         in text
     )
 
