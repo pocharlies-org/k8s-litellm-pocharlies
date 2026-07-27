@@ -2244,7 +2244,7 @@ spec:
             - { name: OPENCLAW_TEAM_ID, value: "openclaw" }
             # Fixed explicit routes required during the canary. The reconciler
             # only unions these names; it never removes existing permissions.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored,router" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY

@@ -23,6 +23,6 @@ def test_openclaw_team_has_canary_and_explicit_operational_routes():
     # for a model that cannot exist.
     assert (
         'OPENCLAW_TEAM_REQUIRED_MODELS, value: '
-        '"ornith-canary,ornith-1.0,dense-uncensored"'
+        '"ornith-canary,ornith-1.0,dense-uncensored,router"'
     ) in text
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text

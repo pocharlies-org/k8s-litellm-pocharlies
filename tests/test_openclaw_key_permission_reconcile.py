@@ -6,8 +6,7 @@ from textwrap import dedent
 
 
 MANIFEST = Path(__file__).parents[1] / "k8s" / "manifest.yaml"
-DGX1_ALIAS = "qwen36-27b-nvfp4-v024-f2-dgx1"
-REQUIRED_MODELS = ("ornith-canary", "ornith-1.0", "dense-uncensored", DGX1_ALIAS)
+REQUIRED_MODELS = ("ornith-canary", "ornith-1.0", "dense-uncensored", "router")
 
 
 def load_reconciler(request_json, log):
@@ -71,7 +70,7 @@ def test_reconciler_updates_only_the_named_openclaw_virtual_key():
                 "ornith-canary",
                 "ornith-1.0",
                 "dense-uncensored",
-                DGX1_ALIAS,
+                "router",
             ],
         },
         {"Authorization": "Bearer test"},
