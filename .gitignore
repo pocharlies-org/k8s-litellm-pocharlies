@@ -3,3 +3,7 @@
 *-secret.yaml
 *.env
 .DS_Store
+
+# Python bytecode (pytest genera tests/__pycache__)
+__pycache__/
+*.py[cod]

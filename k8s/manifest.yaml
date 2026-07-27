@@ -154,15 +154,18 @@ data:
       # ~4 min, so this only has to cover that window.
       allowed_fails: 3
       cooldown_time: 120
-      # 2026-07-14: dense/tooling/router aliases are dynamically registered by
-      # litellm-dgx-backend-sync to one homogeneous Qwen3.6-27B dense F2 pool:
-      # DGX1 is the always-on floor and DGX2 joins whenever its GPU is free.
+      # 2026-07-27: the chat aliases are registered dynamically by
+      # litellm-dgx-backend-sync onto exactly TWO deployments, one per node:
+      #   tooling/router/auto/litellmrouter/qwen36-35b*   -> Ornith 35B-A3B (DGX1)
+      #   dense/dense-reasoning/dense-uncensored/taxonomy -> uncensored 27B (DGX2)
+      # There is no shared pool and no load-balancing between them: each alias has
+      # exactly one backend. Cross-alias fallback is deliberately NOT configured
+      # here -- the smart-router hook already degrades dense<->tooling when an alias
+      # has no live deployments, and adding a LiteLLM-level fallback on top would
+      # create alias-to-alias retry loops while the only backend is unhealthy.
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
-      # No cross-alias fallback is needed: each alias has the same DGX1 floor
-      # and optional DGX2 deployment. Avoid alias-to-alias retry loops when the
-      # only active backend is unhealthy.
   litellm_strip_params.py: |
     import logging
     import os
@@ -187,6 +190,8 @@ data:
 
     log = logging.getLogger("litellm.active_tracking")
     router_log = logging.getLogger("litellm.smart_router")
+    # Sampling telemetry (Fase 6): solo observa, nunca modifica valores.
+    sampling_log = logging.getLogger("litellm.sampling")
 
     def _usage_snapshot(usage):
         if isinstance(usage, dict):
@@ -436,57 +441,46 @@ data:
                 return "master"
         return "unknown"
 
-    # Model aliases that trigger the smart router; requests to any of them get
-    # re-pointed at a concrete sampling alias from MODEL_MAP by request shape.
-    # "litellmrouter" is the Codex-facing name (~/.codex/litellmrouter.config.toml).
-    # 2026-07-22 cutover (Daniel): tooling/router/auto/litellmrouter and every
-    # qwen36-35b* compatibility alias resolve to the Ornith pool (DGX1, alias
-    # `tooling`); dense/dense-reasoning/taxonomy stay on the 27B dense F2 pool.
-    ROUTER_MODELS = {
-        "router", "auto", "litellmrouter", "dense", "dense-reasoning", "taxonomy",
-        # Compatibility names retained while the 35B engine is retired. They
-        # are request aliases only; every category below resolves to dense F2.
-        "tooling", "qwen36-35b", "qwen36-35b-tooling",
-        "qwen36-35b-reasoning", "qwen36-35b-nvfp4", "qwen-36-35b",
-    }
-    # Aliases that stay on the 27B dense F2 pool. Every other ROUTER_MODELS
-    # name resolves to the Ornith pool below.
-    DENSE_POOL_MODELS = {"dense", "dense-reasoning", "taxonomy"}
+    # ── Routing policy (2026-07-27, Daniel) ──────────────────────────────────────
+    # Only the AUTO-ROUTED aliases are re-pointed by request shape. Everything else
+    # -- `dense`, `dense-reasoning`, `dense-uncensored`, `taxonomy`, `tooling` and
+    # the `qwen36-35b*` compat names -- is EXPLICIT client intent and passes through
+    # untouched to whichever backend the sync registered it on.
+    #
+    # The rule itself:
+    #     request carries a tool  ->  dense           (the uncensored 27B DENSE)
+    #     no tool                 ->  tooling         (Ornith 35B-A3B MoE, DGX1)
+    #
+    # Rationale and the honest caveat: the 27B dense out-scored the old Qwen3.6-35B
+    # on tool calls when it was benchmarked (2026-07-02: 5/5 vs 3/5 single calls,
+    # 3/3 vs 2/3 agentic loops), which is where this rule comes from. Note both
+    # sides of that comparison have since been replaced -- `tooling` is now Ornith
+    # (an RL agentic-coding fine-tune, SWE-bench Verified 75.6 / Terminal-Bench 2.1
+    # 64.2, ~170 tok/s) and `dense` is the abliterated uncensored 27B (~41 tok/s, no
+    # published tool-calling numbers). So this rule trades ~4x decode latency on
+    # agentic loops for the dense model's per-token quality, and is pending
+    # measurement against Ornith's 346/370 internal tooling battery. Reverting is a
+    # two-line swap in ROUTE below.
+    AUTO_ROUTED_MODELS = {"router", "auto", "litellmrouter"}
 
-    # Dense-pool request shapes (direct dense/dense-reasoning/taxonomy calls)
-    # keep resolving inside the 27B dense F2 pool.
-    MODEL_MAP = {
-        "SIMPLE": {
-            "model": "dense",
-            # During the one-GPU replacement window the old 35B alias remains
-            # available until dense starts; after cutover both names share F2.
-            "fallback": "qwen36-35b-tooling",
-        },
-        "TOOLING": {
-            "model": "dense",
-            "fallback": "qwen36-35b-tooling",
-        },
-        "REASONING": {
-            "model": "dense-reasoning",
-            "fallback": "qwen36-35b-reasoning",
-        },
-        "REASONING_SIMPLE": {
-            "model": "dense-reasoning",
-            "fallback": "qwen36-35b-reasoning",
-        },
+    # Where each shape goes. `fallback` is used only when the primary alias has no
+    # live deployments (see _alias_has_deployments): DGX2 is evictable, so `dense`
+    # degrades to Ornith rather than failing, and vice versa. Fallbacks are spelled
+    # with the canonical names -- they used to say `qwen36-35b-tooling`, which only
+    # worked by way of the compat aliases also being registered on Ornith.
+    ROUTE = {
+        "TOOLS": {"model": "dense", "fallback": "tooling"},
+        "TOOLS_REASONING": {"model": "dense-reasoning", "fallback": "tooling"},
+        "NO_TOOLS": {"model": "tooling", "fallback": "dense"},
     }
 
-    # Ornith pool (2026-07-22 cutover): tooling/router/auto/litellmrouter and
-    # the qwen36-35b* compatibility aliases resolve to `tooling`, which the
-    # backend-sync registers on the DGX1 Ornith deployment. If Ornith has no
-    # live deployments (pod restart / eviction) the existing
-    # _alias_has_deployments guard degrades to the dense pool automatically.
-    ORNITH_MODEL_MAP = {
-        "SIMPLE": {"model": "tooling", "fallback": "dense"},
-        "TOOLING": {"model": "tooling", "fallback": "dense"},
-        "REASONING": {"model": "tooling", "fallback": "dense-reasoning"},
-        "REASONING_SIMPLE": {"model": "tooling", "fallback": "dense-reasoning"},
-    }
+    # Hard limit escape: the uncensored 27B serves --max-model-len 229376 while
+    # Ornith serves 262144, so a tool-bearing request longer than this goes to
+    # Ornith instead of 400-ing on length. Deliberately below 229376 because
+    # _approx_input_tokens is a chars/4 estimate that does NOT count image tokens.
+    # (No multimodal escape is needed: Ornith's --limit-mm-per-prompt was raised to
+    # {"image":64} on 2026-07-27 to match the uncensored.)
+    DENSE_CTX_ESCAPE = 200000
 
     FAST_CTX_LIMIT = 73000
     THINK_MARKERS = ("/think", "[think]")
@@ -551,14 +545,32 @@ data:
                         total += len(p.get("text") or "")
         return total // 4
 
+    # Item types that mean "this turn is tool-shaped" in the Responses API. The
+    # `function_call` prefix covers function_call and function_call_output; MCP and
+    # custom-tool turns use their own names and were previously invisible here,
+    # which now matters because the whole route hinges on this predicate.
+    TOOL_ITEM_TYPES = ("function_call", "mcp_call", "mcp_list_tools",
+                       "custom_tool_call", "tool_call")
+
+
     def _has_tools(data):
         if data.get("tools") or data.get("functions") or data.get("function_call"):
+            return True
+        # tool_choice pins a tool even if the declaration lives elsewhere in the
+        # payload; "none"/"auto" carry no such intent.
+        tc = data.get("tool_choice")
+        if isinstance(tc, str):
+            if tc not in ("none", "auto"):
+                return True
+        elif tc:
             return True
         inp = data.get("input")
         if isinstance(inp, list):
             for item in inp:
-                if isinstance(item, dict) and str(item.get("type") or "").startswith("function_call"):
-                    return True
+                if isinstance(item, dict):
+                    t = str(item.get("type") or "")
+                    if any(t.startswith(p) for p in TOOL_ITEM_TYPES):
+                        return True
         for m in data.get("messages") or []:
             if isinstance(m, dict) and (m.get("tool_calls") or m.get("role") == "tool"):
                 return True
@@ -654,39 +666,58 @@ data:
         except Exception:
             return True
 
-    def _classify_request_shape(data, original_model=""):
-        """Return (category, think_marker_present) keyed into MODEL_MAP.
+    def _classify_route(data):
+        """Devuelve (route_key, rule, think_marker_present) para las peticiones
+        auto-enrutadas (router/auto/litellmrouter).
 
-        Priority: explicit think marker > multimodal / huge context > tools >
-        reasoning params > simple. Categories only select dense sampling now;
-        they no longer split traffic across different resident models.
-
-        The marker is deliberate per-request intent, so it always wins. Plain
-        tool-calling remains on `dense`: benchmarked 2026-07-02, it out-scored
-        qwen36-35b-tooling on both single tool-calls (5/5 vs 3/5) and agentic
-        loops (3/3 vs 2/3). Multimodal and long-context requests now use the
-        same dense F2 engine as well; the category is retained so policy can be
-        changed later without breaking client aliases. Ambient reasoning params
-        (Codex attaches an effort to every call) do not force tool requests into
-        reasoning mode.
+        La regla es deliberadamente simple: manda la presencia de tool. Solo hay un
+        escape, por limite fisico de contexto del dense. La intencion de reasoning
+        (marcador [think] o reasoning_effort medium+) elige la variante -reasoning
+        del dense; Ornith sirve todas sus formas bajo el mismo alias `tooling`.
         """
         has_think = _has_think_marker(_entry_text(_last_user_entry(data)))
-        heavy_pool = (
-            _has_part_type(data, IMAGE_PART_TYPES)
-            or _has_part_type(data, VIDEO_PART_TYPES)
-            or _approx_input_tokens(data) > FAST_CTX_LIMIT
-        )
-        if has_think:
-            return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), True
-        if original_model in {"dense-reasoning", "qwen36-35b-reasoning"}:
-            return ("REASONING" if heavy_pool else "REASONING_SIMPLE"), False
-        if heavy_pool:
-            return "TOOLING", False
+        wants_reasoning = has_think or _wants_reasoning(data)
         if _has_tools(data):
-            return "SIMPLE", False
-        if _wants_reasoning(data):
-            return "REASONING_SIMPLE", False
-        return "SIMPLE", False
+            if _approx_input_tokens(data) > DENSE_CTX_ESCAPE:
+                return "NO_TOOLS", "ctx-escape", has_think
+            if wants_reasoning:
+                return "TOOLS_REASONING", "tools+reasoning", has_think
+            return "TOOLS", "tools", has_think
+        return "NO_TOOLS", "no-tools", has_think
+
+
+    SAMPLING_KEYS = ("temperature", "top_p", "top_k", "min_p",
+                     "presence_penalty", "frequency_penalty", "repetition_penalty")
+    GREEDY_TEMPERATURE = 0.1
+
+
+    def _log_sampling(data, resolved_model, key_alias="unknown"):
+        """Registra el sampling que llega, sin modificarlo (solo lectura).
+
+        `greedy=True` marca el caso que Qwen prohibe explicitamente: temperature
+        casi cero no hace el tool-calling mas determinista, lo degrada y provoca
+        repeticion. Se emite tambien cuando falta presence_penalty para poder medir
+        la dispersion real de configuraciones entre clientes.
+        """
+        try:
+            body = data.get("extra_body")
+            present = {}
+            for k in SAMPLING_KEYS:
+                v = data.get(k)
+                if v is None and isinstance(body, dict):
+                    v = body.get(k)
+                if v is not None:
+                    present[k] = v
+            temp = present.get("temperature")
+            greedy = isinstance(temp, (int, float)) and temp <= GREEDY_TEMPERATURE
+            sampling_log.warning(
+                "sampling: model=%s key=%s greedy=%s params=%s",
+                resolved_model, key_alias, greedy,
+                present or "none(server defaults apply)",
+            )
+        except Exception as e:  # nunca romper una peticion por telemetria
+            log.debug("_log_sampling error: %s", e)
+
 
     class StripUnsupportedParams(litellm.integrations.custom_logger.CustomLogger):
         STRIP_PARAMS = {"reasoningSummary", "reasoning_summary"}
@@ -702,19 +733,16 @@ data:
                 .get("body", {})
                 .get("model", "")
             )
-            is_router_request = requested_model in ROUTER_MODELS or proxy_model in ROUTER_MODELS
+            is_router_request = (
+                requested_model in AUTO_ROUTED_MODELS
+                or proxy_model in AUTO_ROUTED_MODELS
+            )
 
             if is_router_request:
-                category, marker_present = _classify_request_shape(data, proxy_model or requested_model)
+                category, rule, marker_present = _classify_route(data)
                 if marker_present:
                     _strip_think_from_last_user(data)
-                requested_alias = proxy_model or requested_model
-                target_map = (
-                    MODEL_MAP
-                    if requested_alias in DENSE_POOL_MODELS
-                    else ORNITH_MODEL_MAP
-                )
-                target = target_map[category]
+                target = ROUTE[category]
                 resolved_model = target["model"]
                 fallback_model = target.get("fallback")
                 if fallback_model and not _alias_has_deployments(resolved_model):
@@ -729,13 +757,14 @@ data:
                 data.pop("api_key", None)
                 data.setdefault("metadata", {})
                 data["metadata"]["_router_category"] = category
+                data["metadata"]["_router_rule"] = rule
                 data["metadata"]["_router_original_model"] = proxy_model or requested_model
                 data["metadata"]["_router_resolved_model"] = resolved_model
                 data["metadata"]["_router_resolved_base"] = "model_list"
 
                 preview = _entry_text(_last_user_entry(data))[:120].replace("\n", " ")
                 tok_est = _approx_input_tokens(data)
-                reasons = []
+                reasons = [f"rule={rule}"]
                 if marker_present:
                     reasons.append("think_marker")
                 effort = _reasoning_effort_value(data)
@@ -749,6 +778,16 @@ data:
                     reasons.append("image")
                 if _has_part_type(data, VIDEO_PART_TYPES):
                     reasons.append("video")
+                # Fase 6 (2026-07-27): observabilidad de sampling. NO se toca ningun
+                # valor -- solo se registra que manda cada cliente y a que modelo,
+                # para localizar y arreglar en ORIGEN a los clientes que envian
+                # temperature<=0.1 a un backend Qwen (Qwen documenta que el greedy
+                # decoding CAUSA degradacion y bucles de repeticion; ~11 servicios
+                # de produccion lo hacen hoy). Los checkpoints ya aportan sus
+                # propios defaults (temperature 1.0 / top_p 0.95 / top_k 20 via
+                # --generation-config auto), asi que aqui NO hace falta rellenar
+                # nada: solo medir.
+                _log_sampling(data, resolved_model, key_alias=_resolve_key_label(user_api_key_dict))
                 router_log.warning(
                     "router: %s -> %s | orig=%r reasons=%s tok~%d msgs=%d last_user=%r",
                     category,
@@ -875,13 +914,22 @@ data:
             _track_end_from_payload(request_data, "deployment_success")
             return response
 
-    LOCAL_VLLM_ALIASES = ROUTER_MODELS | {
-        "local",
+    # Every alias served by our own vLLM deployments. `local` and the v024-f2
+    # names were dropped on 2026-07-27: their deployments were deleted on 07-26.
+    LOCAL_VLLM_ALIASES = AUTO_ROUTED_MODELS | {
+        "dense",
+        "dense-reasoning",
         "dense-uncensored",
+        "taxonomy",
+        "tooling",
+        "qwen36-35b",
+        "qwen36-35b-tooling",
+        "qwen36-35b-reasoning",
+        "qwen36-35b-nvfp4",
+        "qwen-36-35b",
         "ornith",
         "ornith-1.0",
         "ornith-canary",
-        "qwen36-27b-nvfp4-v024-f2-dgx1",
     }
 
     def _is_local_vllm_request(model, proxy_model, api_base):
@@ -1594,11 +1642,6 @@ data:
         if model.strip()
     )
 
-    GEMMA_ALIASES = (
-        "local",
-        "gemma4-31b",
-        "gemma4-26b-a4b-nvfp4",
-    )
     # Direct aliases for the Ornith deployment.
     ORNITH_CANARY_ALIASES = (
         "ornith-canary",
@@ -1609,70 +1652,54 @@ data:
         "router",
         "auto",
         # Codex-facing smart-router alias (profile `litellmrouter`). The
-        # strip-params hook re-points it per request shape; registering it
-        # here keeps the alias servable from the 35B floor even if the hook
-        # rewrite is ever disabled.
+        # strip-params hook re-points it per request shape; registering it on
+        # Ornith keeps the alias servable even if the hook rewrite is ever
+        # disabled.
         "litellmrouter",
         "qwen36-35b",
-        # Contractual alias: explicit model+purpose name expected by clients that
-        # pin the tooling route to the Qwen3.6-35B pool.
+        # Contractual alias: explicit model+purpose name kept for clients that
+        # pinned the old Qwen3.6-35B tooling route. It now resolves to Ornith,
+        # which owns every name in this tuple.
         "qwen36-35b-tooling",
         "qwen36-35b-reasoning",
         "qwen36-35b-nvfp4",
         "qwen-36-35b",
     )
-    QWEN36_27B_DENSE_ALIASES = (
+    # 2026-07-22 cutover (Daniel): the compatibility aliases are owned by the
+    # DGX1 Ornith backend (gates passed: parser/tooling battery 370, speed
+    # 170 tok/s @8K).
+    ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES
+    # The DGX2 uncensored 27B is the ONLY dense model in the cluster, so it owns
+    # every dense-shaped name. `taxonomy` was added here on 2026-07-27: it used to
+    # be registered solely by the censored 27B deployments (deleted 2026-07-26), so
+    # it survived only because the strip-params hook rewrote it before routing --
+    # it would have broken the moment the hook was disabled. Registering it makes
+    # it a real alias again.
+    # `dense-uncensored` is the explicit, un-fallbacked name: it is never rewritten
+    # by the hook, so a direct call fails hard if DGX2 is down instead of silently
+    # answering from Ornith.
+    QWEN36_27B_UNCENSORED_ALIASES = (
+        "dense-uncensored",
         "dense",
         "dense-reasoning",
         "taxonomy",
     )
-    # 2026-07-22 cutover (Daniel): the compatibility aliases are owned by the
-    # DGX1 Ornith backend (gates passed: parser/tooling battery 370, speed
-    # 170 tok/s @8K). Ornith registers them; dense keeps only its own names.
-    ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES
-    # Rollback contract only: the idle 35B deployments now register just their
-    # node-specific names so a benchmark scale-up cannot silently rejoin the
-    # tooling/router/auto pool next to Ornith.
-    QWEN36_35B_SHARED_ALIASES = ()
-    QWEN36_27B_DENSE_DGX1_ALIASES = QWEN36_27B_DENSE_ALIASES + (
-        "qwen36-27b-nvfp4-v024-f2-dgx1",
-    )
-    QWEN36_27B_DENSE_DGX2_ALIASES = QWEN36_27B_DENSE_ALIASES + (
-        "qwen36-27b-nvfp4-v024-f2-dgx2",
-    )
-    # 2026-07-24 (Daniel): the DGX2 uncensored 27B is now the standing dense
-    # resident, so it co-owns the `dense`/`dense-reasoning` route in addition to
-    # its explicit `dense-uncensored` name. DGX2 runs exactly one 27B at a time
-    # (uncensored here, or the censored F2 pool via QWEN36_27B_DENSE_*_ALIASES),
-    # and both register `dense`, so the `dense` alias always follows whichever
-    # 27B is Ready instead of degrading to the 35B Ornith floor. The 35B floor
-    # remains only the MODEL_MAP fallback when no 27B is Ready.
-    # `dense-uncensored` itself stays the explicit, un-fallbacked alias (never in
-    # ROUTER_MODELS/MODEL_MAP): if DGX2 uncensored is down, direct
-    # `dense-uncensored` calls still fail hard.
-    QWEN36_27B_UNCENSORED_ALIASES = ("dense-uncensored", "dense", "dense-reasoning")
-    QWEN36_35B_DGX1_ALIASES = QWEN36_35B_SHARED_ALIASES + (
-        "qwen36-35b-nvfp4-dgx1",
-    )
-    QWEN36_35B_DGX2_ALIASES = QWEN36_35B_SHARED_ALIASES + (
-        "qwen36-35b-nvfp4-dgx2",
-    )
     QWEN36_REPEAT_GUARD_PARAMS = {
         "repetition_penalty": float(os.getenv("QWEN36_REPETITION_PENALTY", "1.08")),
     }
-    # Qwen3.6-35B NVFP4 topology:
-    #   - DGX1 (`qwen36-35b-dgx1`) is the BASE, always-on resident. Its Service
-    #     (`vllm-35b-nvfp4`) is expected to stay Ready, so it is the floor of the
-    #     tooling/router/auto/qwen36 routes and never gets evicted.
-    #   - DGX2 (`qwen36-35b-dgx2`) is OPTIONAL/evictable: ComfyUI/Trellis/video
-    #     workloads can claim DGX2 and take its vLLM Service NotReady.
-    # Both backends register the SAME shared aliases under DISTINCT id_prefixes, so
-    # LiteLLM (routing_strategy: simple-shuffle) load-balances tooling/router/auto
-    # and the generic qwen36 aliases across whichever backends are currently
-    # registered. Backend-specific aliases (...-dgx1/...-dgx2) are registered only
-    # on their own node. When DGX2 is evicted its EndpointSlice goes NotReady,
-    # reconcile_backend(dgx2, enable=False) deletes the DGX2 model IDs, and shared
-    # aliases collapse onto DGX1 alone. No restart/config reload is required.
+    # Cluster topology (2026-07-26): exactly TWO chat models remain, one per node,
+    # each on its own set of aliases -- there is no shared-alias pool and no
+    # load-balancing between them any more.
+    #   - `ornith-dgx1`  (DGX1, nvidia-dgx): Ornith 1.0 35B-A3B MoE + grafted MTP.
+    #     Owns tooling/router/auto/litellmrouter and the qwen36-35b* compat names.
+    #   - `qwen36-27b-uncensored-dgx2` (DGX2, gx10-ec3d): the uncensored 27B DENSE.
+    #     Owns dense/dense-reasoning/dense-uncensored/taxonomy. Evictable: the GPU
+    #     arbiter can hand DGX2 to image/video work, which takes its EndpointSlice
+    #     NotReady; reconcile_backend(enable=False) then deletes its model IDs and
+    #     the hook's `_alias_has_deployments` guard degrades `dense` to Ornith.
+    # The Qwen3.6-35B (`vllm-35b-nvfp4*`), censored 27B F2 (`...-v024-f2-*`) and
+    # Gemma-4 deployments were DELETED on 2026-07-26 -- not scaled to zero -- so
+    # their backends were removed from this controller on 2026-07-27.
     BACKENDS = (
         {
             # DGX1 Ornith production resident: owns tooling/router/auto and
@@ -1698,124 +1725,10 @@ data:
             "supports_vision": True,
         },
         {
-            "name": "gemma-dgx1",
-            "label": "DGX1_GEMMA4_26B",
-            "backend": "dgx1",
-            "base_model": "openai/gemma4-26b-a4b-nvfp4",
-            "aliases": GEMMA_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_GEMMA_DGX1",
-                "vllm-gemma4-26b-a4b-nvfp4-dgx1",
-            ),
-            "api_base": os.getenv(
-                "GEMMA_DGX1_API_BASE",
-                "http://vllm-gemma4-26b-a4b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1",
-            ),
-            "id_prefix": "dgx1-gemma4-26b-a4b-nvfp4",
-            "max_parallel_requests": 4,
-            "supports_function_calling": True,
-            "supports_vision": True,
-        },
-        {
-            # DGX1 base, always-on Qwen3.6-35B resident. Floor of the
-            # tooling/router/auto/qwen36 routes; load-balances with DGX2 when both
-            # are Ready and serves alone when DGX2 is evicted (ComfyUI/Trellis/video).
-            "name": "qwen36-35b-dgx1",
-            "label": "DGX1_QWEN36_35B",
-            "backend": "dgx1",
-            "base_model": "openai/qwen36-35b-nvfp4",
-            "aliases": QWEN36_35B_DGX1_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_QWEN36_35B_DGX1",
-                "vllm-35b-nvfp4",
-            ),
-            "api_base": os.getenv(
-                "QWEN36_35B_DGX1_API_BASE",
-                "http://vllm-35b-nvfp4.llm.svc.cluster.local:8000/v1",
-            ),
-            "id_prefix": "dgx1-qwen36-35b-nvfp4",
-            "max_parallel_requests": 8,
-            "supports_function_calling": True,
-            "supports_vision": True,
-        },
-        {
-            # DGX2 optional/evictable Qwen3.6-35B resident. Readiness-gated: when its
-            # vLLM Service loses Ready endpoints (DGX2 claimed by ComfyUI/Trellis/
-            # video), reconcile_backend disables only the DGX2 IDs and the aliases
-            # fall back to the DGX1 base above.
-            "name": "qwen36-35b-dgx2",
-            "label": "DGX2_QWEN36_35B",
-            "backend": "dgx2",
-            "base_model": "openai/qwen36-35b-nvfp4",
-            "aliases": QWEN36_35B_DGX2_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_QWEN36_35B_DGX2",
-                "vllm-35b-nvfp4-dgx2",
-            ),
-            "api_base": os.getenv(
-                "QWEN36_35B_DGX2_API_BASE",
-                "http://vllm-35b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
-            ),
-            "id_prefix": "dgx2-qwen36-35b-nvfp4",
-            "max_parallel_requests": 8,
-            "supports_function_calling": True,
-            "supports_vision": True,
-        },
-        {
-            # DGX1 permanent floor for the homogeneous dense F2 pool.
-            "name": "qwen36-27b-dense-dgx1",
-            "label": "DGX1_QWEN36_27B_DENSE",
-            "backend": "dgx1",
-            "base_model": os.getenv(
-                "QWEN36_27B_DENSE_MODEL",
-                "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv",
-            ),
-            "aliases": QWEN36_27B_DENSE_DGX1_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_QWEN36_27B_DENSE_DGX1",
-                "vllm-qwen36-27b-nvfp4-v024-f2-dgx1",
-            ),
-            "api_base": os.getenv(
-                "QWEN36_27B_DENSE_DGX1_API_BASE",
-                "http://vllm-qwen36-27b-nvfp4-v024-f2-dgx1.llm.svc.cluster.local:8000/v1",
-            ),
-            "id_prefix": "dgx1-qwen36-27b-dense-nvfp4",
-            "max_parallel_requests": 8,
-            "supports_function_calling": True,
-            "supports_vision": True,
-        },
-        {
-            # DGX2 optional dense F2 twin. The GPU arbiter can keep it at zero
-            # while Trellis/image/video work is active; aliases then use DGX1.
-            "name": "qwen36-27b-dense-dgx2",
-            "label": "DGX2_QWEN36_27B_DENSE",
-            "backend": "dgx2",
-            "base_model": os.getenv(
-                "QWEN36_27B_DENSE_MODEL",
-                "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv",
-            ),
-            "aliases": QWEN36_27B_DENSE_DGX2_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_QWEN36_27B_DENSE_DGX2",
-                "vllm-qwen36-27b-nvfp4-v024-f2-dgx2",
-            ),
-            "api_base": os.getenv(
-                "QWEN36_27B_DENSE_DGX2_API_BASE",
-                "http://vllm-qwen36-27b-nvfp4-v024-f2-dgx2.llm.svc.cluster.local:8000/v1",
-            ),
-            "id_prefix": "dgx2-qwen36-27b-dense-nvfp4",
-            "max_parallel_requests": 8,
-            "supports_function_calling": True,
-            "supports_vision": True,
-        },
-        {
-            # DGX2 uncensored resident, now the standing dense pool member: it
-            # registers `dense`/`dense-reasoning` (shared with the censored F2
-            # pool; only one 27B is Ready at a time) plus its explicit
-            # `dense-uncensored` name. `dense-uncensored` itself takes no
-            # fallback — absence of a Ready EndpointSlice removes it from LiteLLM
-            # entirely — while `dense`/`dense-reasoning` keep the MODEL_MAP 35B
-            # fallback for when no 27B is Ready.
+            # DGX2 resident and the cluster's only DENSE model: the uncensored
+            # 27B (heretic-v2 + NVFP4 lm_head, ~41 tok/s). Owns every dense-shaped
+            # alias including `taxonomy`. Evictable by the GPU arbiter; when its
+            # EndpointSlice goes NotReady the hook degrades `dense` to Ornith.
             "name": "qwen36-27b-uncensored-dgx2",
             "label": "DGX2_QWEN36_27B_UNCENSORED",
             "backend": "dgx2",
@@ -1838,25 +1751,26 @@ data:
             "supports_vision": True,
         },
     )
-    # These model IDs were managed by earlier versions of this controller. Remove
-    # them so tooling/router/auto load-balance ONLY across the Qwen3.6-35B residents
-    # (DGX1 base + optional DGX2) and a stale Gemma deployment can never sneak back
-    # into those routes. Gemma is intentionally confined to GEMMA_ALIASES
-    # (local/gemma*) and must never own a tooling/router/auto ID on either DGX.
+    # Model IDs managed by earlier versions of this controller. They are deleted
+    # every cycle so a leftover registration can never serve traffic on a route it
+    # no longer owns. Since 2026-07-26 the Gemma-4, Qwen3.6-35B and censored 27B F2
+    # deployments are GONE, so their whole ID prefixes are purged below (previously
+    # only three dgx1 Gemma IDs were listed explicitly, because gemma-dgx1 was still
+    # an active backend -- it no longer is).
     RETIRED_MANAGED_IDS = (
         "dgx1-gemma4-26b-a4b-nvfp4-tooling",
         "dgx1-gemma4-26b-a4b-nvfp4-router",
         "dgx1-gemma4-26b-a4b-nvfp4-auto",
     )
     RETIRED_MANAGED_ID_PREFIXES = (
-        # DGX2 no longer runs Gemma at all, so purge any leftover Gemma ID there,
-        # regardless of alias. DO NOT add the dgx1 Gemma prefix here: gemma-dgx1 is
-        # an ACTIVE backend (local/gemma* under dgx1-gemma4-26b-a4b-nvfp4-*), and a
-        # broad prefix would delete its live deployments every cycle. The three
-        # retired dgx1 Gemma tooling/router/auto IDs are listed explicitly above.
-        # The live Qwen prefixes (dgx{1,2}-qwen36-35b-nvfp4-) are intentionally
-        # absent so both residents stay registered.
+        # Every deployment behind these prefixes was deleted on 2026-07-26, so the
+        # whole prefix is safe to purge -- there is no live backend left to clobber.
+        "dgx1-gemma4-26b-a4b-nvfp4-",
         "dgx2-gemma4-26b-a4b-nvfp4-",
+        "dgx1-qwen36-35b-nvfp4-",
+        "dgx2-qwen36-35b-nvfp4-",
+        "dgx1-qwen36-27b-dense-nvfp4-",
+        "dgx2-qwen36-27b-dense-nvfp4-",
     )
 
     TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -2233,7 +2147,7 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: ornith-prod-cutover-20260722
+        config.k8s.e-dani.com/revision: router-tools-rule-20260727
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -2248,15 +2162,11 @@ spec:
           env:
             - { name: LITELLM_BASE_URL, value: "http://litellm.litellm.svc.cluster.local:4000" }
             - { name: K8S_NAMESPACE, value: "llm" }
-            - { name: K8S_SERVICE_GEMMA_DGX1, value: "vllm-gemma4-26b-a4b-nvfp4-dgx1" }
             - { name: K8S_SERVICE_ORNITH_DGX1, value: "vllm-ornith-35b-nvfp4-mtp-dgx1" }
-            # Retired 35B services are retained as a scale-to-zero rollback path.
-            - { name: K8S_SERVICE_QWEN36_35B_DGX1, value: "vllm-35b-nvfp4" }
-            - { name: K8S_SERVICE_QWEN36_35B_DGX2, value: "vllm-35b-nvfp4-dgx2" }
+    # The Qwen3.6-35B, censored 27B F2 and Gemma-4 Services were DELETED on
+    # 2026-07-26, so their backends and K8S_SERVICE_* envs were removed here on
+    # 2026-07-27; there is no scale-to-zero rollback path left.
             # DGX1 permanent floor plus the optional DGX2 dense F2 twin.
-            - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX1, value: "vllm-qwen36-27b-nvfp4-v024-f2-dgx1" }
-            - { name: K8S_SERVICE_QWEN36_27B_DENSE_DGX2, value: "vllm-qwen36-27b-nvfp4-v024-f2-dgx2" }
-            - { name: QWEN36_27B_DENSE_MODEL, value: "openai/qwen36-27b-nvfp4-v024-f2-nvfp4kv" }
             # Isolated explicit alias: one DGX2 backend, no fallback.
             - { name: K8S_SERVICE_QWEN36_27B_UNCENSORED_DGX2, value: "vllm-qwen36-27b-uncensored-dgx2" }
             - { name: QWEN36_27B_UNCENSORED_MODEL, value: "openai/qwen36-27b-uncensored-nvfp4" }
@@ -2267,7 +2177,7 @@ spec:
             - { name: OPENCLAW_TEAM_ID, value: "openclaw" }
             # Fixed explicit routes required during the canary. The reconciler
             # only unions these names; it never removes existing permissions.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored,qwen36-27b-nvfp4-v024-f2-dgx1" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
@@ -2298,7 +2208,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: ornith-prod-cutover-20260722
+        config.k8s.e-dani.com/revision: router-tools-rule-20260727
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
