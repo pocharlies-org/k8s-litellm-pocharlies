@@ -192,6 +192,8 @@ data:
     router_log = logging.getLogger("litellm.smart_router")
     # Sampling telemetry (Fase 6): solo observa, nunca modifica valores.
     sampling_log = logging.getLogger("litellm.sampling")
+    # Gate de args de tool (strict/xgrammar).
+    tool_gate_log = logging.getLogger("litellm.tool_gate")
 
     def _usage_snapshot(usage):
         if isinstance(usage, dict):
@@ -686,6 +688,67 @@ data:
         return "NO_TOOLS", "no-tools", has_think
 
 
+    # ── Gate de validacion de args de tool (2026-07-27) ──────────────────────────
+    # PROBLEMA MEDIDO: la bateria de 370 casos mostro que el 27B uncensored viola el
+    # enum del schema en 10 casos (`negative-invalidarg`: el prompt exige
+    # mode="write" y el enum solo admite [audit, dry_run, read_only]); ornith falla 6
+    # de los mismos. Es la abliteracion asomando: obedece al prompt por encima del
+    # schema. Consecuencia practica: args invalidos -> la tool falla -> el cliente
+    # reintenta la MISMA llamada -> bucle.
+    #
+    # POR QUE AQUI Y NO VALIDANDO LA RESPUESTA: vLLM ya sabe restringir la
+    # decodificacion a la gramatica del schema (xgrammar), pero la SALTA cuando la
+    # peticion usa `tool_choice: "auto"` y ninguna tool declara `strict`:
+    #     vllm/tool_parsers/structural_tag_registry.py:
+    #         if tool_choice == "auto" and not _any_tool_strict(tools):
+    #             return None
+    # `auto` es justo lo que mandan los agentes. Marcando las tools como strict, la
+    # violacion pasa a ser IMPOSIBLE en generacion en vez de detectarse a posteriori.
+    #
+    # VERIFICADO contra el caso real negative-invalidarg-000 en el 27B uncensored:
+    #   sin strict -> mode='write' 3/3 (viola el enum)
+    #   con strict -> mode='read_only' 3/3 (lo respeta)
+    #
+    # Solo se aplica a NUESTROS backends vLLM y solo si el cliente no dijo nada:
+    # un `strict` explicito del cliente (incluido `false`) se respeta siempre.
+    STRICT_GATE_ENABLED = os.environ.get("LITELLM_TOOL_STRICT_GATE", "1") not in ("0", "false", "")
+
+
+    def _enforce_tool_strict(data, resolved_model="?"):
+        """Marca strict=True en las tools para que vLLM aplique la gramatica.
+
+        No toca una tool que ya traiga `strict` (ni True ni False): la intencion
+        explicita del cliente manda. Devuelve cuantas ha marcado.
+        """
+        if not STRICT_GATE_ENABLED:
+            return 0
+        tools = data.get("tools")
+        if not isinstance(tools, list):
+            return 0
+        marked = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            # Chat Completions: {"type":"function","function":{...}}
+            fn = tool.get("function")
+            target = fn if isinstance(fn, dict) else (tool if tool.get("name") else None)
+            if target is None:
+                continue
+            if "strict" in target or "strict" in tool:
+                continue                      # el cliente decidio: no lo pisamos
+            params = target.get("parameters")
+            if not isinstance(params, dict) or not params.get("properties"):
+                continue                      # sin schema no hay nada que restringir
+            target["strict"] = True
+            marked.append(target.get("name") or "?")
+        if marked:
+            tool_gate_log.warning(
+                "tool-strict-gate: model=%s marked=%d tools=%s",
+                resolved_model, len(marked), marked[:6],
+            )
+        return len(marked)
+
+
     SAMPLING_KEYS = ("temperature", "top_p", "top_k", "min_p",
                      "presence_penalty", "frequency_penalty", "repetition_penalty")
     GREEDY_TEMPERATURE = 0.1
@@ -807,6 +870,10 @@ data:
             )
             if _is_local_vllm_request(model, proxy_model, api_base):
                 enable_continuous_usage(data)
+                # Gate de args: que la gramatica del schema sea obligatoria en
+                # NUESTROS modelos (ver _enforce_tool_strict). Se hace despues de
+                # resolver el modelo para que el log diga a donde iba de verdad.
+                _enforce_tool_strict(data, resolved_model=model)
             tracking_id = str(uuid.uuid4())
             data.setdefault("metadata", {})
             data["metadata"]["_tracking_id"] = tracking_id
@@ -2147,7 +2214,7 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: router-tools-rule-20260727
+        config.k8s.e-dani.com/revision: tool-strict-gate-20260727
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -2208,7 +2275,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: router-tools-rule-20260727
+        config.k8s.e-dani.com/revision: tool-strict-gate-20260727
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
