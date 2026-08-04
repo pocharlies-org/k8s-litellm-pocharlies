@@ -159,10 +159,38 @@ data:
       #   tooling/router/auto/litellmrouter/qwen36-35b*   -> Ornith 35B-A3B (DGX1)
       #   dense/dense-reasoning/dense-uncensored/taxonomy -> uncensored 27B (DGX2)
       # There is no shared pool and no load-balancing between them: each alias has
-      # exactly one backend. Cross-alias fallback is deliberately NOT configured
-      # here -- the smart-router hook already degrades dense<->tooling when an alias
-      # has no live deployments, and adding a LiteLLM-level fallback on top would
-      # create alias-to-alias retry loops while the only backend is unhealthy.
+      # exactly one backend.
+      #
+      # 2026-08-05: this block used to say cross-alias fallback was deliberately not
+      # configured, because it "would create alias-to-alias retry loops". That was
+      # right about MUTUAL fallbacks and wrong as a blanket rule, and the difference
+      # cost a real outage: on 2026-08-04 19:11 DGX1 swapped its resident model and
+      # Aurora died 40s into a live incident with "no healthy deployments for this
+      # model". A ONE-WAY entry is a DAG, not a cycle -- `tooling` falls to `dense`
+      # and `dense` declares nothing, so the walk terminates after one hop. Do NOT
+      # add the reverse; `dense: [tooling]` alongside this is the ping-pong the old
+      # comment warned about.
+      #
+      # WHAT THIS COVERS, AND WHAT IT CANNOT. There are two failure modes with two
+      # different errors, and they live in different layers:
+      #   * alias REGISTERED but no healthy deployment (cooldown after allowed_fails,
+      #     a wedged vLLM whose /health still answers 200) -> the Router raises from
+      #     inside async_function_with_fallbacks' try, so THIS fires. It is the mode
+      #     that actually took Aurora down.
+      #   * alias DELETED from model_list (litellm-dgx-backend-sync calls
+      #     /model/delete when the Service goes NotReady) -> the proxy raises
+      #     ProxyModelNotFoundError in route_llm_request.py BEFORE the Router is
+      #     invoked, so no entry here can ever fire. That mode is covered only by
+      #     the smart-router hook's chain, which runs at pre_call_hook, ahead of the
+      #     model-name gate.
+      # Both layers are load-bearing. Neither one substitutes for the other.
+      #
+      # Nothing reconciles these names against the live model_list: the sync only
+      # touches model_list, never router_settings. An entry naming an alias that no
+      # longer exists would sit here silently, so keep it to the two canonical big
+      # aliases.
+      fallbacks:
+        - tooling: ["dense"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -500,6 +528,35 @@ data:
         "NO_TOOLS": {"model": "tooling", "fallbacks": ("dense", "qwen3-coder")},
     }
 
+    # Opt-in HA aliases. Same chain machinery as ROUTE, but the CLIENT picks the
+    # model: there is no classification by request shape here, so `tooling-ha`
+    # always prefers `tooling` whether or not the request carries tools.
+    #
+    # WHY IT EXISTS (2026-08-05). Aurora asks for `tooling` explicitly in all five
+    # of its model roles (MAIN/RCA/SUMMARIZATION/ENRICHMENT/GUARDRAILS_LLM) and has
+    # NO fallback of its own: zero `with_fallbacks` in its tree, only ChatOpenAI
+    # max_retries against the SAME model, and bedrock is its only available
+    # provider. So when DGX1 swaps its resident model, `tooling` disappears and
+    # every RCA dies mid-investigation -- which is exactly what happened on
+    # 2026-08-04 19:11, 40s into a real incident.
+    #
+    # WHY A NEW NAME INSTEAD OF DEGRADING `tooling` ITSELF. This estate benchmarks
+    # these models against each other constantly (the tooling battery, the opencode
+    # runs, the 370-case tool-arg suite). An alias that silently answers with a
+    # different model would corrupt those measurements at the source and the numbers
+    # would look like model quality. `tooling` keeps meaning exactly `tooling`,
+    # including its 400 when it is gone; callers that prefer "alive" over "exactly
+    # this model" opt in by name.
+    #
+    # NOTE FOR WHOEVER GREPS /v1/models AND DOES NOT FIND THIS: `tooling-ha` is
+    # resolved entirely in this hook and is never registered as a deployment. It
+    # works because pre_call_hook rewrites data["model"] BEFORE the proxy's
+    # model-name gate (proxy_server.py:8691 vs route_request at :8698), so the gate
+    # only ever sees the alias we resolved to.
+    HA_ALIASES = {
+        "tooling-ha": {"model": "tooling", "fallbacks": ("dense", "qwen3-coder")},
+    }
+
     # Hard limit escape: the uncensored 27B serves --max-model-len 229376 while
     # Ornith serves 262144, so a tool-bearing request longer than this goes to
     # Ornith instead of 400-ing on length. Deliberately below 229376 because
@@ -692,8 +749,12 @@ data:
         except Exception:
             return True
 
-    def _degrade(category, alias_live=_alias_has_deployments):
-        """Walk the category's chain and return (alias, state).
+    def _chain_of(entry):
+        """The ordered aliases of a chain entry, primary first."""
+        return (entry["model"],) + tuple(entry.get("fallbacks") or ())
+
+    def _walk_chain(entry, alias_live=_alias_has_deployments):
+        """Walk one chain entry and return (alias, state).
 
         state is "primary" when the head served, "degraded" when a later hop did,
         and "dry" when NO alias in the chain is registered. One membership check
@@ -705,13 +766,36 @@ data:
         contract of _alias_has_deployments -- when it cannot introspect litellm it
         answers True, so a dry verdict means the aliases really are deregistered,
         not that the guard broke.
+
+        WHAT THIS DOES *NOT* COVER (2026-08-05). It asks whether the alias is
+        REGISTERED, not whether its deployment is HEALTHY. Those are two distinct
+        failure modes with two distinct errors, and each needs a different layer:
+
+          alias deleted from model_list (the sync's /model/delete)
+            -> proxy raises ProxyModelNotFoundError "Invalid model name passed in"
+               in route_llm_request.py BEFORE the Router runs, so no Router-level
+               fallback can ever fire. THIS layer is the only one that can rescue
+               it, because pre_call_hook runs before that gate
+               (proxy_server.py:8691 vs :8698).
+          alias registered but no healthy deployment (cooldown after allowed_fails,
+          a wedged vLLM still answering /health)
+            -> the Router raises BadRequestError "no healthy deployments for this
+               model" from INSIDE async_function_with_fallbacks' try, so the
+               `fallbacks:` in config.yaml DO fire. This layer is blind to it: the
+               alias is registered, so we hand the request over unchanged.
+
+        Aurora's real outage on 2026-08-04 19:11 was the second kind. Both layers
+        are load-bearing; neither substitutes for the other.
         """
-        entry = ROUTE[category]
-        chain = (entry["model"],) + tuple(entry.get("fallbacks") or ())
+        chain = _chain_of(entry)
         for position, alias in enumerate(chain):
             if alias_live(alias):
                 return alias, ("primary" if position == 0 else "degraded")
         return chain[0], "dry"
+
+    def _degrade(category, alias_live=_alias_has_deployments):
+        """_walk_chain for one of the shape-classified ROUTE categories."""
+        return _walk_chain(ROUTE[category], alias_live=alias_live)
 
     def _classify_route(data):
         """Devuelve (route_key, rule, think_marker_present) para las peticiones
@@ -841,6 +925,40 @@ data:
                 .get("body", {})
                 .get("model", "")
             )
+            # Alias HA: se resuelve ANTES de is_router_request. Los nombres -ha son
+            # disjuntos de AUTO_ROUTED_MODELS, asi que tras reescribir el modelo el
+            # flujo continua como una peticion explicita normal -- y el gate de
+            # tools de mas abajo se aplica al modelo que de verdad va a servir,
+            # porque relee data["model"].
+            ha_alias = (
+                requested_model if requested_model in HA_ALIASES
+                else proxy_model if proxy_model in HA_ALIASES
+                else None
+            )
+            if ha_alias is not None:
+                ha_entry = HA_ALIASES[ha_alias]
+                ha_resolved, ha_state = _walk_chain(ha_entry)
+                if ha_state == "degraded":
+                    router_log.warning(
+                        "ha: %s primary %r is not registered; degraded to %r",
+                        ha_alias,
+                        ha_entry["model"],
+                        ha_resolved,
+                    )
+                elif ha_state == "dry":
+                    router_log.error(
+                        "ha: no alias in the %s chain %r is registered; "
+                        "dispatching to %r, which will fail",
+                        ha_alias,
+                        _chain_of(ha_entry),
+                        ha_resolved,
+                    )
+                data["model"] = ha_resolved
+                data.setdefault("metadata", {})
+                data["metadata"]["_router_original_model"] = ha_alias
+                data["metadata"]["_router_resolved_model"] = ha_resolved
+                data["metadata"]["_router_route_state"] = ha_state
+
             is_router_request = (
                 requested_model in AUTO_ROUTED_MODELS
                 or proxy_model in AUTO_ROUTED_MODELS
@@ -2496,7 +2614,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: router-fallback-chain-20260804
+        config.k8s.e-dani.com/revision: aurora-tooling-ha-20260805
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

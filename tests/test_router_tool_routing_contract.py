@@ -22,10 +22,10 @@ WANT_FN = {"_has_tools", "_classify_route", "_approx_input_tokens", "_message_en
            # probe and has to exist for _degrade's signature to bind at def time. Its
            # body lazily imports litellm, so pulling it in costs nothing here -- the
            # chain tests inject a stub instead of calling it.
-           "_degrade", "_alias_has_deployments"}
+           "_degrade", "_alias_has_deployments", "_walk_chain", "_chain_of"}
 WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "DENSE_CTX_ESCAPE", "THINK_MARKERS",
               "REASONING_EFFORT_SIGNAL", "TEXT_PART_TYPES", "IMAGE_PART_TYPES",
-              "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "FAST_CTX_LIMIT"}
+              "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "FAST_CTX_LIMIT", "HA_ALIASES"}
 
 
 @pytest.fixture(scope="module")
@@ -152,6 +152,39 @@ def test_degrade_walks_to_the_first_live_alias(hook):
     assert hook._degrade("TOOLS", alias_live=lambda a: False) == (tools[0], "dry")
 
 
+def test_ha_aliases_are_opt_in_and_disjoint(hook):
+    """`tooling-ha` existe para que Aurora degrade; `tooling` sigue siendo literal.
+
+    Lo segundo es la mitad importante: este estate mide estos modelos unos contra
+    otros constantemente, y un alias que respondiera con otro modelo en silencio
+    falsearia las mediciones. Y los nombres -ha tienen que ser disjuntos de los
+    auto-enrutados, porque el hook los resuelve en ramas distintas: si un nombre
+    cayera en las dos, la rama HA correria primero y la clasificacion por forma de
+    peticion no se aplicaria nunca.
+    """
+    assert "tooling-ha" in hook.HA_ALIASES
+    assert hook.HA_ALIASES["tooling-ha"]["model"] == "tooling"
+    assert not (set(hook.HA_ALIASES) & hook.AUTO_ROUTED_MODELS)
+    for explicit in ("tooling", "dense", "dense-reasoning", "qwen3-coder", "taxonomy"):
+        assert explicit not in hook.HA_ALIASES, (
+            f"{explicit} degradaria en silencio y romperia las mediciones")
+
+
+def test_ha_chains_degrade_and_terminate(hook):
+    """Misma maquinaria que ROUTE: se recorre entera y termina fuera de su nodo."""
+    dgx2 = {"dense", "dense-reasoning", "qwen3-coder"}
+    for name, entry in hook.HA_ALIASES.items():
+        chain = hook._chain_of(entry)
+        assert len(chain) >= 2, f"{name} no tiene a donde degradar: {chain}"
+        assert len(set(chain)) == len(chain), f"{name} repite un alias: {chain}"
+        assert set(chain) & dgx2 and set(chain) - dgx2, (
+            f"{name} no sale de un solo nodo: {chain}")
+        assert hook._walk_chain(entry, alias_live=lambda a: True) == (chain[0], "primary")
+        assert hook._walk_chain(entry, alias_live=lambda a: a == chain[-1]) \
+            == (chain[-1], "degraded")
+        assert hook._walk_chain(entry, alias_live=lambda a: False) == (chain[0], "dry")
+
+
 def test_degrade_probes_each_alias_at_most_once(hook):
     """Una pasada, no un retry: sin esto el cruce mutuo si podria ciclar."""
     seen = []
@@ -163,6 +196,42 @@ def test_degrade_probes_each_alias_at_most_once(hook):
     hook._degrade("NO_TOOLS", alias_live=probe)
     assert seen == list(_chain(hook, "NO_TOOLS"))
     assert len(seen) == len(set(seen))
+
+
+@pytest.fixture(scope="module")
+def proxy_config():
+    docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+    raw = next(d["data"]["config.yaml"] for d in docs
+               if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
+    return yaml.safe_load(raw)
+
+
+def test_proxy_fallbacks_are_acyclic(proxy_config):
+    """El fallback de la config SI es un retry: un ciclo aqui gira para siempre.
+
+    Cubre el modo de fallo que el hook NO puede ver -- alias registrado pero sin
+    deployment sano ("no healthy deployments for this model"), que es el que tumbo
+    a Aurora el 2026-08-04 19:11. Un solo sentido es un DAG; anadir el inverso es
+    el ping-pong contra el que avisaba el comentario viejo, y este test es lo que
+    impide que vuelva.
+    """
+    entries = proxy_config.get("router_settings", {}).get("fallbacks") or []
+    graph = {}
+    for entry in entries:
+        for src, dsts in entry.items():
+            graph.setdefault(src, []).extend(dsts or [])
+
+    assert graph.get("tooling") == ["dense"], (
+        f"se esperaba tooling -> [dense], hay {graph.get('tooling')!r}")
+
+    # Recorrido completo: ningun camino puede volver a un nodo ya visitado.
+    def walk(node, seen):
+        assert node not in seen, f"ciclo de fallbacks: {' -> '.join(seen + [node])}"
+        for nxt in graph.get(node, []):
+            walk(nxt, seen + [node])
+
+    for src in graph:
+        walk(src, [])
 
 
 def test_ctx_escape_stays_under_the_dense_limit(hook):
