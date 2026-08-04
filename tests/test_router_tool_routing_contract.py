@@ -17,7 +17,12 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 WANT_FN = {"_has_tools", "_classify_route", "_approx_input_tokens", "_message_entries",
            "_entry_text", "_last_user_entry", "_has_think_marker", "_wants_reasoning",
-           "_reasoning_effort_value", "_has_part_type"}
+           "_reasoning_effort_value", "_has_part_type",
+           # _degrade walks the fallback chain; _alias_has_deployments is its default
+           # probe and has to exist for _degrade's signature to bind at def time. Its
+           # body lazily imports litellm, so pulling it in costs nothing here -- the
+           # chain tests inject a stub instead of calling it.
+           "_degrade", "_alias_has_deployments"}
 WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "DENSE_CTX_ESCAPE", "THINK_MARKERS",
               "REASONING_EFFORT_SIGNAL", "TEXT_PART_TYPES", "IMAGE_PART_TYPES",
               "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "FAST_CTX_LIMIT"}
@@ -100,10 +105,64 @@ def test_only_the_auto_aliases_are_rewritten(hook):
         assert explicit not in hook.AUTO_ROUTED_MODELS
 
 
+def _chain(hook, category):
+    entry = hook.ROUTE[category]
+    return (entry["model"],) + tuple(entry.get("fallbacks") or ())
+
+
 def test_fallbacks_cross_the_two_models(hook):
-    """dense y tooling se cubren mutuamente: DGX2 es desalojable."""
-    assert hook.ROUTE["TOOLS"]["fallback"] == "tooling"
-    assert hook.ROUTE["NO_TOOLS"]["fallback"] == "dense"
+    """dense y tooling se siguen cubriendo mutuamente: DGX2 es desalojable.
+
+    Aqui es seguro que el cruce sea mutuo porque _degrade recorre la cadena UNA
+    vez antes de despachar; no es un retry y no puede hacer ping-pong.
+    """
+    assert "tooling" in _chain(hook, "TOOLS")
+    assert "dense" in _chain(hook, "NO_TOOLS")
+
+
+def test_every_chain_ends_outside_its_own_node(hook):
+    """La invariante que faltaba el 2026-08-04.
+
+    El bug no era el cruce: era que se degradaba al fallback SIN comprobarlo, y
+    con los dos nodos a medio swap se despachaba a un alias desregistrado. Que
+    cada cadena tenga >= 2 saltos y toque los dos nodos es lo que impide que
+    degradar sea caer en un agujero. dense/dense-reasoning/qwen3-coder viven en
+    DGX2; tooling en DGX1.
+    """
+    dgx2 = {"dense", "dense-reasoning", "qwen3-coder"}
+    for category in hook.ROUTE:
+        chain = _chain(hook, category)
+        assert len(chain) >= 2, f"{category} no tiene a donde degradar: {chain}"
+        assert len(set(chain)) == len(chain), f"{category} repite un alias: {chain}"
+        assert set(chain) & dgx2 and set(chain) - dgx2, (
+            f"{category} no sale de un solo nodo: {chain}")
+
+
+def test_degrade_walks_to_the_first_live_alias(hook):
+    """Recorrido con sondas inyectadas: primario, degradado y cadena seca."""
+    tools = _chain(hook, "TOOLS")
+
+    assert hook._degrade("TOOLS", alias_live=lambda a: True) == (tools[0], "primary")
+
+    # Solo el ultimo vivo -> tiene que llegar hasta el, no pararse en el primero.
+    assert hook._degrade("TOOLS", alias_live=lambda a: a == tools[-1]) \
+        == (tools[-1], "degraded")
+
+    # Cadena seca: devuelve el primario y lo marca, en vez de despachar a ciegas.
+    assert hook._degrade("TOOLS", alias_live=lambda a: False) == (tools[0], "dry")
+
+
+def test_degrade_probes_each_alias_at_most_once(hook):
+    """Una pasada, no un retry: sin esto el cruce mutuo si podria ciclar."""
+    seen = []
+
+    def probe(alias):
+        seen.append(alias)
+        return False
+
+    hook._degrade("NO_TOOLS", alias_live=probe)
+    assert seen == list(_chain(hook, "NO_TOOLS"))
+    assert len(seen) == len(set(seen))
 
 
 def test_ctx_escape_stays_under_the_dense_limit(hook):

@@ -465,15 +465,39 @@ data:
     # two-line swap in ROUTE below.
     AUTO_ROUTED_MODELS = {"router", "auto", "litellmrouter"}
 
-    # Where each shape goes. `fallback` is used only when the primary alias has no
-    # live deployments (see _alias_has_deployments): DGX2 is evictable, so `dense`
-    # degrades to Ornith rather than failing, and vice versa. Fallbacks are spelled
-    # with the canonical names -- they used to say `qwen36-35b-tooling`, which only
-    # worked by way of the compat aliases also being registered on Ornith.
+    # Where each shape goes, as an ORDERED CHAIN. The head is the primary; each
+    # later entry is used only when every alias before it has no live deployments
+    # (see _alias_has_deployments and _degrade). Spelled with canonical names --
+    # they used to say `qwen36-35b-tooling`, which only worked by way of the compat
+    # aliases also being registered on Ornith.
+    #
+    # WHY A CHAIN AND NOT A SINGLE `fallback` (2026-08-04): the old form swapped to
+    # the fallback WITHOUT checking that the fallback itself was registered. When
+    # both nodes were mid-swap the router dispatched to a deregistered alias and
+    # 400-ed. The log caught both directions degrading within the same minute --
+    # `tooling` -> `dense` and `dense` -> `tooling`, with neither registered. It
+    # degraded into a hole. Every hop is now verified, and the chain ends on
+    # something that can actually be up.
+    #
+    # THIS CANNOT LOOP, and the mutual cover between `dense` and `tooling` is safe
+    # here: the chain is a finite ordered list walked ONCE per request, before
+    # dispatch. It is not a retry. LiteLLM's own `fallbacks:` config IS a retry, and
+    # alias-to-alias entries there would ping-pong forever -- which is exactly why
+    # degradation lives in this layer and not in that one.
+    #
+    # ORDER RATIONALE. `dense` and `qwen3-coder` both live on DGX2, which
+    # time-slices two GPU slots, so they can be live simultaneously; `tooling` is on
+    # DGX1 (one slot, one big model). qwen3-coder goes AHEAD of tooling on the
+    # tool-bearing lanes because it is the only audited model that drives opencode
+    # for real: 11/14 scripted tasks vs 0-1/14 for Ornith, the 27B dense and the
+    # NVIDIA-Qwen3.6, the three of which hallucinate tool calls in invented XML
+    # under the agent's ~9.3k-token system prompt. It goes LAST on NO_TOOLS: a coder
+    # model is a poor terminal for prose, but alive beats 400.
     ROUTE = {
-        "TOOLS": {"model": "dense", "fallback": "tooling"},
-        "TOOLS_REASONING": {"model": "dense-reasoning", "fallback": "tooling"},
-        "NO_TOOLS": {"model": "tooling", "fallback": "dense"},
+        "TOOLS": {"model": "dense", "fallbacks": ("qwen3-coder", "tooling")},
+        "TOOLS_REASONING": {"model": "dense-reasoning",
+                            "fallbacks": ("dense", "qwen3-coder", "tooling")},
+        "NO_TOOLS": {"model": "tooling", "fallbacks": ("dense", "qwen3-coder")},
     }
 
     # Hard limit escape: the uncensored 27B serves --max-model-len 229376 while
@@ -668,6 +692,27 @@ data:
         except Exception:
             return True
 
+    def _degrade(category, alias_live=_alias_has_deployments):
+        """Walk the category's chain and return (alias, state).
+
+        state is "primary" when the head served, "degraded" when a later hop did,
+        and "dry" when NO alias in the chain is registered. One membership check
+        per alias, single pass, no retry -- see the ROUTE comment for why that is
+        what makes the mutual dense/tooling cover safe.
+
+        On "dry" we return the head: there is nothing better to choose, and a 400
+        from the primary is the honest signal. It also preserves the fail-open
+        contract of _alias_has_deployments -- when it cannot introspect litellm it
+        answers True, so a dry verdict means the aliases really are deregistered,
+        not that the guard broke.
+        """
+        entry = ROUTE[category]
+        chain = (entry["model"],) + tuple(entry.get("fallbacks") or ())
+        for position, alias in enumerate(chain):
+            if alias_live(alias):
+                return alias, ("primary" if position == 0 else "degraded")
+        return chain[0], "dry"
+
     def _classify_route(data):
         """Devuelve (route_key, rule, think_marker_present) para las peticiones
         auto-enrutadas (router/auto/litellmrouter).
@@ -806,15 +851,25 @@ data:
                 if marker_present:
                     _strip_think_from_last_user(data)
                 target = ROUTE[category]
-                resolved_model = target["model"]
-                fallback_model = target.get("fallback")
-                if fallback_model and not _alias_has_deployments(resolved_model):
+                resolved_model, route_state = _degrade(category)
+                if route_state == "degraded":
                     router_log.warning(
-                        "router: target %r has no live deployments; degrading to %r",
+                        "router: %s primary %r has no live deployments; degraded to %r",
+                        category,
+                        target["model"],
                         resolved_model,
-                        fallback_model,
                     )
-                    resolved_model = fallback_model
+                elif route_state == "dry":
+                    # Both DGX nodes down or mid-swap. Logged at error so it is
+                    # distinguishable from an ordinary degrade: this one WILL 400,
+                    # and the cause is capacity, not the request.
+                    router_log.error(
+                        "router: no alias in the %s chain %r is registered; "
+                        "dispatching to %r, which will fail",
+                        category,
+                        (target["model"],) + tuple(target.get("fallbacks") or ()),
+                        resolved_model,
+                    )
                 data["model"] = resolved_model
                 data.pop("api_base", None)
                 data.pop("api_key", None)
@@ -824,6 +879,10 @@ data:
                 data["metadata"]["_router_original_model"] = proxy_model or requested_model
                 data["metadata"]["_router_resolved_model"] = resolved_model
                 data["metadata"]["_router_resolved_base"] = "model_list"
+                # primary / degraded / dry -- makes "was this request served by the
+                # model the rule chose?" answerable per request instead of only by
+                # correlating log lines against deployment state after the fact.
+                data["metadata"]["_router_route_state"] = route_state
 
                 preview = _entry_text(_last_user_entry(data))[:120].replace("\n", " ")
                 tok_est = _approx_input_tokens(data)
@@ -2437,7 +2496,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: tool-strict-gate-20260727
+        config.k8s.e-dani.com/revision: router-fallback-chain-20260804
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
