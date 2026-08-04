@@ -1745,6 +1745,9 @@ data:
     # name a specific model, so a direct call to them MUST fail when Ornith is not
     # the resident rather than silently answer from Qwen3-Coder.
     TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES
+    # Aliases propios de Qwen3-Coder en DGX2. Deliberadamente FUERA de los de
+    # tooling: es co-residente, no candidato a residente de DGX1.
+    QWEN3CODER_ALIASES = ("qwen3-coder", "coder")
     # The DGX2 uncensored 27B is the ONLY dense model in the cluster, so it owns
     # every dense-shaped name. `taxonomy` was added here on 2026-07-27: it used to
     # be registered solely by the censored 27B deployments (deleted 2026-07-26), so
@@ -1763,20 +1766,31 @@ data:
     QWEN36_REPEAT_GUARD_PARAMS = {
         "repetition_penalty": float(os.getenv("QWEN36_REPETITION_PENALTY", "1.08")),
     }
-    # Cluster topology (2026-08-03): FOUR backends are declared but only TWO can be
-    # registered at once -- one per node. The three DGX1 entries are mutually
-    # exclusive CANDIDATES for a single seat, not a pool: DGX1 has one physical GPU
-    # with nvidia.com/gpu.sharing-strategy=none and every candidate asks for
-    # `nvidia.com/gpu: 1` at replicas=1, so at most one of them can ever hold the
-    # card and therefore at most one can ever be Ready. They deliberately declare
-    # the SAME alias tuple (TOOLING_RESIDENT_ALIASES); readiness gating plus the
-    # explicit sibling eviction in reconcile_backend() keep exactly one of them
-    # registered. Which one is up is decided in git (ai overlay replicas patches),
-    # so the switch is auditable and reversible by re-pinning targetRevision. There is still no alias pool and no load-balancing.
-    #   - `ornith-dgx1`  (DGX1, nvidia-dgx): Ornith 1.0 35B-A3B MoE + grafted MTP.
-    #     Default resident. Additionally owns its own ornith-canary/ornith-1.0.
-    #   - `qwen3coder-dgx1` (DGX1): Qwen3-Coder-30B-A3B NVFP4 + EAGLE3. Text only.
-    #   - `nvidia-qwen36-dgx1` (DGX1): NVIDIA-Qwen3.6-35B NVFP4 + MTP. Multimodal.
+    # Cluster topology (2026-08-04). CUATRO backends declarados, y la exclusion
+    # mutua NO es uniforme: depende del nodo.
+    #
+    # DGX1 (nvidia-dgx) = asiento UNICO de tooling. Una GPU fisica con
+    # nvidia.com/gpu.sharing-strategy=none, y los dos candidatos piden
+    # `nvidia.com/gpu: 1`, asi que como maximo uno puede estar Ready. Declaran el
+    # MISMO conjunto (TOOLING_RESIDENT_ALIASES): la readiness decide quien tiene el
+    # alias, y la eviction explicita de reconcile_backend() garantiza que no lo
+    # sirvan dos ni un instante. Quien esta arriba se decide en git (los patches de
+    # replicas del overlay de la app `ai`), asi que el cambio es auditable y
+    # reversible re-pineando targetRevision.
+    #   - `ornith-dgx1`  Ornith 1.0 35B-A3B + MTP injertado. Ademas posee sus
+    #     propios ornith-canary/ornith-1.0, que NO se comparten: nombran un modelo
+    #     concreto, asi que una llamada directa debe fallar si no es el residente.
+    #   - `nvidia-qwen36-dgx1`  NVIDIA-Qwen3.6-35B NVFP4 + MTP nativo. Multimodal.
+    #     Residente desde 2026-08-04: gana en tooling con rangos que no se solapan
+    #     (350-352 vs 340-345 de 370) a cambio de ~14% de decode.
+    #
+    # DGX2 (gx10-ec3d) = dos slots por time-slicing, asi que aqui SI hay
+    # co-residencia. `dense` y `qwen3-coder` pueden estar arriba a la vez. Por eso
+    # qwen3coder-dgx2 tiene aliases PROPIOS y no los de tooling: al no compartir
+    # nodo con DGX1 no hay exclusion fisica, y si declarara los de tooling ese alias
+    # acabaria servido por dos backends.
+    #
+    # Sigue sin haber pool de aliases ni balanceo en ningun caso.
     #   - `qwen36-27b-uncensored-dgx2` (DGX2, gx10-ec3d): the uncensored 27B DENSE.
     #     Owns dense/dense-reasoning/dense-uncensored/taxonomy. Evictable: the GPU
     #     arbiter can hand DGX2 to image/video work, which takes its EndpointSlice
@@ -1808,38 +1822,6 @@ data:
             "context_window": 262144,
             "supports_function_calling": True,
             "supports_vision": True,
-        },
-        {
-            # DGX1 tooling-resident candidate #2: Qwen3-Coder-30B-A3B NVFP4 with an
-            # EAGLE3 draft head. qwen3_moe, TEXT ONLY -- no vision, no reasoning
-            # parser (the Instruct never emits <think>), so supports_vision is False
-            # and a multimodal request on `tooling` fails fast instead of silently
-            # dropping the images. Never Ready at the same time as ornith-dgx1: same
-            # single GPU.
-            "name": "qwen3coder-dgx1",
-            "label": "DGX1_QWEN3CODER_30B",
-            "backend": "dgx1",
-            "base_model": os.getenv(
-                "QWEN3CODER_DGX1_MODEL",
-                "openai/qwen3-coder-30b-a3b-nvfp4",
-            ),
-            "aliases": TOOLING_RESIDENT_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_QWEN3CODER_DGX1",
-                "vllm-qwen3coder-30b-a3b-nvfp4-dgx1",
-            ),
-            "api_base": os.getenv(
-                "QWEN3CODER_DGX1_API_BASE",
-                "http://vllm-qwen3coder-30b-a3b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1",
-            ),
-            # NOT a prefix of any RETIRED_MANAGED_ID_PREFIXES entry: `dgx1-qwen3c`
-            # diverges from the retired `dgx1-qwen36-` at the 11th character.
-            "id_prefix": "dgx1-qwen3coder-30b-a3b-nvfp4",
-            "max_parallel_requests": 4,
-            "max_tokens": 16384,
-            "context_window": 262144,
-            "supports_function_calling": True,
-            "supports_vision": False,
         },
         {
             # DGX1 tooling-resident candidate #3: NVIDIA-Qwen3.6-35B-A3B NVFP4
@@ -1876,6 +1858,50 @@ data:
             "context_window": 262144,
             "supports_function_calling": True,
             "supports_vision": True,
+        },
+        {
+            # Qwen3-Coder-30B-A3B NVFP4 + cabeza EAGLE3, CO-RESIDENTE en DGX2 con el
+            # 27B denso. DGX2 tiene 2 replicas de GPU por time-slicing, asi que este
+            # y `dense` pueden estar arriba a la vez (como TRELLIS y compania).
+            #
+            # ALIASES PROPIOS, no los de tooling. Motivo concreto: DGX1 y DGX2 son
+            # nodos DISTINTOS, asi que aqui NO hay exclusion fisica con el residente
+            # de tooling. Si declarara TOOLING_RESIDENT_ALIASES, `tooling` acabaria
+            # servido por dos backends a la vez -- exactamente lo que el resto de
+            # este controlador existe para evitar.
+            #
+            # Es el unico de los cuatro modelos auditados que conduce un agente de
+            # verdad: 11/14 tareas de opencode verificadas por script, frente a
+            # 0-1/14 de Ornith, del 27B denso y del NVIDIA-Qwen3.6. Los tres de la
+            # familia qwen3_5_moe alucinan tool calls en XML inventado bajo el system
+            # prompt de ~9.3k tokens de opencode. Apunta aqui tus agentes.
+            # Evidencia: https://huggingface.co/datasets/pocharlies/dgx-spark-moe-benchmarks
+            #
+            # qwen3_moe, SOLO TEXTO: supports_vision False para que una peticion
+            # multimodal falle rapido en vez de descartar las imagenes en silencio.
+            "name": "qwen3coder-dgx2",
+            "label": "DGX2_QWEN3CODER_30B",
+            "backend": "dgx2",
+            "base_model": os.getenv(
+                "QWEN3CODER_DGX2_MODEL",
+                "openai/qwen3-coder-30b-a3b-nvfp4",
+            ),
+            "aliases": QWEN3CODER_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN3CODER_DGX2",
+                "vllm-qwen3coder-30b-a3b-nvfp4-dgx2",
+            ),
+            "api_base": os.getenv(
+                "QWEN3CODER_DGX2_API_BASE",
+                "http://vllm-qwen3coder-30b-a3b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
+            ),
+            # NO es prefijo de ninguna entrada de RETIRED_MANAGED_ID_PREFIXES.
+            "id_prefix": "dgx2-qwen3coder-30b-a3b-nvfp4",
+            "max_parallel_requests": 4,
+            "max_tokens": 16384,
+            "context_window": 262144,
+            "supports_function_calling": True,
+            "supports_vision": False,
         },
         {
             # DGX2 resident and the cluster's only DENSE model: the uncensored
@@ -2362,7 +2388,7 @@ spec:
             # DGX1 tooling seat: three mutually exclusive candidates, one GPU. The
             # dashboard's DGX1 model-mode button scales exactly one of them to 1.
             - { name: K8S_SERVICE_ORNITH_DGX1, value: "vllm-ornith-35b-nvfp4-mtp-dgx1" }
-            - { name: K8S_SERVICE_QWEN3CODER_DGX1, value: "vllm-qwen3coder-30b-a3b-nvfp4-dgx1" }
+            - { name: K8S_SERVICE_QWEN3CODER_DGX2, value: "vllm-qwen3coder-30b-a3b-nvfp4-dgx2" }
             - { name: QWEN3CODER_DGX1_MODEL, value: "openai/qwen3-coder-30b-a3b-nvfp4" }
             - { name: K8S_SERVICE_NVIDIA_QWEN36_DGX1, value: "vllm-nvidia-qwen36-35b-dgx1" }
             - { name: NVIDIA_QWEN36_DGX1_MODEL, value: "openai/nvidia-qwen36-35b-nvfp4" }

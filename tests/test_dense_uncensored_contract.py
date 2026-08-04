@@ -65,28 +65,32 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert "/team/new" not in block
 
 
-def test_backends_are_one_dgx2_dense_plus_three_exclusive_dgx1_candidates():
-    """4 backends declarados, 2 registrables a la vez (2026-08-03).
+def test_backends_are_two_exclusive_dgx1_candidates_plus_two_dgx2_coresidents():
+    """4 backends declarados, y la exclusion NO es uniforme (2026-08-04).
 
-    Los tres de DGX1 son candidatos MUTUAMENTE EXCLUYENTES al mismo asiento: una
-    sola GPU con sharing-strategy=none, todos piden `nvidia.com/gpu: 1` a
-    replicas=1, asi que como mucho uno puede estar Ready. Por eso comparten el
-    mismo tuple de alias.
+    DGX1: dos candidatos MUTUAMENTE EXCLUYENTES al mismo asiento (una GPU con
+    sharing-strategy=none, ambos piden nvidia.com/gpu: 1), asi que comparten el
+    mismo tuple de alias y la readiness decide.
+
+    DGX2: dos CO-RESIDENTES (2 replicas de GPU por time-slicing) que pueden estar
+    arriba a la vez, asi que NO pueden compartir alias con nadie.
     """
     text = MANIFEST.read_text()
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
     assert backends.count('"name": "') == 4
-    for name in ("ornith-dgx1", "qwen3coder-dgx1", "nvidia-qwen36-dgx1",
-                 "qwen36-27b-uncensored-dgx2"):
+    for name in ("ornith-dgx1", "nvidia-qwen36-dgx1",
+                 "qwen3coder-dgx2", "qwen36-27b-uncensored-dgx2"):
         assert f'"name": "{name}"' in backends
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",
-                 "qwen36-27b-dense-dgx1", "qwen36-27b-dense-dgx2"):
+                 "qwen36-27b-dense-dgx1", "qwen36-27b-dense-dgx2",
+                 # nunca existio en DGX1: Qwen3-Coder es co-residente de DGX2
+                 "qwen3coder-dgx1"):
         assert f'"name": "{dead}"' not in backends
 
     # Solo el de NVIDIA es multimodal entre los candidatos nuevos; Qwen3-Coder es
     # solo texto y debe declararlo, no heredar el True de Ornith.
-    coder = backends[backends.index('"name": "qwen3coder-dgx1"'):
-                     backends.index('"name": "nvidia-qwen36-dgx1"')]
+    coder = backends[backends.index('"name": "qwen3coder-dgx2"'):
+                     backends.index('"name": "qwen36-27b-uncensored-dgx2"')]
     assert '"supports_vision": False' in coder
     assert '"context_window": 262144' in coder
     assert '"supports_function_calling": True' in coder
@@ -95,7 +99,7 @@ def test_backends_are_one_dgx2_dense_plus_three_exclusive_dgx1_candidates():
     # cleanup_retired_models() purga en cada ciclo.
     retired = _sync_block(text, "RETIRED_MANAGED_ID_PREFIXES = (", "TOKEN_PATH =")
     dead_prefixes = re.findall(r'"(dgx\d-[a-z0-9-]+-)"', retired)
-    for prefix in ("dgx1-qwen3coder-30b-a3b-nvfp4-", "dgx1-nvidia-qwen36-35b-nvfp4-"):
+    for prefix in ("dgx2-qwen3coder-30b-a3b-nvfp4-", "dgx1-nvidia-qwen36-35b-nvfp4-"):
         for dead in dead_prefixes:
             assert not prefix.startswith(dead), f"{prefix} seria purgado por {dead}"
 
@@ -107,8 +111,27 @@ def test_shared_tooling_alias_is_guarded_against_double_registration():
     controlador (endpoint_ready devuelve None y se SALTA el backend), asi que
     habilitar un backend debe expulsar explicitamente a sus hermanos."""
     text = MANIFEST.read_text()
+    # Los dos candidatos de DGX1 comparten los nombres de tooling, pero NO con el
+    # mismo literal: Ornith los recibe via ORNITH_ALIASES (que suma sus canary),
+    # NVIDIA via TOOLING_RESIDENT_ALIASES. Se comprueba la invariante SEMANTICA,
+    # no el nombre de la constante, para que renombrarla no de un falso verde.
     assert "TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES" in text
-    assert text.count('"aliases": TOOLING_RESIDENT_ALIASES') == 2
+    assert "ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES" in text
+
+    backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
+    comparten = [n for n, a in re.findall(r'"name":\s*"([a-z0-9-]+)".*?"aliases":\s*(\w+)',
+                                          backends, re.S)
+                 if a in ("ORNITH_ALIASES", "TOOLING_RESIDENT_ALIASES")]
+    assert sorted(comparten) == ["nvidia-qwen36-dgx1", "ornith-dgx1"], comparten
+
+    # El co-residente de DGX2 NO puede compartirlos: no hay exclusion fisica entre
+    # nodos distintos, asi que `tooling` acabaria servido por dos backends.
+    coder = backends[backends.index('"name": "qwen3coder-dgx2"'):
+                     backends.index('"name": "qwen36-27b-uncensored-dgx2"')]
+    assert '"aliases": QWEN3CODER_ALIASES' in coder
+    # Comprobar la DECLARACION, no cualquier mencion: el comentario de esa entrada
+    # nombra TOOLING_RESIDENT_ALIASES justo para explicar por que NO la usa.
+    assert '"aliases": TOOLING_RESIDENT_ALIASES' not in coder
 
     guard = _sync_block(text, "def conflicting_managed_ids", "def reconcile_backend")
     assert 'own_aliases & set(other["aliases"])' in guard
