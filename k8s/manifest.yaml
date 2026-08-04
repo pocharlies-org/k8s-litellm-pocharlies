@@ -1736,6 +1736,15 @@ data:
     # DGX1 Ornith backend (gates passed: parser/tooling battery 370, speed
     # 170 tok/s @8K).
     ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES
+    # 2026-08-03: DGX1 stops being "the Ornith node" and becomes "the tooling
+    # resident node". Three deployments are now candidates for that seat -- Ornith,
+    # Qwen3-Coder-30B-A3B and NVIDIA-Qwen3.6-35B -- selected by GitOps: the
+    # replicas switch at the top of the ai overlay's kustomization.yaml. Whichever one is up owns the tooling-shaped names, so
+    # those names live in their own tuple instead of being spelled `Ornith's`.
+    # ORNITH_CANARY_ALIASES stay on Ornith alone: `ornith-canary` / `ornith-1.0`
+    # name a specific model, so a direct call to them MUST fail when Ornith is not
+    # the resident rather than silently answer from Qwen3-Coder.
+    TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES
     # The DGX2 uncensored 27B is the ONLY dense model in the cluster, so it owns
     # every dense-shaped name. `taxonomy` was added here on 2026-07-27: it used to
     # be registered solely by the censored 27B deployments (deleted 2026-07-26), so
@@ -1754,11 +1763,20 @@ data:
     QWEN36_REPEAT_GUARD_PARAMS = {
         "repetition_penalty": float(os.getenv("QWEN36_REPETITION_PENALTY", "1.08")),
     }
-    # Cluster topology (2026-07-26): exactly TWO chat models remain, one per node,
-    # each on its own set of aliases -- there is no shared-alias pool and no
-    # load-balancing between them any more.
+    # Cluster topology (2026-08-03): FOUR backends are declared but only TWO can be
+    # registered at once -- one per node. The three DGX1 entries are mutually
+    # exclusive CANDIDATES for a single seat, not a pool: DGX1 has one physical GPU
+    # with nvidia.com/gpu.sharing-strategy=none and every candidate asks for
+    # `nvidia.com/gpu: 1` at replicas=1, so at most one of them can ever hold the
+    # card and therefore at most one can ever be Ready. They deliberately declare
+    # the SAME alias tuple (TOOLING_RESIDENT_ALIASES); readiness gating plus the
+    # explicit sibling eviction in reconcile_backend() keep exactly one of them
+    # registered. Which one is up is decided in git (ai overlay replicas patches),
+    # so the switch is auditable and reversible by re-pinning targetRevision. There is still no alias pool and no load-balancing.
     #   - `ornith-dgx1`  (DGX1, nvidia-dgx): Ornith 1.0 35B-A3B MoE + grafted MTP.
-    #     Owns tooling/router/auto/litellmrouter and the qwen36-35b* compat names.
+    #     Default resident. Additionally owns its own ornith-canary/ornith-1.0.
+    #   - `qwen3coder-dgx1` (DGX1): Qwen3-Coder-30B-A3B NVFP4 + EAGLE3. Text only.
+    #   - `nvidia-qwen36-dgx1` (DGX1): NVIDIA-Qwen3.6-35B NVFP4 + MTP. Multimodal.
     #   - `qwen36-27b-uncensored-dgx2` (DGX2, gx10-ec3d): the uncensored 27B DENSE.
     #     Owns dense/dense-reasoning/dense-uncensored/taxonomy. Evictable: the GPU
     #     arbiter can hand DGX2 to image/video work, which takes its EndpointSlice
@@ -1785,6 +1803,74 @@ data:
                 "http://vllm-ornith-35b-nvfp4-mtp-dgx1.llm.svc.cluster.local:8000/v1",
             ),
             "id_prefix": "dgx1-ornith-35b-nvfp4-mtp",
+            "max_parallel_requests": 4,
+            "max_tokens": 16384,
+            "context_window": 262144,
+            "supports_function_calling": True,
+            "supports_vision": True,
+        },
+        {
+            # DGX1 tooling-resident candidate #2: Qwen3-Coder-30B-A3B NVFP4 with an
+            # EAGLE3 draft head. qwen3_moe, TEXT ONLY -- no vision, no reasoning
+            # parser (the Instruct never emits <think>), so supports_vision is False
+            # and a multimodal request on `tooling` fails fast instead of silently
+            # dropping the images. Never Ready at the same time as ornith-dgx1: same
+            # single GPU.
+            "name": "qwen3coder-dgx1",
+            "label": "DGX1_QWEN3CODER_30B",
+            "backend": "dgx1",
+            "base_model": os.getenv(
+                "QWEN3CODER_DGX1_MODEL",
+                "openai/qwen3-coder-30b-a3b-nvfp4",
+            ),
+            "aliases": TOOLING_RESIDENT_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN3CODER_DGX1",
+                "vllm-qwen3coder-30b-a3b-nvfp4-dgx1",
+            ),
+            "api_base": os.getenv(
+                "QWEN3CODER_DGX1_API_BASE",
+                "http://vllm-qwen3coder-30b-a3b-nvfp4-dgx1.llm.svc.cluster.local:8000/v1",
+            ),
+            # NOT a prefix of any RETIRED_MANAGED_ID_PREFIXES entry: `dgx1-qwen3c`
+            # diverges from the retired `dgx1-qwen36-` at the 11th character.
+            "id_prefix": "dgx1-qwen3coder-30b-a3b-nvfp4",
+            "max_parallel_requests": 4,
+            "max_tokens": 16384,
+            "context_window": 262144,
+            "supports_function_calling": True,
+            "supports_vision": False,
+        },
+        {
+            # DGX1 tooling-resident candidate #3: NVIDIA-Qwen3.6-35B-A3B NVFP4
+            # (modelopt checkpoint) with native MTP. qwen3_5_moe MULTIMODAL, same
+            # shape as Ornith. Never Ready at the same time as the other two DGX1
+            # candidates: same single GPU.
+            "name": "nvidia-qwen36-dgx1",
+            "label": "DGX1_NVIDIA_QWEN36_35B",
+            "backend": "dgx1",
+            # Deliberately NOT `openai/qwen36-...`: that prefix is what
+            # extra_litellm_params() keys the repetition-penalty guard on, and this
+            # checkpoint has not been measured against it. Renaming it into the
+            # qwen36- namespace would silently enable the guard.
+            "base_model": os.getenv(
+                "NVIDIA_QWEN36_DGX1_MODEL",
+                "openai/nvidia-qwen36-35b-nvfp4",
+            ),
+            "aliases": TOOLING_RESIDENT_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_NVIDIA_QWEN36_DGX1",
+                "vllm-nvidia-qwen36-35b-dgx1",
+            ),
+            "api_base": os.getenv(
+                "NVIDIA_QWEN36_DGX1_API_BASE",
+                "http://vllm-nvidia-qwen36-35b-dgx1.llm.svc.cluster.local:8000/v1",
+            ),
+            # `dgx1-nvidia-...` deliberately does NOT start with the retired
+            # `dgx1-qwen36-35b-nvfp4-` prefix, which cleanup_retired_models() purges
+            # every cycle -- naming it `dgx1-qwen36-35b-nvfp4-*` would make this
+            # backend delete its own registrations on every loop.
+            "id_prefix": "dgx1-nvidia-qwen36-35b-nvfp4",
             "max_parallel_requests": 4,
             "max_tokens": 16384,
             "context_window": 262144,
@@ -2123,6 +2209,38 @@ data:
             delete_model(model_id)
 
 
+    def conflicting_managed_ids(backend: dict[str, Any]) -> set[str]:
+        """Managed IDs of OTHER backends that claim an alias of this one.
+
+        LiteLLM does not enforce alias uniqueness: `/model/new` happily accepts a
+        second deployment under `tooling` with a different model_info.id and the
+        router then load-balances across both. Until 2026-08-03 nothing in this
+        controller relied on that -- every backend owned a disjoint alias set. The
+        three DGX1 tooling candidates share one tuple, so the ONLY thing keeping
+        `tooling` single-valued is that one physical GPU cannot make two of them
+        Ready at once.
+
+        That is a property of the hardware, not an invariant of this loop, and the
+        loop can still double-register without it being violated: endpoint_ready()
+        returns None on any non-404 Kubernetes error, and a None makes main() SKIP
+        that backend entirely -- leaving the outgoing resident's IDs registered
+        while the incoming one, which reads fine, registers its own. Half of
+        `tooling` would then be routed to an api_base whose pod is gone.
+
+        So enabling a backend explicitly evicts every sibling registration that
+        claims one of its aliases, before adding its own. Last one Ready wins, and
+        the overlap is bounded to the single cycle that observes it.
+        """
+        own_aliases = set(backend["aliases"])
+        conflicting: set[str] = set()
+        for other in BACKENDS:
+            if other["name"] == backend["name"]:
+                continue
+            for alias in own_aliases & set(other["aliases"]):
+                conflicting.add(managed_model_id(other, alias))
+        return conflicting
+
+
     def reconcile_backend(backend: dict[str, Any], enable: bool) -> None:
         desired = desired_deployments(backend)
         managed_ids = {d["model_info"]["id"] for d in desired}
@@ -2139,6 +2257,16 @@ data:
             delete_model(model_id)
         existing -= stale_ids
         if enable:
+            # Evict siblings BEFORE adding, so the alias is never briefly served by
+            # two deployments within one cycle.
+            for model_id in sorted(conflicting_managed_ids(backend) & existing):
+                log.info(
+                    "evicting conflicting registration %s: %s claims the same alias",
+                    model_id,
+                    backend["name"],
+                )
+                delete_model(model_id)
+                existing.discard(model_id)
             for deployment in desired:
                 if deployment["model_info"]["id"] not in existing:
                     add_model(deployment)
@@ -2214,7 +2342,9 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        config.k8s.e-dani.com/revision: tool-strict-gate-20260727
+        # Bumped 2026-08-03: sync.py gained the two DGX1 tooling candidates and the
+        # sibling-eviction guard. The ConfigMap alone does not restart this pod.
+        config.k8s.e-dani.com/revision: dgx1-tooling-resident-20260803
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -2229,7 +2359,13 @@ spec:
           env:
             - { name: LITELLM_BASE_URL, value: "http://litellm.litellm.svc.cluster.local:4000" }
             - { name: K8S_NAMESPACE, value: "llm" }
+            # DGX1 tooling seat: three mutually exclusive candidates, one GPU. The
+            # dashboard's DGX1 model-mode button scales exactly one of them to 1.
             - { name: K8S_SERVICE_ORNITH_DGX1, value: "vllm-ornith-35b-nvfp4-mtp-dgx1" }
+            - { name: K8S_SERVICE_QWEN3CODER_DGX1, value: "vllm-qwen3coder-30b-a3b-nvfp4-dgx1" }
+            - { name: QWEN3CODER_DGX1_MODEL, value: "openai/qwen3-coder-30b-a3b-nvfp4" }
+            - { name: K8S_SERVICE_NVIDIA_QWEN36_DGX1, value: "vllm-nvidia-qwen36-35b-dgx1" }
+            - { name: NVIDIA_QWEN36_DGX1_MODEL, value: "openai/nvidia-qwen36-35b-nvfp4" }
     # The Qwen3.6-35B, censored 27B F2 and Gemma-4 Services were DELETED on
     # 2026-07-26, so their backends and K8S_SERVICE_* envs were removed here on
     # 2026-07-27; there is no scale-to-zero rollback path left.

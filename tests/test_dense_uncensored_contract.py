@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -64,16 +65,58 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert "/team/new" not in block
 
 
-def test_only_two_chat_backends_remain():
-    """Exactamente 2 backends: Ornith (DGX1) y el uncensored (DGX2)."""
+def test_backends_are_one_dgx2_dense_plus_three_exclusive_dgx1_candidates():
+    """4 backends declarados, 2 registrables a la vez (2026-08-03).
+
+    Los tres de DGX1 son candidatos MUTUAMENTE EXCLUYENTES al mismo asiento: una
+    sola GPU con sharing-strategy=none, todos piden `nvidia.com/gpu: 1` a
+    replicas=1, asi que como mucho uno puede estar Ready. Por eso comparten el
+    mismo tuple de alias.
+    """
     text = MANIFEST.read_text()
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    assert backends.count('"name": "') == 2, "solo deben quedar ornith + uncensored"
-    assert '"name": "ornith-dgx1"' in backends
-    assert '"name": "qwen36-27b-uncensored-dgx2"' in backends
+    assert backends.count('"name": "') == 4
+    for name in ("ornith-dgx1", "qwen3coder-dgx1", "nvidia-qwen36-dgx1",
+                 "qwen36-27b-uncensored-dgx2"):
+        assert f'"name": "{name}"' in backends
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",
                  "qwen36-27b-dense-dgx1", "qwen36-27b-dense-dgx2"):
         assert f'"name": "{dead}"' not in backends
+
+    # Solo el de NVIDIA es multimodal entre los candidatos nuevos; Qwen3-Coder es
+    # solo texto y debe declararlo, no heredar el True de Ornith.
+    coder = backends[backends.index('"name": "qwen3coder-dgx1"'):
+                     backends.index('"name": "nvidia-qwen36-dgx1"')]
+    assert '"supports_vision": False' in coder
+    assert '"context_window": 262144' in coder
+    assert '"supports_function_calling": True' in coder
+
+    # Ninguno de los id_prefix nuevos puede caer bajo un prefijo retirado, que
+    # cleanup_retired_models() purga en cada ciclo.
+    retired = _sync_block(text, "RETIRED_MANAGED_ID_PREFIXES = (", "TOKEN_PATH =")
+    dead_prefixes = re.findall(r'"(dgx\d-[a-z0-9-]+-)"', retired)
+    for prefix in ("dgx1-qwen3coder-30b-a3b-nvfp4-", "dgx1-nvidia-qwen36-35b-nvfp4-"):
+        for dead in dead_prefixes:
+            assert not prefix.startswith(dead), f"{prefix} seria purgado por {dead}"
+
+
+def test_shared_tooling_alias_is_guarded_against_double_registration():
+    """LiteLLM no impone unicidad de alias: si dos backends de DGX1 quedaran
+    registrados a la vez sobre `tooling`, el router balancearia contra un
+    api_base muerto. La exclusion por hardware NO es una invariante de este
+    controlador (endpoint_ready devuelve None y se SALTA el backend), asi que
+    habilitar un backend debe expulsar explicitamente a sus hermanos."""
+    text = MANIFEST.read_text()
+    assert "TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES" in text
+    assert text.count('"aliases": TOOLING_RESIDENT_ALIASES') == 2
+
+    guard = _sync_block(text, "def conflicting_managed_ids", "def reconcile_backend")
+    assert 'own_aliases & set(other["aliases"])' in guard
+    assert "managed_model_id(other, alias)" in guard
+
+    reconcile = _sync_block(text, "def reconcile_backend", "def main()")
+    # La expulsion ocurre ANTES del alta, no despues.
+    assert reconcile.index("conflicting_managed_ids(backend)") < reconcile.index("add_model(deployment)")
 
 
 def test_manifest_stays_valid_yaml():
