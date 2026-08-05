@@ -3,7 +3,7 @@
 #
 # POR QUÉ EXISTE
 #
-# La cuenta ChatGPT Pro del usuario puede servir gpt-5.5 por el mismo endpoint
+# La cuenta ChatGPT Pro del usuario puede servir gpt-5.6-sol por el mismo endpoint
 # que usa el CLI de Codex (chatgpt.com/backend-api/codex/responses), sin API key
 # de pago por token. Ese endpoint NO habla el dialecto OpenAI clásico: exige el
 # Responses API con streaming obligatorio y cabeceras propias. Este puente hace
@@ -12,8 +12,9 @@
 #
 # LÍMITES CONOCIDOS (verificados contra el endpoint real el 2026-08-05)
 #
-#   - Solo `gpt-5.5`. gpt-5.5-codex, gpt-5.2 y o3 devuelven 400 "not supported
-#     when using Codex with a ChatGPT account".
+#   - Solo responden `gpt-5.6-sol` y `gpt-5.5`. gpt-5.6, gpt-5.6-codex,
+#     gpt-5.6-pro, gpt-5.6-high, gpt-5.5-codex, gpt-5.2 y o3 devuelven 400
+#     "not supported when using Codex with a ChatGPT account".
 #   - `stream:false` devuelve 400: aguas arriba SIEMPRE se pide streaming y el
 #     modo no-stream del cliente se sirve agregando la respuesta.
 #   - La cuota es la MISMA que la del Codex interactivo del usuario, y OpenAI
@@ -78,9 +79,11 @@ data:
     Restricciones del upstream, verificadas contra el endpoint real (2026-08-05):
       - `stream: false` devuelve 400 "Stream must be set to true". SIEMPRE se pide
         streaming aguas arriba; el modo no-stream del cliente se sirve agregando.
-      - Solo `gpt-5.5` funciona con cuenta ChatGPT: gpt-5.5-codex, gpt-5.2 y o3 dan
-        400 "not supported when using Codex with a ChatGPT account". Por eso el
-        modelo que pida el cliente se ignora y se fuerza UPSTREAM_MODEL.
+      - La cuenta ChatGPT solo admite un puñado de modelos: `gpt-5.6-sol` y
+        `gpt-5.5` responden; gpt-5.6, gpt-5.6-codex, gpt-5.6-pro, gpt-5.6-high,
+        gpt-5.5-codex, gpt-5.2 y o3 devuelven 400 "not supported when using Codex
+        with a ChatGPT account". Por eso el modelo que pida el cliente se ignora
+        y se fuerza UPSTREAM_MODEL.
       - Emite items `reasoning` que no son texto de respuesta y se descartan.
 
     Solo stdlib: la imagen es un python:3.x-slim sin pip install en el arranque.
@@ -100,8 +103,8 @@ data:
     TOKEN_URL = "https://auth.openai.com/oauth/token"
     # client_id de la app Codex CLI, leído del claim `aud` del id_token de ~/.codex/auth.json
     CLIENT_ID = os.environ.get("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
-    UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", "gpt-5.5")
-    MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-5.5-codex-oauth")
+    UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", "gpt-5.6-sol")
+    MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-5.6-sol-oauth")
     BRIDGE_API_KEY = os.environ.get("BRIDGE_API_KEY", "")
     AUTH_FILE = os.environ.get("AUTH_FILE", "/auth/auth.json")
     SECRET_NAME = os.environ.get("SECRET_NAME", "codex-bridge-auth")
@@ -626,8 +629,8 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: AUTH_FILE, value: /auth/auth.json }
-            - { name: MODEL_NAME, value: gpt-5.5-codex-oauth }
-            - { name: UPSTREAM_MODEL, value: gpt-5.5 }
+            - { name: MODEL_NAME, value: gpt-5.6-sol-oauth }
+            - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-auth }
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
@@ -662,7 +665,7 @@ spec:
     - { name: http, port: 8080, targetPort: 8080 }
 ---
 # Rotador del token. Sin esto la credencial caduca a los 10 días y el modelo
-# gpt-5.5-chatgpt deja de responder.
+# gpt-5.6-sol deja de responder.
 #
 # Cada 6 h porque la ventana de rotación que concede OpenAI
 # (earliest_refresh_at → expiración) es de ~1 día: cuatro intentos dentro de la
