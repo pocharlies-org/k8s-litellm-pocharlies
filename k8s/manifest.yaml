@@ -103,6 +103,19 @@ data:
         api_key: not-used
       model_info:
         mode: audio_speech
+    # ── ChatGPT Pro (suscripción, no API key) vía codex-bridge ──
+    # El único modelo del gateway que NO corre en el DGX: sale a chatgpt.com con
+    # las credenciales OAuth del Codex del usuario. Por eso es estático y no lo
+    # gestiona litellm-dgx-backend-sync — no hay Service que vigilar.
+    # OJO con la cuota: comparte límites con el Codex interactivo del usuario y
+    # OpenAI estrangula por cliente. Para chat manual, no para cargas masivas.
+    - model_name: gpt-5.5-chatgpt
+      litellm_params:
+        model: openai/gpt-5.5-codex-oauth
+        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
     litellm_settings:
       success_callback:
       - db

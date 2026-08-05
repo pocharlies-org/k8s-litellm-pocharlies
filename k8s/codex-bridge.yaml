@@ -1,0 +1,514 @@
+---
+# Puente OpenAI-compatible sobre la suscripción ChatGPT (Codex OAuth).
+#
+# POR QUÉ EXISTE
+#
+# La cuenta ChatGPT Pro del usuario puede servir gpt-5.5 por el mismo endpoint
+# que usa el CLI de Codex (chatgpt.com/backend-api/codex/responses), sin API key
+# de pago por token. Ese endpoint NO habla el dialecto OpenAI clásico: exige el
+# Responses API con streaming obligatorio y cabeceras propias. Este puente hace
+# la traducción para que LiteLLM lo consuma como un backend `openai/` normal, y
+# así cualquier cliente del gateway (Aurora incluida) pueda usarlo sin cambios.
+#
+# LÍMITES CONOCIDOS (verificados contra el endpoint real el 2026-08-05)
+#
+#   - Solo `gpt-5.5`. gpt-5.5-codex, gpt-5.2 y o3 devuelven 400 "not supported
+#     when using Codex with a ChatGPT account".
+#   - `stream:false` devuelve 400: aguas arriba SIEMPRE se pide streaming y el
+#     modo no-stream del cliente se sirve agregando la respuesta.
+#   - La cuota es la MISMA que la del Codex interactivo del usuario, y OpenAI
+#     estrangula por cliente: cargas masivas (p.ej. los RCA de Aurora) pueden
+#     dejar sin Codex al usuario. Pensado para chat manual, no para RCA.
+#
+# CREDENCIALES
+#
+# El Secret `codex-bridge-auth` NO está en git: se siembra a mano desde el
+# ~/.codex/auth.json del Mac. El puente refresca el access token solo cuando le
+# queda menos de una hora y persiste el resultado en ese mismo Secret (de ahí el
+# Role de abajo). Si el refresh empieza a fallar con 401, hay que resembrarlo:
+#
+#   kubectl -n litellm create secret generic codex-bridge-auth \
+#     --from-file=auth.json=$HOME/.codex/auth.json --dry-run=client -o yaml \
+#     | kubectl apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: codex-bridge
+  namespace: litellm
+---
+# Solo su propio Secret, y solo para poder guardar los tokens ya rotados.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: codex-bridge
+  namespace: litellm
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["codex-bridge-auth"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: codex-bridge
+  namespace: litellm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: codex-bridge
+subjects:
+  - kind: ServiceAccount
+    name: codex-bridge
+    namespace: litellm
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: codex-bridge-code
+  namespace: litellm
+data:
+  bridge.py: |
+    """Puente OpenAI-compatible sobre la cuenta ChatGPT/Codex.
+
+    Expone /v1/chat/completions y traduce a chatgpt.com/backend-api/codex/responses,
+    que es el endpoint que usa el CLI de Codex con credenciales OAuth de suscripción
+    (no API key de pago). LiteLLM lo consume como un backend `openai/` cualquiera.
+
+    Restricciones del upstream, verificadas contra el endpoint real (2026-08-05):
+      - `stream: false` devuelve 400 "Stream must be set to true". SIEMPRE se pide
+        streaming aguas arriba; el modo no-stream del cliente se sirve agregando.
+      - Solo `gpt-5.5` funciona con cuenta ChatGPT: gpt-5.5-codex, gpt-5.2 y o3 dan
+        400 "not supported when using Codex with a ChatGPT account". Por eso el
+        modelo que pida el cliente se ignora y se fuerza UPSTREAM_MODEL.
+      - Emite items `reasoning` que no son texto de respuesta y se descartan.
+
+    Solo stdlib: la imagen es un python:3.x-slim sin pip install en el arranque.
+    """
+
+    import json
+    import os
+    import base64
+    import threading
+    import time
+    import urllib.error
+    import urllib.request
+    import uuid
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    UPSTREAM_URL = "https://chatgpt.com/backend-api/codex/responses"
+    TOKEN_URL = "https://auth.openai.com/oauth/token"
+    # client_id de la app Codex CLI, leído del claim `aud` del id_token de ~/.codex/auth.json
+    CLIENT_ID = os.environ.get("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
+    UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", "gpt-5.5")
+    MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-5.5-codex-oauth")
+    BRIDGE_API_KEY = os.environ.get("BRIDGE_API_KEY", "")
+    AUTH_FILE = os.environ.get("AUTH_FILE", "/auth/auth.json")
+    SECRET_NAME = os.environ.get("SECRET_NAME", "codex-bridge-auth")
+    NAMESPACE = os.environ.get("POD_NAMESPACE", "litellm")
+    REFRESH_MARGIN = int(os.environ.get("REFRESH_MARGIN_SECONDS", "3600"))
+
+    _lock = threading.Lock()
+    _tokens = {}
+
+
+    def log(msg):
+        print(f"[codex-bridge] {msg}", flush=True)
+
+
+    # --------------------------------------------------------------------------
+    # Credenciales
+    # --------------------------------------------------------------------------
+
+    def _jwt_exp(token):
+        try:
+            payload = token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            return json.loads(base64.urlsafe_b64decode(payload)).get("exp", 0)
+        except Exception:
+            return 0
+
+
+    def load_tokens():
+        global _tokens
+        with open(AUTH_FILE) as fh:
+            data = json.load(fh)
+        _tokens = data["tokens"] if "tokens" in data else data
+        log(f"credenciales cargadas, access_token exp={_jwt_exp(_tokens['access_token'])}")
+
+
+    def persist_tokens():
+        """Guarda los tokens rotados en el Secret. Sin esto, cada reinicio del pod
+        volvería al refresh_token viejo, que el rotado puede haber invalidado."""
+        try:
+            with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as fh:
+                sa = fh.read()
+            payload = json.dumps({"tokens": _tokens}).encode()
+            body = json.dumps({
+                "data": {"auth.json": base64.b64encode(payload).decode()}
+            }).encode()
+            req = urllib.request.Request(
+                f"https://kubernetes.default.svc/api/v1/namespaces/{NAMESPACE}/secrets/{SECRET_NAME}",
+                data=body, method="PATCH",
+                headers={"Authorization": "Bearer " + sa,
+                         "Content-Type": "application/merge-patch+json"})
+            ctx = __import__("ssl").create_default_context(
+                cafile="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+            urllib.request.urlopen(req, timeout=15, context=ctx).read()
+            log("tokens rotados persistidos en el Secret")
+        except Exception as exc:  # no es fatal: el token en memoria sigue sirviendo
+            log(f"AVISO: no pude persistir los tokens rotados: {exc!r}")
+
+
+    def refresh_if_needed():
+        """Refresca solo si al access token le queda menos de REFRESH_MARGIN.
+
+        OJO: si OpenAI rota el refresh_token, el `codex` CLI del Mac que comparta
+        esta credencial puede quedarse fuera y necesitar `codex login`. Por eso el
+        margen es corto: se refresca lo menos posible.
+        """
+        with _lock:
+            exp = _jwt_exp(_tokens.get("access_token", ""))
+            if exp - time.time() > REFRESH_MARGIN:
+                return
+            log("access token cerca de caducar: refrescando")
+            body = json.dumps({
+                "client_id": CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": _tokens["refresh_token"],
+                "scope": "openid profile email",
+            }).encode()
+            req = urllib.request.Request(
+                TOKEN_URL, data=body, method="POST",
+                headers={"Content-Type": "application/json"})
+            try:
+                data = json.loads(urllib.request.urlopen(req, timeout=30).read())
+            except urllib.error.HTTPError as exc:
+                log(f"ERROR refrescando ({exc.code}): hay que resembrar el Secret "
+                    f"con un `codex login` nuevo")
+                raise
+            _tokens["access_token"] = data["access_token"]
+            if data.get("refresh_token"):
+                rotated = data["refresh_token"] != _tokens.get("refresh_token")
+                _tokens["refresh_token"] = data["refresh_token"]
+                log(f"refresh OK (refresh_token {'ROTADO' if rotated else 'estable'})")
+            if data.get("id_token"):
+                _tokens["id_token"] = data["id_token"]
+            persist_tokens()
+
+
+    # --------------------------------------------------------------------------
+    # Traducción chat/completions -> responses
+    # --------------------------------------------------------------------------
+
+    def to_responses_payload(req):
+        instructions = []
+        items = []
+        for msg in req.get("messages", []):
+            role = msg.get("role")
+            content = msg.get("content")
+            if isinstance(content, list):  # partes multimodales: solo texto
+                content = "".join(p.get("text", "") for p in content
+                                  if isinstance(p, dict) and p.get("type") in ("text", "input_text"))
+            if role in ("system", "developer"):
+                if content:
+                    instructions.append(content)
+            elif role == "tool":
+                items.append({
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id", ""),
+                    "output": content if isinstance(content, str) else json.dumps(content),
+                })
+            elif role == "assistant":
+                for call in msg.get("tool_calls") or []:
+                    fn = call.get("function", {})
+                    items.append({
+                        "type": "function_call",
+                        "call_id": call.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "arguments": fn.get("arguments", "") or "{}",
+                    })
+                if content:
+                    items.append({"type": "message", "role": "assistant",
+                                  "content": [{"type": "output_text", "text": content}]})
+            else:
+                items.append({"type": "message", "role": "user",
+                              "content": [{"type": "input_text", "text": content or ""}]})
+
+        payload = {
+            "model": UPSTREAM_MODEL,
+            "instructions": "\n\n".join(instructions) or "You are a helpful assistant.",
+            "input": items,
+            "stream": True,   # el upstream rechaza cualquier otra cosa
+            "store": False,
+        }
+        tools = []
+        for tool in req.get("tools") or []:
+            fn = tool.get("function", tool)
+            tools.append({
+                "type": "function",
+                "name": fn.get("name"),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+                "strict": False,
+            })
+        if tools:
+            payload["tools"] = tools
+            choice = req.get("tool_choice")
+            if choice in ("auto", "none", "required"):
+                payload["tool_choice"] = choice
+        return payload
+
+
+    def open_upstream(payload):
+        refresh_if_needed()
+        req = urllib.request.Request(
+            UPSTREAM_URL, data=json.dumps(payload).encode(), method="POST",
+            headers={
+                "Authorization": "Bearer " + _tokens["access_token"],
+                "chatgpt-account-id": _tokens["account_id"],
+                "OpenAI-Beta": "responses=experimental",
+                "originator": "codex_cli_rs",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "session_id": str(uuid.uuid4()),
+            })
+        return urllib.request.urlopen(req, timeout=600)
+
+
+    def iter_events(stream):
+        """Trocea el SSE del upstream en (evento, data) sin cargarlo entero."""
+        buf = b""
+        for raw in stream:
+            buf += raw
+            while b"\n\n" in buf:
+                block, buf = buf.split(b"\n\n", 1)
+                event, data = None, None
+                for line in block.decode(errors="replace").splitlines():
+                    if line.startswith("event: "):
+                        event = line[7:]
+                    elif line.startswith("data: "):
+                        data = line[6:]
+                if event and data:
+                    try:
+                        yield event, json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+
+
+    def collect(stream):
+        """Consume el SSE y devuelve (texto, tool_calls, usage)."""
+        text, calls, usage = [], [], {}
+        for event, data in iter_events(stream):
+            if event == "response.output_text.delta":
+                text.append(data.get("delta", ""))
+            elif event == "response.output_item.done":
+                item = data.get("item", {})
+                if item.get("type") == "function_call":
+                    calls.append({
+                        "id": item.get("call_id"),
+                        "type": "function",
+                        "function": {"name": item.get("name"),
+                                     "arguments": item.get("arguments", "{}")},
+                    })
+            elif event == "response.completed":
+                usage = (data.get("response") or {}).get("usage", {}) or {}
+        return "".join(text), calls, usage
+
+
+    def usage_block(usage):
+        return {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        }
+
+
+    # --------------------------------------------------------------------------
+    # HTTP
+    # --------------------------------------------------------------------------
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):  # silencia el log por petición de stdlib
+            pass
+
+        def _json(self, code, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _error(self, code, message):
+            log(f"error {code}: {message}")
+            self._json(code, {"error": {"message": message, "type": "bridge_error",
+                                        "code": code}})
+
+        def _authorized(self):
+            if not BRIDGE_API_KEY:
+                return True
+            return self.headers.get("Authorization", "") == "Bearer " + BRIDGE_API_KEY
+
+        def do_GET(self):
+            if self.path == "/health":
+                exp = _jwt_exp(_tokens.get("access_token", ""))
+                return self._json(200, {"status": "ok", "model": MODEL_NAME,
+                                        "token_expires_in_s": int(exp - time.time())})
+            if self.path.rstrip("/") in ("/v1/models", "/models"):
+                return self._json(200, {"object": "list", "data": [
+                    {"id": MODEL_NAME, "object": "model", "owned_by": "chatgpt-codex"}]})
+            return self._error(404, f"not found: {self.path}")
+
+        def do_POST(self):
+            if self.path.rstrip("/") not in ("/v1/chat/completions", "/chat/completions"):
+                return self._error(404, f"not found: {self.path}")
+            if not self._authorized():
+                return self._error(401, "invalid bridge api key")
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                req = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, json.JSONDecodeError) as exc:
+                return self._error(400, f"cuerpo ilegible: {exc}")
+
+            payload = to_responses_payload(req)
+            want_stream = bool(req.get("stream"))
+            try:
+                upstream = open_upstream(payload)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read()[:500].decode(errors="replace")
+                return self._error(exc.code, f"upstream: {detail}")
+            except Exception as exc:
+                return self._error(502, f"upstream inalcanzable: {exc!r}")
+
+            created, rid = int(time.time()), "chatcmpl-" + uuid.uuid4().hex[:24]
+            if want_stream:
+                self._stream_out(upstream, rid, created)
+            else:
+                text, calls, usage = collect(upstream)
+                message = {"role": "assistant", "content": text or None}
+                if calls:
+                    message["tool_calls"] = calls
+                self._json(200, {
+                    "id": rid, "object": "chat.completion", "created": created,
+                    "model": MODEL_NAME,
+                    "choices": [{"index": 0, "message": message,
+                                 "finish_reason": "tool_calls" if calls else "stop"}],
+                    "usage": usage_block(usage),
+                })
+
+        def _stream_out(self, upstream, rid, created):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            def send(chunk):
+                self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+                self.wfile.flush()
+
+            def envelope(delta, finish=None):
+                return {"id": rid, "object": "chat.completion.chunk", "created": created,
+                        "model": MODEL_NAME,
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+
+            try:
+                send(envelope({"role": "assistant", "content": ""}))
+                calls, usage = [], {}
+                for event, data in iter_events(upstream):
+                    if event == "response.output_text.delta":
+                        send(envelope({"content": data.get("delta", "")}))
+                    elif event == "response.output_item.done":
+                        item = data.get("item", {})
+                        if item.get("type") == "function_call":
+                            idx = len(calls)
+                            calls.append(item)
+                            send(envelope({"tool_calls": [{
+                                "index": idx, "id": item.get("call_id"), "type": "function",
+                                "function": {"name": item.get("name"),
+                                             "arguments": item.get("arguments", "{}")}}]}))
+                    elif event == "response.completed":
+                        usage = (data.get("response") or {}).get("usage", {}) or {}
+                final = envelope({}, "tool_calls" if calls else "stop")
+                final["usage"] = usage_block(usage)
+                send(final)
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                log("cliente cerró el stream")
+
+
+    def main():
+        load_tokens()
+        port = int(os.environ.get("PORT", "8080"))
+        log(f"escuchando en :{port} como modelo {MODEL_NAME} -> {UPSTREAM_MODEL}")
+        ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codex-bridge
+  namespace: litellm
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: codex-bridge } }
+  template:
+    metadata:
+      labels: { app: codex-bridge }
+    spec:
+      serviceAccountName: codex-bridge
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        node-pool: ks5-nvme
+      containers:
+        - name: bridge
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/code/bridge.py"]
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: AUTH_FILE, value: /auth/auth.json }
+            - { name: MODEL_NAME, value: gpt-5.5-codex-oauth }
+            - { name: UPSTREAM_MODEL, value: gpt-5.5 }
+            - { name: SECRET_NAME, value: codex-bridge-auth }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+          volumeMounts:
+            - { name: code, mountPath: /code, readOnly: true }
+            - { name: auth, mountPath: /auth, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: code
+          configMap: { name: codex-bridge-code }
+        - name: auth
+          secret: { secretName: codex-bridge-auth }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codex-bridge
+  namespace: litellm
+spec:
+  selector: { app: codex-bridge }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
