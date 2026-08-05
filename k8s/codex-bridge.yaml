@@ -110,6 +110,7 @@ data:
 
     _lock = threading.Lock()
     _tokens = {}
+    _earliest_refresh = 0
 
 
     def log(msg):
@@ -129,11 +130,16 @@ data:
             return 0
 
 
-    def load_tokens():
-        global _tokens
+    def read_auth_file():
         with open(AUTH_FILE) as fh:
-            data = json.load(fh)
+            return json.load(fh)
+
+
+    def load_tokens():
+        global _tokens, _earliest_refresh
+        data = read_auth_file()
         _tokens = data["tokens"] if "tokens" in data else data
+        _earliest_refresh = data.get("earliest_refresh_at", 0)
         log(f"credenciales cargadas, access_token exp={_jwt_exp(_tokens['access_token'])}")
 
 
@@ -143,7 +149,11 @@ data:
         try:
             with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as fh:
                 sa = fh.read()
-            payload = json.dumps({"tokens": _tokens}).encode()
+            current = read_auth_file()
+            current["tokens"] = _tokens
+            if _earliest_refresh:
+                current["earliest_refresh_at"] = _earliest_refresh
+            payload = json.dumps(current, indent=2).encode()
             body = json.dumps({
                 "data": {"auth.json": base64.b64encode(payload).decode()}
             }).encode()
@@ -161,17 +171,33 @@ data:
 
 
     def refresh_if_needed():
-        """Refresca solo si al access token le queda menos de REFRESH_MARGIN.
+        """Asegura un access token vivo, refrescando lo menos posible.
 
-        OJO: si OpenAI rota el refresh_token, el `codex` CLI del Mac que comparta
-        esta credencial puede quedarse fuera y necesitar `codex login`. Por eso el
-        margen es corto: se refresca lo menos posible.
+        Quien rota de forma normal es el CronJob `codex-token-rotate`, que deja las
+        credenciales nuevas en el Secret; el kubelet las propaga a este volumen en
+        ~1 min. Por eso el orden es: (1) mirar si las de disco ya son más nuevas y
+        adoptarlas, y solo (2) refrescar aquí si tampoco sirven. Refrescar por
+        nuestra cuenta ROTA el refresh_token y deja fuera a los demás
+        consumidores de la misma credencial, así que es el último recurso.
         """
+        global _earliest_refresh
         with _lock:
             exp = _jwt_exp(_tokens.get("access_token", ""))
             if exp - time.time() > REFRESH_MARGIN:
                 return
-            log("access token cerca de caducar: refrescando")
+            try:
+                disk = read_auth_file()
+                disk_tokens = disk.get("tokens", disk)
+                if _jwt_exp(disk_tokens.get("access_token", "")) > exp:
+                    _tokens.update(disk_tokens)
+                    _earliest_refresh = disk.get("earliest_refresh_at", _earliest_refresh)
+                    exp = _jwt_exp(_tokens["access_token"])
+                    log("credenciales recargadas del Secret (rotadas por el CronJob)")
+                    if exp - time.time() > REFRESH_MARGIN:
+                        return
+            except Exception as exc:
+                log(f"AVISO: no pude releer el Secret: {exc!r}")
+            log("access token cerca de caducar y el Secret no trae uno mejor: refrescando")
             body = json.dumps({
                 "client_id": CLIENT_ID,
                 "grant_type": "refresh_token",
@@ -194,6 +220,8 @@ data:
                 log(f"refresh OK (refresh_token {'ROTADO' if rotated else 'estable'})")
             if data.get("id_token"):
                 _tokens["id_token"] = data["id_token"]
+            if data.get("earliest_refresh_at"):
+                _earliest_refresh = data["earliest_refresh_at"]
             persist_tokens()
 
 
@@ -450,6 +478,126 @@ data:
 
     if __name__ == "__main__":
         main()
+  rotate.py: |
+    """Rotador del token OAuth de Codex. Lo ejecuta un CronJob cada 6 h.
+
+    Es el ÚNICO que rota en condiciones normales: el bridge solo lo hace como
+    último recurso, porque cada refresh invalida el refresh_token anterior y deja
+    fuera a cualquier otro consumidor de la misma credencial.
+
+    Cuándo refresca — OpenAI dicta el calendario, no nosotros. La respuesta del
+    refresh trae `earliest_refresh_at` (~9 días) junto a un access_token que vive
+    10, así que hay una ventana de ~1 día para rotar. Con el cron cada 6 h se
+    entra en esa ventana 4 veces antes de que caduque nada. Pedirlo antes de
+    `earliest_refresh_at` es tirar cuota contra un endpoint que va a decir que no.
+    """
+
+    import base64
+    import json
+    import os
+    import ssl
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+
+    TOKEN_URL = "https://auth.openai.com/oauth/token"
+    CLIENT_ID = os.environ.get("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
+    NAMESPACE = os.environ.get("POD_NAMESPACE", "litellm")
+    SECRET_NAME = os.environ.get("SECRET_NAME", "codex-bridge-auth")
+    SECRET_KEY = os.environ.get("SECRET_KEY", "auth.json")
+    # Sin `earliest_refresh_at` guardado (primer arranque), este es el criterio.
+    FALLBACK_MARGIN = int(os.environ.get("FALLBACK_MARGIN_SECONDS", str(48 * 3600)))
+
+    API = "https://kubernetes.default.svc"
+    SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+
+    def log(msg):
+        print(f"[codex-rotate] {msg}", flush=True)
+
+
+    def k8s(method, path, body=None):
+        with open(f"{SA_DIR}/token") as fh:
+            token = fh.read()
+        headers = {"Authorization": "Bearer " + token}
+        if body is not None:
+            headers["Content-Type"] = "application/merge-patch+json"
+        req = urllib.request.Request(API + path, data=body, method=method, headers=headers)
+        ctx = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+        return json.loads(urllib.request.urlopen(req, timeout=30, context=ctx).read())
+
+
+    def jwt_exp(token):
+        try:
+            payload = token.split(".")[1]
+            payload += "=" * (-len(payload) % 4)
+            return json.loads(base64.urlsafe_b64decode(payload)).get("exp", 0)
+        except Exception:
+            return 0
+
+
+    def main():
+        secret = k8s("GET", f"/api/v1/namespaces/{NAMESPACE}/secrets/{SECRET_NAME}")
+        auth = json.loads(base64.b64decode(secret["data"][SECRET_KEY]))
+        tokens = auth.get("tokens", auth)
+
+        now = time.time()
+        exp = jwt_exp(tokens.get("access_token", ""))
+        earliest = auth.get("earliest_refresh_at", 0)
+        left_h = (exp - now) / 3600
+        log(f"access token caduca en {left_h:.1f} h")
+
+        if earliest:
+            if now < earliest:
+                log(f"OpenAI no admite refresh hasta dentro de "
+                    f"{(earliest - now) / 3600:.1f} h: no toco nada")
+                return 0
+            log("dentro de la ventana que marca earliest_refresh_at: rotando")
+        elif exp - now > FALLBACK_MARGIN:
+            log("sin earliest_refresh_at y queda margen de sobra: no toco nada")
+            return 0
+
+        body = json.dumps({
+            "client_id": CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": tokens["refresh_token"],
+            "scope": "openid profile email",
+        }).encode()
+        req = urllib.request.Request(TOKEN_URL, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        try:
+            fresh = json.loads(urllib.request.urlopen(req, timeout=30).read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read()[:300].decode(errors="replace")
+            log(f"ERROR: el refresh devolvió {exc.code}: {detail}")
+            log("La credencial ya no sirve. Resiembra el Secret desde un "
+                "`codex login` reciente (ver cabecera de codex-bridge.yaml).")
+            return 1
+
+        tokens["access_token"] = fresh["access_token"]
+        if fresh.get("refresh_token"):
+            rotated = fresh["refresh_token"] != tokens.get("refresh_token")
+            tokens["refresh_token"] = fresh["refresh_token"]
+            log(f"refresh OK (refresh_token {'ROTADO' if rotated else 'estable'})")
+        if fresh.get("id_token"):
+            tokens["id_token"] = fresh["id_token"]
+        auth["tokens"] = tokens
+        if fresh.get("earliest_refresh_at"):
+            auth["earliest_refresh_at"] = fresh["earliest_refresh_at"]
+        auth["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        payload = base64.b64encode(json.dumps(auth, indent=2).encode()).decode()
+        k8s("PATCH", f"/api/v1/namespaces/{NAMESPACE}/secrets/{SECRET_NAME}",
+            json.dumps({"data": {SECRET_KEY: payload}}).encode())
+        log(f"Secret actualizado; nuevo access token vive "
+            f"{(jwt_exp(tokens['access_token']) - time.time()) / 3600:.1f} h")
+        log("El bridge lo recoge solo del volumen; el Mac, con codex-auth-sync.")
+        return 0
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -512,3 +660,53 @@ spec:
   selector: { app: codex-bridge }
   ports:
     - { name: http, port: 8080, targetPort: 8080 }
+---
+# Rotador del token. Sin esto la credencial caduca a los 10 días y el modelo
+# gpt-5.5-chatgpt deja de responder.
+#
+# Cada 6 h porque la ventana de rotación que concede OpenAI
+# (earliest_refresh_at → expiración) es de ~1 día: cuatro intentos dentro de la
+# ventana bastan y no se malgasta cuota fuera de ella. El script decide; el
+# cron solo le da oportunidades.
+#
+# Lee el Secret por API en vez de montarlo: un volumen de Secret llega con
+# hasta ~1 min de retraso y aquí se escribe justo lo que se acaba de leer.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: codex-token-rotate
+  namespace: litellm
+spec:
+  schedule: "17 */6 * * *"
+  # Forbid: dos rotaciones a la vez se pisarían el refresh_token entre ellas.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: codex-bridge
+          enableServiceLinks: false
+          nodeSelector:
+            kubernetes.io/arch: amd64
+            node-pool: ks5-nvme
+          containers:
+            - name: rotate
+              image: python:3.12-slim
+              imagePullPolicy: IfNotPresent
+              command: ["python", "-u", "/code/rotate.py"]
+              env:
+                - { name: SECRET_NAME, value: codex-bridge-auth }
+                - name: POD_NAMESPACE
+                  valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+              volumeMounts:
+                - { name: code, mountPath: /code, readOnly: true }
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { memory: 128Mi }
+          volumes:
+            - name: code
+              configMap: { name: codex-bridge-code }
