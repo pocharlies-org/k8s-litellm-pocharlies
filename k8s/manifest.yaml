@@ -555,6 +555,25 @@ data:
     # only ever sees the alias we resolved to.
     HA_ALIASES = {
         "tooling-ha": {"model": "tooling", "fallbacks": ("dense", "qwen3-coder")},
+        # Para BUCLES AGENTICOS, no para prosa. Invierte la preferencia de
+        # tooling-ha a propósito.
+        #
+        # POR QUE EXISTE (2026-08-05): los RCA de Aurora morían todos en el mismo
+        # punto -- justo después de la primera llamada a herramienta -- y el modelo
+        # rellenaba el hueco inventando infraestructura que no existe en este
+        # clúster (`onprem-cluster-01`, `staging-cluster`, k8s 1.28.4). Encaja con
+        # la batería de opencode de este repo: bajo un system prompt de ~9.3k
+        # tokens, qwen3-coder conduce 11/14 tareas y Ornith / el 27B denso /
+        # NVIDIA-Qwen3.6 conducen 0-1/14, alucinando tool calls en XML inventado.
+        # Aurora corre LangGraph con 30+ tools y AGENT_RECURSION_LIMIT=240, que es
+        # un bucle aún más largo, y estaba en `tooling` -- el grupo del 0-1/14.
+        #
+        # El fallback NO es equivalente: si qwen3-coder no está, el bucle agéntico
+        # va a producir una investigación pobre igualmente. Se degrada porque una
+        # respuesta mala es mejor que un 400 a mitad de incidente, no porque dé lo
+        # mismo. Si esto degrada a menudo, la respuesta es levantar el coder, no
+        # cambiar la cadena.
+        "coder-ha": {"model": "qwen3-coder", "fallbacks": ("tooling", "dense")},
     }
 
     # Hard limit escape: the uncensored 27B serves --max-model-len 229376 while
@@ -2614,7 +2633,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: aurora-tooling-ha-20260805
+        config.k8s.e-dani.com/revision: aurora-coder-ha-20260805
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
