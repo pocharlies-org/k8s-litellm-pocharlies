@@ -3,7 +3,7 @@
 #
 # POR QUÉ EXISTE
 #
-# La cuenta ChatGPT Pro del usuario puede servir gpt-5.6-sol por el mismo endpoint
+# La cuenta ChatGPT Pro del usuario puede servir modelos GPT-5.6 por el mismo endpoint
 # que usa el CLI de Codex (chatgpt.com/backend-api/codex/responses), sin API key
 # de pago por token. Ese endpoint NO habla el dialecto OpenAI clásico: exige el
 # Responses API con streaming obligatorio y cabeceras propias. Este puente hace
@@ -12,9 +12,12 @@
 #
 # LÍMITES CONOCIDOS (verificados contra el endpoint real el 2026-08-05)
 #
-#   - Solo responden `gpt-5.6-sol` y `gpt-5.5`. gpt-5.6, gpt-5.6-codex,
-#     gpt-5.6-pro, gpt-5.6-high, gpt-5.5-codex, gpt-5.2 y o3 devuelven 400
-#     "not supported when using Codex with a ChatGPT account".
+#   - La cuenta sirve varios modelos, no uno: `gpt-5.6-sol`, `gpt-5.6-terra`,
+#     `gpt-5.6-luna` y `gpt-5.5`. Los sufijos de la familia 5.6 son variantes
+#     reales, no adornos. En cambio `gpt-5.6` a secas y los sufijos -codex,
+#     -pro y -high devuelven 400 "not supported when using Codex with a
+#     ChatGPT account", igual que gpt-5.2 y o3. El puente enruta por el modelo
+#     que pida el cliente si está en ALLOWED_MODELS.
 #   - `stream:false` devuelve 400: aguas arriba SIEMPRE se pide streaming y el
 #     modo no-stream del cliente se sirve agregando la respuesta.
 #   - La cuota es la MISMA que la del Codex interactivo del usuario, y OpenAI
@@ -79,11 +82,13 @@ data:
     Restricciones del upstream, verificadas contra el endpoint real (2026-08-05):
       - `stream: false` devuelve 400 "Stream must be set to true". SIEMPRE se pide
         streaming aguas arriba; el modo no-stream del cliente se sirve agregando.
-      - La cuenta ChatGPT solo admite un puñado de modelos: `gpt-5.6-sol` y
-        `gpt-5.5` responden; gpt-5.6, gpt-5.6-codex, gpt-5.6-pro, gpt-5.6-high,
-        gpt-5.5-codex, gpt-5.2 y o3 devuelven 400 "not supported when using Codex
-        with a ChatGPT account". Por eso el modelo que pida el cliente se ignora
-        y se fuerza UPSTREAM_MODEL.
+      - La cuenta ChatGPT no sirve cualquier modelo. Responden `gpt-5.6-sol`,
+        `gpt-5.6-terra`, `gpt-5.6-luna` y `gpt-5.5`; devuelven 400 "not supported
+        when using Codex with a ChatGPT account" el `gpt-5.6` a secas y los
+        sufijos -codex, -pro y -high, además de gpt-5.2 y o3. Los sufijos de la
+        familia 5.6 son variantes reales (sol/terra/luna), no adornos, así que la
+        lista se mantiene explícita en ALLOWED_MODELS: lo que no esté ahí cae al
+        modelo por defecto en vez de provocar un 400 del upstream.
       - Emite items `reasoning` que no son texto de respuesta y se descartan.
 
     Solo stdlib: la imagen es un python:3.x-slim sin pip install en el arranque.
@@ -103,8 +108,9 @@ data:
     TOKEN_URL = "https://auth.openai.com/oauth/token"
     # client_id de la app Codex CLI, leído del claim `aud` del id_token de ~/.codex/auth.json
     CLIENT_ID = os.environ.get("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
-    UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", "gpt-5.6-sol")
-    MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-5.6-sol-oauth")
+    ALLOWED_MODELS = [m.strip() for m in os.environ.get(
+        "ALLOWED_MODELS", "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5").split(",") if m.strip()]
+    UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", ALLOWED_MODELS[0])
     BRIDGE_API_KEY = os.environ.get("BRIDGE_API_KEY", "")
     AUTH_FILE = os.environ.get("AUTH_FILE", "/auth/auth.json")
     SECRET_NAME = os.environ.get("SECRET_NAME", "codex-bridge-auth")
@@ -232,6 +238,25 @@ data:
     # Traducción chat/completions -> responses
     # --------------------------------------------------------------------------
 
+    def resolve_model(requested):
+        """Traduce lo que pide el cliente a un modelo que el upstream acepte.
+
+        LiteLLM manda el id sin su prefijo de provider, pero aquí llegan también
+        nombres del selector de Aurora, así que se normaliza y se comprueba contra
+        la allowlist. Un modelo desconocido cae al por defecto: es preferible
+        responder con otro modelo que devolver el 400 del upstream.
+        """
+        if not requested:
+            return UPSTREAM_MODEL
+        name = str(requested).split("/")[-1]
+        if name.endswith("-oauth"):
+            name = name[: -len("-oauth")]
+        if name in ALLOWED_MODELS:
+            return name
+        log(f"modelo no soportado por la cuenta ({requested!r}); uso {UPSTREAM_MODEL}")
+        return UPSTREAM_MODEL
+
+
     def to_responses_payload(req):
         instructions = []
         items = []
@@ -267,7 +292,7 @@ data:
                               "content": [{"type": "input_text", "text": content or ""}]})
 
         payload = {
-            "model": UPSTREAM_MODEL,
+            "model": resolve_model(req.get("model")),
             "instructions": "\n\n".join(instructions) or "You are a helpful assistant.",
             "input": items,
             "stream": True,   # el upstream rechaza cualquier otra cosa
@@ -386,11 +411,13 @@ data:
         def do_GET(self):
             if self.path == "/health":
                 exp = _jwt_exp(_tokens.get("access_token", ""))
-                return self._json(200, {"status": "ok", "model": MODEL_NAME,
+                return self._json(200, {"status": "ok", "models": ALLOWED_MODELS,
+                                        "default": UPSTREAM_MODEL,
                                         "token_expires_in_s": int(exp - time.time())})
             if self.path.rstrip("/") in ("/v1/models", "/models"):
                 return self._json(200, {"object": "list", "data": [
-                    {"id": MODEL_NAME, "object": "model", "owned_by": "chatgpt-codex"}]})
+                    {"id": m, "object": "model", "owned_by": "chatgpt-codex"}
+                    for m in ALLOWED_MODELS]})
             return self._error(404, f"not found: {self.path}")
 
         def do_POST(self):
@@ -405,6 +432,7 @@ data:
                 return self._error(400, f"cuerpo ilegible: {exc}")
 
             payload = to_responses_payload(req)
+            used_model = payload["model"]
             want_stream = bool(req.get("stream"))
             try:
                 upstream = open_upstream(payload)
@@ -416,7 +444,7 @@ data:
 
             created, rid = int(time.time()), "chatcmpl-" + uuid.uuid4().hex[:24]
             if want_stream:
-                self._stream_out(upstream, rid, created)
+                self._stream_out(upstream, rid, created, used_model)
             else:
                 text, calls, usage = collect(upstream)
                 message = {"role": "assistant", "content": text or None}
@@ -424,13 +452,13 @@ data:
                     message["tool_calls"] = calls
                 self._json(200, {
                     "id": rid, "object": "chat.completion", "created": created,
-                    "model": MODEL_NAME,
+                    "model": used_model,
                     "choices": [{"index": 0, "message": message,
                                  "finish_reason": "tool_calls" if calls else "stop"}],
                     "usage": usage_block(usage),
                 })
 
-        def _stream_out(self, upstream, rid, created):
+        def _stream_out(self, upstream, rid, created, used_model):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -443,7 +471,7 @@ data:
 
             def envelope(delta, finish=None):
                 return {"id": rid, "object": "chat.completion.chunk", "created": created,
-                        "model": MODEL_NAME,
+                        "model": used_model,
                         "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
 
             try:
@@ -475,7 +503,7 @@ data:
     def main():
         load_tokens()
         port = int(os.environ.get("PORT", "8080"))
-        log(f"escuchando en :{port} como modelo {MODEL_NAME} -> {UPSTREAM_MODEL}")
+        log(f"escuchando en :{port} | modelos={ALLOWED_MODELS} | por defecto={UPSTREAM_MODEL}")
         ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
@@ -629,7 +657,7 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: AUTH_FILE, value: /auth/auth.json }
-            - { name: MODEL_NAME, value: gpt-5.6-sol-oauth }
+            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5" }
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-auth }
             - name: POD_NAMESPACE
@@ -665,7 +693,7 @@ spec:
     - { name: http, port: 8080, targetPort: 8080 }
 ---
 # Rotador del token. Sin esto la credencial caduca a los 10 días y el modelo
-# gpt-5.6-sol deja de responder.
+# los modelos gpt-5.6-* dejan de responder.
 #
 # Cada 6 h porque la ventana de rotación que concede OpenAI
 # (earliest_refresh_at → expiración) es de ~1 día: cuatro intentos dentro de la
