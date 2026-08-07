@@ -26,14 +26,26 @@
 #
 # CREDENCIALES
 #
-# El Secret `codex-bridge-auth` NO está en git: se siembra a mano desde el
-# ~/.codex/auth.json del Mac. El puente refresca el access token solo cuando le
-# queda menos de una hora y persiste el resultado en ese mismo Secret (de ahí el
-# Role de abajo). Si el refresh empieza a fallar con 401, hay que resembrarlo:
+# Cuenta: daniel.ibanez@cloudblue.com (account c3edf899-f6be-4c82-b58d-7a16f5f8dd4d).
+# Es una cuenta DISTINTA de la personal del usuario, a propósito: la cuota de
+# ChatGPT es por cuenta, y con la personal cualquier carga de Aurora se comía el
+# cupo del Codex interactivo. Al separarlas ya no compiten.
 #
-#   kubectl -n litellm create secret generic codex-bridge-auth \
-#     --from-file=auth.json=$HOME/.codex/auth.json --dry-run=client -o yaml \
-#     | kubectl apply -f -
+# El Secret `codex-bridge-auth` NO está en git. La credencial sale del perfil
+# OAuth que OpenClaw ya tiene guardado para esa cuenta —no de un fichero, sino de
+# la tabla `auth_profile_store` de /data/agents/main/agent/openclaw-agent.sqlite
+# en el pod de openclaw (ns openclaw-qwen36), bajo la clave
+# `openai:daniel.ibanez@cloudblue.com`.
+#
+# El puente refresca el access token cuando le queda menos de una hora y persiste
+# el resultado en este mismo Secret (de ahí el Role de abajo). Si el refresh
+# empieza a fallar con 401, se resiembra leyendo otra vez ese perfil; el script
+# que lo hace está documentado en el brain (buscar codex-bridge cloudblue).
+#
+# OJO: OpenClaw usa ESE MISMO perfil para sus propias llamadas. Si algún día
+# refresca por su cuenta, rotará el refresh_token y dejará al puente fuera hasta
+# que se resiembre — el mismo problema que teníamos con la cuenta personal, ahora
+# entre el puente y OpenClaw. Vigilar en la primera rotación (~14 de agosto).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
