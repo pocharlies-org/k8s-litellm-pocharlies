@@ -31,21 +31,27 @@
 # ChatGPT es por cuenta, y con la personal cualquier carga de Aurora se comía el
 # cupo del Codex interactivo. Al separarlas ya no compiten.
 #
-# El Secret `codex-bridge-auth` NO está en git. La credencial sale del perfil
-# OAuth que OpenClaw ya tiene guardado para esa cuenta —no de un fichero, sino de
-# la tabla `auth_profile_store` de /data/agents/main/agent/openclaw-agent.sqlite
-# en el pod de openclaw (ns openclaw-qwen36), bajo la clave
-# `openai:daniel.ibanez@cloudblue.com`.
+# El Secret `codex-bridge-auth` NO está en git. La credencial es una sesión OAuth
+# PROPIA del puente, creada con `codex login --device-auth`: no la comparte con
+# nadie, ni con el Codex del usuario ni con los perfiles de OpenClaw. Eso importa
+# porque cada refresh ROTA el refresh_token, así que dos consumidores de la misma
+# credencial acaban expulsándose el uno al otro.
 #
 # El puente refresca el access token cuando le queda menos de una hora y persiste
-# el resultado en este mismo Secret (de ahí el Role de abajo). Si el refresh
-# empieza a fallar con 401, se resiembra leyendo otra vez ese perfil; el script
-# que lo hace está documentado en el brain (buscar codex-bridge cloudblue).
+# el resultado en este mismo Secret (de ahí el Role de abajo).
 #
-# OJO: OpenClaw usa ESE MISMO perfil para sus propias llamadas. Si algún día
-# refresca por su cuenta, rotará el refresh_token y dejará al puente fuera hasta
-# que se resiembre — el mismo problema que teníamos con la cuenta personal, ahora
-# entre el puente y OpenClaw. Vigilar en la primera rotación (~14 de agosto).
+# PARA REHACERLA (si el refresh empieza a devolver 401) — no es evidente: el CLI
+# oficial de Codex no está en el Mac, pero sí dentro del pod de OpenClaw, y el
+# flujo de dispositivo evita depender de un callback local (el puerto 1455 lo
+# ocupa VS Code en el Mac):
+#
+#   kubectl -n openclaw-qwen36 exec deploy/openclaw-qwen36-openclaw -c openclaw -- \
+#     sh -c 'mkdir -p /data/.codex-bridge && CODEX_HOME=/data/.codex-bridge codex login --device-auth'
+#
+# Imprime una URL y un código: se abre en el navegador, se entra con la cuenta
+# daniel.ibanez@cloudblue.com y se autoriza. Después se vuelca ese auth.json al
+# Secret y SE BORRA /data/.codex-bridge, o queda una credencial huérfana viva en
+# el volumen de OpenClaw que nadie recordará revocar.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
