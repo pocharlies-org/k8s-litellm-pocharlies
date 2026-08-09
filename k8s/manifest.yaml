@@ -130,6 +130,53 @@ data:
         api_key: not-used
       model_info:
         mode: chat
+    # ── DeepSeek-V4-Flash-0731: perfiles por cliente ────────────────────────────
+    # Entradas AÑADIDAS, no reemplazan a nada. Los alias de tooling los sigue
+    # registrando litellm-dgx-backend-sync segun readiness; estas dos son estaticas
+    # y llevan el sampling ya puesto para cada cliente.
+    #
+    # temperature 1.0 / top_p 0.95 NO es un descuido: es lo que recomienda el model
+    # card de DeepSeek para escenarios agenticos y de tool-calling. El instinto de
+    # "temp 0 para codigo" saca al modelo del regimen para el que esta tuneado. Los
+    # benchmarks de velocidad SI se midieron a temp 0, porque eso es lo que pedia el
+    # criterio de aceptacion — son dos cosas distintas.
+    #
+    # reasoning_effort low a proposito: con `high` o `max` el bloque de pensamiento
+    # se dispara y el TTFT se va al garete. Medido a low: TTFT mediana 0.209s. El
+    # cliente puede subirlo por peticion cuando le haga falta.
+    - model_name: deepseek-v4-flash-openclaw
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        temperature: 1.0
+        top_p: 0.95
+        extra_body:
+          chat_template_kwargs:
+            thinking: true
+            reasoning_effort: low
+      model_info:
+        mode: chat
+        supports_function_calling: true
+        max_tokens: 16384
+    - model_name: deepseek-v4-flash-opencode
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        temperature: 1.0
+        top_p: 0.95
+        # 16384 porque los diffs completos se truncan por debajo, y ademas este
+        # modelo gasta ~130 tokens de pensamiento incluso con effort low.
+        max_tokens: 16384
+        extra_body:
+          chat_template_kwargs:
+            thinking: true
+            reasoning_effort: low
+      model_info:
+        mode: chat
+        supports_function_calling: true
+        max_tokens: 16384
     litellm_settings:
       success_callback:
       - db
@@ -216,8 +263,13 @@ data:
       # touches model_list, never router_settings. An entry naming an alias that no
       # longer exists would sit here silently, so keep it to the two canonical big
       # aliases.
-      fallbacks:
-        - tooling: ["dense"]
+      # 2026-08-09: `tooling: ["dense"]` RETIRADO mientras DeepSeek-V4-Flash ocupa
+      # los dos Sparks. `dense` es el 27B de gx10-ec3d y esta a 0 justamente para
+      # dejarle sitio: el fallback apuntaba a un alias sin backend posible. El
+      # comentario de mas abajo ya avisa de que una entrada que nombra un alias
+      # inexistente se queda aqui en silencio, y esto era exactamente ese caso.
+      # RESTAURAR junto con el rollback del modelo (cuando `dense` vuelva a 1).
+      fallbacks: []
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -2148,6 +2200,51 @@ data:
             "max_parallel_requests": 8,
             "supports_function_calling": True,
             "supports_vision": True,
+        },
+        {
+            # DeepSeek-V4-Flash-0731 (284B MoE / 13B activos) en TP=2 REPARTIDO
+            # ENTRE LOS DOS SPARKS sobre RoCE 200G. Es el unico backend del
+            # cluster que no vive en un solo nodo.
+            #
+            # OJO CON LA READINESS: el Service selecciona SOLO el pod head
+            # (gx10-ec3d). El worker de nvidia-dgx no tiene Service ni /health
+            # porque corre --headless. Si el worker muere, el head deja de
+            # responder al health por su cuenta (pierde el rendezvous) y el
+            # EndpointSlice se cae solo, asi que la senal sigue siendo correcta
+            # — pero no hay forma de distinguir "worker caido" de "head caido"
+            # desde aqui. Para eso estan los logs de los dos pods.
+            #
+            # Se queda los aliases de tooling porque mientras esto corre NO HAY
+            # residente de DGX1: ocupa los dos Sparks, asi que la exclusion es
+            # fisica igual que antes, solo que ahora abarca los dos nodos.
+            "name": "deepseek-v4-flash-tp2",
+            "label": "DS4_FLASH_TP2",
+            "backend": "dgx1+dgx2",
+            "base_model": os.getenv(
+                "DS4_FLASH_MODEL",
+                "openai/deepseek-v4-flash-0731",
+            ),
+            "aliases": TOOLING_RESIDENT_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_DS4_FLASH",
+                "deepseek-v4-flash-0731",
+            ),
+            "api_base": os.getenv(
+                "DS4_FLASH_API_BASE",
+                "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "ds4-flash-0731-tp2",
+            # = --max-num-seqs del servidor. Pedir mas solo encola.
+            "max_parallel_requests": 6,
+            "max_tokens": 16384,
+            # 262144 es el max_model_len REAL del servidor (medido: sirve un
+            # prompt de 261.100 tokens). No poner 1048576: ese fue el valor que
+            # tumbo el primer arranque, porque una sola peticion de 1M pide 7.54
+            # GiB de KV y no habia.
+            "context_window": 262144,
+            "supports_function_calling": True,
+            # DeepseekV4ForCausalLM: solo texto, no es multimodal.
+            "supports_vision": False,
         },
     )
     # Model IDs managed by earlier versions of this controller. They are deleted
