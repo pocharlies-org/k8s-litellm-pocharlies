@@ -1047,6 +1047,12 @@ data:
                 data.pop(p, None)
 
             requested_model = data.get("model", "")
+            # AQUI ARRIBA a proposito, no dentro de `if is_router_request`: los
+            # valores invalidos de sampling los rechaza el backend para CUALQUIER
+            # alias. La primera version de esto se colgo del bloque del router y
+            # por eso no saltaba con model="tooling" directo, que es justo como
+            # pega el playground.
+            _sanitize_sampling(data, requested_model)
             litellm_params = data.get("litellm_params", {})
             proxy_model = (
                 litellm_params.get("proxy_server_request", {})
@@ -1156,9 +1162,6 @@ data:
                 # --generation-config auto), asi que aqui NO hace falta rellenar
                 # nada: solo medir.
                 _log_sampling(data, resolved_model, key_alias=_resolve_key_label(user_api_key_dict))
-                # Despues de registrar lo que llego tal cual, corregir lo que el
-                # backend rechazaria en duro (top_p=0 del playground, top_k=0).
-                _sanitize_sampling(data, resolved_model)
                 router_log.warning(
                     "router: %s -> %s | orig=%r reasons=%s tok~%d msgs=%d last_user=%r",
                     category,
