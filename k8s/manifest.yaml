@@ -978,6 +978,39 @@ data:
     GREEDY_TEMPERATURE = 0.1
 
 
+    def _sanitize_sampling(data, resolved_model="unknown"):
+        """Corrige valores de sampling FUERA DE RANGO antes de mandarlos al backend.
+
+        Motivo concreto (2026-08-09, playground contra `tooling`):
+            litellm.BadRequestError: OpenAIException -
+            top_p must be in (0, 1], got 0.0
+        vLLM valida top_p en el intervalo ABIERTO por abajo: 0.0 es invalido, no
+        "greedy". Varios clientes (el playground entre ellos) mandan 0.0 como si
+        fuera "desactivado" y se llevan un 400 en duro. `drop_params` de LiteLLM
+        no cubre esto: solo quita parametros NO SOPORTADOS, y top_p lo esta —
+        lo que no vale es el valor.
+
+        Se quitan en vez de recortarse a un epsilon: sin la clave, manda el
+        default del servidor, que es lo que el cliente queria decir con "0".
+        """
+        try:
+            for container in (data, data.get("extra_body")):
+                if not isinstance(container, dict):
+                    continue
+                tp = container.get("top_p")
+                if isinstance(tp, (int, float)) and not (0 < tp <= 1):
+                    container.pop("top_p", None)
+                    log.warning(
+                        "sampling: top_p=%s fuera de (0,1] en model=%s -> retirado, "
+                        "aplica el default del servidor", tp, resolved_model)
+                tk = container.get("top_k")
+                if isinstance(tk, int) and tk == 0:
+                    container.pop("top_k", None)
+                    log.warning("sampling: top_k=0 en model=%s -> retirado", resolved_model)
+        except Exception as e:  # nunca romper una peticion por sanear
+            log.debug("_sanitize_sampling error: %s", e)
+
+
     def _log_sampling(data, resolved_model, key_alias="unknown"):
         """Registra el sampling que llega, sin modificarlo (solo lectura).
 
@@ -1123,6 +1156,9 @@ data:
                 # --generation-config auto), asi que aqui NO hace falta rellenar
                 # nada: solo medir.
                 _log_sampling(data, resolved_model, key_alias=_resolve_key_label(user_api_key_dict))
+                # Despues de registrar lo que llego tal cual, corregir lo que el
+                # backend rechazaria en duro (top_p=0 del playground, top_k=0).
+                _sanitize_sampling(data, resolved_model)
                 router_log.warning(
                     "router: %s -> %s | orig=%r reasons=%s tok~%d msgs=%d last_user=%r",
                     category,
