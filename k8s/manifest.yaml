@@ -43,7 +43,7 @@ data:
     - model_name: bge-m3
       litellm_params:
         model: openai/bge-m3
-        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+        api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
         api_key: not-used
       model_info:
         mode: embedding
@@ -51,7 +51,7 @@ data:
     - model_name: bge-m3-embedding
       litellm_params:
         model: openai/bge-m3
-        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+        api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
         api_key: not-used
       model_info:
         mode: embedding
@@ -59,7 +59,7 @@ data:
     - model_name: bge-reranker
       litellm_params:
         model: infinity/bge-reranker
-        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
@@ -67,7 +67,7 @@ data:
     - model_name: bge-reranker-v2-m3
       litellm_params:
         model: infinity/bge-reranker
-        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
