@@ -109,6 +109,10 @@ data:
     # gestiona litellm-dgx-backend-sync — no hay Service que vigilar.
     # OJO con la cuota: comparte límites con el Codex interactivo del usuario y
     # OpenAI estrangula por cliente. Para chat manual, no para cargas masivas.
+    # `supports_vision` NO es decorativo: mientras el residente sea DeepSeek (solo
+    # texto) estos son los únicos modelos del gateway que VEN, y el hook desvía
+    # aquí las peticiones con imagen (VISION_FALLBACK_MODEL). Verificado contra el
+    # upstream real el 2026-08-11 — el puente traduce las partes de imagen.
     - model_name: gpt-5.6-sol
       litellm_params:
         model: openai/gpt-5.6-sol
@@ -116,6 +120,7 @@ data:
         api_key: not-used
       model_info:
         mode: chat
+        supports_vision: true
     - model_name: gpt-5.6-terra
       litellm_params:
         model: openai/gpt-5.6-terra
@@ -123,6 +128,7 @@ data:
         api_key: not-used
       model_info:
         mode: chat
+        supports_vision: true
     - model_name: gpt-5.6-luna
       litellm_params:
         model: openai/gpt-5.6-luna
@@ -130,6 +136,7 @@ data:
         api_key: not-used
       model_info:
         mode: chat
+        supports_vision: true
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -739,6 +746,29 @@ data:
         "high": {"model": "high", "fallbacks": ("dense",)},
         "max": {"model": "max", "fallbacks": ("dense",)},
     }
+    # ── Desvio de VISION (2026-08-11) ───────────────────────────────────────────
+    #
+    # DeepSeekV4ForCausalLM es SOLO TEXTO (lo declara su backend con
+    # supports_vision: False). Mientras sea el residente, una peticion con imagen a
+    # `router`/`tooling`/... llega a un modelo que no ve: el backend la rechaza, y
+    # cuando no la rechaza es peor -- contesta a ciegas sobre lo que diga el texto.
+    #
+    # El unico modelo del gateway que ve hoy es la cuenta ChatGPT Pro por
+    # codex-bridge. VERIFICADO contra el upstream real el 2026-08-11: un
+    # `input_image` con `image_url` STRING (data: URI vale) se responde bien
+    # (imagen azul de 64x64 -> "Azul"); con `image_url` objeto devuelve 400
+    # "expected an image URL, but got an object instead". El puente lo traduce.
+    #
+    # OJO CON LA CUOTA: sol comparte limites con el Codex interactivo del usuario.
+    # Por eso el desvio es estrecho a proposito (solo nombres de CAPACIDAD, y solo
+    # cuando el que iba a servir declara que no ve) y se apaga con
+    # LITELLM_VISION_FALLBACK_MODEL="".
+    VISION_FALLBACK_MODEL = os.environ.get("LITELLM_VISION_FALLBACK_MODEL", "gpt-5.6-sol")
+    # Nombres de CAPACIDAD, los unicos que se desvian. Un nombre de MODELO
+    # (`deepseek-v4-flash-0731`, `dense`, `ornith-1.0`...) NO se desvia jamas, por
+    # la misma razon por la que no degrada: quien lo nombra sabe a que habla, y las
+    # mediciones se hacen contra esos nombres.
+    VISION_DIVERTIBLE = AUTO_ROUTED_MODELS | frozenset(CAPABILITY_CHAINS)
     THINK_MARKERS = ("/think", "[think]")
     # Codex/agent clients attach a reasoning effort to EVERY call; only a
     # deliberate medium+ effort counts as a reasoning signal so that ambient
@@ -1034,6 +1064,68 @@ data:
         except Exception as e:
             log.debug("_family_of_alias(%s): %s", alias, e)
         return None
+
+    def _alias_supports_vision(alias):
+        """Si el alias declara VISION. True, False, o None cuando no se sabe.
+
+        Lo publica litellm-dgx-backend-sync en model_info.supports_vision de cada
+        deployment (lo lee del propio BACKENDS, donde es obligatorio). None no es
+        lo mismo que False: significa que no se pudo leer el registro, o que la
+        entrada no lo declara -- las estaticas de config.yaml lo dicen a mano.
+
+        Basta con que UNA deployment del alias vea para que el alias vea: el router
+        puede mandar la peticion a cualquiera de ellas.
+        """
+        try:
+            from litellm.proxy.proxy_server import llm_router
+            if llm_router is None:
+                return None
+            declared = None
+            for dep in (llm_router.get_model_list(model_name=alias) or ()):
+                value = (dep.get("model_info") or {}).get("supports_vision")
+                if value is None:
+                    continue
+                if value:
+                    return True
+                declared = False
+            return declared
+        except Exception as e:
+            log.debug("_alias_supports_vision(%s): %s", alias, e)
+            return None
+
+    def _vision_target(data, requested, proxy, served,
+                       supports_vision=_alias_supports_vision,
+                       alias_live=_alias_has_deployments):
+        """El alias al que desviar una peticion CON IMAGEN, o None.
+
+        Cuatro condiciones, y tienen que darse las cuatro:
+
+          1. la peticion lleva una parte de imagen;
+          2. el cliente pidio por CAPACIDAD (ver VISION_DIVERTIBLE);
+          3. el alias que iba a servir declara EXPLICITAMENTE que no ve;
+          4. el modelo de vision esta registrado.
+
+        La 3 es `is False` a proposito, no `not ...`: si no se puede leer el
+        registro (None) NO se desvia. Preferimos el 400 honesto del backend a
+        gastar en silencio la cuota de ChatGPT del usuario, que es la misma que
+        usa su Codex interactivo. El precio de esa eleccion: cuando la cadena esta
+        DRY (ningun alias registrado) tampoco se desvia, aunque ahi el desvio
+        rescataria la peticion. Es el mismo criterio que el resto del hook -- lo
+        que no se sabe no se toca.
+        """
+        if not VISION_FALLBACK_MODEL:
+            return None
+        if not _has_part_type(data, IMAGE_PART_TYPES):
+            return None
+        if requested not in VISION_DIVERTIBLE and proxy not in VISION_DIVERTIBLE:
+            return None
+        if served == VISION_FALLBACK_MODEL:
+            return None
+        if supports_vision(served) is not False:
+            return None
+        if not alias_live(VISION_FALLBACK_MODEL):
+            return None
+        return VISION_FALLBACK_MODEL
 
     def _is_structured_output(data):
         """La peticion exige una forma de salida (json_schema / json_object)."""
@@ -1507,6 +1599,29 @@ data:
                     preview,
                 )
 
+            # Desvio de VISION, DESPUES de resolver: la pregunta no es que pidio el
+            # cliente sino si el alias que ha quedado ve. Va aqui y no antes para no
+            # duplicar la resolucion de cadenas ni la clasificacion por forma.
+            vision_diverted = False
+            vision_from = data.get("model", "")
+            vision_target = _vision_target(
+                data, requested_model, proxy_model, vision_from)
+            if vision_target:
+                data["model"] = vision_target
+                data.pop("api_base", None)
+                data.pop("api_key", None)
+                data.setdefault("metadata", {})
+                data["metadata"]["_vision_diverted_from"] = vision_from
+                data["metadata"]["_router_resolved_model"] = vision_target
+                vision_diverted = True
+                router_log.warning(
+                    "vision: %r no ve; imagen desviada a %r (pedido=%r, key=%s)",
+                    vision_from,
+                    vision_target,
+                    proxy_model or requested_model,
+                    _resolve_key_label(user_api_key_dict),
+                )
+
             # Sampling por FAMILIA del backend, con el modelo YA resuelto: aqui
             # data["model"] es el alias que de verdad va a atender (tras el salto
             # de CAPABILITY_CHAINS y tras el re-apuntado del router), no el que pidio el
@@ -1525,7 +1640,14 @@ data:
                 data.get("api_base")
                 or (litellm_params or {}).get("api_base")
             )
-            if _is_local_vllm_request(model, proxy_model, api_base):
+            # `not vision_diverted` es OBLIGATORIO, no cosmetico:
+            # _is_local_vllm_request mira tambien `proxy_model`, que sigue diciendo
+            # `tooling` despues del desvio. Sin este guard, una imagen que sale a
+            # ChatGPT pasaria por la admision de compute-mode (503 cuando el
+            # computo local esta apagado, que es justo cuando mas falta hace la
+            # nube) y se le marcarian las tools como strict para una gramatica de
+            # vLLM que no la va a atender ningun vLLM.
+            if not vision_diverted and _is_local_vllm_request(model, proxy_model, api_base):
                 await _enforce_compute_mode_admission(model, proxy_model, api_base)
                 enable_continuous_usage(data)
                 # Gate de args: que la gramatica del schema sea obligatoria en
@@ -3178,7 +3300,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: compute-mode-admission-20260810
+        config.k8s.e-dani.com/revision: vision-divert-to-codex-20260811
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

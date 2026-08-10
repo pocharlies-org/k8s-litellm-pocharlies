@@ -53,8 +53,20 @@ def test_hook_checks_mode_before_tracking_a_new_local_request():
 
 
 def test_litellm_pod_rolls_and_points_at_typed_compute_mode_get():
+    """El pod tiene que rodar con el hook, y apuntar al GET tipado del modo.
+
+    2026-08-11: la primera mitad pinneaba el literal `compute-mode-admission-20260810`.
+    Eso no es el contrato -- ese valor ES el marcador de rollout, y todo cambio del
+    hook lo cambia por definicion (aqui lo cambio el desvio de vision). Lo que
+    importa es que la anotacion siga estando en el pod template: sin ella el hook
+    se sincroniza y el pod no rueda.
+    """
     text = MANIFEST.read_text()
-    assert "compute-mode-admission-20260810" in text
+    doc = next(d for d in yaml.safe_load_all(text)
+               if d and d.get("kind") == "Deployment"
+               and d["metadata"]["name"] == "litellm")
+    anotaciones = doc["spec"]["template"]["metadata"]["annotations"]
+    assert anotaciones.get("config.k8s.e-dani.com/revision")
     assert (
         "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002"
         "/api/compute/mode"

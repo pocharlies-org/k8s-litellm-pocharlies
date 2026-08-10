@@ -108,6 +108,10 @@ data:
         lista se mantiene explícita en ALLOWED_MODELS: lo que no esté ahí cae al
         modelo por defecto en vez de provocar un 400 del upstream.
       - Emite items `reasoning` que no son texto de respuesta y se descartan.
+      - SÍ acepta imágenes (2026-08-11), y es lo único del gateway que ve mientras
+        el residente del DGX sea DeepSeek. Van como `input_image` con `image_url`
+        STRING — el objeto `{"url": ...}` de chat/completions da 400. Ver
+        to_input_parts().
 
     Solo stdlib: la imagen es un python:3.x-slim sin pip install en el arranque.
     """
@@ -275,15 +279,71 @@ data:
         return UPSTREAM_MODEL
 
 
+    def flatten_text(content):
+        """Las partes de texto de un content, concatenadas. El resto se descarta."""
+        if isinstance(content, list):
+            return "".join(p.get("text", "") for p in content
+                           if isinstance(p, dict) and p.get("type") in ("text", "input_text"))
+        return content
+
+
+    def image_url_of(part):
+        """La URL de una parte de imagen, o None si no lo es.
+
+        Acepta las dos formas que llegan por LiteLLM: la de chat/completions
+        (`image_url` como objeto {"url": ...}) y la de la Responses API
+        (`image_url` como string). Una `data:` URI vale igual que una http.
+        """
+        if not isinstance(part, dict) or part.get("type") not in ("image_url", "input_image", "image"):
+            return None
+        url = part.get("image_url")
+        if isinstance(url, dict):
+            url = url.get("url")
+        return url or None
+
+
+    def to_input_parts(content):
+        """content de chat/completions -> partes de la Responses API, EN ORDEN.
+
+        LAS IMAGENES VAN COMO STRING. Verificado contra el upstream real
+        (2026-08-11): `{"type": "input_image", "image_url": "data:image/png;base64,..."}`
+        se responde bien; la forma de chat/completions con el objeto
+        `{"url": ...}` devuelve 400 «expected an image URL, but got an object
+        instead». Traducirlo es justo el trabajo de este puente.
+
+        Hasta hoy esto aplanaba a texto y las imagenes SE PERDIAN sin un solo log:
+        el modelo contestaba a ciegas sobre lo que dijera el texto, que es peor que
+        un error.
+        """
+        if not isinstance(content, list):
+            return [{"type": "input_text", "text": content or ""}]
+        parts = []
+        for p in content:
+            if not isinstance(p, dict):
+                continue
+            url = image_url_of(p)
+            if url:
+                part = {"type": "input_image", "image_url": url}
+                src = p.get("image_url")
+                detail = p.get("detail") or (src.get("detail") if isinstance(src, dict) else None)
+                if detail:
+                    part["detail"] = detail
+                parts.append(part)
+            elif p.get("type") in ("text", "input_text"):
+                parts.append({"type": "input_text", "text": p.get("text", "")})
+        return parts or [{"type": "input_text", "text": ""}]
+
+
     def to_responses_payload(req):
         instructions = []
         items = []
         for msg in req.get("messages", []):
             role = msg.get("role")
-            content = msg.get("content")
-            if isinstance(content, list):  # partes multimodales: solo texto
-                content = "".join(p.get("text", "") for p in content
-                                  if isinstance(p, dict) and p.get("type") in ("text", "input_text"))
+            raw_content = msg.get("content")
+            # `instructions` es un string y los roles no-usuario no llevan imagen:
+            # para todo lo que no sea el turno de usuario se aplana a texto, igual
+            # que antes.
+            content = flatten_text(raw_content)
             if role in ("system", "developer"):
                 if content:
                     instructions.append(content)
@@ -307,7 +367,7 @@ data:
                                   "content": [{"type": "output_text", "text": content}]})
             else:
                 items.append({"type": "message", "role": "user",
-                              "content": [{"type": "input_text", "text": content or ""}]})
+                              "content": to_input_parts(raw_content)})
 
         payload = {
             "model": resolve_model(req.get("model")),
@@ -659,6 +719,10 @@ spec:
   template:
     metadata:
       labels: { app: codex-bridge }
+      annotations:
+        # El codigo del puente vive en un ConfigMap y se lee al arrancar: sin esto
+        # un cambio en bridge.py se sincroniza y NO rota el pod.
+        config.k8s.e-dani.com/revision: image-passthrough-20260811
     spec:
       serviceAccountName: codex-bridge
       enableServiceLinks: false

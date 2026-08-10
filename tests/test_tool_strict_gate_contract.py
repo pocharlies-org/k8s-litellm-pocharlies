@@ -75,9 +75,16 @@ def test_noop_without_schema_or_tools(gate):
 
 def test_gate_is_wired_into_local_vllm_requests():
     """Debe llamarse SOLO para nuestros backends (dentro del bloque
-    _is_local_vllm_request), nunca para modelos de terceros."""
+    _is_local_vllm_request), nunca para modelos de terceros.
+
+    2026-08-11: la guarda lleva ademas `not vision_diverted`. Una peticion con
+    imagen desviada a ChatGPT sigue teniendo proxy_model=`tooling`, asi que sin
+    esa condicion _is_local_vllm_request diria True y se le marcarian las tools
+    como strict para una gramatica de vLLM que no la va a servir.
+    """
     text = MANIFEST.read_text()
-    block = text[text.index("if _is_local_vllm_request(model, proxy_model, api_base):"):]
+    block = text[text.index(
+        "if not vision_diverted and _is_local_vllm_request(model, proxy_model, api_base):"):]
     block = block[:block.index("tracking_id = str(uuid.uuid4())")]
     assert "_enforce_tool_strict(data" in block
 
