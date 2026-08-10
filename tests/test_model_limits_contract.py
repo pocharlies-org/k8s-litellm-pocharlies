@@ -121,7 +121,7 @@ def test_el_27b_declara_su_ventana_mas_estrecha(backends):
     hook sobra y hay que enterarse por aqui."""
     estrechos = {n: b["max_input_tokens"] for n, b in backends.items()
                  if b["max_input_tokens"] < 262144}
-    assert estrechos == {DGX2_UNCENSORED_27B: 229376}, estrechos
+    assert estrechos == {DGX2_UNCENSORED_27B: 65536}, estrechos
 
 
 def test_dense_ctx_escape_sigue_por_debajo_de_la_ventana_real_del_27b(cms, backends):

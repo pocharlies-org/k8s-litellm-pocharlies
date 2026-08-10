@@ -269,10 +269,14 @@ data:
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
   litellm_strip_params.py: |
+    import asyncio
     import logging
     import os
+    import time
 
+    import httpx
     import litellm
+    from fastapi import HTTPException
     from litellm._uuid import uuid
     from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
     from litellm.llms.infinity.rerank.transformation import InfinityRerankConfig
@@ -296,6 +300,68 @@ data:
     sampling_log = logging.getLogger("litellm.sampling")
     # Gate de args de tool (strict/xgrammar).
     tool_gate_log = logging.getLogger("litellm.tool_gate")
+
+    COMPUTE_MODE_URL = os.environ.get(
+        "COMPUTE_MODE_URL",
+        "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/compute/mode",
+    ).strip()
+    COMPUTE_MODE_CACHE_SECONDS = float(
+        os.environ.get("COMPUTE_MODE_CACHE_SECONDS", "1")
+    )
+    _compute_mode_cache = {"expires": 0.0, "state": None}
+    _compute_mode_lock = asyncio.Lock()
+
+    def _compute_mode_allows_local(state):
+        if not isinstance(state, dict):
+            return False, "compute_mode_unavailable"
+        if state.get("phase") != "ready":
+            return False, "compute_mode_transition"
+        effective = state.get("effective_mode")
+        if effective not in {"llm-tp", "creative"}:
+            return False, "compute_mode_invalid"
+        if state.get("desired_mode") != effective:
+            return False, "compute_mode_inconsistent"
+        return True, None
+
+    async def _compute_mode_state():
+        now = time.monotonic()
+        if now < _compute_mode_cache["expires"]:
+            return _compute_mode_cache["state"]
+        async with _compute_mode_lock:
+            now = time.monotonic()
+            if now < _compute_mode_cache["expires"]:
+                return _compute_mode_cache["state"]
+            state = None
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.get(COMPUTE_MODE_URL)
+                response.raise_for_status()
+                candidate = response.json()
+                if isinstance(candidate, dict):
+                    state = candidate
+            except Exception as exc:
+                log.error("compute-mode admission observation failed: %s", exc)
+            _compute_mode_cache["state"] = state
+            _compute_mode_cache["expires"] = now + COMPUTE_MODE_CACHE_SECONDS
+            return state
+
+    async def _enforce_compute_mode_admission(model, proxy_model, api_base):
+        if not _is_local_vllm_request(model, proxy_model, api_base):
+            return
+        state = await _compute_mode_state()
+        allowed, reason = _compute_mode_allows_local(state)
+        if allowed:
+            return
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "local LLM admission is closed during compute profile transition",
+                "blocked": reason,
+                "desired_mode": (state or {}).get("desired_mode"),
+                "effective_mode": (state or {}).get("effective_mode"),
+                "phase": (state or {}).get("phase"),
+            },
+        )
 
     def _usage_snapshot(usage):
         if isinstance(usage, dict):
@@ -609,7 +675,7 @@ data:
     # _approx_input_tokens is a chars/4 estimate that does NOT count image tokens.
     # (No multimodal escape is needed: Ornith's --limit-mm-per-prompt was raised to
     # {"image":64} on 2026-07-27 to match the uncensored.)
-    DENSE_CTX_ESCAPE = 200000
+    DENSE_CTX_ESCAPE = 48000
 
     FAST_CTX_LIMIT = 73000
 
@@ -1336,6 +1402,7 @@ data:
                 or (litellm_params or {}).get("api_base")
             )
             if _is_local_vllm_request(model, proxy_model, api_base):
+                await _enforce_compute_mode_admission(model, proxy_model, api_base)
                 enable_continuous_usage(data)
                 # Gate de args: que la gramatica del schema sea obligatoria en
                 # NUESTROS modelos (ver _enforce_tool_strict). Se hace despues de
@@ -1464,6 +1531,8 @@ data:
         "ornith",
         "ornith-1.0",
         "ornith-canary",
+        "deepseek-v4-flash-0731",
+        "qwen36-27b-uncensored-nvfp4",
     }
 
     def _is_local_vllm_request(model, proxy_model, api_base):
@@ -2326,13 +2395,12 @@ data:
             "supports_vision": True,
         },
         {
-            # DGX2 resident and the cluster's only DENSE model: the uncensored
-            # 27B (heretic-v2 + NVFP4 lm_head, ~41 tok/s). Owns every dense-shaped
-            # alias including `taxonomy`. Evictable by the GPU arbiter; when its
-            # EndpointSlice goes NotReady the hook degrades `dense` to Ornith.
+            # Stable backend identity for the cluster's only DENSE model. The
+            # compatibility Service keeps its historical DGX2 name, but Creative
+            # now serves the pinned uncensored 27B from DGX1 at 64K context.
             "name": "qwen36-27b-uncensored-dgx2",
             "label": "DGX2_QWEN36_27B_UNCENSORED",
-            "backend": "dgx2",
+            "backend": "dgx1",
             "base_model": os.getenv(
                 "QWEN36_27B_UNCENSORED_MODEL",
                 "openai/qwen36-27b-uncensored-nvfp4",
@@ -2347,14 +2415,8 @@ data:
                 "http://vllm-qwen36-27b-uncensored-dgx2.llm.svc.cluster.local:8000/v1",
             ),
             "id_prefix": "dgx2-qwen36-27b-uncensored-nvfp4",
-            "max_parallel_requests": 8,
-            # 229376 = el --max-model-len REAL de este servidor, y es el UNICO
-            # backend del cluster con una ventana mas pequena que 262144. Hasta
-            # 2026-08-10 no declaraba ninguno de los dos limites y heredaba los
-            # defaults de desired_deployments(), asi que anunciaba 262144: 32k MAS
-            # de los que puede servir. No era "no declara limites", era declarar
-            # los de otro modelo.
-            "max_input_tokens": 229376,
+            "max_parallel_requests": 4,
+            "max_input_tokens": 65536,
             # 16384 por consistencia con el resto del estate, que es una guia para
             # el cliente y no un limite del servidor: aqui la salida real la acota
             # max_model_len menos el prompt. El 32768 que heredaba antes no se
@@ -2963,7 +3025,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: ha-35b-27b-20260805
+        config.k8s.e-dani.com/revision: compute-mode-admission-20260810
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -2989,6 +3051,8 @@ spec:
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
             - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
             - { name: LITELLM_DRAIN_TIMEOUT_SEC, value: "660" }
+            - { name: COMPUTE_MODE_URL, value: "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/compute/mode" }
+            - { name: COMPUTE_MODE_CACHE_SECONDS, value: "1" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
             # Langfuse native callback (LLM tracing). Points at the in-cluster web

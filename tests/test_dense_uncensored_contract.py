@@ -25,6 +25,11 @@ def test_uncensored_is_the_single_backend_owning_every_dense_alias():
 
     assert text.count('"aliases": QWEN36_27B_UNCENSORED_ALIASES') == 1
     assert '"id_prefix": "dgx2-qwen36-27b-uncensored-nvfp4"' in text
+    assert '"backend": "dgx1"' in _sync_block(
+        text,
+        '"name": "qwen36-27b-uncensored-dgx2"',
+        '"name": "deepseek-v4-flash-tp2"',
+    )
 
     # Los backends de los modelos borrados no deben volver.
     for dead in ("QWEN36_27B_DENSE_ALIASES", "QWEN36_35B_DGX1_ALIASES",
@@ -102,11 +107,12 @@ def test_backends_cubren_las_formas_de_exclusion():
                  "qwen3coder-dgx2", "qwen3coder-dgx1"):
         assert f'"name": "{dead}"' not in backends
 
-    # El unico que queda en DGX2 es el 27B denso, y declara su ventana REAL (229376,
-    # mas estrecha que los 262144 del resto) en vez de heredarla.
+    # El backend conserva su identidad estable, pero Creative lo sirve en DGX1
+    # con la ventana real de 64K en vez de heredar 256K.
     dense = backends[backends.index('"name": "qwen36-27b-uncensored-dgx2"'):
                      backends.index('"name": "deepseek-v4-flash-tp2"')]
-    assert '"max_input_tokens": 229376' in dense
+    assert '"backend": "dgx1"' in dense
+    assert '"max_input_tokens": 65536' in dense
     assert '"supports_function_calling": True' in dense
 
     # Ninguno de los id_prefix nuevos puede caer bajo un prefijo retirado, que
