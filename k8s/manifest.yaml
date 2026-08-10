@@ -587,12 +587,11 @@ data:
     # alias-to-alias entries there would ping-pong forever -- which is exactly why
     # degradation lives in this layer and not in that one.
     #
-    # 2026-08-10: `qwen3-coder` RETIRADO de las tres cadenas y del cluster (decision
-    # del owner: "va de puto culo"). Estaba delante de `tooling` en las vias con
-    # tools por la bateria de opencode (11/14 frente a 0-1/14 de los otros tres), y
-    # ese numero sigue siendo cierto -- pero el modelo se retira entero, asi que la
-    # cadena ya no puede nombrarlo: un fallback a un alias que ningun backend declara
-    # es un salto perdido en cada peticion.
+    # 2026-08-10: `qwen3-coder` RETIRADO de las tres cadenas y del cluster, por
+    # decision del owner. Iba delante de `tooling` en las vias con tools, y la medida
+    # que justificaba ese orden -- un test de opencode -- esta DESCARTADA por mala, asi
+    # que no se cita aqui. El modelo se retira entero, y una cadena no puede nombrar un
+    # alias que ningun backend declara: seria un salto perdido en cada peticion.
     #
     # Las tres cadenas quedan sobre los dos modelos que hay: el residente de tooling
     # (DGX1, o los dos Sparks si es DeepSeek en TP=2) y el 27B denso de DGX2. Siguen
@@ -637,15 +636,12 @@ data:
     # retiro del cluster entero por decision del owner. Asi que ya no hay nada que
     # optar: quien conduce agentes es el residente de tooling.
     #
-    # LO QUE ESTO DEJA ABIERTO, y conviene no olvidarlo: la bateria de opencode medida
-    # por script daba 11/14 tareas a qwen3-coder frente a 0-1/14 a Ornith, al 27B denso
-    # y al NVIDIA-Qwen3.6 (los tres alucinan tool calls en XML inventado bajo el system
-    # prompt de ~9.3k tokens). Evidencia:
-    # https://huggingface.co/datasets/pocharlies/dgx-spark-moe-benchmarks
-    # Con el perfil `deepseek-v4-flash` (el actual) no importa: `tooling` es
-    # DeepSeek-V4-Flash y conduce agentes bien. Con el perfil `qwen36-dual`, en cambio,
-    # NO queda ningun modelo del cluster que complete tareas de opencode. Si se vuelve
-    # a ese perfil para trabajo agentico, hace falta traer otro modelo de codigo.
+    # NO se apoya nada en el test de opencode que comparaba los cuatro modelos: esta
+    # DESCARTADO por malo (owner, 2026-08-10) y sus cifras no valen. Lo que si esta
+    # medido y en pie es la matriz de tool-calling de 370 casos, donde los cuatro
+    # puntuan 91-95% y devuelven tool_calls correctos por LiteLLM. Si algun dia hace
+    # falta comparar modelos pilotando un CLI agentico, hay que disenar la medida de
+    # cero.
     #
     # QUE HACE ESTO. Aplica la cadena tooling -> dense al PROPIO `tooling`, o sea que
     # el fallback que aportaba el alias -ha ahora viene de serie. Cubre el modo
