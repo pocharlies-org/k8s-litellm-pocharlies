@@ -65,8 +65,8 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert "/team/new" not in block
 
 
-def test_backends_cubren_las_tres_formas_de_exclusion():
-    """5 backends declarados, y la exclusion tiene TRES formas distintas.
+def test_backends_cubren_las_formas_de_exclusion():
+    """4 backends declarados, y la exclusion tiene dos formas distintas.
 
     Actualizado 2026-08-10: hasta el corte a DeepSeek habia 4 y solo dos formas.
     El test se quedo asertando `count == 4` y llevaba rojo desde entonces sin que
@@ -76,8 +76,10 @@ def test_backends_cubren_las_tres_formas_de_exclusion():
     sharing-strategy=none, ambos piden nvidia.com/gpu: 1), asi que comparten el
     mismo tuple de alias y la readiness decide.
 
-    DGX2: dos CO-RESIDENTES (2 replicas de GPU por time-slicing) que pueden estar
-    arriba a la vez, asi que NO pueden compartir alias con nadie.
+    DGX2: desde el 2026-08-10 solo queda el 27B denso. Habia co-residencia (2
+    replicas de GPU por time-slicing) con Qwen3-Coder, que se retiro del cluster
+    entero. La regla sigue en pie para quien meta otro co-residente: no comparte nodo
+    con DGX1, asi que no hay exclusion fisica y NO puede declarar alias de tooling.
 
     LOS DOS A LA VEZ: DeepSeek-V4-Flash en TP=2 pide ~104 GiB de CADA Spark, asi
     que su exclusion es fisica igual que la de DGX1 pero abarca los dos nodos. Por
@@ -86,10 +88,9 @@ def test_backends_cubren_las_tres_formas_de_exclusion():
     """
     text = MANIFEST.read_text()
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    assert backends.count('"name": "') == 5
+    assert backends.count('"name": "') == 4
     for name in ("ornith-dgx1", "nvidia-qwen36-dgx1",
-                 "qwen3coder-dgx2", "qwen36-27b-uncensored-dgx2",
-                 "deepseek-v4-flash-tp2"):
+                 "qwen36-27b-uncensored-dgx2", "deepseek-v4-flash-tp2"):
         assert f'"name": "{name}"' in backends
     # El de TP=2 tiene que decir que vive en los dos nodos: es lo que justifica que
     # comparta los alias de tooling sin romper la unicidad.
@@ -97,25 +98,28 @@ def test_backends_cubren_las_tres_formas_de_exclusion():
     assert '"backend": "dgx1+dgx2"' in ds
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",
                  "qwen36-27b-dense-dgx1", "qwen36-27b-dense-dgx2",
-                 # nunca existio en DGX1: Qwen3-Coder es co-residente de DGX2
-                 "qwen3coder-dgx1"):
+                 # retirado del cluster entero el 2026-08-10
+                 "qwen3coder-dgx2", "qwen3coder-dgx1"):
         assert f'"name": "{dead}"' not in backends
 
-    # Solo el de NVIDIA es multimodal entre los candidatos nuevos; Qwen3-Coder es
-    # solo texto y debe declararlo, no heredar el True de Ornith.
-    coder = backends[backends.index('"name": "qwen3coder-dgx2"'):
-                     backends.index('"name": "qwen36-27b-uncensored-dgx2"')]
-    assert '"supports_vision": False' in coder
-    assert '"max_input_tokens": 262144' in coder
-    assert '"supports_function_calling": True' in coder
+    # El unico que queda en DGX2 es el 27B denso, y declara su ventana REAL (229376,
+    # mas estrecha que los 262144 del resto) en vez de heredarla.
+    dense = backends[backends.index('"name": "qwen36-27b-uncensored-dgx2"'):
+                     backends.index('"name": "deepseek-v4-flash-tp2"')]
+    assert '"max_input_tokens": 229376' in dense
+    assert '"supports_function_calling": True' in dense
 
     # Ninguno de los id_prefix nuevos puede caer bajo un prefijo retirado, que
     # cleanup_retired_models() purga en cada ciclo.
     retired = _sync_block(text, "RETIRED_MANAGED_ID_PREFIXES = (", "TOKEN_PATH =")
     dead_prefixes = re.findall(r'"(dgx\d-[a-z0-9-]+-)"', retired)
-    for prefix in ("dgx2-qwen3coder-30b-a3b-nvfp4-", "dgx1-nvidia-qwen36-35b-nvfp4-"):
+    for prefix in ("dgx1-nvidia-qwen36-35b-nvfp4-", "ds4-flash-0731-tp2-",
+                   "dgx2-qwen36-27b-uncensored-nvfp4-"):
         for dead in dead_prefixes:
             assert not prefix.startswith(dead), f"{prefix} seria purgado por {dead}"
+    # Y el del coder retirado SI tiene que estar purgado, para que no le sobreviva
+    # ningun registro en el model_list.
+    assert any("dgx2-qwen3coder-30b-a3b-nvfp4-".startswith(d) for d in dead_prefixes)
 
 
 def test_shared_tooling_alias_is_guarded_against_double_registration():
@@ -145,14 +149,15 @@ def test_shared_tooling_alias_is_guarded_against_double_registration():
     assert sorted(comparten) == ["deepseek-v4-flash-tp2", "nvidia-qwen36-dgx1",
                                  "ornith-dgx1"], comparten
 
-    # El co-residente de DGX2 NO puede compartirlos: no hay exclusion fisica entre
-    # nodos distintos, asi que `tooling` acabaria servido por dos backends.
-    coder = backends[backends.index('"name": "qwen3coder-dgx2"'):
-                     backends.index('"name": "qwen36-27b-uncensored-dgx2"')]
-    assert '"aliases": QWEN3CODER_ALIASES' in coder
-    # Comprobar la DECLARACION, no cualquier mencion: el comentario de esa entrada
-    # nombra TOOLING_RESIDENT_ALIASES justo para explicar por que NO la usa.
-    assert '"aliases": TOOLING_RESIDENT_ALIASES' not in coder
+    # El backend de DGX2 NO puede compartirlos: no hay exclusion fisica entre nodos
+    # distintos, asi que `tooling` acabaria servido por dos backends.
+    dense = backends[backends.index('"name": "qwen36-27b-uncensored-dgx2"'):
+                     backends.index('"name": "deepseek-v4-flash-tp2"')]
+    assert '"aliases": QWEN36_27B_UNCENSORED_ALIASES' in dense
+    # Comprobar la DECLARACION, no cualquier mencion.
+    assert '"aliases": TOOLING_RESIDENT_ALIASES' not in dense
+    # Y los alias del coder retirado no vuelven por la puerta de atras.
+    assert "QWEN3CODER_ALIASES" not in text
 
     guard = _sync_block(text, "def conflicting_managed_ids", "def reconcile_backend")
     assert 'own_aliases & set(other["aliases"])' in guard

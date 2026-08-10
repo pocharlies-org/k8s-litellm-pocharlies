@@ -587,19 +587,21 @@ data:
     # alias-to-alias entries there would ping-pong forever -- which is exactly why
     # degradation lives in this layer and not in that one.
     #
-    # ORDER RATIONALE. `dense` and `qwen3-coder` both live on DGX2, which
-    # time-slices two GPU slots, so they can be live simultaneously; `tooling` is on
-    # DGX1 (one slot, one big model). qwen3-coder goes AHEAD of tooling on the
-    # tool-bearing lanes because it is the only audited model that drives opencode
-    # for real: 11/14 scripted tasks vs 0-1/14 for Ornith, the 27B dense and the
-    # NVIDIA-Qwen3.6, the three of which hallucinate tool calls in invented XML
-    # under the agent's ~9.3k-token system prompt. It goes LAST on NO_TOOLS: a coder
-    # model is a poor terminal for prose, but alive beats 400.
+    # 2026-08-10: `qwen3-coder` RETIRADO de las tres cadenas y del cluster (decision
+    # del owner: "va de puto culo"). Estaba delante de `tooling` en las vias con
+    # tools por la bateria de opencode (11/14 frente a 0-1/14 de los otros tres), y
+    # ese numero sigue siendo cierto -- pero el modelo se retira entero, asi que la
+    # cadena ya no puede nombrarlo: un fallback a un alias que ningun backend declara
+    # es un salto perdido en cada peticion.
+    #
+    # Las tres cadenas quedan sobre los dos modelos que hay: el residente de tooling
+    # (DGX1, o los dos Sparks si es DeepSeek en TP=2) y el 27B denso de DGX2. Siguen
+    # cruzando de nodo, que es la invariante que importa.
     ROUTE = {
-        "TOOLS": {"model": "dense", "fallbacks": ("qwen3-coder", "tooling")},
+        "TOOLS": {"model": "dense", "fallbacks": ("tooling",)},
         "TOOLS_REASONING": {"model": "dense-reasoning",
-                            "fallbacks": ("dense", "qwen3-coder", "tooling")},
-        "NO_TOOLS": {"model": "tooling", "fallbacks": ("dense", "qwen3-coder")},
+                            "fallbacks": ("dense", "tooling")},
+        "NO_TOOLS": {"model": "tooling", "fallbacks": ("dense",)},
     }
 
     # Hard limit escape: the uncensored 27B serves --max-model-len 229376 while
@@ -630,15 +632,20 @@ data:
     #      de CAPACIDAD, y una capacidad que devuelve 400 en vez de degradar no
     #      protege nada.
     #
-    # `agentic-ha` (qwen3-coder -> tooling -> dense) se retira con el. La razon por
-    # la que existia sigue siendo cierta y hay que saberla: con el system prompt de
-    # ~9.3k tokens de opencode, qwen3-coder hace 11/14 tareas y Ornith / el 27B denso
-    # / NVIDIA-Qwen3.6 hacen 0-1/14 (alucinan tool calls en XML inventado).
-    # Evidencia: https://huggingface.co/datasets/pocharlies/dgx-spark-moe-benchmarks
-    # CONSECUENCIA PRACTICA: con el perfil `qwen36-dual` puesto, un agente que pida
-    # `tooling` recibe el 35B y NO completara tareas. Ahi hay que pedir `qwen3-coder`
-    # explicitamente. Con el perfil `deepseek-v4-flash` (el actual) da igual, porque
-    # qwen3-coder no tiene backend y `tooling` es DeepSeek, que si conduce agentes.
+    # `agentic-ha` (qwen3-coder -> tooling -> dense) se retiro con el, y el modelo que
+    # encabezaba esa cadena TAMBIEN esta fuera desde el 2026-08-10: Qwen3-Coder se
+    # retiro del cluster entero por decision del owner. Asi que ya no hay nada que
+    # optar: quien conduce agentes es el residente de tooling.
+    #
+    # LO QUE ESTO DEJA ABIERTO, y conviene no olvidarlo: la bateria de opencode medida
+    # por script daba 11/14 tareas a qwen3-coder frente a 0-1/14 a Ornith, al 27B denso
+    # y al NVIDIA-Qwen3.6 (los tres alucinan tool calls en XML inventado bajo el system
+    # prompt de ~9.3k tokens). Evidencia:
+    # https://huggingface.co/datasets/pocharlies/dgx-spark-moe-benchmarks
+    # Con el perfil `deepseek-v4-flash` (el actual) no importa: `tooling` es
+    # DeepSeek-V4-Flash y conduce agentes bien. Con el perfil `qwen36-dual`, en cambio,
+    # NO queda ningun modelo del cluster que complete tareas de opencode. Si se vuelve
+    # a ese perfil para trabajo agentico, hace falta traer otro modelo de codigo.
     #
     # QUE HACE ESTO. Aplica la cadena tooling -> dense al PROPIO `tooling`, o sea que
     # el fallback que aportaba el alias -ha ahora viene de serie. Cubre el modo
@@ -2157,9 +2164,6 @@ data:
     # name a specific model, so a direct call to them MUST fail when Ornith is not
     # the resident rather than silently answer from Qwen3-Coder.
     TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES
-    # Aliases propios de Qwen3-Coder en DGX2. Deliberadamente FUERA de los de
-    # tooling: es co-residente, no candidato a residente de DGX1.
-    QWEN3CODER_ALIASES = ("qwen3-coder", "coder")
     # The DGX2 uncensored 27B is the ONLY dense model in the cluster, so it owns
     # every dense-shaped name. `taxonomy` was added here on 2026-07-27: it used to
     # be registered solely by the censored 27B deployments (deleted 2026-07-26), so
@@ -2196,11 +2200,13 @@ data:
     #     Residente desde 2026-08-04: gana en tooling con rangos que no se solapan
     #     (350-352 vs 340-345 de 370) a cambio de ~14% de decode.
     #
-    # DGX2 (gx10-ec3d) = dos slots por time-slicing, asi que aqui SI hay
-    # co-residencia. `dense` y `qwen3-coder` pueden estar arriba a la vez. Por eso
-    # qwen3coder-dgx2 tiene aliases PROPIOS y no los de tooling: al no compartir
-    # nodo con DGX1 no hay exclusion fisica, y si declarara los de tooling ese alias
-    # acabaria servido por dos backends.
+    # DGX2 (gx10-ec3d) = dos slots por time-slicing, asi que aqui PODRIA haber
+    # co-residencia. Desde el 2026-08-10 no la hay: `qwen3coder-dgx2` era el
+    # co-residente y se retiro del cluster entero, asi que en DGX2 solo queda el 27B
+    # denso. La regla que justificaba sus alias propios sigue en pie para quien meta
+    # otro co-residente aqui: al no compartir nodo con DGX1 no hay exclusion fisica,
+    # asi que si declarara los alias de tooling, ese alias acabaria servido por dos
+    # backends a la vez.
     #
     # Sigue sin haber pool de aliases ni balanceo en ningun caso.
     #   - `qwen36-27b-uncensored-dgx2` (DGX2, gx10-ec3d): the uncensored 27B DENSE.
@@ -2270,50 +2276,6 @@ data:
             "max_input_tokens": 262144,
             "supports_function_calling": True,
             "supports_vision": True,
-        },
-        {
-            # Qwen3-Coder-30B-A3B NVFP4 + cabeza EAGLE3, CO-RESIDENTE en DGX2 con el
-            # 27B denso. DGX2 tiene 2 replicas de GPU por time-slicing, asi que este
-            # y `dense` pueden estar arriba a la vez (como TRELLIS y compania).
-            #
-            # ALIASES PROPIOS, no los de tooling. Motivo concreto: DGX1 y DGX2 son
-            # nodos DISTINTOS, asi que aqui NO hay exclusion fisica con el residente
-            # de tooling. Si declarara TOOLING_RESIDENT_ALIASES, `tooling` acabaria
-            # servido por dos backends a la vez -- exactamente lo que el resto de
-            # este controlador existe para evitar.
-            #
-            # Es el unico de los cuatro modelos auditados que conduce un agente de
-            # verdad: 11/14 tareas de opencode verificadas por script, frente a
-            # 0-1/14 de Ornith, del 27B denso y del NVIDIA-Qwen3.6. Los tres de la
-            # familia qwen3_5_moe alucinan tool calls en XML inventado bajo el system
-            # prompt de ~9.3k tokens de opencode. Apunta aqui tus agentes.
-            # Evidencia: https://huggingface.co/datasets/pocharlies/dgx-spark-moe-benchmarks
-            #
-            # qwen3_moe, SOLO TEXTO: supports_vision False para que una peticion
-            # multimodal falle rapido en vez de descartar las imagenes en silencio.
-            "name": "qwen3coder-dgx2",
-            "label": "DGX2_QWEN3CODER_30B",
-            "backend": "dgx2",
-            "base_model": os.getenv(
-                "QWEN3CODER_DGX2_MODEL",
-                "openai/qwen3-coder-30b-a3b-nvfp4",
-            ),
-            "aliases": QWEN3CODER_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_QWEN3CODER_DGX2",
-                "vllm-qwen3coder-30b-a3b-nvfp4-dgx2",
-            ),
-            "api_base": os.getenv(
-                "QWEN3CODER_DGX2_API_BASE",
-                "http://vllm-qwen3coder-30b-a3b-nvfp4-dgx2.llm.svc.cluster.local:8000/v1",
-            ),
-            # NO es prefijo de ninguna entrada de RETIRED_MANAGED_ID_PREFIXES.
-            "id_prefix": "dgx2-qwen3coder-30b-a3b-nvfp4",
-            "max_parallel_requests": 4,
-            "max_output_tokens": 16384,
-            "max_input_tokens": 262144,
-            "supports_function_calling": True,
-            "supports_vision": False,
         },
         {
             # DGX2 resident and the cluster's only DENSE model: the uncensored
@@ -2443,6 +2405,10 @@ data:
         "dgx2-qwen36-35b-nvfp4-",
         "dgx1-qwen36-27b-dense-nvfp4-",
         "dgx2-qwen36-27b-dense-nvfp4-",
+        # 2026-08-10: Qwen3-Coder retirado del cluster entero (deployment, pesos y
+        # config). El prefijo se purga en cada ciclo para que no sobreviva ningun
+        # registro suyo en el model_list.
+        "dgx2-qwen3coder-30b-a3b-nvfp4-",
     )
 
     TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -2902,8 +2868,6 @@ spec:
             # DGX1 tooling seat: three mutually exclusive candidates, one GPU. The
             # dashboard's DGX1 model-mode button scales exactly one of them to 1.
             - { name: K8S_SERVICE_ORNITH_DGX1, value: "vllm-ornith-35b-nvfp4-mtp-dgx1" }
-            - { name: K8S_SERVICE_QWEN3CODER_DGX2, value: "vllm-qwen3coder-30b-a3b-nvfp4-dgx2" }
-            - { name: QWEN3CODER_DGX1_MODEL, value: "openai/qwen3-coder-30b-a3b-nvfp4" }
             - { name: K8S_SERVICE_NVIDIA_QWEN36_DGX1, value: "vllm-nvidia-qwen36-35b-dgx1" }
             - { name: NVIDIA_QWEN36_DGX1_MODEL, value: "openai/nvidia-qwen36-35b-nvfp4" }
     # The Qwen3.6-35B, censored 27B F2 and Gemma-4 Services were DELETED on
