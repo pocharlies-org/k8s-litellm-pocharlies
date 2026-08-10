@@ -650,6 +650,40 @@ data:
         # fallback que casi nunca esta registrado no es una red, es ruido en la
         # config.
         "tooling-ha": {"model": "tooling", "fallbacks": ("dense",)},
+        # ── agentic-ha: "el que de verdad conduce un agente, el que sea hoy" ──
+        #
+        # PARA QUIEN ES. Clientes que no piden un modelo, piden que su bucle de
+        # herramientas termine: opencode, y cualquier CLI agentica que venga
+        # despues. No es lo mismo que `tooling-ha`, que pide "el residente de
+        # tooling, y si no el denso": eso optimiza DISPONIBILIDAD. Esto optimiza
+        # que el agente COMPLETE tareas, que es otra cosa y se mide distinto.
+        #
+        # POR QUE ESTE ORDEN, Y NO EL DE tooling-ha. Con el mismo system prompt de
+        # ~9.3k tokens de opencode, medido por script:
+        #   qwen3-coder-30b-a3b  11/14 tareas
+        #   Ornith / 27B denso / NVIDIA-Qwen3.6-35B   0-1/14 (alucinan tool calls
+        #                                             en XML inventado)
+        # Evidencia: https://huggingface.co/datasets/pocharlies/dgx-spark-moe-benchmarks
+        # Por eso qwen3-coder va PRIMERO aunque sea el que menos aguanta arriba
+        # (segundo slot time-sliced de DGX2, disputado). El comentario de
+        # `tooling-ha` dice que un fallback casi nunca registrado es ruido — cierto
+        # como FALLBACK, y justo lo contrario como PRIMARIO: si esta, es el bueno.
+        #
+        # `tooling` DE SEGUNDO ES LO QUE HACE QUE ESTO FUNCIONE EN LOS DOS PERFILES
+        # de residente, sin que el cliente edite nada:
+        #   perfil deepseek-v4-flash  qwen3-coder no tiene backend (DeepSeek ocupa
+        #     los dos Sparks en TP=2) -> cae a `tooling` = DeepSeek-V4-Flash, que
+        #     trae tool_call_parser deepseek_v4 nativo.
+        #   perfil qwen36-dual        qwen3-coder esta arriba -> lo sirve el.
+        # Es la respuesta a "que LiteLLM lea que modelo hay puesto y se ponga uno u
+        # otro": la cadena la resuelve _walk_chain contra el model_list VIVO, y el
+        # sampling lo ajusta _apply_family_sampling por la familia del backend que
+        # de verdad va a atender. Ningun cliente hardcodea el nombre del modelo.
+        #
+        # `dense` de tercero solo como ultimo recurso: contesta mal a un agente,
+        # pero contesta, y para eso esta el ultimo salto de una cadena.
+        "agentic-ha": {"model": "qwen3-coder",
+                       "fallbacks": ("tooling", "dense")},
     }
 
     # Hard limit escape: the uncensored 27B serves --max-model-len 229376 while
@@ -1143,10 +1177,12 @@ data:
             # por eso no saltaba con model="tooling" directo, que es justo como
             # pega el playground.
             _sanitize_sampling(data, requested_model)
-            # Y ajustar el sampling a la familia del backend que sirve el alias
-            # ahora mismo. Va aqui, antes de cualquier bifurcacion, para que
-            # cubra tanto las peticiones del router como las directas.
-            _apply_family_sampling(data)
+            # El sampling por familia se aplica MAS ABAJO, ya resuelto el modelo
+            # (ver la llamada junto a `key_alias`). Estuvo aqui arriba hasta
+            # 2026-08-10 y era un bug latente: con `agentic-ha` o `litellmrouter`
+            # el alias que llega NO es el que sirve, asi que la familia se
+            # calculaba del alias equivocado — o de ninguno, porque los `-ha` no
+            # estan en SWAPPABLE_ALIASES y salia por el return temprano.
             litellm_params = data.get("litellm_params", {})
             proxy_model = (
                 litellm_params.get("proxy_server_request", {})
@@ -1267,6 +1303,13 @@ data:
                     preview,
                 )
 
+            # Sampling por FAMILIA del backend, con el modelo YA resuelto: aqui
+            # data["model"] es el alias que de verdad va a atender (tras el salto
+            # de HA_ALIASES y tras el re-apuntado del router), no el que pidio el
+            # cliente. Es la unica posicion en la que el perfil corresponde al
+            # checkpoint real -- calcularlo antes de las bifurcaciones daba el
+            # perfil de un alias que no servia la peticion.
+            _apply_family_sampling(data)
             key_alias = _resolve_key_label(user_api_key_dict)
             model = data.get("model", "unknown")
             api_base = (

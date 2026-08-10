@@ -170,6 +170,37 @@ def test_ha_aliases_are_opt_in_and_disjoint(hook):
             f"{explicit} degradaria en silencio y romperia las mediciones")
 
 
+def test_agentic_ha_resuelve_en_los_dos_perfiles_de_residente(hook):
+    """`agentic-ha` es lo que permite que opencode NO edite su config al cambiar
+    de residente GPU. La propiedad que hay que sostener es esa, no el orden:
+
+      perfil qwen36-dual        qwen3-coder arriba -> lo sirve el (11/14 tareas
+                                de opencode; los otros tres, 0-1/14)
+      perfil deepseek-v4-flash  qwen3-coder SIN backend (DeepSeek ocupa los dos
+                                Sparks en TP=2) -> cae a `tooling` = DeepSeek
+
+    Si alguien reordena la cadena y deja `tooling` delante, el perfil qwen36-dual
+    manda opencode al 35B, que es justo el que no completa tareas. De ahi el
+    assert del primer salto.
+    """
+    entry = hook.HA_ALIASES["agentic-ha"]
+    assert entry["model"] == "qwen3-coder"
+
+    # Perfil qwen36-dual: DGX1 sirve tooling y DGX2 sirve dense + qwen3-coder.
+    qwen_dual = {"tooling", "dense", "dense-reasoning", "taxonomy", "qwen3-coder"}
+    assert hook._walk_chain(entry, alias_live=lambda a: a in qwen_dual) \
+        == ("qwen3-coder", "primary")
+
+    # Perfil deepseek-v4-flash: DeepSeek se queda los alias del residente de
+    # tooling y NO hay nada en el segundo slot de DGX2, asi que ni qwen3-coder ni
+    # dense existen. La cadena tiene que llegar a `tooling` sola.
+    ds_flash = {"tooling", "router", "auto", "litellmrouter", "qwen36-35b",
+                "qwen36-35b-tooling", "qwen36-35b-reasoning", "qwen36-35b-nvfp4",
+                "qwen-36-35b"}
+    assert hook._walk_chain(entry, alias_live=lambda a: a in ds_flash) \
+        == ("tooling", "degraded")
+
+
 def test_ha_chains_degrade_and_terminate(hook):
     """Misma maquinaria que ROUTE: se recorre entera y termina fuera de su nodo."""
     dgx2 = {"dense", "dense-reasoning", "qwen3-coder"}
