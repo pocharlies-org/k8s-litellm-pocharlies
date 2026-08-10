@@ -23,8 +23,10 @@ import yaml
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 WANT_FN = {"_apply_family_sampling", "_family_of_alias",
-           "_is_structured_output", "_disable_thinking"}
-WANT_CONST = {"FAMILY_SAMPLING", "SWAPPABLE_ALIASES"}
+           "_is_structured_output", "_disable_thinking",
+           "_apply_thinking_tier"}
+WANT_CONST = {"FAMILY_SAMPLING", "SWAPPABLE_ALIASES",
+              "THINKING_TIERS", "THINKING_KWARGS"}
 
 
 def _install_fake_litellm(deployments):
@@ -209,3 +211,105 @@ def test_detector_de_salida_estructurada(hook):
     assert hook._is_structured_output({"response_format": {"type": "json_object"}})
     assert not hook._is_structured_output({"response_format": {"type": "text"}})
     assert not hook._is_structured_output({})
+
+
+# ── Nivel de pensamiento por nombre de alias ────────────────────────────────
+#
+# Cuatro alias sobre el MISMO backend que solo se diferencian en cuanto piensan.
+# Existen para el cliente que solo tiene un campo `model` en un YAML -- k8sgpt,
+# Aurora, los ~15 adapters de Synapse -- y que no puede mandar extra_body.
+
+
+def _ctk(data):
+    return (data.get("extra_body") or {}).get("chat_template_kwargs") or {}
+
+
+def test_cada_alias_pide_su_nivel_en_deepseek(hook):
+    """El nombre del alias ES la peticion de nivel, traducida al dialecto de la
+    familia viva. DeepSeek lee `thinking` + `reasoning_effort`."""
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    esperado = {
+        "tooling": {"thinking": False},
+        "agent": {"thinking": True, "reasoning_effort": "low"},
+        "high": {"thinking": True, "reasoning_effort": "high"},
+        "max": {"thinking": True, "reasoning_effort": "max"},
+    }
+    for alias, kwargs in esperado.items():
+        data = {"model": "tooling"}          # ya resuelto; el tier va por el pedido
+        hook._apply_thinking_tier(data, alias)
+        assert _ctk(data) == kwargs, alias
+
+
+def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
+    """Qwen no tiene reasoning_effort: solo `enable_thinking`. Los tres niveles
+    colapsan a "piensa", y `tooling` sigue significando "no pienses". Lo que NO
+    puede pasar es que se le cuelen las claves de DeepSeek."""
+    _install_fake_litellm({"tooling": _dep("openai/nvidia-qwen36-35b-nvfp4")})
+    for alias in ("agent", "high", "max"):
+        data = {"model": "tooling"}
+        hook._apply_thinking_tier(data, alias)
+        assert _ctk(data) == {"enable_thinking": True}, alias
+    data = {"model": "tooling"}
+    hook._apply_thinking_tier(data, "tooling")
+    assert _ctk(data) == {"enable_thinking": False}
+
+
+def test_el_tier_sale_del_alias_PEDIDO_no_del_resuelto(hook):
+    """La propiedad que justifica pasar `requested_alias` por separado.
+
+    Cuando `max` degrada a `dense`, data["model"] ya dice "dense" -- que no esta en
+    la tabla. Si el tier se calculara sobre el resuelto, un `max` degradado se
+    quedaria sin pensar, que es justo el nivel contrario al que se pidio.
+    """
+    _install_fake_litellm({"dense": _dep("openai/deepseek-v4-flash-0731")})
+    data = {"model": "dense"}
+    hook._apply_thinking_tier(data, "max")
+    assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
+
+
+def test_router_y_auto_no_heredan_sin_pensar(hook):
+    """`router`/`auto` los reescribe el hook a `tooling`, pero nadie pidio "sin
+    pensar": se quedan con el default del servidor y el hook no toca nada."""
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    for alias in ("router", "auto", "litellmrouter", "dense", ""):
+        data = {"model": "tooling"}
+        hook._apply_thinking_tier(data, alias)
+        assert "extra_body" not in data, alias
+
+
+def test_el_cliente_explicito_gana_al_alias(hook):
+    """Quien sabe mandar extra_body no necesita que le elijan el nivel: es lo que
+    hacen los perfiles del playground. Si el alias ganara, no habria forma de
+    probar `max` contra un alias que no se llame `max`."""
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    data = {"model": "tooling",
+            "extra_body": {"chat_template_kwargs": {"thinking": True,
+                                                    "reasoning_effort": "max"}}}
+    hook._apply_thinking_tier(data, "tooling")   # el alias diria thinking:False
+    assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
+
+
+def test_la_salida_estructurada_apaga_el_pensamiento_pida_lo_que_pida_el_alias(hook):
+    """Medido el 2026-08-10: con thinking activo se cuela una llave suelta del
+    razonamiento delante del JSON guiado y el parse revienta (3/3). Pedir `max` y
+    un json_schema a la vez no es mas pensamiento, es una contradiccion."""
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    data = {"model": "tooling", "response_format": {"type": "json_schema"}}
+    hook._apply_thinking_tier(data, "max")
+    assert _ctk(data) == {"thinking": False}
+
+
+def test_los_cuatro_tiers_son_swappable(hook):
+    """Si un tier se quedara fuera de SWAPPABLE_ALIASES, _apply_family_sampling
+    saldria antes de tiempo y ese alias mandaria a DeepSeek el sampling de Qwen."""
+    for alias in hook.THINKING_TIERS:
+        assert alias in hook.SWAPPABLE_ALIASES, alias
+
+
+def test_ningun_tier_dice_medium(hook):
+    """El tokenizer viene parcheado para que lo desconocido caiga a "low", no a
+    "high". Un tier "medium" se comportaria como low y el nombre mentiria."""
+    for fam, niveles in hook.THINKING_KWARGS.items():
+        assert "medium" not in niveles, fam
+        for kw in niveles.values():
+            assert kw.get("reasoning_effort") in (None, "low", "high", "max")

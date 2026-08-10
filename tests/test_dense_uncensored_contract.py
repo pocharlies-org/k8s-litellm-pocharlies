@@ -54,7 +54,7 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     # v024-f2-dgx1 fuera: su deployment se borro el 2026-07-26.
     assert (
         'OPENCLAW_TEAM_REQUIRED_MODELS, value: '
-        '"ornith-canary,ornith-1.0,dense-uncensored,router"'
+        '"ornith-canary,ornith-1.0,dense-uncensored,router,agent,high,max"'
     ) in text
     block = text[
         text.index("def reconcile_required_team_models"):

@@ -57,6 +57,7 @@ def backends(cms):
     """BACKENDS del sync, evaluado de verdad (no por regex sobre el texto)."""
     tree = ast.parse(cms["sync"])
     wanted = {"ORNITH_CANARY_ALIASES", "QWEN36_COMPAT_ALIASES", "ORNITH_ALIASES",
+              "THINKING_TIER_ALIASES",
               "TOOLING_RESIDENT_ALIASES", "QWEN3CODER_ALIASES",
               "QWEN36_27B_UNCENSORED_ALIASES", "QWEN36_REPEAT_GUARD_PARAMS",
               "BACKENDS"}

@@ -26,7 +26,7 @@ WANT_FN = {"_has_tools", "_classify_route", "_approx_input_tokens", "_message_en
 WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "DENSE_CTX_ESCAPE", "THINK_MARKERS",
               "REASONING_EFFORT_SIGNAL", "TEXT_PART_TYPES", "IMAGE_PART_TYPES",
               "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "FAST_CTX_LIMIT",
-              "CAPABILITY_CHAINS"}
+              "CAPABILITY_CHAINS", "THINKING_TIERS"}
 
 
 @pytest.fixture(scope="module")
@@ -166,10 +166,21 @@ def test_solo_tooling_degrada_y_los_nombres_de_modelo_no(hook):
     Lo que este test impide es que alguien meta un nombre de MODELO aqui: eso si
     volveria a falsear medidas en silencio.
     """
-    assert set(hook.CAPABILITY_CHAINS) == {"tooling"}, (
+    # 2026-08-10: entran `agent`, `high` y `max`. Siguen siendo nombres de
+    # CAPACIDAD -- no dicen QUE modelo, dicen cuanto piensa el residente -- y los
+    # registra y borra el mismo sync que a `tooling`, asi que comparten su modo de
+    # fallo: sin cadena, un residente caido sale como 400 en vez de degradar.
+    assert set(hook.CAPABILITY_CHAINS) == {"tooling", "agent", "high", "max"}, (
         "solo los nombres de capacidad degradan; anadir un nombre de modelo aqui "
         "falsearia las mediciones hechas contra el")
-    assert hook.CAPABILITY_CHAINS["tooling"]["model"] == "tooling"
+    # Cada uno es cabeza de su propia cadena: el tier se calcula sobre el alias que
+    # pidio el cliente, asi que la cabeza NO puede colapsar a `tooling` (eso
+    # convertiria un `max` degradado en "sin pensar", que es el tier contrario).
+    for cap in ("tooling", "agent", "high", "max"):
+        assert hook.CAPABILITY_CHAINS[cap]["model"] == cap
+    # Y los cuatro tienen que estar en la tabla de tiers, o el nombre no significa
+    # nada: seria un alias mas apuntando al mismo sitio.
+    assert set(hook.CAPABILITY_CHAINS) == set(hook.THINKING_TIERS)
     # Disjunto de los auto-enrutados: si un nombre cayera en los dos, la rama de
     # capacidad correria primero y la clasificacion por forma de peticion no se
     # aplicaria nunca.

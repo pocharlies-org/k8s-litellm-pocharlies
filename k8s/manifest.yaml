@@ -265,6 +265,13 @@ data:
       # avisa el comentario de arriba. Una sola direccion es un DAG y termina.
       fallbacks:
       - tooling: ["dense"]
+      # 2026-08-10: los tres tiers de pensamiento. Cubren el mismo modo que cubre
+      # `tooling` aqui -- "alias registrado pero sin deployment sano" -- que el hook
+      # no puede ver porque lo levanta el Router desde dentro. Igual que arriba: NO
+      # anadir el inverso desde `dense`, o vuelve el ping-pong.
+      - agent: ["dense"]
+      - high: ["dense"]
+      - max: ["dense"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -720,8 +727,17 @@ data:
     #
     # Funciona porque pre_call_hook reescribe data["model"] ANTES del gate de nombre
     # del proxy (proxy_server.py:8691 vs route_request en :8698).
+    # Los tres tiers llevan la MISMA red que `tooling` y por el mismo motivo: los
+    # registra y los borra el mismo sync, contra el mismo Service. Si el residente
+    # cae, `agent` se queda tan desregistrado como `tooling`, y sin cadena ese fallo
+    # sale como 400 en vez de degradar. La cabeza es el propio alias para que el
+    # tier -- que se calcula sobre lo que pidio el cliente -- siga valiendo tras el
+    # salto: `agent` degradado a `dense` sigue pensando poco.
     CAPABILITY_CHAINS = {
         "tooling": {"model": "tooling", "fallbacks": ("dense",)},
+        "agent": {"model": "agent", "fallbacks": ("dense",)},
+        "high": {"model": "high", "fallbacks": ("dense",)},
+        "max": {"model": "max", "fallbacks": ("dense",)},
     }
     THINK_MARKERS = ("/think", "[think]")
     # Codex/agent clients attach a reasoning effort to EVERY call; only a
@@ -940,10 +956,61 @@ data:
     # tal cual: quien lo pide sabe a que habla.
     SWAPPABLE_ALIASES = frozenset({
         "tooling", "router", "auto", "litellmrouter",
+        "agent", "high", "max",
         "qwen36-35b", "qwen36-35b-tooling", "qwen36-35b-reasoning",
         "qwen36-35b-nvfp4", "qwen-36-35b",
         "dense", "dense-reasoning", "dense-uncensored", "taxonomy",
     })
+
+    # ── Nivel de pensamiento por ALIAS (2026-08-10) ─────────────────────────────
+    #
+    # Cuatro nombres para el mismo residente, que solo se diferencian en cuanto
+    # piensa antes de contestar. Existen porque la mayoria de clientes NO pueden
+    # mandar extra_body: k8sgpt, Aurora y los ~15 adapters de Synapse solo tienen
+    # un campo `model` en un YAML. Elegir el nivel por NOMBRE es lo unico que les
+    # queda, y ademas sobrevive al cambio de residente.
+    #
+    #   tooling -> sin pensar. Redaccion y extraccion: borradores, traducciones,
+    #              gmail, messaging, expenses, document-intake. Es tambien lo que
+    #              exige la salida estructurada (ver abajo).
+    #   agent   -> effort low. El arranque del servidor (DEFAULT_THINKING=low) y
+    #              el regimen agentico del model card. TTFT mediana 0.209 s.
+    #   high    -> effort high. Lo que recomienda la guia de opencode para codigo.
+    #   max     -> effort max. El nivel con el que DeepSeek evalua sus benchmarks
+    #              de code-agent. Piensa MUCHO: con 16384 de salida se trunca.
+    #
+    # OJO: el tier se decide por el alias que pidio el CLIENTE, no por el que acaba
+    # sirviendo. Si `agent` degrada a `dense` sigue queriendo pensar poco; y `router`
+    # / `auto`, que el hook reescribe a `tooling`, NO heredan "sin pensar" -- no lo
+    # pidieron. Calcularlo tras la reescritura era justo el fallo contrario.
+    THINKING_TIERS = {
+        "tooling": "off",
+        "agent": "low",
+        "high": "high",
+        "max": "max",
+    }
+    # Cada familia dice lo mismo con otras palabras. DeepSeek lee `thinking` (bool)
+    # + `reasoning_effort`; Qwen solo tiene `enable_thinking`, no gradua, asi que
+    # low/high/max colapsan a "piensa". Un alias sin traduccion para la familia viva
+    # se queda sin tocar y manda el default del servidor.
+    #
+    # Valores que acepta DeepSeek: low / high / max. El tokenizer viene parcheado en
+    # el launch.sh para que lo desconocido caiga a "low" en vez de a "high", asi que
+    # NO metas "medium" aqui: se comportaria como low y el nombre mentiria.
+    THINKING_KWARGS = {
+        "deepseek-v4": {
+            "off": {"thinking": False},
+            "low": {"thinking": True, "reasoning_effort": "low"},
+            "high": {"thinking": True, "reasoning_effort": "high"},
+            "max": {"thinking": True, "reasoning_effort": "max"},
+        },
+        "qwen": {
+            "off": {"enable_thinking": False},
+            "low": {"enable_thinking": True},
+            "high": {"enable_thinking": True},
+            "max": {"enable_thinking": True},
+        },
+    }
 
     def _family_of_alias(alias):
         """Familia del backend que sirve `alias` ahora mismo, o None.
@@ -1047,6 +1114,58 @@ data:
                                   alias, fam, ",".join(changed))
         except Exception as e:  # nunca romper una peticion por esto
             log.debug("_apply_family_sampling error: %s", e)
+
+    def _apply_thinking_tier(data, requested_alias):
+        """Fija el nivel de pensamiento que pide el NOMBRE del alias.
+
+        `requested_alias` es el que mando el cliente, capturado al entrar en el
+        hook: para entonces el router ya puede haber reescrito data["model"], y el
+        tier tiene que seguir al que se pidio, no al que sirve.
+
+        TRES COSAS QUE NO HACE, y las tres a proposito:
+
+        1. NO pisa lo que el cliente ya haya puesto en chat_template_kwargs. Quien
+           sabe mandar extra_body no necesita que le elijan el nivel -- es lo que
+           hacen los perfiles del playground, y si el alias ganara no habria forma
+           de probar `max` contra un alias que no se llame `max`.
+        2. NO toca los alias que no estan en la tabla. `router`, `auto`, `dense`...
+           siguen con el default del servidor.
+        3. NO piensa nunca con salida estructurada. El motivo esta medido: con
+           thinking activo se cuela una llave suelta del razonamiento delante del
+           JSON guiado y el parse revienta (3/3 reproducido el 2026-08-10). El
+           esquema manda sobre el nombre del alias, y por eso este caso corta antes
+           incluso de mirar el tier: pedir `max` y un json_schema a la vez no es
+           una peticion de mas pensamiento, es una contradiccion.
+        """
+        try:
+            tier = THINKING_TIERS.get((requested_alias or "").strip())
+            if not tier:
+                return
+            if _is_structured_output(data):
+                tier = "off"
+            fam = _family_of_alias((data.get("model") or "").strip())
+            kwargs = (THINKING_KWARGS.get(fam) or {}).get(tier)
+            if not kwargs:
+                return
+            body = data.get("extra_body")
+            if not isinstance(body, dict):
+                body = {}
+                data["extra_body"] = body
+            ctk = body.get("chat_template_kwargs")
+            if not isinstance(ctk, dict):
+                ctk = {}
+                body["chat_template_kwargs"] = ctk
+            applied = []
+            for k, v in kwargs.items():
+                if k in ctk:          # el cliente ya opino: manda el cliente
+                    continue
+                ctk[k] = v
+                applied.append("%s=%s" % (k, v))
+            if applied:
+                sampling_log.info("thinking: alias=%s tier=%s familia=%s -> %s",
+                                  requested_alias, tier, fam, ",".join(applied))
+        except Exception as e:  # nunca romper una peticion por esto
+            log.debug("_apply_thinking_tier error: %s", e)
 
     def _chain_of(entry):
         """The ordered aliases of a chain entry, primary first."""
@@ -1395,6 +1514,11 @@ data:
             # checkpoint real -- calcularlo antes de las bifurcaciones daba el
             # perfil de un alias que no servia la peticion.
             _apply_family_sampling(data)
+            # Y el nivel de pensamiento, que va al reves: lo decide el alias que
+            # pidio el CLIENTE (`requested_model`, capturado al entrar), no el
+            # resuelto. La familia sigue saliendo del backend real, porque el
+            # nombre de la clave del chat template lo pone el checkpoint.
+            _apply_thinking_tier(data, requested_model)
             key_alias = _resolve_key_label(user_api_key_dict)
             model = data.get("model", "unknown")
             api_base = (
@@ -1523,6 +1647,11 @@ data:
         "dense-uncensored",
         "taxonomy",
         "tooling",
+        # Los tres tiers de pensamiento: mismo backend que `tooling`, asi que la
+        # telemetria de vLLM local tiene que contarlos igual.
+        "agent",
+        "high",
+        "max",
         "qwen36-35b",
         "qwen36-35b-tooling",
         "qwen36-35b-reasoning",
@@ -2250,6 +2379,17 @@ data:
         "ornith-canary",
         "ornith-1.0",
     )
+    # Los tres hermanos de `tooling` que solo cambian cuanto se piensa (2026-08-10).
+    # `tooling` ya vive en QWEN36_COMPAT_ALIASES y significa "sin pensar"; estos son
+    # low / high / max. Los sirve el MISMO backend -- no son modelos distintos, son
+    # el mismo con otro chat template, y el nivel lo pone THINKING_TIERS en el hook.
+    # Van en su propia tupla y no dentro de la de compat porque no son nombres
+    # heredados de nada: son la interfaz para el cliente que solo tiene un `model`.
+    THINKING_TIER_ALIASES = (
+        "agent",
+        "high",
+        "max",
+    )
     QWEN36_COMPAT_ALIASES = (
         "tooling",
         "router",
@@ -2271,7 +2411,7 @@ data:
     # 2026-07-22 cutover (Daniel): the compatibility aliases are owned by the
     # DGX1 Ornith backend (gates passed: parser/tooling battery 370, speed
     # 170 tok/s @8K).
-    ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES
+    ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES + THINKING_TIER_ALIASES
     # 2026-08-03: DGX1 stops being "the Ornith node" and becomes "the tooling
     # resident node". Three deployments are now candidates for that seat -- Ornith,
     # Qwen3-Coder-30B-A3B and NVIDIA-Qwen3.6-35B -- selected by GitOps: the
@@ -2280,7 +2420,7 @@ data:
     # ORNITH_CANARY_ALIASES stay on Ornith alone: `ornith-canary` / `ornith-1.0`
     # name a specific model, so a direct call to them MUST fail when Ornith is not
     # the resident rather than silently answer from Qwen3-Coder.
-    TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES
+    TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES + THINKING_TIER_ALIASES
     # The DGX2 uncensored 27B is the ONLY dense model in the cluster, so it owns
     # every dense-shaped name. `taxonomy` was added here on 2026-07-27: it used to
     # be registered solely by the censored 27B deployments (deleted 2026-07-26), so
@@ -2465,6 +2605,15 @@ data:
             # prompt de 261.100 tokens). No poner 1048576: ese fue el valor que
             # tumbo el primer arranque, porque una sola peticion de 1M pide 7.54
             # GiB de KV y no habia.
+            #
+            # PENDIENTE 2026-08-10: sube a 393216 (384K) EN EL MISMO PASO en que el
+            # Deployment arranque con MAX_MODEL_LEN=393216, no antes. Este repo
+            # autosincroniza y el 27B ya enseno lo que pasa al anunciar una ventana
+            # que el servidor no sirve. Que 384K quepa esta comprobado: el pool de
+            # KV no lo fija max_model_len sino gpu_memory_utilization, y son
+            # 923.278 tokens (14,12 GiB, leidos del arranque); 1.048.576 no cabia
+            # en una peticion y por eso abortaba, 393.216 si (2,35x de concurrencia
+            # a longitud completa, frente a 3,52x hoy).
             "max_input_tokens": 262144,
             "supports_function_calling": True,
             # DeepseekV4ForCausalLM: solo texto, no es multimodal.
@@ -2994,7 +3143,11 @@ spec:
             - { name: OPENCLAW_TEAM_ID, value: "openclaw" }
             # Fixed explicit routes required during the canary. The reconciler
             # only unions these names; it never removes existing permissions.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored,router" }
+            # 2026-08-10: +agent,high,max. El gate del EQUIPO es el que se olvida --
+            # con la key abierta y el equipo no, los pods salen Healthy y TODA
+            # inferencia da 403 team_model_access_denied. reconcile_required_team_models
+            # es aditivo, asi que esto solo ensancha.
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored,router,agent,high,max" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
