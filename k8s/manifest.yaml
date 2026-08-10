@@ -134,8 +134,8 @@ data:
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
     # cliente. Se construyeron con cuidado y NUNCA las pidio nadie: 0 consumidores
-    # en todo ~/k8s. OpenClaw pedia `qwen36-35b-tooling` (hoy `tooling-ha`) y
-    # opencode pide `agentic-ha`. Codigo muerto que ademas duplicaba, pinneado a
+    # en todo ~/k8s. OpenClaw y opencode piden `tooling`. Codigo muerto que ademas
+    # duplicaba, pinneado a
     # DeepSeek, lo que ya se resuelve solo:
     #
     #   temperature 1.0 / top_p 0.95  -> lo pone FAMILY_SAMPLING del hook, deducido
@@ -602,85 +602,6 @@ data:
         "NO_TOOLS": {"model": "tooling", "fallbacks": ("dense", "qwen3-coder")},
     }
 
-    # Opt-in HA aliases. Same chain machinery as ROUTE, but the CLIENT picks the
-    # model: there is no classification by request shape here, so `tooling-ha`
-    # always prefers `tooling` whether or not the request carries tools.
-    #
-    # WHY IT EXISTS (2026-08-05). Aurora asks for `tooling` explicitly in all five
-    # of its model roles (MAIN/RCA/SUMMARIZATION/ENRICHMENT/GUARDRAILS_LLM) and has
-    # NO fallback of its own: zero `with_fallbacks` in its tree, only ChatOpenAI
-    # max_retries against the SAME model, and bedrock is its only available
-    # provider. So when DGX1 swaps its resident model, `tooling` disappears and
-    # every RCA dies mid-investigation -- which is exactly what happened on
-    # 2026-08-04 19:11, 40s into a real incident.
-    #
-    # WHY A NEW NAME INSTEAD OF DEGRADING `tooling` ITSELF. This estate benchmarks
-    # these models against each other constantly (the tooling battery, the opencode
-    # runs, the 370-case tool-arg suite). An alias that silently answers with a
-    # different model would corrupt those measurements at the source and the numbers
-    # would look like model quality. `tooling` keeps meaning exactly `tooling`,
-    # including its 400 when it is gone; callers that prefer "alive" over "exactly
-    # this model" opt in by name.
-    #
-    # NOTE FOR WHOEVER GREPS /v1/models AND DOES NOT FIND THIS: `tooling-ha` is
-    # resolved entirely in this hook and is never registered as a deployment. It
-    # works because pre_call_hook rewrites data["model"] BEFORE the proxy's
-    # model-name gate (proxy_server.py:8691 vs route_request at :8698), so the gate
-    # only ever sees the alias we resolved to.
-    HA_ALIASES = {
-        # Primario el 35B de DGX1, fallback el 27B de DGX2. Un solo salto y fuera.
-        #
-        # `tooling` y `dense` son los nombres CANONICOS de esos dos modelos:
-        # `tooling` lo sirve dgx1-nvidia-qwen36-35b-nvfp4 (el mismo backend que el
-        # alias de compatibilidad `qwen36-35b`) y `dense` lo sirve
-        # dgx2-qwen36-27b-uncensored-nvfp4. Se deletrean asi a proposito: los alias
-        # de compatibilidad ya rompieron una cadena antes, cuando `qwen36-35b-tooling`
-        # solo funcionaba porque el backend de turno los declaraba tambien.
-        # `qwen36-27b` NO existe como alias: el 27B se sirve bajo la familia `dense`
-        # y `taxonomy`.
-        #
-        # SIN qwen3-coder EN LA CADENA (2026-08-05). Estuvo un rato como tercer
-        # salto y se retira: vive en el segundo slot time-sliced de DGX2, que esta
-        # disputado, y no aguanta arriba lo suficiente para apoyarse en el. Un
-        # fallback que casi nunca esta registrado no es una red, es ruido en la
-        # config.
-        "tooling-ha": {"model": "tooling", "fallbacks": ("dense",)},
-        # ── agentic-ha: "el que de verdad conduce un agente, el que sea hoy" ──
-        #
-        # PARA QUIEN ES. Clientes que no piden un modelo, piden que su bucle de
-        # herramientas termine: opencode, y cualquier CLI agentica que venga
-        # despues. No es lo mismo que `tooling-ha`, que pide "el residente de
-        # tooling, y si no el denso": eso optimiza DISPONIBILIDAD. Esto optimiza
-        # que el agente COMPLETE tareas, que es otra cosa y se mide distinto.
-        #
-        # POR QUE ESTE ORDEN, Y NO EL DE tooling-ha. Con el mismo system prompt de
-        # ~9.3k tokens de opencode, medido por script:
-        #   qwen3-coder-30b-a3b  11/14 tareas
-        #   Ornith / 27B denso / NVIDIA-Qwen3.6-35B   0-1/14 (alucinan tool calls
-        #                                             en XML inventado)
-        # Evidencia: https://huggingface.co/datasets/pocharlies/dgx-spark-moe-benchmarks
-        # Por eso qwen3-coder va PRIMERO aunque sea el que menos aguanta arriba
-        # (segundo slot time-sliced de DGX2, disputado). El comentario de
-        # `tooling-ha` dice que un fallback casi nunca registrado es ruido — cierto
-        # como FALLBACK, y justo lo contrario como PRIMARIO: si esta, es el bueno.
-        #
-        # `tooling` DE SEGUNDO ES LO QUE HACE QUE ESTO FUNCIONE EN LOS DOS PERFILES
-        # de residente, sin que el cliente edite nada:
-        #   perfil deepseek-v4-flash  qwen3-coder no tiene backend (DeepSeek ocupa
-        #     los dos Sparks en TP=2) -> cae a `tooling` = DeepSeek-V4-Flash, que
-        #     trae tool_call_parser deepseek_v4 nativo.
-        #   perfil qwen36-dual        qwen3-coder esta arriba -> lo sirve el.
-        # Es la respuesta a "que LiteLLM lea que modelo hay puesto y se ponga uno u
-        # otro": la cadena la resuelve _walk_chain contra el model_list VIVO, y el
-        # sampling lo ajusta _apply_family_sampling por la familia del backend que
-        # de verdad va a atender. Ningun cliente hardcodea el nombre del modelo.
-        #
-        # `dense` de tercero solo como ultimo recurso: contesta mal a un agente,
-        # pero contesta, y para eso esta el ultimo salto de una cadena.
-        "agentic-ha": {"model": "qwen3-coder",
-                       "fallbacks": ("tooling", "dense")},
-    }
-
     # Hard limit escape: the uncensored 27B serves --max-model-len 229376 while
     # Ornith serves 262144, so a tool-bearing request longer than this goes to
     # Ornith instead of 400-ing on length. Deliberately below 229376 because
@@ -690,6 +611,49 @@ data:
     DENSE_CTX_ESCAPE = 200000
 
     FAST_CTX_LIMIT = 73000
+
+    # ── Fallback del alias de capacidad `tooling` ───────────────────────────────
+    #
+    # RETIRADOS 2026-08-10: `tooling-ha` y `agentic-ha`. Eran nombres de mas.
+    #
+    # `tooling-ha` nacio el 2026-08-05 tras el outage de Aurora para significar
+    # «prefiero el residente de tooling, pero prefiero vivo», con el argumento de que
+    # degradar `tooling` corromperia las mediciones. Ese argumento se cae por dos
+    # motivos:
+    #   1. TODO el que pedia `tooling` queria exactamente eso -- Aurora, Keep,
+    #      k8sgpt, OpenClaw, el bot de Studio, opencode. Dos nombres para una sola
+    #      intencion, y el que no llevaba sufijo era una trampa.
+    #   2. Las mediciones no se hacen contra `tooling`, se hacen contra nombres de
+    #      MODELO: `ornith-1.0`, `ornith-canary`, `qwen3-coder`, `qwen36-35b-nvfp4`,
+    #      `dense-uncensored`. Esos NO degradan y siguen dando 400 cuando su modelo
+    #      no esta, que es justo lo que protege las medidas. `tooling` es un nombre
+    #      de CAPACIDAD, y una capacidad que devuelve 400 en vez de degradar no
+    #      protege nada.
+    #
+    # `agentic-ha` (qwen3-coder -> tooling -> dense) se retira con el. La razon por
+    # la que existia sigue siendo cierta y hay que saberla: con el system prompt de
+    # ~9.3k tokens de opencode, qwen3-coder hace 11/14 tareas y Ornith / el 27B denso
+    # / NVIDIA-Qwen3.6 hacen 0-1/14 (alucinan tool calls en XML inventado).
+    # Evidencia: https://huggingface.co/datasets/pocharlies/dgx-spark-moe-benchmarks
+    # CONSECUENCIA PRACTICA: con el perfil `qwen36-dual` puesto, un agente que pida
+    # `tooling` recibe el 35B y NO completara tareas. Ahi hay que pedir `qwen3-coder`
+    # explicitamente. Con el perfil `deepseek-v4-flash` (el actual) da igual, porque
+    # qwen3-coder no tiene backend y `tooling` es DeepSeek, que si conduce agentes.
+    #
+    # QUE HACE ESTO. Aplica la cadena tooling -> dense al PROPIO `tooling`, o sea que
+    # el fallback que aportaba el alias -ha ahora viene de serie. Cubre el modo
+    # "alias DESREGISTRADO" (el sync llama a /model/delete cuando el Service se cae),
+    # que el proxy rechaza en route_llm_request ANTES de que corra el Router, asi que
+    # `router_settings.fallbacks` no puede salvarlo. El otro modo -- "registrado pero
+    # sin deployment sano", que es el que de verdad tumbo a Aurora -- lo cubre
+    # `router_settings.fallbacks: tooling -> [dense]`. Las dos capas siguen siendo
+    # necesarias y ninguna sustituye a la otra.
+    #
+    # Funciona porque pre_call_hook reescribe data["model"] ANTES del gate de nombre
+    # del proxy (proxy_server.py:8691 vs route_request en :8698).
+    CAPABILITY_CHAINS = {
+        "tooling": {"model": "tooling", "fallbacks": ("dense",)},
+    }
     THINK_MARKERS = ("/think", "[think]")
     # Codex/agent clients attach a reasoning effort to EVERY call; only a
     # deliberate medium+ effort counts as a reasoning signal so that ambient
@@ -1174,7 +1138,8 @@ data:
             _sanitize_sampling(data, requested_model)
             # El sampling por familia se aplica MAS ABAJO, ya resuelto el modelo
             # (ver la llamada junto a `key_alias`). Estuvo aqui arriba hasta
-            # 2026-08-10 y era un bug latente: con `agentic-ha` o `litellmrouter`
+            # 2026-08-10 y era un bug latente: con `litellmrouter` (o cualquier
+            # alias que se reescriba)
             # el alias que llega NO es el que sirve, asi que la familia se
             # calculaba del alias equivocado — o de ninguno, porque los `-ha` no
             # estan en SWAPPABLE_ALIASES y salia por el return temprano.
@@ -1184,39 +1149,43 @@ data:
                 .get("body", {})
                 .get("model", "")
             )
-            # Alias HA: se resuelve ANTES de is_router_request. Los nombres -ha son
-            # disjuntos de AUTO_ROUTED_MODELS, asi que tras reescribir el modelo el
-            # flujo continua como una peticion explicita normal -- y el gate de
-            # tools de mas abajo se aplica al modelo que de verdad va a servir,
+            # Cadena del alias de capacidad: se resuelve ANTES de is_router_request.
+            # `tooling` es disjunto de AUTO_ROUTED_MODELS, asi que tras reescribir el
+            # modelo el flujo continua como una peticion explicita normal -- y el gate
+            # de tools de mas abajo se aplica al modelo que de verdad va a servir,
             # porque relee data["model"].
-            ha_alias = (
-                requested_model if requested_model in HA_ALIASES
-                else proxy_model if proxy_model in HA_ALIASES
+            #
+            # Cuando `tooling` esta registrado (el caso normal) _walk_chain devuelve
+            # ("tooling", "primary") y esto es un no-op: no se toca nada. Solo actua
+            # cuando el alias NO esta, que es el hueco que dejaba el 400 duro.
+            cap_alias = (
+                requested_model if requested_model in CAPABILITY_CHAINS
+                else proxy_model if proxy_model in CAPABILITY_CHAINS
                 else None
             )
-            if ha_alias is not None:
-                ha_entry = HA_ALIASES[ha_alias]
-                ha_resolved, ha_state = _walk_chain(ha_entry)
-                if ha_state == "degraded":
+            if cap_alias is not None:
+                cap_entry = CAPABILITY_CHAINS[cap_alias]
+                cap_resolved, cap_state = _walk_chain(cap_entry)
+                if cap_state == "degraded":
                     router_log.warning(
-                        "ha: %s primary %r is not registered; degraded to %r",
-                        ha_alias,
-                        ha_entry["model"],
-                        ha_resolved,
+                        "capability: %s no esta registrado; degradado a %r",
+                        cap_alias,
+                        cap_resolved,
                     )
-                elif ha_state == "dry":
+                elif cap_state == "dry":
                     router_log.error(
-                        "ha: no alias in the %s chain %r is registered; "
-                        "dispatching to %r, which will fail",
-                        ha_alias,
-                        _chain_of(ha_entry),
-                        ha_resolved,
+                        "capability: ningun alias de la cadena %s %r esta registrado; "
+                        "se despacha a %r, que va a fallar",
+                        cap_alias,
+                        _chain_of(cap_entry),
+                        cap_resolved,
                     )
-                data["model"] = ha_resolved
-                data.setdefault("metadata", {})
-                data["metadata"]["_router_original_model"] = ha_alias
-                data["metadata"]["_router_resolved_model"] = ha_resolved
-                data["metadata"]["_router_route_state"] = ha_state
+                if cap_resolved != cap_alias:
+                    data["model"] = cap_resolved
+                    data.setdefault("metadata", {})
+                    data["metadata"]["_router_original_model"] = cap_alias
+                    data["metadata"]["_router_resolved_model"] = cap_resolved
+                    data["metadata"]["_router_route_state"] = cap_state
 
             is_router_request = (
                 requested_model in AUTO_ROUTED_MODELS
@@ -1300,7 +1269,7 @@ data:
 
             # Sampling por FAMILIA del backend, con el modelo YA resuelto: aqui
             # data["model"] es el alias que de verdad va a atender (tras el salto
-            # de HA_ALIASES y tras el re-apuntado del router), no el que pidio el
+            # de CAPABILITY_CHAINS y tras el re-apuntado del router), no el que pidio el
             # cliente. Es la unica posicion en la que el perfil corresponde al
             # checkpoint real -- calcularlo antes de las bifurcaciones daba el
             # perfil de un alias que no servia la peticion.

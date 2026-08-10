@@ -25,7 +25,8 @@ WANT_FN = {"_has_tools", "_classify_route", "_approx_input_tokens", "_message_en
            "_degrade", "_alias_has_deployments", "_walk_chain", "_chain_of"}
 WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "DENSE_CTX_ESCAPE", "THINK_MARKERS",
               "REASONING_EFFORT_SIGNAL", "TEXT_PART_TYPES", "IMAGE_PART_TYPES",
-              "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "FAST_CTX_LIMIT", "HA_ALIASES"}
+              "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "FAST_CTX_LIMIT",
+              "CAPABILITY_CHAINS"}
 
 
 @pytest.fixture(scope="module")
@@ -152,68 +153,43 @@ def test_degrade_walks_to_the_first_live_alias(hook):
     assert hook._degrade("TOOLS", alias_live=lambda a: False) == (tools[0], "dry")
 
 
-def test_ha_aliases_are_opt_in_and_disjoint(hook):
-    """`tooling-ha` existe para que Aurora degrade; `tooling` sigue siendo literal.
+def test_solo_tooling_degrada_y_los_nombres_de_modelo_no(hook):
+    """La linea que separa un nombre de CAPACIDAD de un nombre de MODELO.
 
-    Lo segundo es la mitad importante: este estate mide estos modelos unos contra
-    otros constantemente, y un alias que respondiera con otro modelo en silencio
-    falsearia las mediciones. Y los nombres -ha tienen que ser disjuntos de los
-    auto-enrutados, porque el hook los resuelve en ramas distintas: si un nombre
-    cayera en las dos, la rama HA correria primero y la clasificacion por forma de
-    peticion no se aplicaria nunca.
+    Reescrito 2026-08-10, al retirar `tooling-ha` y `agentic-ha`. El argumento viejo
+    era que degradar `tooling` corromperia las mediciones, y de ahi un alias -ha
+    aparte. Se cae: las mediciones se hacen contra nombres de MODELO (`ornith-1.0`,
+    `qwen3-coder`, `qwen36-35b-nvfp4`, `dense-uncensored`), que NO estan en esta
+    tabla y por tanto siguen dando 400 cuando su modelo no esta. `tooling` es una
+    capacidad, y una capacidad que da 400 en vez de degradar no protege nada.
+
+    Lo que este test impide es que alguien meta un nombre de MODELO aqui: eso si
+    volveria a falsear medidas en silencio.
     """
-    assert "tooling-ha" in hook.HA_ALIASES
-    assert hook.HA_ALIASES["tooling-ha"]["model"] == "tooling"
-    assert not (set(hook.HA_ALIASES) & hook.AUTO_ROUTED_MODELS)
-    for explicit in ("tooling", "dense", "dense-reasoning", "qwen3-coder", "taxonomy"):
-        assert explicit not in hook.HA_ALIASES, (
-            f"{explicit} degradaria en silencio y romperia las mediciones")
+    assert set(hook.CAPABILITY_CHAINS) == {"tooling"}, (
+        "solo los nombres de capacidad degradan; anadir un nombre de modelo aqui "
+        "falsearia las mediciones hechas contra el")
+    assert hook.CAPABILITY_CHAINS["tooling"]["model"] == "tooling"
+    # Disjunto de los auto-enrutados: si un nombre cayera en los dos, la rama de
+    # capacidad correria primero y la clasificacion por forma de peticion no se
+    # aplicaria nunca.
+    assert not (set(hook.CAPABILITY_CHAINS) & hook.AUTO_ROUTED_MODELS)
+    for explicit in ("ornith-1.0", "ornith-canary", "qwen3-coder",
+                     "qwen36-35b-nvfp4", "dense-uncensored", "taxonomy",
+                     "tooling-ha", "agentic-ha"):
+        assert explicit not in hook.CAPABILITY_CHAINS, (
+            f"{explicit} degradaria en silencio")
 
 
-def test_agentic_ha_resuelve_en_los_dos_perfiles_de_residente(hook):
-    """`agentic-ha` es lo que permite que opencode NO edite su config al cambiar
-    de residente GPU. La propiedad que hay que sostener es esa, no el orden:
-
-      perfil qwen36-dual        qwen3-coder arriba -> lo sirve el (11/14 tareas
-                                de opencode; los otros tres, 0-1/14)
-      perfil deepseek-v4-flash  qwen3-coder SIN backend (DeepSeek ocupa los dos
-                                Sparks en TP=2) -> cae a `tooling` = DeepSeek
-
-    Si alguien reordena la cadena y deja `tooling` delante, el perfil qwen36-dual
-    manda opencode al 35B, que es justo el que no completa tareas. De ahi el
-    assert del primer salto.
-    """
-    entry = hook.HA_ALIASES["agentic-ha"]
-    assert entry["model"] == "qwen3-coder"
-
-    # Perfil qwen36-dual: DGX1 sirve tooling y DGX2 sirve dense + qwen3-coder.
-    qwen_dual = {"tooling", "dense", "dense-reasoning", "taxonomy", "qwen3-coder"}
-    assert hook._walk_chain(entry, alias_live=lambda a: a in qwen_dual) \
-        == ("qwen3-coder", "primary")
-
-    # Perfil deepseek-v4-flash: DeepSeek se queda los alias del residente de
-    # tooling y NO hay nada en el segundo slot de DGX2, asi que ni qwen3-coder ni
-    # dense existen. La cadena tiene que llegar a `tooling` sola.
-    ds_flash = {"tooling", "router", "auto", "litellmrouter", "qwen36-35b",
-                "qwen36-35b-tooling", "qwen36-35b-reasoning", "qwen36-35b-nvfp4",
-                "qwen-36-35b"}
-    assert hook._walk_chain(entry, alias_live=lambda a: a in ds_flash) \
-        == ("tooling", "degraded")
-
-
-def test_ha_chains_degrade_and_terminate(hook):
-    """Misma maquinaria que ROUTE: se recorre entera y termina fuera de su nodo."""
-    dgx2 = {"dense", "dense-reasoning", "qwen3-coder"}
-    for name, entry in hook.HA_ALIASES.items():
-        chain = hook._chain_of(entry)
-        assert len(chain) >= 2, f"{name} no tiene a donde degradar: {chain}"
-        assert len(set(chain)) == len(chain), f"{name} repite un alias: {chain}"
-        assert set(chain) & dgx2 and set(chain) - dgx2, (
-            f"{name} no sale de un solo nodo: {chain}")
-        assert hook._walk_chain(entry, alias_live=lambda a: True) == (chain[0], "primary")
-        assert hook._walk_chain(entry, alias_live=lambda a: a == chain[-1]) \
-            == (chain[-1], "degraded")
-        assert hook._walk_chain(entry, alias_live=lambda a: False) == (chain[0], "dry")
+def test_tooling_es_no_op_cuando_esta_registrado(hook):
+    """Lo importante de fusionar el -ha dentro de `tooling`: en el caso normal no
+    cambia NADA. Solo actua cuando el alias no esta, que es el hueco donde antes
+    salia un 400 duro que `router_settings.fallbacks` no puede cubrir, porque el
+    proxy rechaza el nombre antes de que corra el Router."""
+    entry = hook.CAPABILITY_CHAINS["tooling"]
+    assert hook._walk_chain(entry, alias_live=lambda a: True) == ("tooling", "primary")
+    assert hook._walk_chain(entry, alias_live=lambda a: a == "dense") == ("dense", "degraded")
+    assert hook._walk_chain(entry, alias_live=lambda a: False) == ("tooling", "dry")
 
 
 def test_degrade_probes_each_alias_at_most_once(hook):

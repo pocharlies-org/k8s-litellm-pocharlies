@@ -6,8 +6,8 @@ distinto. El cliente no puede saberlo, asi que lo pone el hook.
 
 Lo que este fichero fija es la propiedad que se rompio de verdad: el perfil se
 elige por el backend que VA A ATENDER la peticion, no por el nombre que escribio
-el cliente. Con `agentic-ha` los dos no coinciden nunca, y con `litellmrouter`
-coinciden solo por casualidad segun el perfil de residente que este puesto.
+el cliente. Con `litellmrouter` coinciden solo por casualidad segun el perfil de
+residente que este puesto, y con cualquier alias que el hook reescriba no coinciden.
 
 Se carga el hook REAL del manifest y se ejecutan solo sus funciones puras, con un
 llm_router de mentira, igual que el resto de los contratos de este repo.
@@ -101,16 +101,18 @@ def test_qwen_mantiene_su_perfil_en_el_mismo_alias(hook):
 def test_el_perfil_se_elige_por_el_alias_RESUELTO_no_por_el_que_pidio_el_cliente(hook):
     """La regresion concreta que arreglo el movimiento de la llamada (2026-08-10).
 
-    `agentic-ha` NO esta en SWAPPABLE_ALIASES a proposito: es un nombre de cadena,
-    no de modelo. Si `_apply_family_sampling` corre ANTES de resolverla, sale por
-    el return temprano y no se aplica ningun perfil; corriendo DESPUES ve el alias
-    real (`tooling`) y aplica el del residente.
+    Un alias que el hook reescribe puede no estar en SWAPPABLE_ALIASES: si
+    `_apply_family_sampling` corre ANTES de resolverlo, sale por el return temprano
+    y no se aplica ningun perfil; corriendo DESPUES ve el alias real y aplica el del
+    residente. Se usa un nombre inexistente como sonda porque el sintoma es
+    exactamente ese: alias no reconocido -> sin perfil.
     """
     _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
 
-    sin_resolver = {"model": "agentic-ha", "temperature": 0.7, "presence_penalty": 1.5}
+    sin_resolver = {"model": "alias-que-el-hook-reescribe", "temperature": 0.7,
+                    "presence_penalty": 1.5}
     hook._apply_family_sampling(sin_resolver)
-    assert sin_resolver["temperature"] == 0.7, "un alias -ha no debe llevar perfil"
+    assert sin_resolver["temperature"] == 0.7, "sin resolver no debe llevar perfil"
     assert "presence_penalty" in sin_resolver
 
     ya_resuelto = {"model": "tooling", "temperature": 0.7, "presence_penalty": 1.5}
