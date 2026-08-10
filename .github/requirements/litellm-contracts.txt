@@ -1,0 +1,23 @@
+# Dependencias para correr la suite ENTERA de contratos en CI.
+#
+# Los pines y hashes son EXACTAMENTE los de
+# k8s-openclaw-qwen36-pocharlies/.github/requirements-ci.txt: ese conjunto ya esta
+# probado con --require-hashes en el estate, asi que se reusa en vez de resolver
+# otro. Si se sube pytest ahi, subirlo aqui a la vez.
+#
+# Sustituye a litellm-network-contract.txt (solo PyYAML), que dejaba fuera todo lo
+# que usa fixtures de pytest -- es decir, todos los contratos menos uno. Por eso
+# tres contratos pudieron estar rojos desde el corte a DeepSeek sin que nadie lo
+# viera.
+pytest==9.0.2 \
+    --hash=sha256:711ffd45bf766d5264d487b917733b453d917afd2b0ad65223959f59089f875b
+iniconfig==2.3.0 \
+    --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
+packaging==25.0 \
+    --hash=sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484
+pluggy==1.6.0 \
+    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+Pygments==2.19.2 \
+    --hash=sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b
+PyYAML==6.0.3 \
+    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc

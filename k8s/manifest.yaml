@@ -263,13 +263,29 @@ data:
       # touches model_list, never router_settings. An entry naming an alias that no
       # longer exists would sit here silently, so keep it to the two canonical big
       # aliases.
-      # 2026-08-09: `tooling: ["dense"]` RETIRADO mientras DeepSeek-V4-Flash ocupa
-      # los dos Sparks. `dense` es el 27B de gx10-ec3d y esta a 0 justamente para
-      # dejarle sitio: el fallback apuntaba a un alias sin backend posible. El
-      # comentario de mas abajo ya avisa de que una entrada que nombra un alias
-      # inexistente se queda aqui en silencio, y esto era exactamente ese caso.
-      # RESTAURAR junto con el rollback del modelo (cuando `dense` vuelva a 1).
-      fallbacks: []
+      # 2026-08-09: `tooling: ["dense"]` se retiro porque con DeepSeek ocupando los
+      # dos Sparks `dense` esta a 0 y el fallback apuntaba a un alias sin backend
+      # posible.
+      #
+      # 2026-08-10: RESTAURADO, y el razonamiento de ayer estaba medio mal. Esta es
+      # la UNICA capa que cubre "alias registrado pero sin deployment sano" (cooldown
+      # tras allowed_fails, un vLLM atascado que sigue contestando /health): ese error
+      # lo levanta el Router desde DENTRO del try de async_function_with_fallbacks,
+      # asi que la cadena del hook es ciega a el -- el hook pregunta si el alias esta
+      # REGISTRADO, no si esta sano. Es el modo que tumbo a Aurora el 2026-08-04 y el
+      # 400 que salio hoy al probar: "no healthy deployments for tooling ...
+      # Fallbacks=[]".
+      #
+      # Dejarlo vacio para no "apuntar a un alias sin backend" cambia un coste
+      # inexistente por un agujero real: con `dense` desregistrado el intento extra
+      # falla igual y el cliente recibe el mismo 400 de hoy, solo un salto mas tarde.
+      # Con el perfil qwen36-dual puesto, en cambio, es red de verdad. Asimetrico a
+      # favor de tenerlo.
+      #
+      # NO anadir el inverso `dense: ["tooling"]`: el par mutuo es el ping-pong que
+      # avisa el comentario de arriba. Una sola direccion es un DAG y termina.
+      fallbacks:
+      - tooling: ["dense"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -2266,8 +2282,8 @@ data:
             ),
             "id_prefix": "dgx1-ornith-35b-nvfp4-mtp",
             "max_parallel_requests": 4,
-            "max_tokens": 16384,
-            "context_window": 262144,
+            "max_output_tokens": 16384,
+            "max_input_tokens": 262144,
             "supports_function_calling": True,
             "supports_vision": True,
         },
@@ -2302,8 +2318,8 @@ data:
             # backend delete its own registrations on every loop.
             "id_prefix": "dgx1-nvidia-qwen36-35b-nvfp4",
             "max_parallel_requests": 4,
-            "max_tokens": 16384,
-            "context_window": 262144,
+            "max_output_tokens": 16384,
+            "max_input_tokens": 262144,
             "supports_function_calling": True,
             "supports_vision": True,
         },
@@ -2346,8 +2362,8 @@ data:
             # NO es prefijo de ninguna entrada de RETIRED_MANAGED_ID_PREFIXES.
             "id_prefix": "dgx2-qwen3coder-30b-a3b-nvfp4",
             "max_parallel_requests": 4,
-            "max_tokens": 16384,
-            "context_window": 262144,
+            "max_output_tokens": 16384,
+            "max_input_tokens": 262144,
             "supports_function_calling": True,
             "supports_vision": False,
         },
@@ -2374,6 +2390,18 @@ data:
             ),
             "id_prefix": "dgx2-qwen36-27b-uncensored-nvfp4",
             "max_parallel_requests": 8,
+            # 229376 = el --max-model-len REAL de este servidor, y es el UNICO
+            # backend del cluster con una ventana mas pequena que 262144. Hasta
+            # 2026-08-10 no declaraba ninguno de los dos limites y heredaba los
+            # defaults de desired_deployments(), asi que anunciaba 262144: 32k MAS
+            # de los que puede servir. No era "no declara limites", era declarar
+            # los de otro modelo.
+            "max_input_tokens": 229376,
+            # 16384 por consistencia con el resto del estate, que es una guia para
+            # el cliente y no un limite del servidor: aqui la salida real la acota
+            # max_model_len menos el prompt. El 32768 que heredaba antes no se
+            # midio nunca contra este checkpoint.
+            "max_output_tokens": 16384,
             "supports_function_calling": True,
             "supports_vision": True,
         },
@@ -2412,17 +2440,41 @@ data:
             "id_prefix": "ds4-flash-0731-tp2",
             # = --max-num-seqs del servidor. Pedir mas solo encola.
             "max_parallel_requests": 6,
-            "max_tokens": 16384,
+            "max_output_tokens": 16384,
             # 262144 es el max_model_len REAL del servidor (medido: sirve un
             # prompt de 261.100 tokens). No poner 1048576: ese fue el valor que
             # tumbo el primer arranque, porque una sola peticion de 1M pide 7.54
             # GiB de KV y no habia.
-            "context_window": 262144,
+            "max_input_tokens": 262144,
             "supports_function_calling": True,
             # DeepseekV4ForCausalLM: solo texto, no es multimodal.
             "supports_vision": False,
         },
     )
+    # ── Los limites son OBLIGATORIOS, no opcionales (2026-08-10) ────────────────
+    # Esto existe por un fallo concreto: `desired_deployments()` resolvia la ventana
+    # y la salida con `backend.get(clave, <default>)`, y el 27B denso no declaraba
+    # ninguna de las dos. Resultado: heredaba 262144 cuando sirve 229376, o sea que
+    # anunciaba 32k mas de los que puede. Un default silencioso en un campo que
+    # describe al HARDWARE no es una comodidad, es una via para que un backend nuevo
+    # publique los numeros de otro.
+    #
+    # Se valida al IMPORTAR, no dentro del bucle: un controlador mal configurado
+    # tiene que morir en el arranque y quedarse en CrashLoopBackOff (visible en el
+    # panel y en las alertas), no registrar rutas con metadatos inventados y parecer
+    # sano. Los alias los borra el propio reconcile al no haber sync, asi que fallar
+    # aqui no deja registros huerfanos sirviendo.
+    REQUIRED_BACKEND_LIMITS = ("max_input_tokens", "max_output_tokens")
+    _missing_limits = {
+        b["name"]: [k for k in REQUIRED_BACKEND_LIMITS if not b.get(k)]
+        for b in BACKENDS
+        if any(not b.get(k) for k in REQUIRED_BACKEND_LIMITS)
+    }
+    if _missing_limits:
+        raise SystemExit(
+            "backend-sync mal configurado: estos backends no declaran sus limites "
+            "y NO se heredan de nadie: %s" % _missing_limits
+        )
     # Model IDs managed by earlier versions of this controller. They are deleted
     # every cycle so a leftover registration can never serve traffic on a route it
     # no longer owns. Since 2026-07-26 the Gemma-4, Qwen3.6-35B and censored 27B F2
@@ -2651,12 +2703,33 @@ data:
                         "max_parallel_requests": backend["max_parallel_requests"],
                         **extra_litellm_params(backend, alias),
                     },
+                    # LOS NOMBRES DE LOS CAMPOS SON LOS DE LITELLM, NO LOS NUESTROS
+                    # (2026-08-10). Hasta hoy esto declaraba `context_window`, que NO
+                    # es un campo de ModelInfo:
+                    #     'context_window' in get_type_hints(litellm...ModelInfo)
+                    #     -> False
+                    # Se guardaba como metadato suelto y no lo leia NADIE, asi que
+                    # los 256k del modelo eran invisibles: `max_input_tokens` salia
+                    # null y el unico numero que veia un cliente era `max_tokens`,
+                    # que es el techo de SALIDA. De ahi que opencode se configurara
+                    # con 16k de contexto y que el catalogo de Aurora tenga el
+                    # "256K" hardcodeado en un parche del bundle del frontend.
+                    #
+                    # La convencion la fija litellm con los modelos que si conoce
+                    # (gpt-5.6-sol): max_tokens == max_output_tokens, y
+                    # max_input_tokens es la ventana. `max_tokens` se mantiene por
+                    # ser el campo legacy que aun leen sitios como token_counter.
+                    #
+                    # Es informativo, no un gate: max_input_tokens solo se agrega en
+                    # Router.get_model_group_info() para reportar. Declararlo no
+                    # activa ningun rechazo pre-call.
                     "model_info": {
                         "id": managed_model_id(backend, alias),
-                        "max_tokens": backend.get("max_tokens", 32768),
+                        "max_tokens": backend["max_output_tokens"],
+                        "max_output_tokens": backend["max_output_tokens"],
+                        "max_input_tokens": backend["max_input_tokens"],
                         "supports_function_calling": backend["supports_function_calling"],
                         "supports_vision": backend["supports_vision"],
-                        "context_window": backend.get("context_window", 262144),
                         "managed_by": "litellm-dgx-backend-sync",
                         "backend": backend["backend"],
                         "k8s_namespace": K8S_NAMESPACE,

@@ -65,8 +65,12 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert "/team/new" not in block
 
 
-def test_backends_are_two_exclusive_dgx1_candidates_plus_two_dgx2_coresidents():
-    """4 backends declarados, y la exclusion NO es uniforme (2026-08-04).
+def test_backends_cubren_las_tres_formas_de_exclusion():
+    """5 backends declarados, y la exclusion tiene TRES formas distintas.
+
+    Actualizado 2026-08-10: hasta el corte a DeepSeek habia 4 y solo dos formas.
+    El test se quedo asertando `count == 4` y llevaba rojo desde entonces sin que
+    nadie lo viera, porque CI solo corre el contrato de red.
 
     DGX1: dos candidatos MUTUAMENTE EXCLUYENTES al mismo asiento (una GPU con
     sharing-strategy=none, ambos piden nvidia.com/gpu: 1), asi que comparten el
@@ -74,13 +78,23 @@ def test_backends_are_two_exclusive_dgx1_candidates_plus_two_dgx2_coresidents():
 
     DGX2: dos CO-RESIDENTES (2 replicas de GPU por time-slicing) que pueden estar
     arriba a la vez, asi que NO pueden compartir alias con nadie.
+
+    LOS DOS A LA VEZ: DeepSeek-V4-Flash en TP=2 pide ~104 GiB de CADA Spark, asi
+    que su exclusion es fisica igual que la de DGX1 pero abarca los dos nodos. Por
+    eso SI comparte los alias del residente de tooling: mientras corre no puede
+    haber residente de DGX1 ni co-residente de DGX2.
     """
     text = MANIFEST.read_text()
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    assert backends.count('"name": "') == 4
+    assert backends.count('"name": "') == 5
     for name in ("ornith-dgx1", "nvidia-qwen36-dgx1",
-                 "qwen3coder-dgx2", "qwen36-27b-uncensored-dgx2"):
+                 "qwen3coder-dgx2", "qwen36-27b-uncensored-dgx2",
+                 "deepseek-v4-flash-tp2"):
         assert f'"name": "{name}"' in backends
+    # El de TP=2 tiene que decir que vive en los dos nodos: es lo que justifica que
+    # comparta los alias de tooling sin romper la unicidad.
+    ds = backends[backends.index('"name": "deepseek-v4-flash-tp2"'):]
+    assert '"backend": "dgx1+dgx2"' in ds
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",
                  "qwen36-27b-dense-dgx1", "qwen36-27b-dense-dgx2",
                  # nunca existio en DGX1: Qwen3-Coder es co-residente de DGX2
@@ -92,7 +106,7 @@ def test_backends_are_two_exclusive_dgx1_candidates_plus_two_dgx2_coresidents():
     coder = backends[backends.index('"name": "qwen3coder-dgx2"'):
                      backends.index('"name": "qwen36-27b-uncensored-dgx2"')]
     assert '"supports_vision": False' in coder
-    assert '"context_window": 262144' in coder
+    assert '"max_input_tokens": 262144' in coder
     assert '"supports_function_calling": True' in coder
 
     # Ninguno de los id_prefix nuevos puede caer bajo un prefijo retirado, que
@@ -122,7 +136,14 @@ def test_shared_tooling_alias_is_guarded_against_double_registration():
     comparten = [n for n, a in re.findall(r'"name":\s*"([a-z0-9-]+)".*?"aliases":\s*(\w+)',
                                           backends, re.S)
                  if a in ("ORNITH_ALIASES", "TOOLING_RESIDENT_ALIASES")]
-    assert sorted(comparten) == ["nvidia-qwen36-dgx1", "ornith-dgx1"], comparten
+    # 2026-08-10: TRES, no dos. DeepSeek-V4-Flash entra en el conjunto porque su
+    # TP=2 ocupa los dos Sparks, asi que la exclusion fisica sigue garantizada --
+    # solo que ahora abarca los dos nodos en vez del asiento de DGX1. Si algun dia
+    # se anade aqui un backend que NO excluya a los otros por hardware, `tooling`
+    # acabaria servido por dos api_base a la vez y el router balancearia contra uno
+    # muerto: eso es lo que este test protege, no el numero.
+    assert sorted(comparten) == ["deepseek-v4-flash-tp2", "nvidia-qwen36-dgx1",
+                                 "ornith-dgx1"], comparten
 
     # El co-residente de DGX2 NO puede compartirlos: no hay exclusion fisica entre
     # nodos distintos, asi que `tooling` acabaria servido por dos backends.

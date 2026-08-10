@@ -8,13 +8,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "k8s" / "manifest.yaml"
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-LOCK = ROOT / ".github" / "requirements" / "litellm-network-contract.txt"
+LOCK = ROOT / ".github" / "requirements" / "litellm-contracts.txt"
 
 CHECKOUT_ACTION = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 SETUP_PYTHON_ACTION = (
     "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
 )
-PYYAML_HASH = "80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476"
 
 
 class TestLiteLLMNetworkContract(unittest.TestCase):
@@ -70,9 +69,21 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         self.assertEqual(http_port["port"], 4000)
         self.assertEqual(http_port["targetPort"], 4000)
 
-    def test_ci_job_is_pinned_and_uses_the_minimal_lock(self):
+    def test_ci_job_is_pinned_and_runs_the_whole_contract_suite(self):
+        """El job sigue pineado por SHA, y ahora corre la suite entera.
+
+        Reescrito 2026-08-10. Este test exigia el job `litellm-network-contract`,
+        que instalaba solo PyYAML y corria UN fichero por unittest. Todo lo que usa
+        fixtures de pytest quedaba sin ejecutar, o sea el resto de los contratos:
+        asi es como tres de ellos estuvieron rojos desde el corte a DeepSeek sin que
+        nadie lo viera, incluido uno que asertaba 4 backends habiendo ya 5.
+
+        Lo que este test protege sigue siendo lo mismo — runner fijo, acciones
+        pineadas por SHA de 40 hex, deps con --require-hashes — solo cambia el
+        alcance de lo que se ejecuta.
+        """
         workflow = yaml.safe_load(WORKFLOW.read_text())
-        job = workflow["jobs"]["litellm-network-contract"]
+        job = workflow["jobs"]["litellm-contracts"]
         steps = job["steps"]
 
         self.assertEqual(job["runs-on"], "ubuntu-24.04")
@@ -93,21 +104,30 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         run_commands = [step["run"] for step in steps if "run" in step]
         self.assertIn('test "$(uname -m)" = "x86_64"', run_commands)
         self.assertIn(
-            "python -m pip install --require-hashes --only-binary=PyYAML "
-            "-r .github/requirements/litellm-network-contract.txt",
+            "python -m pip install --require-hashes --only-binary=:all: "
+            "-r .github/requirements/litellm-contracts.txt",
             run_commands,
         )
-        self.assertIn(
-            "python -m unittest tests/test_litellm_network_contract.py",
-            run_commands,
-        )
+        # La suite ENTERA, no un fichero. Un `pytest <ruta concreta>` aqui volveria
+        # a dejar contratos sin ejecutar.
+        self.assertIn("python -m pytest tests/ -q", run_commands)
 
+        # El lock: lo que importa es que TODO paquete este clavado a una version
+        # exacta con su sha256, no cual es cual. Antes se asertaba el contenido
+        # literal (dos lineas, solo PyYAML), que es lo que hacia imposible anadir
+        # pytest sin tocar el test -- y sin pytest la suite no se podia correr.
         lock_text = LOCK.read_text()
-        self.assertEqual(
-            lock_text.splitlines(),
-            ["PyYAML==6.0.2 \\", f"    --hash=sha256:{PYYAML_HASH}"],
-        )
+        paquetes = re.findall(r"(?m)^([A-Za-z0-9_.-]+)==([^ \\]+) \\\n\s+--hash=sha256:([0-9a-f]{64})$",
+                              lock_text)
+        self.assertIn("pytest", [n for n, _, _ in paquetes],
+                      "sin pytest en el lock el job no puede correr la suite")
+        self.assertIn("PyYAML", [n for n, _, _ in paquetes])
+        # Cada entrada `nombre==version` del fichero tiene que haber encajado con el
+        # patron de arriba, es decir llevar su hash pegado.
+        self.assertEqual(len(paquetes), len(re.findall(r"(?m)^[A-Za-z0-9_.-]+==", lock_text)))
         self.assertTrue(lock_text.endswith("\n"))
+        # Ni rangos, ni comodines, ni requirements anidados: --require-hashes lo
+        # rechazaria, pero mejor fallar aqui que en CI.
         self.assertNotRegex(lock_text, re.compile(r">=|<=|~=|!=|\*|(?:^|\n)\s*-r"))
 
 

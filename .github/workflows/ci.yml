@@ -21,8 +21,13 @@ jobs:
       kustomize_paths: ". k8s"
     secrets: inherit
 
-  litellm-network-contract:
-    name: LiteLLM network contract
+  # 2026-08-10: este job corria UN solo fichero de tests (el contrato de red, que es
+  # unittest puro y solo necesitaba PyYAML). Todo lo que usa fixtures de pytest
+  # quedaba fuera, o sea todos los demas contratos. Resultado: tres contratos rojos
+  # desde el corte a DeepSeek sin que nadie se enterara, incluido uno que asertaba
+  # que habia 4 backends cuando ya habia 5. Ahora corre la suite entera.
+  litellm-contracts:
+    name: LiteLLM contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -38,9 +43,9 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
-      - name: Install locked test dependency
+      - name: Install locked test dependencies
         run: >-
-          python -m pip install --require-hashes --only-binary=PyYAML
-          -r .github/requirements/litellm-network-contract.txt
-      - name: Run LiteLLM network contract
-        run: python -m unittest tests/test_litellm_network_contract.py
+          python -m pip install --require-hashes --only-binary=:all:
+          -r .github/requirements/litellm-contracts.txt
+      - name: Run the whole contract suite
+        run: python -m pytest tests/ -q
