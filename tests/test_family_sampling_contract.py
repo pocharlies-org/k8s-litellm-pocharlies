@@ -22,7 +22,8 @@ import yaml
 
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
-WANT_FN = {"_apply_family_sampling", "_family_of_alias"}
+WANT_FN = {"_apply_family_sampling", "_family_of_alias",
+           "_is_structured_output", "_disable_thinking"}
 WANT_CONST = {"FAMILY_SAMPLING", "SWAPPABLE_ALIASES"}
 
 
@@ -139,3 +140,72 @@ def test_sin_backend_registrado_no_se_inventa_perfil(hook):
     data = {"model": "tooling", "temperature": 0.3, "presence_penalty": 1.5}
     hook._apply_family_sampling(data)
     assert data == {"model": "tooling", "temperature": 0.3, "presence_penalty": 1.5}
+
+
+# ── Salida estructurada ────────────────────────────────────────────────────────
+# Un bug de datos, no de estilo: con `thinking` activo (el servidor arranca con
+# --default-chat-template-kwargs thinking=True) una peticion con `response_format`
+# devuelve el JSON CORRUPTO -- se cuela un `{` suelto del razonamiento delante del
+# JSON guiado. Reproducido 3/3 el 2026-08-10; con thinking off, 2/2 correcto.
+#
+# Quien lo sufria: la extraccion fiscal de skirmbooks, que ante el JSON.parse
+# fallido cae a heuristicas de regex dentro de un `catch` que solo escribe un
+# console.warn. Llevaba degradando en silencio desde el corte a DeepSeek.
+
+def _structured(**extra):
+    d = {"model": "tooling",
+         "response_format": {"type": "json_schema",
+                             "json_schema": {"name": "X", "strict": True, "schema": {}}}}
+    d.update(extra)
+    return d
+
+
+def test_estructurada_contra_deepseek_apaga_el_pensamiento(hook):
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    data = _structured()
+    hook._apply_family_sampling(data)
+    assert data["extra_body"]["chat_template_kwargs"]["thinking"] is False
+
+
+def test_estructurada_respeta_la_temperatura_del_cliente(hook):
+    """El esquema fija la FORMA, no los VALORES: a temperatura 1.0 los numeros
+    bailan, y quien pide un esquema quiere un dato. Si mando 0, se respeta."""
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    data = _structured(temperature=0)
+    hook._apply_family_sampling(data)
+    assert data["temperature"] == 0, "el perfil de familia no debe subirla a 1.0"
+
+
+def test_estructurada_sigue_quitando_los_penalties_de_qwen(hook):
+    """Los `drop` no dependen de que haya esquema: a DeepSeek le sientan mal igual."""
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    data = _structured(temperature=0, presence_penalty=1.5, top_k=20)
+    hook._apply_family_sampling(data)
+    assert "presence_penalty" not in data and "top_k" not in data
+
+
+def test_sin_esquema_el_perfil_de_familia_manda_como_siempre(hook):
+    """La ruta normal no cambia: sin `response_format` se sigue aplicando el
+    sampling agentico que recomienda el model card, y no se toca el pensamiento."""
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    data = {"model": "tooling", "temperature": 0}
+    hook._apply_family_sampling(data)
+    assert data["temperature"] == 1.0 and data["top_p"] == 0.95
+    assert "extra_body" not in data
+
+
+def test_estructurada_contra_qwen_no_toca_el_pensamiento(hook):
+    """`thinking` es un chat_template_kwarg de DeepSeek. Con un residente Qwen no
+    se inventa el parametro: mandarlo a un backend que no lo conoce es basura."""
+    _install_fake_litellm({"tooling": _dep("openai/nvidia-qwen36-35b-nvfp4")})
+    data = _structured(temperature=0)
+    hook._apply_family_sampling(data)
+    assert "extra_body" not in data
+    assert data["temperature"] == 0
+
+
+def test_detector_de_salida_estructurada(hook):
+    assert hook._is_structured_output({"response_format": {"type": "json_schema"}})
+    assert hook._is_structured_output({"response_format": {"type": "json_object"}})
+    assert not hook._is_structured_output({"response_format": {"type": "text"}})
+    assert not hook._is_structured_output({})

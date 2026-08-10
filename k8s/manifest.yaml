@@ -902,8 +902,54 @@ data:
             log.debug("_family_of_alias(%s): %s", alias, e)
         return None
 
+    def _is_structured_output(data):
+        """La peticion exige una forma de salida (json_schema / json_object)."""
+        rf = data.get("response_format")
+        return isinstance(rf, dict) and rf.get("type") in ("json_schema", "json_object")
+
+
+    def _disable_thinking(data):
+        """Apaga el bloque de pensamiento de DeepSeek para ESTA peticion."""
+        body = data.get("extra_body")
+        if not isinstance(body, dict):
+            body = {}
+            data["extra_body"] = body
+        kwargs = body.get("chat_template_kwargs")
+        if not isinstance(kwargs, dict):
+            kwargs = {}
+            body["chat_template_kwargs"] = kwargs
+        if kwargs.get("thinking") is False:
+            return False
+        kwargs["thinking"] = False
+        return True
+
+
     def _apply_family_sampling(data):
-        """Ajusta el sampling al backend que de verdad va a atender la peticion."""
+        """Ajusta el sampling al backend que de verdad va a atender la peticion.
+
+        SALIDA ESTRUCTURADA (2026-08-10). Una peticion con `response_format` recibe
+        dos tratos distintos, y los dos por el mismo motivo: quien pide un esquema
+        quiere un dato, no una redaccion.
+
+        1. Se le APAGA el bloque de pensamiento cuando el backend es DeepSeek. No es
+           una preferencia: con `thinking` activo (y lo esta por defecto, el servidor
+           arranca con --default-chat-template-kwargs thinking=True) el contenido
+           vuelve CORRUPTO -- se cuela un `{` suelto del razonamiento delante del JSON
+           guiado y `JSON.parse` revienta. Reproducido 3/3 el 2026-08-10 contra
+           `qwen36-35b`; con thinking off, 2/2 correcto. Lo sufria la extraccion
+           fiscal de skirmbooks, que ante el parse fallido cae a heuristicas de regex
+           en un `catch` que solo escribe un console.warn: degradaba en silencio
+           desde el corte a DeepSeek.
+
+        2. NO se le pisa la temperatura. El perfil de familia sube DeepSeek a 1.0
+           porque su model card lo recomienda para agentico y tool-calling, pero eso
+           es justo lo contrario de lo que quiere una extraccion determinista: el
+           esquema fija la FORMA, no los VALORES, y a temperatura 1.0 los numeros
+           bailan. Si el cliente mando `temperature: 0`, se respeta.
+
+        Los `drop` si se aplican siempre: los penalties de Qwen le sientan mal a
+        DeepSeek con esquema o sin el.
+        """
         try:
             alias = (data.get("model") or "").strip()
             if alias not in SWAPPABLE_ALIASES:
@@ -912,18 +958,24 @@ data:
             if not fam:
                 return
             prof = FAMILY_SAMPLING[fam]
+            structured = _is_structured_output(data)
             body = data.get("extra_body") if isinstance(data.get("extra_body"), dict) else None
             changed = []
             for k in prof["drop"]:
                 for c in (data, body):
                     if isinstance(c, dict) and c.pop(k, None) is not None:
                         changed.append("-" + k)
-            for k, v in prof["set"].items():
-                if data.get(k) != v:
-                    changed.append("%s=%s" % (k, v))
-                data[k] = v
-                if body is not None:
-                    body.pop(k, None)   # que no lo pise por detras
+            if not structured:
+                for k, v in prof["set"].items():
+                    if data.get(k) != v:
+                        changed.append("%s=%s" % (k, v))
+                    data[k] = v
+                    if body is not None:
+                        body.pop(k, None)   # que no lo pise por detras
+            else:
+                changed.append("estructurada:sampling-del-cliente")
+                if fam == "deepseek-v4" and _disable_thinking(data):
+                    changed.append("estructurada:thinking=off")
             if changed:
                 sampling_log.info("sampling: alias=%s familia=%s ajustes=%s",
                                   alias, fam, ",".join(changed))
