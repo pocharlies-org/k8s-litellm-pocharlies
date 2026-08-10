@@ -844,6 +844,96 @@ data:
         except Exception:
             return True
 
+    # ── perfil de sampling por FAMILIA del backend ───────────────────────────
+    # Los alias compartidos (`tooling`, `router`, `dense`...) los sirve quien sea
+    # el residente del momento, y cada familia quiere un sampling distinto. El
+    # cliente no puede saberlo: OpenClaw lleva los valores de Qwen HARDCODEADOS
+    # por alias en ~8 agentes de su runtime config, asi que al poner DeepSeek
+    # seguian llegando los de Qwen.
+    #
+    # Se resuelve aqui y no en el cliente porque es UN sitio en vez de 40+, y
+    # porque cubre a TODOS los clientes (OpenClaw, opencode, playground, brain),
+    # no solo al que te acuerdes de tocar.
+    #
+    # La familia se deduce del backend REAL que sirve el alias AHORA MISMO, no de
+    # una tabla de alias: al intercambiar el residente el perfil cambia solo.
+    FAMILY_SAMPLING = {
+        "deepseek-v4": {
+            # El model card de DeepSeek documenta esto para agentico/tool-calling.
+            "set": {"temperature": 1.0, "top_p": 0.95},
+            # NO documenta top_k/min_p/penalties, y los de Qwen le sientan mal:
+            # presence_penalty 1.5 le alarga las respuestas y le hace divagar.
+            "drop": ("top_k", "min_p", "presence_penalty",
+                     "frequency_penalty", "repetition_penalty"),
+        },
+        "qwen": {
+            # Los de siempre. Qwen documenta que temperature casi-cero degrada el
+            # tool-calling, de ahi 0.7 y no 0.
+            "set": {"temperature": 0.7, "top_p": 0.8},
+            "drop": (),
+        },
+    }
+    # Solo se pisan los alias cuyo backend PUEDE cambiar. Un alias que ya nombra
+    # un modelo concreto (deepseek-v4-flash-opencode, ornith-1.0...) se respeta
+    # tal cual: quien lo pide sabe a que habla.
+    SWAPPABLE_ALIASES = frozenset({
+        "tooling", "router", "auto", "litellmrouter",
+        "qwen36-35b", "qwen36-35b-tooling", "qwen36-35b-reasoning",
+        "qwen36-35b-nvfp4", "qwen-36-35b",
+        "dense", "dense-reasoning", "dense-uncensored", "taxonomy",
+    })
+
+    def _family_of_alias(alias):
+        """Familia del backend que sirve `alias` ahora mismo, o None.
+
+        Se lee de litellm_params.model de la deployment que registro
+        litellm-dgx-backend-sync. Falla a None (no tocar nada) ante cualquier
+        cambio de internals de litellm: preferimos no aplicar perfil a aplicar
+        uno equivocado.
+        """
+        try:
+            from litellm.proxy.proxy_server import llm_router
+            if llm_router is None:
+                return None
+            for dep in (llm_router.get_model_list(model_name=alias) or ()):
+                mid = ((dep.get("litellm_params") or {}).get("model") or "").lower()
+                for fam in FAMILY_SAMPLING:
+                    if fam in mid:
+                        return fam
+                if "qwen" in mid or "ornith" in mid:
+                    return "qwen"
+        except Exception as e:
+            log.debug("_family_of_alias(%s): %s", alias, e)
+        return None
+
+    def _apply_family_sampling(data):
+        """Ajusta el sampling al backend que de verdad va a atender la peticion."""
+        try:
+            alias = (data.get("model") or "").strip()
+            if alias not in SWAPPABLE_ALIASES:
+                return
+            fam = _family_of_alias(alias)
+            if not fam:
+                return
+            prof = FAMILY_SAMPLING[fam]
+            body = data.get("extra_body") if isinstance(data.get("extra_body"), dict) else None
+            changed = []
+            for k in prof["drop"]:
+                for c in (data, body):
+                    if isinstance(c, dict) and c.pop(k, None) is not None:
+                        changed.append("-" + k)
+            for k, v in prof["set"].items():
+                if data.get(k) != v:
+                    changed.append("%s=%s" % (k, v))
+                data[k] = v
+                if body is not None:
+                    body.pop(k, None)   # que no lo pise por detras
+            if changed:
+                sampling_log.info("sampling: alias=%s familia=%s ajustes=%s",
+                                  alias, fam, ",".join(changed))
+        except Exception as e:  # nunca romper una peticion por esto
+            log.debug("_apply_family_sampling error: %s", e)
+
     def _chain_of(entry):
         """The ordered aliases of a chain entry, primary first."""
         return (entry["model"],) + tuple(entry.get("fallbacks") or ())
@@ -1053,6 +1143,10 @@ data:
             # por eso no saltaba con model="tooling" directo, que es justo como
             # pega el playground.
             _sanitize_sampling(data, requested_model)
+            # Y ajustar el sampling a la familia del backend que sirve el alias
+            # ahora mismo. Va aqui, antes de cualquier bifurcacion, para que
+            # cubra tanto las peticiones del router como las directas.
+            _apply_family_sampling(data)
             litellm_params = data.get("litellm_params", {})
             proxy_model = (
                 litellm_params.get("proxy_server_request", {})
