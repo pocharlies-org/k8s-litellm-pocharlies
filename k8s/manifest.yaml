@@ -130,53 +130,32 @@ data:
         api_key: not-used
       model_info:
         mode: chat
-    # ── DeepSeek-V4-Flash-0731: perfiles por cliente ────────────────────────────
-    # Entradas AÑADIDAS, no reemplazan a nada. Los alias de tooling los sigue
-    # registrando litellm-dgx-backend-sync segun readiness; estas dos son estaticas
-    # y llevan el sampling ya puesto para cada cliente.
+    # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
-    # temperature 1.0 / top_p 0.95 NO es un descuido: es lo que recomienda el model
-    # card de DeepSeek para escenarios agenticos y de tool-calling. El instinto de
-    # "temp 0 para codigo" saca al modelo del regimen para el que esta tuneado. Los
-    # benchmarks de velocidad SI se midieron a temp 0, porque eso es lo que pedia el
-    # criterio de aceptacion — son dos cosas distintas.
+    # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
+    # cliente. Se construyeron con cuidado y NUNCA las pidio nadie: 0 consumidores
+    # en todo ~/k8s. OpenClaw pedia `qwen36-35b-tooling` (hoy `tooling-ha`) y
+    # opencode pide `agentic-ha`. Codigo muerto que ademas duplicaba, pinneado a
+    # DeepSeek, lo que ya se resuelve solo:
     #
-    # reasoning_effort low a proposito: con `high` o `max` el bloque de pensamiento
-    # se dispara y el TTFT se va al garete. Medido a low: TTFT mediana 0.209s. El
-    # cliente puede subirlo por peticion cuando le haga falta.
-    - model_name: deepseek-v4-flash-openclaw
-      litellm_params:
-        model: openai/deepseek-v4-flash-0731
-        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        temperature: 1.0
-        top_p: 0.95
-        extra_body:
-          chat_template_kwargs:
-            thinking: true
-            reasoning_effort: low
-      model_info:
-        mode: chat
-        supports_function_calling: true
-        max_tokens: 16384
-    - model_name: deepseek-v4-flash-opencode
-      litellm_params:
-        model: openai/deepseek-v4-flash-0731
-        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        temperature: 1.0
-        top_p: 0.95
-        # 16384 porque los diffs completos se truncan por debajo, y ademas este
-        # modelo gasta ~130 tokens de pensamiento incluso con effort low.
-        max_tokens: 16384
-        extra_body:
-          chat_template_kwargs:
-            thinking: true
-            reasoning_effort: low
-      model_info:
-        mode: chat
-        supports_function_calling: true
-        max_tokens: 16384
+    #   temperature 1.0 / top_p 0.95  -> lo pone FAMILY_SAMPLING del hook, deducido
+    #     de la FAMILIA del backend que sirve el alias ahora mismo. Funciona para
+    #     todos los clientes y sobrevive al cambio de residente; una entrada
+    #     estatica pinneada a DeepSeek habria mentido al volver a Qwen.
+    #   chat_template_kwargs {thinking, reasoning_effort: low}  -> ya los trae el
+    #     servidor vLLM como --default-chat-template-kwargs (visto en los args de
+    #     arranque del head). No hacia falta repetirlos aqui.
+    #   max_tokens 16384  -> ahora lo publica el sync como max_output_tokens en los
+    #     alias del residente, y opencode lo declara en su propia config.
+    #
+    # Lo que documentaban estas entradas y merece sobrevivir al borrado: el model
+    # card de DeepSeek recomienda temperature 1.0 / top_p 0.95 para escenarios
+    # agenticos y de tool-calling. El instinto de "temp 0 para codigo" saca al
+    # modelo del regimen para el que esta tuneado (los benchmarks de velocidad si
+    # se midieron a temp 0, porque lo pedia el criterio de aceptacion: son dos
+    # cosas distintas). Y reasoning_effort low no es tacaneria: con `high` o `max`
+    # el bloque de pensamiento se dispara y el TTFT se va al garete -- medido a
+    # low, TTFT mediana 0.209s. Todo eso vive ahora en FAMILY_SAMPLING.
     litellm_settings:
       success_callback:
       - db
