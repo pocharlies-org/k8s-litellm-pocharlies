@@ -276,7 +276,11 @@ data:
       # `tooling` aqui -- "alias registrado pero sin deployment sano" -- que el hook
       # no puede ver porque lo levanta el Router desde dentro. Igual que arriba: NO
       # anadir el inverso desde `dense`, o vuelve el ping-pong.
-      - agent: ["dense"]
+      # 2026-08-11: `agent` anade gpt-5.6-sol (ChatGPT Pro por codex-bridge, estatico)
+      # como ultimo eslabon: si DeepSeek se cae a mitad de la peticion (el FailoverError
+      # 500 de OpenClaw), el Router itera dense -> gpt-5.6-sol en vez de fallar. No crea
+      # ciclo: gpt-5.6-sol no tiene fallbacks propios.
+      - agent: ["dense", "gpt-5.6-sol"]
       - high: ["dense"]
       - max: ["dense"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
@@ -749,7 +753,10 @@ data:
     # salto: `agent` degradado a `dense` sigue pensando poco.
     CAPABILITY_CHAINS = {
         "tooling": {"model": "tooling", "fallbacks": ("dense",)},
-        "agent": {"model": "agent", "fallbacks": ("dense",)},
+        # 2026-08-11: ultimo eslabon gpt-5.6-sol (estatico via codex-bridge, siempre
+        # live para _alias_has_deployments). Cubre el modo "alias DESREGISTRADO"
+        # cuando el Service DeepSeek se cae del todo; la cadena nunca queda en dry.
+        "agent": {"model": "agent", "fallbacks": ("dense", "gpt-5.6-sol")},
         "high": {"model": "high", "fallbacks": ("dense",)},
         "max": {"model": "max", "fallbacks": ("dense",)},
     }
