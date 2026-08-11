@@ -3360,7 +3360,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: compute-mode-observer-timeout-20260811
+        config.k8s.e-dani.com/revision: agent-fallback-gpt-5.6-sol-20260811
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
