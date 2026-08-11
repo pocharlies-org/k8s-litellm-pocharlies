@@ -759,10 +759,10 @@ data:
     # (imagen azul de 64x64 -> "Azul"); con `image_url` objeto devuelve 400
     # "expected an image URL, but got an object instead". El puente lo traduce.
     #
-    # OJO CON LA CUOTA: sol comparte limites con el Codex interactivo del usuario.
-    # Por eso el desvio es estrecho a proposito (solo nombres de CAPACIDAD, y solo
-    # cuando el que iba a servir declara que no ve) y se apaga con
-    # LITELLM_VISION_FALLBACK_MODEL="".
+    # OJO CON LA CUOTA: sol comparte limites con el Codex interactivo del usuario,
+    # y desde el 2026-08-11 TODO lo que lleve imagen sale por aqui salvo que el
+    # backend que iba a servir declare que ve (decision del owner). Se apaga entero
+    # con LITELLM_VISION_FALLBACK_MODEL="".
     VISION_FALLBACK_MODEL = os.environ.get("LITELLM_VISION_FALLBACK_MODEL", "gpt-5.6-sol")
     # Nombres de CAPACIDAD, los unicos que se desvian. Un nombre de MODELO
     # (`deepseek-v4-flash-0731`, `dense`, `ornith-1.0`...) NO se desvia jamas, por
@@ -1098,30 +1098,41 @@ data:
                        alias_live=_alias_has_deployments):
         """El alias al que desviar una peticion CON IMAGEN, o None.
 
-        Cuatro condiciones, y tienen que darse las cuatro:
+        LA REGLA (decision del owner, 2026-08-11): lo que pida vision en LiteLLM
+        sale por aqui. Se desvia SALVO que el alias que iba a servir declare que
+        ve, con una sola excepcion -- ver abajo.
 
-          1. la peticion lleva una parte de imagen;
-          2. el cliente pidio por CAPACIDAD (ver VISION_DIVERTIBLE);
-          3. el alias que iba a servir declara EXPLICITAMENTE que no ve;
-          4. el modelo de vision esta registrado.
+        La primera version invertia esto: solo desviaba con un
+        `supports_vision: False` EXPLICITO, y si no se sabia (None) dejaba pasar la
+        peticion para no gastar cuota de ChatGPT en silencio. Medido en produccion
+        el mismo dia contra el cluster real: con el plano local en transicion NO
+        HAY NINGUN alias registrado, `get_model_list("tooling")` devuelve vacio y
+        eso es None -- o sea que la vision se caia (503 de la admision de
+        compute-mode, 400 de "no healthy deployments") exactamente en el momento en
+        que el desvio era la unica forma de contestar. Un criterio que solo
+        funciona cuando el DGX esta sano no sirve de red.
 
-        La 3 es `is False` a proposito, no `not ...`: si no se puede leer el
-        registro (None) NO se desvia. Preferimos el 400 honesto del backend a
-        gastar en silencio la cuota de ChatGPT del usuario, que es la misma que
-        usa su Codex interactivo. El precio de esa eleccion: cuando la cadena esta
-        DRY (ningun alias registrado) tampoco se desvia, aunque ahi el desvio
-        rescataria la peticion. Es el mismo criterio que el resto del hook -- lo
-        que no se sabe no se toca.
+        Truco de lectura: `ve is True` significa "lo declara y ve". None es "no se
+        sabe", y no saber ya no protege nada -- ahora manda el desvio.
+
+        LA EXCEPCION: un nombre de MODELO (`ornith-1.0`, `dense-uncensored`,
+        `deepseek-v4-flash-0731`...) solo se desvia si SABEMOS que no ve
+        (`ve is False`), porque ahi el desvio no puede estropear ninguna medida:
+        la peticion iba a fallar seguro. Con None se respeta el nombre. Quien
+        nombra un modelo sabe a que habla, y las mediciones se hacen contra esos
+        nombres, no contra las capacidades.
         """
         if not VISION_FALLBACK_MODEL:
             return None
         if not _has_part_type(data, IMAGE_PART_TYPES):
             return None
-        if requested not in VISION_DIVERTIBLE and proxy not in VISION_DIVERTIBLE:
-            return None
         if served == VISION_FALLBACK_MODEL:
             return None
-        if supports_vision(served) is not False:
+        ve = supports_vision(served)
+        if ve is True:
+            return None
+        por_capacidad = requested in VISION_DIVERTIBLE or proxy in VISION_DIVERTIBLE
+        if not por_capacidad and ve is not False:
             return None
         if not alias_live(VISION_FALLBACK_MODEL):
             return None
@@ -3300,7 +3311,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: vision-divert-to-codex-20260811
+        config.k8s.e-dani.com/revision: vision-divert-all-20260811
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

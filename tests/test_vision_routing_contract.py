@@ -6,11 +6,14 @@ ChatGPT Pro por codex-bridge (`gpt-5.6-sol`).
 
 Lo que este contrato fija, que es lo que se puede romper sin darse cuenta:
 
-  - un nombre de MODELO nunca se desvia, aunque lleve imagen;
   - sin imagen no se desvia nunca, aunque el backend no vea;
-  - un backend que SI ve se queda la peticion (no se gasta cuota de ChatGPT);
-  - si no se sabe si ve (None), NO se desvia: el 400 honesto antes que gastar en
-    silencio la cuota que comparte con el Codex interactivo del usuario.
+  - un backend que declara que VE se queda la peticion (no se gasta cuota);
+  - lo que NO declara que ve se desvia, incluido el caso "no hay nada
+    registrado". Ese es el que se midio en produccion el 2026-08-11: con el plano
+    local en transicion no queda ningun alias, y el criterio anterior (desviar
+    solo con un False explicito) dejaba la vision rota justo entonces;
+  - un nombre de MODELO solo se desvia si SABEMOS que no ve. Con "no se sabe" se
+    respeta el nombre: las mediciones se hacen contra esos nombres.
 
 Se carga el hook REAL desde el manifest y se ejecutan solo sus funciones puras,
 inyectando las dos sondas que tocan internals de litellm.
@@ -76,31 +79,51 @@ def test_capacidad_con_imagen_sobre_backend_ciego_se_desvia(hook):
         assert _target(hook, _con_imagen(), alias, "tooling") == hook.VISION_FALLBACK_MODEL, alias
 
 
-def test_nombre_de_modelo_no_se_desvia_nunca(hook):
-    """Misma invariante que la degradacion: un nombre de MODELO se sirve tal cual.
+def test_capacidad_con_imagen_y_registro_VACIO_se_desvia(hook):
+    """EL CASO MEDIDO (2026-08-11): plano local en transicion, cero alias vivos.
 
-    Si esto cae, una medida contra `deepseek-v4-flash-0731` puede acabar
-    respondida por ChatGPT sin que nadie lo pida.
+    `get_model_list("tooling")` devuelve vacio -> supports_vision es None. Antes
+    eso NO desviaba y la peticion moria con 503 de la admision de compute-mode.
+    Es justo el momento en que el desvio es la unica forma de contestar.
     """
-    for alias in ("deepseek-v4-flash-0731", "dense", "ornith-1.0", "qwen36-35b"):
-        assert _target(hook, _con_imagen(), alias, alias) is None, alias
+    assert hook._vision_target(
+        _con_imagen(), "tooling", "", "tooling",
+        supports_vision=lambda alias: None,
+        alias_live=lambda alias: True,
+    ) == hook.VISION_FALLBACK_MODEL
+
+
+def test_nombre_de_modelo_sin_veredicto_no_se_desvia(hook):
+    """Un nombre de MODELO que no dice si ve se sirve tal cual.
+
+    Si esto cae, una medida contra `ornith-1.0` puede acabar respondida por
+    ChatGPT sin que nadie lo pida.
+    """
+    for alias in ("ornith-1.0", "dense-uncensored", "qwen36-35b"):
+        assert hook._vision_target(
+            _con_imagen(), alias, "", alias,
+            supports_vision=lambda a: None,
+            alias_live=lambda a: True,
+        ) is None, alias
+
+
+def test_nombre_de_modelo_que_declara_que_NO_ve_si_se_desvia(hook):
+    """Sabemos que iba a fallar seguro: desviar no puede estropear ninguna medida."""
+    assert _target(hook, _con_imagen(), "deepseek-v4-flash-0731", "deepseek-v4-flash-0731",
+                   ve=False) == hook.VISION_FALLBACK_MODEL
 
 
 def test_sin_imagen_no_se_desvia(hook):
     assert _target(hook, _sin_imagen(), "tooling", "tooling") is None
+    assert _target(hook, _sin_imagen(), "tooling", "tooling", ve=None) is None
 
 
 def test_backend_que_ve_se_queda_la_peticion(hook):
+    """Un residente multimodal (Ornith, el 27B, el nvidia-qwen36) recupera lo suyo
+    sin tocar nada: el desvio se apaga solo."""
     assert _target(hook, _con_imagen(), "router", "dense", ve=True) is None
-
-
-def test_no_se_sabe_si_ve_no_se_desvia(hook):
-    """None != False. Introspeccion rota -> no se gasta cuota de ChatGPT."""
-    assert hook._vision_target(
-        _con_imagen(), "router", "", "tooling",
-        supports_vision=lambda alias: None,
-        alias_live=lambda alias: True,
-    ) is None
+    for alias in sorted(hook.VISION_DIVERTIBLE):
+        assert _target(hook, _con_imagen(), alias, "tooling", ve=True) is None, alias
 
 
 def test_no_se_desvia_si_el_modelo_de_vision_no_esta_registrado(hook):
