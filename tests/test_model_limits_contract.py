@@ -36,6 +36,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 # La ventana que sirve de verdad cada checkpoint. Si alguien cambia un
 # --max-model-len, este numero y el del sync tienen que moverse juntos.
 DGX2_UNCENSORED_27B = "qwen36-27b-uncensored-dgx2"
+DEEPSEEK_V4_FLASH = "deepseek-v4-flash-tp2"
 
 
 @pytest.fixture(scope="module")
@@ -123,6 +124,12 @@ def test_el_27b_declara_su_ventana_mas_estrecha(backends):
     estrechos = {n: b["max_input_tokens"] for n, b in backends.items()
                  if b["max_input_tokens"] < 262144}
     assert estrechos == {DGX2_UNCENSORED_27B: 65536}, estrechos
+
+
+def test_deepseek_publica_la_ventana_operativa_de_384k(backends):
+    """El catalogo solo puede anunciar el max_model_len que sirve vLLM."""
+    assert backends[DEEPSEEK_V4_FLASH]["max_input_tokens"] == 393216
+    assert backends[DEEPSEEK_V4_FLASH]["max_output_tokens"] == 16384
 
 
 def test_dense_ctx_escape_sigue_por_debajo_de_la_ventana_real_del_27b(cms, backends):

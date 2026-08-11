@@ -2741,20 +2741,13 @@ data:
             # = --max-num-seqs del servidor. Pedir mas solo encola.
             "max_parallel_requests": 6,
             "max_output_tokens": 16384,
-            # 262144 es el max_model_len REAL del servidor (medido: sirve un
-            # prompt de 261.100 tokens). No poner 1048576: ese fue el valor que
-            # tumbo el primer arranque, porque una sola peticion de 1M pide 7.54
-            # GiB de KV y no habia.
-            #
-            # PENDIENTE 2026-08-10: sube a 393216 (384K) EN EL MISMO PASO en que el
-            # Deployment arranque con MAX_MODEL_LEN=393216, no antes. Este repo
-            # autosincroniza y el 27B ya enseno lo que pasa al anunciar una ventana
-            # que el servidor no sirve. Que 384K quepa esta comprobado: el pool de
-            # KV no lo fija max_model_len sino gpu_memory_utilization, y son
-            # 923.278 tokens (14,12 GiB, leidos del arranque); 1.048.576 no cabia
-            # en una peticion y por eso abortaba, 393.216 si (2,35x de concurrencia
-            # a longitud completa, frente a 3,52x hoy).
-            "max_input_tokens": 262144,
+            # 393216 es el max_model_len REAL del servidor (384K). Se publica en
+            # el mismo cambio que MAX_MODEL_LEN=393216 en ambos ranks: nunca se
+            # anuncia mas contexto del que sirve vLLM. No poner 1048576: una sola
+            # peticion de 1M pide 7.54 GiB de KV y tumbo el primer arranque. El
+            # pool medido es de 1.237.351 tokens (14,22 GiB), suficiente para 3,15
+            # peticiones simultaneas a longitud completa de 384K.
+            "max_input_tokens": 393216,
             "supports_function_calling": True,
             # DeepseekV4ForCausalLM: solo texto, no es multimodal.
             "supports_vision": False,
@@ -3247,9 +3240,9 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        # Bumped 2026-08-03: sync.py gained the two DGX1 tooling candidates and the
-        # sibling-eviction guard. The ConfigMap alone does not restart this pod.
-        config.k8s.e-dani.com/revision: dgx1-tooling-resident-20260803
+        # Bumped 2026-08-11: sync.py now publishes DeepSeek's deployed 384K
+        # context. The ConfigMap alone does not restart this pod.
+        config.k8s.e-dani.com/revision: deepseek-384k-context-20260811
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
