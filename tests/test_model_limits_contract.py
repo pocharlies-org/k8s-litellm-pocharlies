@@ -132,6 +132,44 @@ def test_deepseek_publica_la_ventana_operativa_de_384k(backends):
     assert backends[DEEPSEEK_V4_FLASH]["max_output_tokens"] == 16384
 
 
+def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
+    """Cambiar 256K -> 384K debe reemplazar el registro ya existente."""
+    tree = ast.parse(cms["sync"])
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "managed_model_contract"
+    )
+    namespace = {"Any": object}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "<sync>", "exec"), namespace)
+    contract = namespace["managed_model_contract"]
+    current = {
+        "model_name": "agent",
+        "litellm_params": {
+            "model": "openai/deepseek-v4-flash-0731",
+            "api_base": "http://deepseek/v1",
+            "max_parallel_requests": 6,
+        },
+        "model_info": {
+            "max_tokens": 16384,
+            "max_output_tokens": 16384,
+            "max_input_tokens": 262144,
+            "supports_function_calling": True,
+            "supports_vision": False,
+            "backend": "dgx1+dgx2",
+            "k8s_namespace": "llm",
+            "k8s_service": "deepseek-v4-flash-0731",
+        },
+    }
+    desired = {**current, "model_info": {**current["model_info"], "max_input_tokens": 393216}}
+    assert contract(current) != contract(desired)
+
+    reconcile = cms["sync"]
+    reconcile = reconcile[reconcile.index("def reconcile_backend"):reconcile.index("def main()")]
+    assert 'log.info("refreshing changed model contract %s", model_id)' in reconcile
+    assert "delete_model(model_id)" in reconcile
+
+
 def test_dense_ctx_escape_sigue_por_debajo_de_la_ventana_real_del_27b(cms, backends):
     """La razon de ser de este fichero.
 

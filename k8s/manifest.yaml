@@ -3046,20 +3046,50 @@ data:
         return deployments
 
 
-    def current_model_ids() -> set[str]:
+    def current_models_by_id() -> dict[str, dict[str, Any]]:
         data = _request_json(
             "GET",
             f"{LITELLM_BASE_URL}/model/info",
             headers=_litellm_headers(),
         )
         items = data.get("data", data) if isinstance(data, dict) else data
-        ids: set[str] = set()
+        models: dict[str, dict[str, Any]] = {}
         for item in items or []:
             info = item.get("model_info") or {}
             model_id = info.get("id") or item.get("model_id") or item.get("id")
             if model_id:
-                ids.add(str(model_id))
-        return ids
+                models[str(model_id)] = item
+        return models
+
+
+    def current_model_ids() -> set[str]:
+        return set(current_models_by_id())
+
+
+    def managed_model_contract(deployment: dict[str, Any]) -> dict[str, Any]:
+        """Fields that must be refreshed even when the stable model ID exists.
+
+        LiteLLM's `/model/new` is create-only. A controller restart therefore
+        used to preserve stale context/capability metadata forever because the
+        reconciler compared only IDs. Secrets and server-populated fields are
+        deliberately excluded so they cannot create a delete/add loop.
+        """
+        info = deployment.get("model_info") or {}
+        params = deployment.get("litellm_params") or {}
+        return {
+            "model_name": deployment.get("model_name"),
+            "model": params.get("model"),
+            "api_base": params.get("api_base"),
+            "max_parallel_requests": params.get("max_parallel_requests"),
+            "max_tokens": info.get("max_tokens"),
+            "max_output_tokens": info.get("max_output_tokens"),
+            "max_input_tokens": info.get("max_input_tokens"),
+            "supports_function_calling": info.get("supports_function_calling"),
+            "supports_vision": info.get("supports_vision"),
+            "backend": info.get("backend"),
+            "k8s_namespace": info.get("k8s_namespace"),
+            "k8s_service": info.get("k8s_service"),
+        }
 
 
     def add_model(deployment: dict[str, Any]) -> None:
@@ -3142,9 +3172,11 @@ data:
     def reconcile_backend(backend: dict[str, Any], enable: bool) -> None:
         desired = desired_deployments(backend)
         managed_ids = {d["model_info"]["id"] for d in desired}
-        existing = current_model_ids()
+        current = current_models_by_id()
+        existing = set(current)
         cleanup_retired_models(existing)
-        existing = current_model_ids()
+        current = current_models_by_id()
+        existing = set(current)
         active_prefix = f"{backend['id_prefix']}-"
         stale_ids = {
             model_id
@@ -3166,7 +3198,17 @@ data:
                 delete_model(model_id)
                 existing.discard(model_id)
             for deployment in desired:
-                if deployment["model_info"]["id"] not in existing:
+                model_id = deployment["model_info"]["id"]
+                if (
+                    model_id in current
+                    and managed_model_contract(current[model_id])
+                    != managed_model_contract(deployment)
+                ):
+                    log.info("refreshing changed model contract %s", model_id)
+                    delete_model(model_id)
+                    existing.discard(model_id)
+                    current.pop(model_id, None)
+                if model_id not in existing:
                     add_model(deployment)
         else:
             for model_id in sorted(managed_ids & existing):
@@ -3242,7 +3284,7 @@ spec:
       annotations:
         # Bumped 2026-08-11: sync.py now publishes DeepSeek's deployed 384K
         # context. The ConfigMap alone does not restart this pod.
-        config.k8s.e-dani.com/revision: deepseek-384k-context-20260811
+        config.k8s.e-dani.com/revision: deepseek-384k-context-v2-20260811
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
