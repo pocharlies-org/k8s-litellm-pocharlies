@@ -320,7 +320,10 @@ data:
         "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/compute/mode",
     ).strip()
     COMPUTE_MODE_CACHE_SECONDS = float(
-        os.environ.get("COMPUTE_MODE_CACHE_SECONDS", "1")
+        os.environ.get("COMPUTE_MODE_CACHE_SECONDS", "5")
+    )
+    COMPUTE_MODE_TIMEOUT_SECONDS = float(
+        os.environ.get("COMPUTE_MODE_TIMEOUT_SECONDS", "10")
     )
     COMPUTE_MODE_RETRY_AFTER_SECONDS = max(
         1, int(os.environ.get("COMPUTE_MODE_RETRY_AFTER_SECONDS", "5"))
@@ -350,7 +353,7 @@ data:
                 return _compute_mode_cache["state"]
             state = None
             try:
-                async with httpx.AsyncClient(timeout=2.0) as client:
+                async with httpx.AsyncClient(timeout=COMPUTE_MODE_TIMEOUT_SECONDS) as client:
                     response = await client.get(COMPUTE_MODE_URL)
                 response.raise_for_status()
                 candidate = response.json()
@@ -3315,7 +3318,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: vision-divert-all-20260811
+        config.k8s.e-dani.com/revision: compute-mode-observer-timeout-20260811
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -3342,7 +3345,8 @@ spec:
             - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
             - { name: LITELLM_DRAIN_TIMEOUT_SEC, value: "660" }
             - { name: COMPUTE_MODE_URL, value: "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/compute/mode" }
-            - { name: COMPUTE_MODE_CACHE_SECONDS, value: "1" }
+            - { name: COMPUTE_MODE_CACHE_SECONDS, value: "5" }
+            - { name: COMPUTE_MODE_TIMEOUT_SECONDS, value: "10" }
             - { name: COMPUTE_MODE_RETRY_AFTER_SECONDS, value: "5" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }

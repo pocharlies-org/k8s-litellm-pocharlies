@@ -49,6 +49,9 @@ def test_hook_checks_mode_before_tracking_a_new_local_request():
     tracking = source.index("request_tracker.start(", gate)
     assert gate < tracking
     assert "COMPUTE_MODE_CACHE_SECONDS" in source
+    assert 'os.environ.get("COMPUTE_MODE_CACHE_SECONDS", "5")' in source
+    assert 'os.environ.get("COMPUTE_MODE_TIMEOUT_SECONDS", "10")' in source
+    assert "httpx.AsyncClient(timeout=COMPUTE_MODE_TIMEOUT_SECONDS)" in source
     assert "COMPUTE_MODE_RETRY_AFTER_SECONDS" in source
     assert 'status_code=503' in source
     assert 'headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)}' in source
@@ -77,3 +80,5 @@ def test_litellm_pod_rolls_and_points_at_typed_compute_mode_get():
         '{ name: COMPUTE_MODE_RETRY_AFTER_SECONDS, value: "5" }'
         in text
     )
+    assert '{ name: COMPUTE_MODE_CACHE_SECONDS, value: "5" }' in text
+    assert '{ name: COMPUTE_MODE_TIMEOUT_SECONDS, value: "10" }' in text
