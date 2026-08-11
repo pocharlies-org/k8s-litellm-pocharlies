@@ -322,6 +322,9 @@ data:
     COMPUTE_MODE_CACHE_SECONDS = float(
         os.environ.get("COMPUTE_MODE_CACHE_SECONDS", "1")
     )
+    COMPUTE_MODE_RETRY_AFTER_SECONDS = max(
+        1, int(os.environ.get("COMPUTE_MODE_RETRY_AFTER_SECONDS", "5"))
+    )
     _compute_mode_cache = {"expires": 0.0, "state": None}
     _compute_mode_lock = asyncio.Lock()
 
@@ -368,6 +371,7 @@ data:
             return
         raise HTTPException(
             status_code=503,
+            headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)},
             detail={
                 "error": "local LLM admission is closed during compute profile transition",
                 "blocked": reason,
@@ -3339,6 +3343,7 @@ spec:
             - { name: LITELLM_DRAIN_TIMEOUT_SEC, value: "660" }
             - { name: COMPUTE_MODE_URL, value: "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/compute/mode" }
             - { name: COMPUTE_MODE_CACHE_SECONDS, value: "1" }
+            - { name: COMPUTE_MODE_RETRY_AFTER_SECONDS, value: "5" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
             # Langfuse native callback (LLM tracing). Points at the in-cluster web

@@ -49,7 +49,9 @@ def test_hook_checks_mode_before_tracking_a_new_local_request():
     tracking = source.index("request_tracker.start(", gate)
     assert gate < tracking
     assert "COMPUTE_MODE_CACHE_SECONDS" in source
+    assert "COMPUTE_MODE_RETRY_AFTER_SECONDS" in source
     assert 'status_code=503' in source
+    assert 'headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)}' in source
 
 
 def test_litellm_pod_rolls_and_points_at_typed_compute_mode_get():
@@ -71,3 +73,7 @@ def test_litellm_pod_rolls_and_points_at_typed_compute_mode_get():
         "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002"
         "/api/compute/mode"
     ) in text
+    assert (
+        '{ name: COMPUTE_MODE_RETRY_AFTER_SECONDS, value: "5" }'
+        in text
+    )
