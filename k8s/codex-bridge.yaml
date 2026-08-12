@@ -883,7 +883,7 @@ spec:
       annotations:
         # El codigo del puente vive en un ConfigMap y se lee al arrancar: sin esto
         # un cambio en bridge.py se sincroniza y NO rota el pod.
-        config.k8s.e-dani.com/revision: codex-spark-two-accounts-20260812
+        config.k8s.e-dani.com/revision: responses-nostream-output-20260812
     spec:
       serviceAccountName: codex-bridge
       enableServiceLinks: false
@@ -1050,7 +1050,7 @@ spec:
       annotations:
         # Igual que el otro: el codigo se lee al arrancar, asi que un cambio en
         # bridge.py NO rota el pod sin tocar esto.
-        config.k8s.e-dani.com/revision: codex-spark-two-accounts-20260812
+        config.k8s.e-dani.com/revision: responses-nostream-output-20260812
     spec:
       serviceAccountName: codex-bridge-edani
       enableServiceLinks: false
