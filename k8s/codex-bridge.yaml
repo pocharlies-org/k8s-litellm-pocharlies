@@ -1042,7 +1042,20 @@ metadata:
   name: codex-bridge-edani
   namespace: litellm
 spec:
-  replicas: 1
+  # 0 A PROPOSITO hasta que exista el Secret `codex-bridge-edani-auth`.
+  #
+  # No es timidez: con replicas 1 y el Secret ausente el pod se queda en
+  # ContainerCreating, la app nunca llega a Healthy y el SYNC DE ARGOCD SE QUEDA
+  # EN `Running` ("waiting for healthy state of Deployment/codex-bridge-edani").
+  # Eso NO es solo cosmetico -- bloquea el apply de TODOS los commits siguientes
+  # de esta app, incluidos los de otras sesiones. Paso el 2026-08-12: dos commits
+  # detras de la cola sin aplicarse.
+  #
+  # Al crear el Secret (ver la cabecera de este fichero), subir a 1 en el MISMO
+  # push. Si esto lleva dias a 0, no es que "falte encenderlo": es que la cuenta
+  # me@e-dani.com no se autorizo nunca y sobran tambien sus 4 alias en
+  # manifest.yaml.
+  replicas: 0
   selector: { matchLabels: { app: codex-bridge-edani } }
   template:
     metadata:
