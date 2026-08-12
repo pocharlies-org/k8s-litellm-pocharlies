@@ -13,23 +13,63 @@
 # LÍMITES CONOCIDOS (verificados contra el endpoint real el 2026-08-05)
 #
 #   - La cuenta sirve varios modelos, no uno: `gpt-5.6-sol`, `gpt-5.6-terra`,
-#     `gpt-5.6-luna` y `gpt-5.5`. Los sufijos de la familia 5.6 son variantes
-#     reales, no adornos. En cambio `gpt-5.6` a secas y los sufijos -codex,
-#     -pro y -high devuelven 400 "not supported when using Codex with a
-#     ChatGPT account", igual que gpt-5.2 y o3. El puente enruta por el modelo
-#     que pida el cliente si está en ALLOWED_MODELS.
+#     `gpt-5.6-luna`, `gpt-5.3-codex-spark` y `gpt-5.5`. Los sufijos de la
+#     familia 5.6 son variantes reales, no adornos. En cambio `gpt-5.6` a secas
+#     y los sufijos -codex, -pro y -high devuelven 400 "not supported when
+#     using Codex with a ChatGPT account", igual que gpt-5.2 y o3. El puente
+#     enruta por el modelo que pida el cliente si está en ALLOWED_MODELS.
+#   - NO HAY QUE ADIVINAR QUÉ SIRVE LA CUENTA: hay un catálogo autoritativo,
+#     y es por cuenta (el plan manda). Con las mismas credenciales del puente:
+#
+#       GET https://chatgpt.com/backend-api/codex/models?client_version=0.144.0
+#           Authorization: Bearer <access_token>
+#           chatgpt-account-id: <account_id>
+#
+#     Sin `client_version` devuelve 400. Da `slug`, `input_modalities`,
+#     `context_window` y `visibility` de cada modelo. Ahí se vio (2026-08-12)
+#     que el slug bueno es `gpt-5.3-codex-spark` y no `gpt-5.3-codex`, que era
+#     el que se probó en su día y por eso salía el 400.
+#   - `gpt-5.3-codex-spark` declara `supported_in_api: false` y AUN ASÍ responde
+#     200 por este endpoint (probado el 2026-08-12): ese flag es la vía API key,
+#     no la de suscripción. Es SOLO TEXTO (`input_modalities: [text]`) y su
+#     ventana son 128k, no 272k como la familia 5.6 — no puede ser destino del
+#     desvío de visión.
 #   - `stream:false` devuelve 400: aguas arriba SIEMPRE se pide streaming y el
 #     modo no-stream del cliente se sirve agregando la respuesta.
 #   - La cuota es la MISMA que la del Codex interactivo del usuario, y OpenAI
 #     estrangula por cliente: cargas masivas (p.ej. los RCA de Aurora) pueden
 #     dejar sin Codex al usuario. Pensado para chat manual, no para RCA.
 #
+# DOS INSTANCIAS, UNA POR CUENTA (2026-08-12)
+#
+# Un pod = una credencial: `bridge.py` guarda UN juego de tokens en memoria y los
+# persiste en UN Secret. Para servir dos cuentas hay dos Deployments del MISMO
+# ConfigMap de código, que se diferencian solo en el env:
+#
+#   codex-bridge         -> daniel.ibanez@cloudblue.com  (Secret codex-bridge-auth)
+#   codex-bridge-edani   -> me@e-dani.com                (Secret codex-bridge-edani-auth)
+#
+# QUIÉN DISTINGUE LA CUENTA ES EL `api_base`, NO EL NOMBRE DEL MODELO. En
+# manifest.yaml los alias `*-edani` apuntan a este Service pero su
+# `litellm_params.model` lleva el slug DESNUDO (`openai/gpt-5.6-sol`). Es
+# obligatorio: `resolve_model()` manda al UPSTREAM_MODEL todo lo que no esté en
+# ALLOWED_MODELS, así que un `openai/gpt-5.6-sol-edani` contestaría con sol
+# SIN ERROR NINGUNO. Si dudas de si hubo sustitución, el testigo es el log
+# ("modelo no soportado por la cuenta"), no el campo `model` de la respuesta:
+# LiteLLM ese lo normaliza al alias que pidió el cliente.
+#
+# CUOTA: la cuenta cloudblue es la que aguanta lo automático (desvío de visión,
+# último eslabón de `agent`, Aurora). La de me@e-dani.com es la MISMA cuota que
+# el Codex interactivo del usuario, así que sus alias son opt-in por nombre y no
+# están en ninguna cadena de fallback. No meterlos.
+#
 # CREDENCIALES
 #
 # Cuenta: daniel.ibanez@cloudblue.com (account c3edf899-f6be-4c82-b58d-7a16f5f8dd4d).
 # Es una cuenta DISTINTA de la personal del usuario, a propósito: la cuota de
 # ChatGPT es por cuenta, y con la personal cualquier carga de Aurora se comía el
-# cupo del Codex interactivo. Al separarlas ya no compiten.
+# cupo del Codex interactivo. Al separarlas ya no compiten — y por eso mismo el
+# segundo puente existe para uso manual, no para carga automática.
 #
 # El Secret `codex-bridge-auth` NO está en git. La credencial es una sesión OAuth
 # PROPIA del puente, creada con `codex login --device-auth`: no la comparte con
@@ -93,20 +133,32 @@ data:
   bridge.py: |
     """Puente OpenAI-compatible sobre la cuenta ChatGPT/Codex.
 
-    Expone /v1/chat/completions y traduce a chatgpt.com/backend-api/codex/responses,
-    que es el endpoint que usa el CLI de Codex con credenciales OAuth de suscripción
-    (no API key de pago). LiteLLM lo consume como un backend `openai/` cualquiera.
+    Habla con chatgpt.com/backend-api/codex/responses, que es el endpoint que usa
+    el CLI de Codex con credenciales OAuth de suscripción (no API key de pago).
+    LiteLLM lo consume como un backend `openai/` cualquiera. Dos rutas:
+
+      /v1/chat/completions  traduce chat -> responses. Es la que usa todo el
+                            gateway (Aurora, el desvío de visión, `agent`).
+      /v1/responses         casi passthrough, con el SSE relegado verbatim. La
+                            necesita el Codex CLI: desde 0.143 `wire_api="chat"`
+                            es un error duro y LiteLLM no traduce Responses para
+                            un backend `openai/` — reenvía a {api_base}/responses.
 
     Restricciones del upstream, verificadas contra el endpoint real (2026-08-05):
       - `stream: false` devuelve 400 "Stream must be set to true". SIEMPRE se pide
         streaming aguas arriba; el modo no-stream del cliente se sirve agregando.
       - La cuenta ChatGPT no sirve cualquier modelo. Responden `gpt-5.6-sol`,
-        `gpt-5.6-terra`, `gpt-5.6-luna` y `gpt-5.5`; devuelven 400 "not supported
-        when using Codex with a ChatGPT account" el `gpt-5.6` a secas y los
-        sufijos -codex, -pro y -high, además de gpt-5.2 y o3. Los sufijos de la
-        familia 5.6 son variantes reales (sol/terra/luna), no adornos, así que la
-        lista se mantiene explícita en ALLOWED_MODELS: lo que no esté ahí cae al
-        modelo por defecto en vez de provocar un 400 del upstream.
+        `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.3-codex-spark` y `gpt-5.5`;
+        devuelven 400 "not supported when using Codex with a ChatGPT account" el
+        `gpt-5.6` a secas y los sufijos -codex, -pro y -high, además de gpt-5.2 y
+        o3. Los sufijos de la familia 5.6 son variantes reales (sol/terra/luna),
+        no adornos, así que la lista se mantiene explícita en ALLOWED_MODELS: lo
+        que no esté ahí cae al modelo por defecto en vez de provocar un 400 del
+        upstream. Ese fallback es COMODO Y TRAICIONERO: contesta 200 con otro
+        modelo. Cada vez que se añade un alias en manifest.yaml hay que añadir su
+        slug aquí, y la única señal de que no se hizo es la línea de log de
+        resolve_model(). El catálogo real de la cuenta se lista con
+        GET /backend-api/codex/models?client_version=… (ver cabecera del yaml).
       - Emite items `reasoning` que no son texto de respuesta y se descartan.
       - SÍ acepta imágenes (2026-08-11), y es lo único del gateway que ve mientras
         el residente del DGX sea DeepSeek. Van como `input_image` con `image_url`
@@ -131,7 +183,9 @@ data:
     # client_id de la app Codex CLI, leído del claim `aud` del id_token de ~/.codex/auth.json
     CLIENT_ID = os.environ.get("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
     ALLOWED_MODELS = [m.strip() for m in os.environ.get(
-        "ALLOWED_MODELS", "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5").split(",") if m.strip()]
+        "ALLOWED_MODELS",
+        "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5",
+    ).split(",") if m.strip()]
     UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", ALLOWED_MODELS[0])
     BRIDGE_API_KEY = os.environ.get("BRIDGE_API_KEY", "")
     AUTH_FILE = os.environ.get("AUTH_FILE", "/auth/auth.json")
@@ -394,6 +448,38 @@ data:
         return payload
 
 
+    # Claves que NO se reenvian tal cual en /v1/responses. `model`, `stream` y
+    # `store` se imponen aparte (el upstream exige stream y rechaza store); el
+    # resto son metadatos que mete LiteLLM y que el endpoint de Codex no conoce.
+    # Todo lo demas SI pasa: el cliente de esta ruta es el propio Codex CLI, o
+    # sea que lo que manda es exactamente lo que este upstream espera
+    # (`reasoning`, `include`, `text.verbosity`, `tool_choice`...). Filtrar por
+    # allowlist romperia justo eso.
+    RESPONSES_DROP = ("metadata", "user", "service_tier", "previous_response_id",
+                      "litellm_metadata", "litellm_session_id")
+
+
+    def to_upstream_responses(req):
+        """Payload de /v1/responses -> payload del upstream, casi tal cual.
+
+        Es el camino de MENOS traduccion que existe aqui: Codex habla Responses y
+        chatgpt.com/backend-api/codex/responses habla Responses. Lo unico que hace
+        falta es imponer los invariantes del upstream y resolver el modelo contra
+        la allowlist de la cuenta.
+        """
+        payload = {k: v for k, v in req.items() if k not in RESPONSES_DROP}
+        payload["model"] = resolve_model(req.get("model"))
+        payload["stream"] = True    # el upstream devuelve 400 con cualquier otra cosa
+        payload["store"] = False
+        if not payload.get("input"):
+            payload["input"] = [{"type": "message", "role": "user",
+                                 "content": [{"type": "input_text", "text": ""}]}]
+        if isinstance(payload.get("input"), str):
+            payload["input"] = [{"type": "message", "role": "user",
+                                 "content": [{"type": "input_text", "text": payload["input"]}]}]
+        return payload
+
+
     def open_upstream(payload):
         refresh_if_needed()
         req = urllib.request.Request(
@@ -499,7 +585,10 @@ data:
             return self._error(404, f"not found: {self.path}")
 
         def do_POST(self):
-            if self.path.rstrip("/") not in ("/v1/chat/completions", "/chat/completions"):
+            route = self.path.rstrip("/")
+            if route in ("/v1/responses", "/responses"):
+                return self._do_responses()
+            if route not in ("/v1/chat/completions", "/chat/completions"):
                 return self._error(404, f"not found: {self.path}")
             if not self._authorized():
                 return self._error(401, "invalid bridge api key")
@@ -576,6 +665,69 @@ data:
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 log("cliente cerró el stream")
+
+        # ── /v1/responses ──────────────────────────────────────────────────────
+        #
+        # POR QUE EXISTE (2026-08-12). Codex >= 0.143 BORRO `wire_api = "chat"`:
+        # arrancar con el valor viejo es un error duro ("no longer supported, set
+        # wire_api = responses"). O sea que para que el Codex del usuario hable
+        # con LiteLLM hay una sola via, la Responses API, y LiteLLM NO la traduce
+        # para un backend `openai/`: reenvia el POST a {api_base}/responses tal
+        # cual. Sin esta ruta ese reenvio era un 404 del puente y el 404 se veia
+        # como "no deployments available" tras los reintentos.
+        #
+        # Es la ruta de MENOS traduccion del fichero: el cliente habla Responses y
+        # el upstream habla Responses. Se imponen los invariantes del upstream
+        # (stream, store, modelo de la allowlist) y se relega el SSE VERBATIM, que
+        # es lo que deja intactos los items de reasoning y de tool que Codex
+        # necesita -- convertir a chat/completions y volver los destruye.
+        def _do_responses(self):
+            if not self._authorized():
+                return self._error(401, "invalid bridge api key")
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                req = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, json.JSONDecodeError) as exc:
+                return self._error(400, f"cuerpo ilegible: {exc}")
+
+            want_stream = bool(req.get("stream"))
+            payload = to_upstream_responses(req)
+            try:
+                upstream = open_upstream(payload)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read()[:500].decode(errors="replace")
+                return self._error(exc.code, f"upstream: {detail}")
+            except Exception as exc:
+                return self._error(502, f"upstream inalcanzable: {exc!r}")
+
+            if want_stream:
+                return self._relay_sse(upstream)
+            # Cliente en modo no-stream: se agrega. El objeto final lo da el
+            # propio upstream en `response.completed`, asi que no hay que
+            # reconstruirlo a mano.
+            final = None
+            for event, data in iter_events(upstream):
+                if event in ("response.completed", "response.incomplete", "response.failed"):
+                    final = data.get("response") or data
+            if final is None:
+                return self._error(502, "el upstream cerró sin response.completed")
+            return self._json(200, final)
+
+        def _relay_sse(self, upstream):
+            """Reenvia el SSE del upstream sin tocarlo, trozo a trozo."""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for raw in upstream:
+                    self.wfile.write(raw)
+                    if raw.endswith(b"\n\n") or raw == b"\n":
+                        self.wfile.flush()
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                log("cliente cerró el stream de /v1/responses")
 
 
     def main():
@@ -722,7 +874,7 @@ spec:
       annotations:
         # El codigo del puente vive en un ConfigMap y se lee al arrancar: sin esto
         # un cambio en bridge.py se sincroniza y NO rota el pod.
-        config.k8s.e-dani.com/revision: image-passthrough-20260811
+        config.k8s.e-dani.com/revision: codex-spark-two-accounts-20260812
     spec:
       serviceAccountName: codex-bridge
       enableServiceLinks: false
@@ -739,7 +891,7 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: AUTH_FILE, value: /auth/auth.json }
-            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5" }
+            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5" }
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-auth }
             - name: POD_NAMESPACE
@@ -813,6 +965,165 @@ spec:
               command: ["python", "-u", "/code/rotate.py"]
               env:
                 - { name: SECRET_NAME, value: codex-bridge-auth }
+                - name: POD_NAMESPACE
+                  valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+              volumeMounts:
+                - { name: code, mountPath: /code, readOnly: true }
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { memory: 128Mi }
+          volumes:
+            - name: code
+              configMap: { name: codex-bridge-code }
+---
+# ════════════════════════════════════════════════════════════════════════════
+# SEGUNDA CUENTA: me@e-dani.com (2026-08-12)
+#
+# Mismo código (el ConfigMap `codex-bridge-code` de arriba, sin una línea de
+# diferencia), otra credencial. Lo único que cambia es el env: su propio Secret.
+#
+# La sesión OAuth es PROPIA, creada con un `codex login --device-auth` aparte:
+#
+#   CODEX_HOME=~/.codex-bridge-edani codex login --device-auth
+#   kubectl -n litellm create secret generic codex-bridge-edani-auth \
+#     --from-file=auth.json=~/.codex-bridge-edani/auth.json
+#   rm -rf ~/.codex-bridge-edani          # o queda una credencial huérfana viva
+#
+# NO se copia el `~/.codex/auth.json` del usuario aunque sea la misma cuenta:
+# cada refresh ROTA el refresh_token, así que el rotador de aquí echaría al Codex
+# local (y al de VS Code) con un 401 a los ~9 días. Dos consumidores de la misma
+# credencial se expulsan; dos sesiones distintas de la misma cuenta no.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: codex-bridge-edani
+  namespace: litellm
+---
+# Solo su propio Secret, y solo para guardar los tokens ya rotados. No puede
+# tocar el de la otra cuenta.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: codex-bridge-edani
+  namespace: litellm
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["codex-bridge-edani-auth"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: codex-bridge-edani
+  namespace: litellm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: codex-bridge-edani
+subjects:
+  - kind: ServiceAccount
+    name: codex-bridge-edani
+    namespace: litellm
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codex-bridge-edani
+  namespace: litellm
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: codex-bridge-edani } }
+  template:
+    metadata:
+      labels: { app: codex-bridge-edani }
+      annotations:
+        # Igual que el otro: el codigo se lee al arrancar, asi que un cambio en
+        # bridge.py NO rota el pod sin tocar esto.
+        config.k8s.e-dani.com/revision: codex-spark-two-accounts-20260812
+    spec:
+      serviceAccountName: codex-bridge-edani
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        node-pool: ks5-nvme
+      containers:
+        - name: bridge
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-u", "/code/bridge.py"]
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: AUTH_FILE, value: /auth/auth.json }
+            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5" }
+            - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
+            - { name: SECRET_NAME, value: codex-bridge-edani-auth }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+          volumeMounts:
+            - { name: code, mountPath: /code, readOnly: true }
+            - { name: auth, mountPath: /auth, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: code
+          configMap: { name: codex-bridge-code }
+        - name: auth
+          secret: { secretName: codex-bridge-edani-auth }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codex-bridge-edani
+  namespace: litellm
+spec:
+  selector: { app: codex-bridge-edani }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+# Su propio rotador. Desplazado media hora del de la otra cuenta: comparten el
+# ConfigMap de código y el mismo endpoint de OpenAI, y no hay motivo para que
+# coincidan.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: codex-token-rotate-edani
+  namespace: litellm
+spec:
+  schedule: "47 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: codex-bridge-edani
+          enableServiceLinks: false
+          nodeSelector:
+            kubernetes.io/arch: amd64
+            node-pool: ks5-nvme
+          containers:
+            - name: rotate
+              image: python:3.12-slim
+              imagePullPolicy: IfNotPresent
+              command: ["python", "-u", "/code/rotate.py"]
+              env:
+                - { name: SECRET_NAME, value: codex-bridge-edani-auth }
                 - name: POD_NAMESPACE
                   valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
               volumeMounts:

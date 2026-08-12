@@ -137,6 +137,75 @@ data:
       model_info:
         mode: chat
         supports_vision: true
+    # `gpt-5.3-codex-spark` (2026-08-12). El slug es ESE, con `-spark`: el
+    # `gpt-5.3-codex` a secas no está en el catálogo de la cuenta y por eso daba
+    # 400. Declara `supported_in_api: false` y aun así responde 200 por
+    # /codex/responses (probado) — ese flag es la vía API key, no la de
+    # suscripción. Es SOLO TEXTO y su ventana son 128k, no 272k: por eso
+    # supports_vision false y max_input_tokens explícito (litellm no conoce este
+    # modelo, así que si no se declara sale null).
+    #
+    # NO puede ser destino del desvío de visión ni eslabón de ningún fallback:
+    # un modelo ciego como VISION_FALLBACK_MODEL contesta a ciegas, que es peor
+    # que fallar.
+    - model_name: gpt-5.3-codex-spark
+      litellm_params:
+        model: openai/gpt-5.3-codex-spark
+        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: false
+        max_input_tokens: 128000
+    # ── Segunda cuenta ChatGPT: me@e-dani.com, por codex-bridge-edani ──────────
+    #
+    # Los cuatro alias de arriba salen por la cuenta daniel.ibanez@cloudblue.com;
+    # estos cuatro, por la personal. QUIEN DISTINGUE LA CUENTA ES EL `api_base`.
+    #
+    # `litellm_params.model` lleva el slug DESNUDO, sin el sufijo `-edani`, y es
+    # obligatorio: el puente manda al UPSTREAM_MODEL todo lo que no esté en su
+    # ALLOWED_MODELS, así que `openai/gpt-5.6-sol-edani` contestaría con sol
+    # devolviendo 200. La sustitución no se ve en el campo `model` de la
+    # respuesta (LiteLLM lo normaliza al alias pedido): se ve en el log del
+    # puente, línea "modelo no soportado por la cuenta".
+    #
+    # CUOTA: esta es la MISMA que el Codex interactivo del usuario. Son opt-in
+    # por nombre a propósito — no están en router_settings.fallbacks, ni en
+    # CAPABILITY_CHAINS, ni son VISION_FALLBACK_MODEL. Lo automático (Aurora, el
+    # desvío de visión, el último eslabón de `agent`) sigue en cloudblue.
+    - model_name: gpt-5.6-sol-edani
+      litellm_params:
+        model: openai/gpt-5.6-sol
+        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: true
+    - model_name: gpt-5.6-terra-edani
+      litellm_params:
+        model: openai/gpt-5.6-terra
+        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: true
+    - model_name: gpt-5.6-luna-edani
+      litellm_params:
+        model: openai/gpt-5.6-luna
+        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: true
+    - model_name: gpt-5.3-codex-spark-edani
+      litellm_params:
+        model: openai/gpt-5.3-codex-spark
+        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: false
+        max_input_tokens: 128000
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -3360,7 +3429,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: retirar-perfil-uncensored-20260812
+        config.k8s.e-dani.com/revision: codex-spark-dos-cuentas-20260812
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
