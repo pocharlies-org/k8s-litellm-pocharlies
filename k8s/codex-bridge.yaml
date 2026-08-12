@@ -703,14 +703,23 @@ data:
             if want_stream:
                 return self._relay_sse(upstream)
             # Cliente en modo no-stream: se agrega. El objeto final lo da el
-            # propio upstream en `response.completed`, asi que no hay que
-            # reconstruirlo a mano.
-            final = None
+            # propio upstream en `response.completed`... pero VIENE CON
+            # `output: []` (verificado 2026-08-12): los items se emiten por
+            # `response.output_item.done` y el objeto final NO los repite. Sin
+            # recogerlos, un cliente no-stream recibe 200 con cero texto -- el
+            # peor fallo posible, porque parece que el modelo no dijo nada.
+            final, items = None, []
             for event, data in iter_events(upstream):
-                if event in ("response.completed", "response.incomplete", "response.failed"):
+                if event == "response.output_item.done":
+                    item = data.get("item")
+                    if item:
+                        items.append(item)
+                elif event in ("response.completed", "response.incomplete", "response.failed"):
                     final = data.get("response") or data
             if final is None:
                 return self._error(502, "el upstream cerró sin response.completed")
+            if not final.get("output") and items:
+                final["output"] = items
             return self._json(200, final)
 
         def _relay_sse(self, upstream):
