@@ -43,8 +43,15 @@ data:
     # ── uncensored ───────────────────────────────────────────────────────
     # Mismo backend y mismos pesos que `deepseek-v4-flash-0731`: NO hay segunda
     # copia del modelo (ocupa los dos Spark enteros, no cabria). Lo unico que
-    # cambia es `cache_salt`, que vLLM traduce a lambda=1 de la proyeccion
+    # cambia es `cache_salt`, que vLLM traduce a lambda=1,5 de la proyeccion
     # rank-1 SOLO para esta peticion. Los demas alias siguen a lambda=0.
+    #
+    # Por que 1,5 y no 1: MEDIDO el 12-08-2026 sobre 10 disparadores de rechazo.
+    # lambda=1 rechaza 5-7 de 10 (no es 'sin censura', es 'menos censurado');
+    # lambda=1,5 rechaza 0 de 10. Y no cuesta nada medible: acceptance 0,5647
+    # frente a 0,5661 del base (t=0,10) y NIAH 30/30 a 127k igual que el base.
+    # 2,0 da el mismo 0/10 que 1,5 pero acerca al regimen del checkpoint
+    # horneado (lambda_eff 2,43), que SI degrada: acceptance 0,5128.
     #
     # El salt entra ademas en la clave de hash de bloque del prefix cache, asi
     # que este alias no comparte KV con los otros. Sin eso, un prefijo cacheado
@@ -59,7 +66,7 @@ data:
         api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
         api_key: not-used
         extra_body:
-          cache_salt: "refusal:1.0"
+          cache_salt: "refusal:1.5"
 
     - model_name: bge-m3
       litellm_params:
@@ -3386,7 +3393,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: uncensored-profile-20260812
+        config.k8s.e-dani.com/revision: uncensored-lambda15-20260812
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
