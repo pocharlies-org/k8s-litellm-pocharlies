@@ -1813,6 +1813,13 @@ data:
                 model_call_details.setdefault("metadata", {})
                 if isinstance(model_call_details["metadata"], dict):
                     model_call_details["metadata"]["_tracking_id"] = tracking_id
+                    # El mismo sello, pero en el metadata que LiteLLM persiste en
+                    # LiteLLM_SpendLogs. El fichero de tracking solo cubre las
+                    # peticiones VIVAS; el historico de 1h sale de SQL, y sin esto
+                    # no habria forma de saber como se sirvio algo de hace 20 min.
+                    _rl = _refusal_lambda_for(api_base)
+                    if _rl is not None:
+                        model_call_details["metadata"]["refusal_lambda"] = _rl
                 model_call_details.setdefault("litellm_params", {})
                 if isinstance(model_call_details["litellm_params"], dict):
                     model_call_details["litellm_params"].setdefault("metadata", {})
