@@ -359,6 +359,7 @@ data:
     import asyncio
     import logging
     import os
+    import threading
     import time
 
     import httpx
@@ -542,6 +543,57 @@ data:
         ACTIVE_FILE,
         stale_threshold=STALE_THRESHOLD,
     )
+
+    # ── Lambda de la proyeccion rank-1, para sellar cada peticion ────────────────
+    #
+    # El modo uncensored es GLOBAL y conmutable en caliente, asi que "esta activado
+    # ahora" no dice nada sobre una peticion de hace un rato. Se sella al empezar.
+    #
+    # Cacheado con TTL corto: leerlo por peticion metria una llamada HTTP en el
+    # camino critico de CADA request. El TTL es la ventana de ambiguedad — si el
+    # modo cambia justo dentro de ella, alguna peticion queda sellada con el valor
+    # anterior. 5 s es despreciable frente a lo que dura una peticion de este modelo.
+    REFUSAL_ADMIN_URL = os.environ.get(
+        "LITELLM_REFUSAL_ADMIN_URL",
+        "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/admin/refusal_lambda",
+    )
+    REFUSAL_TTL_S = float(os.environ.get("LITELLM_REFUSAL_TTL_S", "5"))
+    _refusal_cache = {"ts": 0.0, "value": None}
+    _refusal_lock = threading.Lock()
+
+
+    def _refusal_lambda_now():
+        """Lambda actual del head, o None si no se pudo leer. NUNCA lanza."""
+        now = time.time()
+        with _refusal_lock:
+            if now - _refusal_cache["ts"] < REFUSAL_TTL_S:
+                return _refusal_cache["value"]
+            _refusal_cache["ts"] = now
+        value = None
+        try:
+            # Timeout agresivo a proposito: esto corre en el camino de la peticion.
+            # Si el head no contesta rapido, mejor no sellar que retrasar a nadie.
+            # httpx y no urllib: ya esta importado en este modulo y es el cliente
+            # que usa el resto del hook.
+            body = httpx.get(REFUSAL_ADMIN_URL, timeout=1.5).json()
+            v = body.get("lambda")
+            # consistent:false = los ranks TP no coinciden. Sellar un numero ahi
+            # seria mentir sobre como se sirvio: se deja sin sellar.
+            if body.get("consistent") is not False and v is not None:
+                value = float(v)
+        except Exception:
+            value = None
+        with _refusal_lock:
+            _refusal_cache["value"] = value
+        return value
+
+
+    def _refusal_lambda_for(api_base):
+        """Solo se sella lo que sirve DeepSeek-V4; el resto no lleva proyeccion."""
+        if "deepseek-v4-flash" not in str(api_base or "").lower():
+            return None
+        return _refusal_lambda_now()
+
 
     def _track_end(request_id):
         request_tracker.end(request_id)
@@ -1774,6 +1826,7 @@ data:
                     model=model,
                     call_type=call_type,
                     api_base=api_base,
+                    refusal_lambda=_refusal_lambda_for(api_base),
                 )
             except Exception as e:
                 log.debug("track_start error: %s", e)
@@ -2032,6 +2085,7 @@ data:
             model: Any,
             call_type: Any,
             api_base: Any,
+            refusal_lambda: Any = None,
         ) -> Dict[str, Any]:
             now = self.clock()
             with self._lock:
@@ -2044,6 +2098,12 @@ data:
                     "model": str(model or "unknown"),
                     "call_type": str(call_type or "unknown"),
                     "server_id": resolve_server_id(model, api_base),
+                    # Lambda de la proyeccion rank-1 VIGENTE al empezar la peticion.
+                    # Es un modo GLOBAL que cambia en caliente, asi que el valor
+                    # actual no dice como se sirvio una peticion de hace diez
+                    # minutos: hay que sellarlo aqui. None = backend que no es
+                    # DeepSeek-V4, o no se pudo leer.
+                    "refusal_lambda": refusal_lambda,
                     "ts": now,
                     "first_token_ts": None,
                     "last_sample_ts": None,
@@ -2408,6 +2468,7 @@ data:
                     "model": raw.get("model"),
                     "call_type": raw.get("call_type"),
                     "server_id": raw.get("server_id"),
+                    "refusal_lambda": raw.get("refusal_lambda"),
                     "prompt_tokens": raw.get("prompt_tokens"),
                     "completion_tokens": raw.get("completion_tokens"),
                     "output_speed_tps": raw.get("output_speed_tps"),
@@ -3429,7 +3490,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: codex-spark-dos-cuentas-20260812
+        config.k8s.e-dani.com/revision: sellar-lambda-por-peticion-20260812
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
