@@ -40,34 +40,6 @@ data:
     # vLLM Service has ready Kubernetes endpoints. This avoids routing local,
     # tooling, router, litellmrouter, or auto to a baseline pod that is still
     # pulling/starting.
-    # ── uncensored ───────────────────────────────────────────────────────
-    # Mismo backend y mismos pesos que `deepseek-v4-flash-0731`: NO hay segunda
-    # copia del modelo (ocupa los dos Spark enteros, no cabria). Lo unico que
-    # cambia es `cache_salt`, que vLLM traduce a lambda=1,5 de la proyeccion
-    # rank-1 SOLO para esta peticion. Los demas alias siguen a lambda=0.
-    #
-    # Por que 1,5 y no 1: MEDIDO el 12-08-2026 sobre 10 disparadores de rechazo.
-    # lambda=1 rechaza 5-7 de 10 (no es 'sin censura', es 'menos censurado');
-    # lambda=1,5 rechaza 0 de 10. Y no cuesta nada medible: acceptance 0,5647
-    # frente a 0,5661 del base (t=0,10) y NIAH 30/30 a 127k igual que el base.
-    # 2,0 da el mismo 0/10 que 1,5 pero acerca al regimen del checkpoint
-    # horneado (lambda_eff 2,43), que SI degrada: acceptance 0,5128.
-    #
-    # El salt entra ademas en la clave de hash de bloque del prefix cache, asi
-    # que este alias no comparte KV con los otros. Sin eso, un prefijo cacheado
-    # por `agent` se reusaria aqui con el lambda equivocado, en silencio.
-    #
-    # Sin fallback a proposito: no existe otro backend abliterado al que caer.
-    # Si DeepSeek esta caido, este alias esta caido — degradar a un modelo
-    # censurado seria mentir sobre lo que sirve.
-    - model_name: uncensored
-      litellm_params:
-        model: openai/deepseek-v4-flash-0731
-        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        extra_body:
-          cache_salt: "refusal:1.5"
-
     - model_name: bge-m3
       litellm_params:
         model: openai/bge-m3
@@ -1032,11 +1004,6 @@ data:
         "qwen36-35b", "qwen36-35b-tooling", "qwen36-35b-reasoning",
         "qwen36-35b-nvfp4", "qwen-36-35b",
         "dense", "dense-reasoning", "dense-uncensored", "taxonomy",
-        # 2026-08-12: `uncensored` = mismo backend DeepSeek con lambda=1 por
-        # peticion. Va aqui para que herede el perfil de sampling de la familia
-        # igual que el resto; si no, seria el unico alias de DeepSeek servido
-        # con el sampling por defecto en vez del que recomienda su model card.
-        "uncensored",
     })
 
     # ── Nivel de pensamiento por ALIAS (2026-08-10) ─────────────────────────────
@@ -3362,7 +3329,7 @@ spec:
             # con la key abierta y el equipo no, los pods salen Healthy y TODA
             # inferencia da 403 team_model_access_denied. reconcile_required_team_models
             # es aditivo, asi que esto solo ensancha.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored,router,agent,high,max,uncensored" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored,router,agent,high,max" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
@@ -3393,7 +3360,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: uncensored-lambda15-20260812
+        config.k8s.e-dani.com/revision: retirar-perfil-uncensored-20260812
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
