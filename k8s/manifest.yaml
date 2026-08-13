@@ -675,9 +675,26 @@ data:
             )
 
 
-    async def _refusal_lambda_for_async(api_base):
-        if "deepseek-v4-flash" not in str(api_base or "").lower():
-            return None
+    async def _refusal_lambda_for_async(model, api_base):
+        """Solo se sella lo que sirve DeepSeek-V4; el resto no lleva proyeccion.
+
+        Se mira el MODELO y no solo el api_base: en el pre_call_hook `api_base`
+        viene None salvo que lo mande el cliente (lo resuelve el router, DESPUES).
+        Filtrar por api_base ahi dejaba _rl a None SIEMPRE — el sello no se escribia
+        nunca, y el fallo era mudo porque "no sellar" es la salida prevista cuando
+        no se puede leer el estado.
+        """
+        haystack = "{} {}".format(model or "", api_base or "").lower()
+        if "deepseek-v4-flash" not in haystack:
+            # Ultimo recurso: resolver el backend real. Cubre los alias cuyo nombre
+            # no menciona el modelo (`agent`, `max`, `high`...), que son justo los
+            # que usa todo el mundo. Es la misma via que _is_local_vllm_request.
+            try:
+                sid = resolve_server_id(model, api_base)
+            except Exception:  # noqa: BLE001
+                sid = None
+            if "deepseek-v4-flash" not in str(sid or "").lower():
+                return None
         return await _refusal_lambda_now_async()
 
 
@@ -1988,7 +2005,7 @@ data:
             # tiene gate de premium_user (verificado con premium_user=False y un
             # sello real persistido en SQL).
             try:
-                _rl = await _refusal_lambda_for_async(api_base)
+                _rl = await _refusal_lambda_for_async(model, api_base)
                 if _rl is not None:
                     # "metadata" en chat/completions; "litellm_metadata" en
                     # threads/assistants. Se respeta el que ya traiga la peticion.
@@ -2020,7 +2037,7 @@ data:
                     model=model,
                     call_type=call_type,
                     api_base=api_base,
-                    refusal_lambda=await _refusal_lambda_for_async(api_base),
+                    refusal_lambda=await _refusal_lambda_for_async(model, api_base),
                 )
             except Exception as e:
                 log.debug("track_start error: %s", e)
