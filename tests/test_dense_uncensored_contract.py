@@ -51,11 +51,14 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     text = MANIFEST.read_text()
     assert 'OPENCLAW_TEAM_ID, value: "openclaw"' in text
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
+    # La lista crece (union aditiva), asi que se comprueba pertenencia y no el
+    # literal: lo que importa aqui es que `dense-uncensored` siga concedido.
+    match = re.search(r'OPENCLAW_TEAM_REQUIRED_MODELS, value: "([^"]*)"', text)
+    assert match, "el manifest ya no declara OPENCLAW_TEAM_REQUIRED_MODELS"
+    required = {name.strip() for name in match.group(1).split(",") if name.strip()}
+    assert "dense-uncensored" in required
     # v024-f2-dgx1 fuera: su deployment se borro el 2026-07-26.
-    assert (
-        'OPENCLAW_TEAM_REQUIRED_MODELS, value: '
-        '"ornith-canary,ornith-1.0,dense-uncensored,router,agent,high,max"'
-    ) in text
+    assert "qwen36-27b-nvfp4-v024-f2-dgx1" not in required
     block = text[
         text.index("def reconcile_required_team_models"):
         text.index("def managed_model_id")
