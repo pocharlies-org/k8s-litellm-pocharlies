@@ -2705,6 +2705,12 @@ data:
     # name a specific model, so a direct call to them MUST fail when Ornith is not
     # the resident rather than silently answer from Qwen3-Coder.
     TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES + THINKING_TIER_ALIASES
+    # Nombre directo y exclusivo de DeepSeek. A diferencia de los aliases de
+    # capacidad anteriores, este NO se comparte con Ornith/NVIDIA Qwen: quien
+    # selecciona un modelo concreto debe recibir ese modelo o un error visible.
+    DEEPSEEK_V4_FLASH_DIRECT_ALIASES = (
+        "deepseek-v4-flash-0731",
+    )
     # The DGX2 uncensored 27B is the ONLY dense model in the cluster, so it owns
     # every dense-shaped name. `taxonomy` was added here on 2026-07-27: it used to
     # be registered solely by the censored 27B deployments (deleted 2026-07-26), so
@@ -2872,7 +2878,7 @@ data:
                 "DS4_FLASH_MODEL",
                 "openai/deepseek-v4-flash-0731",
             ),
-            "aliases": TOOLING_RESIDENT_ALIASES,
+            "aliases": TOOLING_RESIDENT_ALIASES + DEEPSEEK_V4_FLASH_DIRECT_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_DS4_FLASH",
                 "deepseek-v4-flash-0731",

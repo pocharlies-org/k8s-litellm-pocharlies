@@ -59,7 +59,8 @@ def backends(cms):
     tree = ast.parse(cms["sync"])
     wanted = {"ORNITH_CANARY_ALIASES", "QWEN36_COMPAT_ALIASES", "ORNITH_ALIASES",
               "THINKING_TIER_ALIASES",
-              "TOOLING_RESIDENT_ALIASES", "QWEN3CODER_ALIASES",
+              "TOOLING_RESIDENT_ALIASES", "DEEPSEEK_V4_FLASH_DIRECT_ALIASES",
+              "QWEN3CODER_ALIASES",
               "QWEN36_27B_UNCENSORED_ALIASES", "QWEN36_REPEAT_GUARD_PARAMS",
               "BACKENDS"}
     keep = [n for n in tree.body
@@ -130,6 +131,13 @@ def test_deepseek_publica_la_ventana_operativa_de_384k(backends):
     """El catalogo solo puede anunciar el max_model_len que sirve vLLM."""
     assert backends[DEEPSEEK_V4_FLASH]["max_input_tokens"] == 393216
     assert backends[DEEPSEEK_V4_FLASH]["max_output_tokens"] == 16384
+
+
+def test_deepseek_publica_su_nombre_directo_solo_en_su_backend(backends):
+    """El nombre concreto no puede resolver silenciosamente a otro residente."""
+    alias = "deepseek-v4-flash-0731"
+    owners = [name for name, backend in backends.items() if alias in backend["aliases"]]
+    assert owners == [DEEPSEEK_V4_FLASH]
 
 
 def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
