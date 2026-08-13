@@ -2020,6 +2020,23 @@ data:
             return data
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            # DIAGNOSTICO TEMPORAL (13-08-2026): saber donde acaba de verdad el sello
+            # de refusal_lambda en el kwargs que consume SpendLogs. Quitar cuando el
+            # sellado este confirmado.
+            try:
+                if "deepseek" in str(kwargs.get("model") or "").lower():
+                    _lp = kwargs.get("litellm_params") or {}
+                    log.warning(
+                        "REFUSAL-DIAG model=%s lp.metadata.keys=%s lp.metadata.slm=%s "
+                        "lp.litellm_metadata.slm=%s top.metadata.slm=%s",
+                        kwargs.get("model"),
+                        sorted((_lp.get("metadata") or {}).keys())[:12],
+                        (_lp.get("metadata") or {}).get("spend_logs_metadata"),
+                        (_lp.get("litellm_metadata") or {}).get("spend_logs_metadata"),
+                        (kwargs.get("metadata") or {}).get("spend_logs_metadata"),
+                    )
+            except Exception:
+                pass
             try:
                 _update_tracking_from_payload(
                     kwargs,
