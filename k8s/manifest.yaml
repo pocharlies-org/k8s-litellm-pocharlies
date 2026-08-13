@@ -1964,41 +1964,48 @@ data:
                 model_call_details.setdefault("metadata", {})
                 if isinstance(model_call_details["metadata"], dict):
                     model_call_details["metadata"]["_tracking_id"] = tracking_id
-                _rl = await _refusal_lambda_for_async(api_base)
                 model_call_details.setdefault("litellm_params", {})
                 if isinstance(model_call_details["litellm_params"], dict):
                     model_call_details["litellm_params"].setdefault("metadata", {})
                     if isinstance(model_call_details["litellm_params"]["metadata"], dict):
-                        _lp_meta = model_call_details["litellm_params"]["metadata"]
-                        _lp_meta["_tracking_id"] = tracking_id
-                        # El mismo sello, pero en el metadata que LiteLLM persiste en
-                        # LiteLLM_SpendLogs. El fichero de tracking solo cubre las
-                        # peticiones VIVAS; el historico sale de SQL, y sin esto no
-                        # hay forma de saber como se sirvio algo de hace 20 min.
-                        #
-                        # AQUI y no en model_call_details["metadata"]: SpendLogs lee
-                        # con get_litellm_metadata_from_kwargs, que mira
-                        # `litellm_params["metadata"]` (o `litellm_metadata`) y NUNCA
-                        # el metadata de primer nivel. Escribirlo alli no da error:
-                        # simplemente no llega.
-                        #
-                        # Y TIENE que ir dentro de `spend_logs_metadata`, no como
-                        # clave plana: `_get_spend_logs_metadata` filtra con
-                        # `{k: metadata.get(k) for k in SpendLogsMetadata.__annotations__}`
-                        # — una allowlist, lo que no es campo declarado del TypedDict
-                        # se tira EN SILENCIO. Los dos fallos juntos son por lo que
-                        # 0 de 380.591 filas llevaban el sello. `spend_logs_metadata`
-                        # si esta declarado y es la via oficial (la doc la marca
-                        # "enterprise", pero este build no tiene gate de premium_user
-                        # — verificado con premium_user=False y un sello real en SQL).
-                        if _rl is not None:
-                            _slm = _lp_meta.get("spend_logs_metadata")
-                            if not isinstance(_slm, dict):
-                                _slm = {}
-                                _lp_meta["spend_logs_metadata"] = _slm
-                            # str(): LiteLLM serializa este dict a JSON tal cual, y un
-                            # float 1.5 vs "1.5" complica el filtrado en SQL.
-                            _slm["refusal_lambda"] = str(_rl)
+                        model_call_details["litellm_params"]["metadata"]["_tracking_id"] = tracking_id
+
+            # ── Sello de lambda para el HISTORICO (LiteLLM_SpendLogs) ─────────────
+            #
+            # Se escribe en `data`, que es lo que el proxy propaga, NO en el
+            # logging_obj: probado que por ahi no llega (dos intentos, filas con
+            # spend_logs_metadata=null teniendo el head accesible y stamping=true).
+            # Este es el MISMO sitio donde LiteLLM mete el spend_logs_metadata que
+            # llega por la cabecera x-litellm-spend-logs-metadata —
+            # `data[_metadata_variable_name].update(metadata_from_headers)` en
+            # litellm_pre_call_utils.py — y esa via esta verificada de punta a punta.
+            #
+            # Y TIENE que ir dentro de `spend_logs_metadata`, no como clave plana:
+            # `_get_spend_logs_metadata` filtra con
+            # `{k: metadata.get(k) for k in SpendLogsMetadata.__annotations__}` —
+            # una allowlist, lo que no es campo declarado del TypedDict se tira EN
+            # SILENCIO. La doc marca esto como "enterprise", pero este build no
+            # tiene gate de premium_user (verificado con premium_user=False y un
+            # sello real persistido en SQL).
+            try:
+                _rl = await _refusal_lambda_for_async(api_base)
+                if _rl is not None:
+                    # "metadata" en chat/completions; "litellm_metadata" en
+                    # threads/assistants. Se respeta el que ya traiga la peticion.
+                    _mvar = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+                    _meta = data.get(_mvar)
+                    if not isinstance(_meta, dict):
+                        _meta = {}
+                        data[_mvar] = _meta
+                    _slm = _meta.get("spend_logs_metadata")
+                    if not isinstance(_slm, dict):
+                        _slm = {}
+                        _meta["spend_logs_metadata"] = _slm
+                    # str(): LiteLLM serializa este dict a JSON tal cual, y un float
+                    # 1.5 vs "1.5" complica el filtrado en SQL.
+                    _slm["refusal_lambda"] = str(_rl)
+            except Exception as e:
+                log.debug("refusal stamp error: %s", e)
             try:
                 request_tracker.start(
                     tracking_id,
@@ -2030,7 +2037,7 @@ data:
                         "REFUSAL-DIAG model=%s lp.metadata.keys=%s lp.metadata.slm=%s "
                         "lp.litellm_metadata.slm=%s top.metadata.slm=%s",
                         kwargs.get("model"),
-                        sorted((_lp.get("metadata") or {}).keys())[:12],
+                        [k for k in (_lp.get("metadata") or {}) if "spend" in k or "refusal" in k],
                         (_lp.get("metadata") or {}).get("spend_logs_metadata"),
                         (_lp.get("litellm_metadata") or {}).get("spend_logs_metadata"),
                         (kwargs.get("metadata") or {}).get("spend_logs_metadata"),
