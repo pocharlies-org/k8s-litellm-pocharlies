@@ -17,8 +17,25 @@ O sea: el modelo veia perfectamente y la unica pieza rota era este booleano. Nad
 en los logs lo delataba. Este test fija el valor para que volver a ponerlo en
 False sea un fallo de CI y no un descubrimiento por sorpresa dentro de un mes.
 
-Los otros tres backends locales son checkpoints qwen3_5_moe, multimodales de
-fabrica; se comprueban igual porque el modo de fallo es identico.
+ALCANCE: este test ancla SOLO a DeepSeek.
+
+Los otros tres backends declarados (ornith-dgx1, nvidia-qwen36-dgx1,
+qwen36-27b-uncensored-dgx2) tambien tienen supports_vision=True, pero NO se fijan
+aqui, por dos razones comprobadas el 2026-08-13:
+
+  - Los tres estan MUERTOS. `vllm-ornith-35b-nvfp4-mtp-dgx1` y
+    `vllm-nvidia-qwen36-35b-dgx1` ni siquiera existen como Deployment (Ornith se
+    retiro el 10-08), y `vllm-qwen36-27b-uncensored-dgx2` esta a 0 replicas.
+    Ninguno aparece registrado en LiteLLM: de los backends locales solo responde
+    `deepseek-v4-flash-0731`, con sus 13 alias.
+  - Sus valores no estan igual de justificados. El de NVIDIA lleva su razon en el
+    codigo ("qwen3_5_moe MULTIMODAL"), pero el del 27B DENSO viene copiado del
+    bloque anterior en mayo, sin comprobacion propia y sin comentario. Fijarlo
+    seria convertir en invariante algo que nadie midio.
+
+Cuando alguno vuelva a estar vivo, lo correcto es MEDIR si ve — mandarle una
+imagen — y entonces anclarlo. Un test que fija un valor no verificado no protege
+nada: solo hace mas dificil corregirlo.
 """
 import ast
 import pathlib
@@ -93,15 +110,18 @@ def test_deepseek_declara_que_ve():
     )
 
 
-def test_todos_los_backends_locales_declaran_vision():
-    sin_declarar = {
-        nombre: b.get("supports_vision")
-        for nombre, b in _backends().items()
-        if b.get("supports_vision") is not True
-    }
-    assert not sin_declarar, (
-        f"estos backends locales no declaran vision: {sin_declarar}. Un False "
-        "aqui no da error en ningun sitio: desvia las imagenes en silencio."
+def test_todo_backend_local_declara_vision_explicitamente():
+    """El campo tiene que ESTAR, con el valor que sea.
+
+    No se fija el valor de los backends que no son DeepSeek: ver el ALCANCE del
+    docstring del modulo. Lo que si es invariante es que ninguno se quede sin
+    declararlo, porque un backend sin el campo deja `_alias_supports_vision` en
+    None y el desvio de imagenes pasa a depender de si el alias esta vivo.
+    """
+    sin_campo = [n for n, b in _backends().items() if "supports_vision" not in b]
+    assert not sin_campo, (
+        f"backends locales sin declarar supports_vision: {sin_campo}. Declara el "
+        "valor a proposito: True solo si se ha COMPROBADO que el modelo ve."
     )
 
 
