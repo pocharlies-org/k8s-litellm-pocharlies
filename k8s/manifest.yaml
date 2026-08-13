@@ -2004,8 +2004,14 @@ data:
                     # str(): LiteLLM serializa este dict a JSON tal cual, y un float
                     # 1.5 vs "1.5" complica el filtrado en SQL.
                     _slm["refusal_lambda"] = str(_rl)
+                    log.warning(
+                        "REFUSAL-STAMP escrito rl=%s mvar=%s data_id=%s meta_id=%s slm=%s",
+                        _rl, _mvar, id(data), id(_meta), _slm,
+                    )
+                else:
+                    log.warning("REFUSAL-STAMP saltado: _rl=None api_base=%s", api_base)
             except Exception as e:
-                log.debug("refusal stamp error: %s", e)
+                log.warning("refusal stamp error: %s", e)
             try:
                 request_tracker.start(
                     tracking_id,
