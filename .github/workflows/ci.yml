@@ -28,7 +28,7 @@ jobs:
   # que habia 4 backends cuando ya habia 5. Ahora corre la suite entera.
   litellm-contracts:
     name: LiteLLM contracts
-    runs-on: ubuntu-24.04
+    runs-on: arc-k8s
     timeout-minutes: 10
     permissions:
       contents: read
