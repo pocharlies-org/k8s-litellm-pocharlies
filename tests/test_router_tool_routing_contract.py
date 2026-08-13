@@ -148,7 +148,7 @@ def test_router_solo_selecciona_los_cuatro_tiers(hook):
     assert {entry["model"] for entry in hook.ROUTE.values()} == set(hook.THINKING_TIERS)
     for category in hook.ROUTE:
         chain = _chain(hook, category)
-        assert chain[-1] == "gpt-5.6-sol"
+        assert chain[-1] == "gpt-5.6-luna"
         assert not any(alias.startswith("dense") for alias in chain)
 
 
@@ -157,7 +157,7 @@ def test_every_chain_ends_in_independent_cloud_fallback(hook):
         chain = _chain(hook, category)
         assert len(chain) >= 2, f"{category} no tiene a donde degradar: {chain}"
         assert len(set(chain)) == len(chain), f"{category} repite un alias: {chain}"
-        assert chain[-1] == "gpt-5.6-sol", chain
+        assert chain[-1] == "gpt-5.6-luna", chain
 
 
 def test_degrade_walks_to_the_first_live_alias(hook):
@@ -220,8 +220,8 @@ def test_tooling_es_no_op_cuando_esta_registrado(hook):
     proxy rechaza el nombre antes de que corra el Router."""
     entry = hook.CAPABILITY_CHAINS["tooling"]
     assert hook._walk_chain(entry, alias_live=lambda a: True) == ("tooling", "primary")
-    assert hook._walk_chain(entry, alias_live=lambda a: a == "gpt-5.6-sol") \
-        == ("gpt-5.6-sol", "degraded")
+    assert hook._walk_chain(entry, alias_live=lambda a: a == "gpt-5.6-luna") \
+        == ("gpt-5.6-luna", "degraded")
     assert hook._walk_chain(entry, alias_live=lambda a: False) == ("tooling", "dry")
 
 
@@ -262,8 +262,8 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
             graph.setdefault(src, []).extend(dsts or [])
 
     for profile in ("tooling", "agent", "high", "max"):
-        assert graph.get(profile) == ["gpt-5.6-sol"], (
-            f"se esperaba {profile} -> [gpt-5.6-sol], hay {graph.get(profile)!r}")
+        assert graph.get(profile) == ["gpt-5.6-luna"], (
+            f"se esperaba {profile} -> [gpt-5.6-luna], hay {graph.get(profile)!r}")
 
     # Recorrido completo: ningun camino puede volver a un nodo ya visitado.
     def walk(node, seen):

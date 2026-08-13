@@ -2,7 +2,7 @@
 
 DeepSeek es solo texto. Mientras sea el residente, una peticion con imagen a un
 nombre de CAPACIDAD se manda al unico modelo del gateway que ve: la cuenta
-ChatGPT Pro por codex-bridge (`gpt-5.6-sol`).
+ChatGPT Pro por codex-bridge (`gpt-5.6-luna`).
 
 Lo que este contrato fija, que es lo que se puede romper sin darse cuenta:
 

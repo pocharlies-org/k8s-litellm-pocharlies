@@ -342,12 +342,12 @@ data:
       # residente. Su red debe terminar en una deployment real y estatica, nunca en
       # `dense`: cuando DeepSeek TP=2 ocupa ambos Sparks no puede existir ningun
       # residente dense y ese fallback fue el que convirtio un fallo de streaming
-      # del router en HTTP 500. gpt-5.6-sol no tiene fallback propio, asi que el
+      # del router en HTTP 500. gpt-5.6-luna no tiene fallback propio, asi que el
       # grafo sigue siendo un DAG.
-      - tooling: ["gpt-5.6-sol"]
-      - agent: ["gpt-5.6-sol"]
-      - high: ["gpt-5.6-sol"]
-      - max: ["gpt-5.6-sol"]
+      - tooling: ["gpt-5.6-luna"]
+      - agent: ["gpt-5.6-luna"]
+      - high: ["gpt-5.6-luna"]
+      - max: ["gpt-5.6-luna"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -935,10 +935,10 @@ data:
     # The names deliberately match THINKING_TIERS so the selected alias can be fed
     # to _apply_thinking_tier after the request model has been rewritten.
     ROUTE = {
-        "OFF": {"model": "tooling", "fallbacks": ("gpt-5.6-sol",)},
-        "LOW": {"model": "agent", "fallbacks": ("gpt-5.6-sol",)},
-        "HIGH": {"model": "high", "fallbacks": ("gpt-5.6-sol",)},
-        "MAX": {"model": "max", "fallbacks": ("gpt-5.6-sol",)},
+        "OFF": {"model": "tooling", "fallbacks": ("gpt-5.6-luna",)},
+        "LOW": {"model": "agent", "fallbacks": ("gpt-5.6-luna",)},
+        "HIGH": {"model": "high", "fallbacks": ("gpt-5.6-luna",)},
+        "MAX": {"model": "max", "fallbacks": ("gpt-5.6-luna",)},
     }
 
     # Deterministic hints for the automatic depth selector. The classifier remains
@@ -1003,7 +1003,7 @@ data:
     # cero.
     #
     # QUE HACE ESTO. Los cuatro perfiles conservan su alias como cabeza y usan
-    # gpt-5.6-sol solo como red independiente. Cubre el modo
+    # gpt-5.6-luna solo como red independiente. Cubre el modo
     # "alias DESREGISTRADO" (el sync llama a /model/delete cuando el Service se cae),
     # que el proxy rechaza en route_llm_request ANTES de que corra el Router, asi que
     # `router_settings.fallbacks` no puede salvarlo. El otro modo -- "registrado pero
@@ -1019,13 +1019,13 @@ data:
     # sale como 400 en vez de degradar. La cabeza es el propio alias para que el
     # selector automatico pueda conservar el nivel elegido.
     CAPABILITY_CHAINS = {
-        # gpt-5.6-sol es estatico via codex-bridge y no comparte el despliegue
+        # gpt-5.6-luna es estatico via codex-bridge y no comparte el despliegue
         # local. Cubre tanto alias desregistrado (esta cadena) como deployment
         # registrado pero no sano (router_settings.fallbacks).
-        "tooling": {"model": "tooling", "fallbacks": ("gpt-5.6-sol",)},
-        "agent": {"model": "agent", "fallbacks": ("gpt-5.6-sol",)},
-        "high": {"model": "high", "fallbacks": ("gpt-5.6-sol",)},
-        "max": {"model": "max", "fallbacks": ("gpt-5.6-sol",)},
+        "tooling": {"model": "tooling", "fallbacks": ("gpt-5.6-luna",)},
+        "agent": {"model": "agent", "fallbacks": ("gpt-5.6-luna",)},
+        "high": {"model": "high", "fallbacks": ("gpt-5.6-luna",)},
+        "max": {"model": "max", "fallbacks": ("gpt-5.6-luna",)},
     }
     # ── Desvio de VISION (2026-08-11) ───────────────────────────────────────────
     #
@@ -1040,11 +1040,11 @@ data:
     # (imagen azul de 64x64 -> "Azul"); con `image_url` objeto devuelve 400
     # "expected an image URL, but got an object instead". El puente lo traduce.
     #
-    # OJO CON LA CUOTA: sol comparte limites con el Codex interactivo del usuario,
+    # OJO CON LA CUOTA: luna comparte limites con el Codex interactivo del usuario,
     # y desde el 2026-08-11 TODO lo que lleve imagen sale por aqui salvo que el
     # backend que iba a servir declare que ve (decision del owner). Se apaga entero
     # con LITELLM_VISION_FALLBACK_MODEL="".
-    VISION_FALLBACK_MODEL = os.environ.get("LITELLM_VISION_FALLBACK_MODEL", "gpt-5.6-sol")
+    VISION_FALLBACK_MODEL = os.environ.get("LITELLM_VISION_FALLBACK_MODEL", "gpt-5.6-luna")
     # Nombres de CAPACIDAD, los unicos que se desvian. Un nombre de MODELO
     # (`deepseek-v4-flash-0731`, `dense`, `ornith-1.0`...) NO se desvia jamas, por
     # la misma razon por la que no degrada: quien lo nombra sabe a que habla, y las
@@ -3143,7 +3143,7 @@ data:
             # de prueba correctamente, 257 tokens de imagen, y el servidor arranca
             # con limit_mm_per_prompt {'image': 8}.
             # Con False aqui, _vision_target desviaba TODA peticion con imagen a
-            # gpt-5.6-sol (cuota de ChatGPT del usuario) y OpenClaw contestaba
+            # gpt-5.6-luna (cuota de ChatGPT del usuario) y OpenClaw contestaba
             # "este modelo no admite entrada de imagenes" sin llegar a preguntar.
             # Este flag es la unica pieza que faltaba: el modelo ya veia.
             "supports_vision": True,
@@ -3779,7 +3779,7 @@ spec:
       annotations:
         # The smart-router hook lives in the mounted ConfigMap and is imported at
         # process start, so every material hook change must roll this pod.
-        config.k8s.e-dani.com/revision: router-thinking-depth-20260813
+        config.k8s.e-dani.com/revision: fallback-luna-20260813
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
