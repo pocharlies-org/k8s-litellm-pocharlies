@@ -167,6 +167,41 @@ data:
     - model_name: e-dani/codex-auto-review
       litellm_params: { model: openai/codex-auto-review, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    # ── Alias del esquema VIEJO (compatibilidad, 2026-08-13) ─────────────────
+    # El picker de Codex Desktop solo ofrece los ids que trae bundleados: no
+    # muestra `cuenta/slug` y sigue mandando el nombre desnudo. Documentado en
+    # pocharlies-org/litellm-model-sync (README, 'Codex Desktop limitation').
+    # Se conserva la semantica anterior al rename: id desnudo = CloudBlue.
+    # El sufijo `-edani` NO vuelve: lo prohibe
+    # tests/test_codex_bridge_accounts_contract.py por ambiguo. Un cliente que
+    # quiera la cuenta personal usa `e-dani/<slug>`.
+    - model_name: gpt-5.6-sol
+      litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.6-sol-wm
+      litellm_params: { model: openai/gpt-5.6-sol-wm, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.6-terra
+      litellm_params: { model: openai/gpt-5.6-terra, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.6-luna
+      litellm_params: { model: openai/gpt-5.6-luna, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.5
+      litellm_params: { model: openai/gpt-5.5, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.4
+      litellm_params: { model: openai/gpt-5.4, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.4-mini
+      litellm_params: { model: openai/gpt-5.4-mini, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.3-codex-spark
+      litellm_params: { model: openai/gpt-5.3-codex-spark, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: false, max_input_tokens: 128000 }
+    - model_name: codex-auto-review
+      litellm_params: { model: openai/codex-auto-review, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -3661,7 +3696,11 @@ spec:
       annotations:
         # The smart-router hook lives in the mounted ConfigMap and is imported at
         # process start, so every material hook change must roll this pod.
-        config.k8s.e-dani.com/revision: fallback-luna-20260813
+        # HASH del ConfigMap litellm-config. LiteLLM carga model_list y el hook
+        # al arrancar; que kubelet refresque los ficheros montados no actualiza el
+        # router en memoria. El contrato y el --fix viven en
+        # tests/test_configmap_revision_bump_contract.py.
+        config.k8s.e-dani.com/revision: config-91c13b28e6cc
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
