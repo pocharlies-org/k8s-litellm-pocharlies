@@ -3068,8 +3068,17 @@ data:
             # peticiones simultaneas a longitud completa de 384K.
             "max_input_tokens": 393216,
             "supports_function_calling": True,
-            # DeepseekV4ForCausalLM: solo texto, no es multimodal.
-            "supports_vision": False,
+            # 2026-08-13: YA VE. El servidor no sirve DeepseekV4ForCausalLM sino
+            # DeepseekV4VisionForCausalLM (plugin FlyCockpit dsv4_vision_vllm:
+            # tower DeepEncoderV2 congelado + adapter BF16, imagen
+            # 0.1.1-rank1f-vision). Verificado contra el pod: describe una imagen
+            # de prueba correctamente, 257 tokens de imagen, y el servidor arranca
+            # con limit_mm_per_prompt {'image': 8}.
+            # Con False aqui, _vision_target desviaba TODA peticion con imagen a
+            # gpt-5.6-sol (cuota de ChatGPT del usuario) y OpenClaw contestaba
+            # "este modelo no admite entrada de imagenes" sin llegar a preguntar.
+            # Este flag es la unica pieza que faltaba: el modelo ya veia.
+            "supports_vision": True,
         },
     )
     # ── Los limites son OBLIGATORIOS, no opcionales (2026-08-10) ────────────────
