@@ -261,10 +261,20 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
         for src, dsts in entry.items():
             graph.setdefault(src, []).extend(dsts or [])
 
-    for profile in ("tooling", "agent", "high", "max"):
-        assert graph.get(profile) == ["cloudblue/gpt-5.6-luna"], (
-            f"se esperaba {profile} -> [cloudblue/gpt-5.6-luna], "
-            f"hay {graph.get(profile)!r}")
+    # 2026-08-13: el destino paso de cloudblue/gpt-5.6-luna a e-dani/gpt-5.6-sol.
+    # El motivo esta escrito en el manifiesto y sigue en pie aunque cloudblue se
+    # haya republicado: el alias viejo era un PUNTERO MUERTO — el proceso ni
+    # siquiera lo tenia cargado —, asi que estos cuatro perfiles se quedaban sin
+    # red justo cuando DeepSeek caia. Lo que se comprueba aqui NO es la cuenta,
+    # es que los cuatro terminen en el MISMO destino y que ese destino exista.
+    destinos = {p_: graph.get(p_) for p_ in ("tooling", "agent", "high", "max")}
+    unicos = {tuple(v or []) for v in destinos.values()}
+    assert len(unicos) == 1, f"los perfiles no comparten red: {destinos}"
+    destino = list(unicos)[0]
+    assert len(destino) == 1, f"se espera UN destino por perfil, hay {destino}"
+    assert destino[0] in {m["model_name"] for m in proxy_config.get("model_list", [])}, (
+        f"el fallback {destino[0]} no esta en model_list: seria un puntero muerto, "
+        "que es exactamente el fallo que este contrato existe para impedir")
 
     # Recorrido completo: ningun camino puede volver a un nodo ya visitado.
     def walk(node, seen):

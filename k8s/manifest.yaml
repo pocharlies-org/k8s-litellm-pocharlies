@@ -107,10 +107,20 @@ data:
     # El ID público une cuenta y slug real: `cloudblue/<slug>` o
     # `e-dani/<slug>`. Así ambos catálogos pueden contener el mismo modelo sin
     # colisionar. OpenAI recibe únicamente el slug real de `litellm_params.model`.
-    # Catálogo vivo consultado por cuenta el 2026-08-13. Eran 9 (cloudblue) + 10
-    # (e-dani) = 19; los 9 de cloudblue se RETIRAN el mismo día: sus 4 keys están
-    # bloqueadas a propósito (los 401 en bucle son lo correcto), así que eran 9
-    # alias que no podían funcionar pase lo que pase y sólo ensuciaban /v1/models.
+    # Catálogo vivo consultado por cuenta el 2026-08-13: 9 (cloudblue) + 10
+    # (e-dani) = 19.
+    #
+    # LOS 9 DE CLOUDBLUE SE RETIRARON Y SE REPUBLICAN EL MISMO DÍA. El motivo de
+    # la retirada era que "sus 4 keys están bloqueadas a propósito", y eso NO
+    # aplica a este camino: las keys bloqueadas son VIRTUALES de LiteLLM, y el
+    # puente no las usa — habla con ChatGPT por su propia sesión OAuth
+    # (Secret codex-bridge-auth). Comprobado llamando al puente directamente:
+    #
+    #   POST codex-bridge.litellm.svc:8080/v1/chat/completions {model: gpt-5.6-sol}
+    #   -> 200 en 1 s
+    #
+    # O sea que los 9 alias SÍ pueden funcionar. Lo que no funcionaba era pedirlos
+    # por LiteLLM mientras no estaban publicados (400 "Invalid model name").
     # Los modelos `visibility=hide` también se publican porque este catálogo es
     # completo; Codex decide su presentación mediante el catálogo sincronizado.
     # UNA EXCEPCIÓN, y no volver a añadirla al refrescar el catálogo (2026-08-13):
@@ -123,6 +133,40 @@ data:
     # peor. Sigue en ALLOWED_MODELS de los dos puentes a propósito: la cuenta SÍ lo
     # sirve (probado, HTTP 200 pese a `supported_in_api: false`) y quitarlo de allí
     # abriría el fallback silencioso a UPSTREAM_MODEL en vez de un error.
+    # ── Cuenta CLOUDBLUE (daniel.ibanez@cloudblue.com) ───────────────────────
+    # Es la cuenta de CARGA: desvío de visión, último eslabón de `agent`, Aurora.
+    # Cuota separada de la personal a propósito, para que lo automático no se
+    # coma el cupo del Codex interactivo. Puente: codex-bridge.
+    # `gpt-5.6-sol-wm` NO se publica (ver la excepción de arriba).
+    # `gpt-daybreak-blue-latest` tampoco: solo está en el catálogo de e-dani.
+    - model_name: cloudblue/gpt-5.6-sol
+      litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.6-terra
+      litellm_params: { model: openai/gpt-5.6-terra, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.6-luna
+      litellm_params: { model: openai/gpt-5.6-luna, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.5
+      litellm_params: { model: openai/gpt-5.5, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.4
+      litellm_params: { model: openai/gpt-5.4, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.4-mini
+      litellm_params: { model: openai/gpt-5.4-mini, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.3-codex-spark
+      litellm_params: { model: openai/gpt-5.3-codex-spark, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: false, max_input_tokens: 128000 }
+    - model_name: cloudblue/codex-auto-review
+      litellm_params: { model: openai/codex-auto-review, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    # ── Cuenta E-DANI (me@e-dani.com) ────────────────────────────────────────
+    # Es la cuenta PERSONAL: MISMA cuota que el Codex interactivo del usuario.
+    # Por eso sus alias son opt-in por nombre y NO entran en ninguna cadena de
+    # fallback. Puente: codex-bridge-edani.
     - model_name: e-dani/gpt-5.6-sol
       litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
