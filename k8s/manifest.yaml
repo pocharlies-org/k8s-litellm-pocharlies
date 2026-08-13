@@ -558,7 +558,10 @@ data:
         "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/admin/refusal_lambda",
     )
     REFUSAL_TTL_S = float(os.environ.get("LITELLM_REFUSAL_TTL_S", "5"))
-    _refusal_cache = {"ts": 0.0, "value": None}
+    # `reason` explica POR QUE no hay valor. Sin el, una peticion sin sellar y un
+    # head caido son indistinguibles desde fuera, que es justo la duda que aparece
+    # cuando en el panel falta la insignia de lambda.
+    _refusal_cache = {"ts": 0.0, "value": None, "reason": "never_read"}
     _refusal_lock = threading.Lock()
 
 
@@ -570,6 +573,7 @@ data:
                 return _refusal_cache["value"]
             _refusal_cache["ts"] = now
         value = None
+        reason = None
         try:
             # Timeout agresivo a proposito: esto corre en el camino de la peticion.
             # Si el head no contesta rapido, mejor no sellar que retrasar a nadie.
@@ -579,12 +583,18 @@ data:
             v = body.get("lambda")
             # consistent:false = los ranks TP no coinciden. Sellar un numero ahi
             # seria mentir sobre como se sirvio: se deja sin sellar.
-            if body.get("consistent") is not False and v is not None:
+            if body.get("consistent") is False:
+                reason = "tp_inconsistent"
+            elif v is None:
+                reason = "no_lambda_field"
+            else:
                 value = float(v)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
             value = None
+            reason = "head_unreachable: {}".format(type(exc).__name__)
         with _refusal_lock:
             _refusal_cache["value"] = value
+            _refusal_cache["reason"] = reason
         return value
 
 
@@ -593,6 +603,71 @@ data:
         if "deepseek-v4-flash" not in str(api_base or "").lower():
             return None
         return _refusal_lambda_now()
+
+
+    # ── Exponer ese mismo lambda por el propio proxy ─────────────────────────────
+    #
+    # El panel DGX ya puede leer y cambiar el dial preguntando a vLLM. Esto contesta
+    # una pregunta DISTINTA: que va a sellar LiteLLM. Si el head no responde, el
+    # panel dice el estado real pero LiteLLM no sella nada — y sin esta ruta esa
+    # discrepancia no se ve.
+    #
+    # SOLO MASTER KEY / PROXY_ADMIN, y no es configurable desde aqui: LiteLLM
+    # clasifica las rutas por pertenencia EXPLICITA a sus listas (openai_routes,
+    # info_routes, management_routes...). Una ruta que no esta en ninguna cae al
+    # default-deny final de `non_proxy_admin_allowed_routes_check` -> 403 para
+    # cualquier key virtual. Renombrar el path no lo arregla (no va por prefijo);
+    # habria que inyectarlo en las listas internas de litellm, que no compensa
+    # para un endpoint de diagnostico.
+    REFUSAL_STATE_PATH = "/admin/refusal-state"
+
+
+    def _register_refusal_state_route():
+        from fastapi import Depends
+        from litellm.proxy.proxy_server import app
+        from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+
+        # Starlette NO deduplica rutas: si el config recarga y este modulo se
+        # reimporta, se apilaria una segunda copia identica.
+        if any(getattr(r, "path", None) == REFUSAL_STATE_PATH
+               for r in app.router.routes):
+            return
+
+        # `def` y NO `async def` a proposito: _refusal_lambda_now hace un httpx.get
+        # BLOQUEANTE. FastAPI corre las rutas sincronas en su threadpool, asi que
+        # una consulta de diagnostico no puede parar el event loop del proxy.
+        @app.get(REFUSAL_STATE_PATH, tags=["admin"],
+                 dependencies=[Depends(user_api_key_auth)])
+        def _refusal_state():
+            _refusal_lambda_now()  # refresca si vencio el TTL; el valor se lee abajo
+            # Los tres campos, en la MISMA toma del lock: leer el valor del return
+            # de arriba y `reason`/`ts` por separado podria mezclar dos refrescos y
+            # dar un motivo que no corresponde al valor.
+            with _refusal_lock:
+                lam = _refusal_cache["value"]
+                reason = _refusal_cache["reason"]
+                ts = _refusal_cache["ts"]
+            return {
+                "lambda": lam,
+                # None NO es False: es "no se pudo leer".
+                "enabled": None if lam is None else lam > 0,
+                # lo que de verdad se pregunta: ¿las peticiones llevaran sello?
+                "stamping": lam is not None,
+                "reason": reason,
+                "cache_age_s": round(time.time() - ts, 2),
+                "ttl_s": REFUSAL_TTL_S,
+                "admin_url": REFUSAL_ADMIN_URL,
+                "source": "litellm-hook-cache",
+            }
+
+
+    # Envuelto entero: esto corre en el modulo del hook, que esta en el camino de
+    # TODAS las peticiones. Una ruta de diagnostico no puede impedir que arranque el
+    # proxy.
+    try:
+        _register_refusal_state_route()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo registrar %s: %s", REFUSAL_STATE_PATH, exc)
 
 
     def _track_end(request_id):
