@@ -206,13 +206,38 @@ data:
     # Credenciales
     # --------------------------------------------------------------------------
 
-    def _jwt_exp(token):
+    def _jwt_claim(token, key, default=None):
+        """Lee un claim del JWT sin verificar firma: sólo se usa para datos
+        informativos (exp, email), nunca para autorizar nada."""
         try:
             payload = token.split(".")[1]
             payload += "=" * (-len(payload) % 4)
-            return json.loads(base64.urlsafe_b64decode(payload)).get("exp", 0)
+            return json.loads(base64.urlsafe_b64decode(payload)).get(key, default)
         except Exception:
-            return 0
+            return default
+
+
+    def _jwt_exp(token):
+        return _jwt_claim(token, "exp", 0) or 0
+
+
+    def account_email():
+        """Email de la cuenta, con dos fuentes.
+
+        `codex login --device-auth` no siempre escribe `account_email` en el
+        auth.json — la credencial de me@e-dani.com salió sin él — pero el
+        id_token SIEMPRE lleva el claim `email`. Sin este fallback, el panel no
+        sabe de quién es la cuota que está enseñando.
+        """
+        try:
+            data = read_auth_file()
+        except Exception:
+            data = {}
+        email = data.get("account_email")
+        if email:
+            return email
+        tokens = data.get("tokens") or _tokens or {}
+        return _jwt_claim(tokens.get("id_token", ""), "email")
 
 
     def read_auth_file():
@@ -253,6 +278,41 @@ data:
             log("tokens rotados persistidos en el Secret")
         except Exception as exc:  # no es fatal: el token en memoria sigue sirviendo
             log(f"AVISO: no pude persistir los tokens rotados: {exc!r}")
+
+
+    def backfill_account_email():
+        """Escribe `account_email` en el Secret si falta.
+
+        Con el fallback de arriba el panel ya sabe de quién es la cuota, pero el
+        Secret se queda sin decir a qué cuenta pertenece y hay que decodificar un
+        JWT a mano para averiguarlo — justo lo que costó identificar la
+        credencial de e-dani. Se escribe una vez, al arrancar, y sólo si falta.
+        Es aditivo: no toca los tokens.
+        """
+        try:
+            data = read_auth_file()
+            if data.get("account_email"):
+                return
+            email = _jwt_claim((data.get("tokens") or {}).get("id_token", ""), "email")
+            if not email:
+                return
+            with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as fh:
+                sa = fh.read()
+            data["account_email"] = email
+            body = json.dumps({"data": {
+                "auth.json": base64.b64encode(
+                    json.dumps(data, indent=2).encode()).decode()}}).encode()
+            req = urllib.request.Request(
+                f"https://kubernetes.default.svc/api/v1/namespaces/{NAMESPACE}/secrets/{SECRET_NAME}",
+                data=body, method="PATCH",
+                headers={"Authorization": "Bearer " + sa,
+                         "Content-Type": "application/merge-patch+json"})
+            ctx = __import__("ssl").create_default_context(
+                cafile="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+            urllib.request.urlopen(req, timeout=15, context=ctx).read()
+            log(f"account_email escrito en el Secret: {email}")
+        except Exception as exc:  # informativo: el fallback ya cubre el panel
+            log(f"AVISO: no pude escribir account_email: {exc!r}")
 
 
     def refresh_if_needed():
@@ -523,13 +583,9 @@ data:
         if not found:
             return
         found["captured_at"] = time.time()
-        try:
-            # El email vive en el auth.json, no en `_tokens`. Es lo que
-            # distingue una cuenta de la otra en el panel, así que si el
-            # fichero no se puede leer se queda a None y no se inventa.
-            found["account_email"] = read_auth_file().get("account_email")
-        except Exception:
-            found["account_email"] = None
+        # account_email() cae al claim `email` del id_token si el auth.json no
+        # lo trae, que es el caso de las credenciales de --device-auth.
+        found["account_email"] = account_email()
         with _quota_lock:
             _quota.clear()
             _quota.update(found)
@@ -811,6 +867,9 @@ data:
 
     def main():
         load_tokens()
+        # Aditivo y de una sola vez: deja el Secret auto-descriptivo. Si falla,
+        # el fallback al claim del id_token sigue cubriendo al panel.
+        backfill_account_email()
         port = int(os.environ.get("PORT", "8080"))
         log(f"escuchando en :{port} | modelos={ALLOWED_MODELS} | por defecto={UPSTREAM_MODEL}")
         ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
