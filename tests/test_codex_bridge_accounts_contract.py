@@ -56,6 +56,12 @@ PUBLISHED_MODELS = {
     "e-dani": ACCOUNT_CATALOG["e-dani"] - {"gpt-5.6-sol-wm"},
 }
 
+REASONING_EFFORTS = {
+    "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
+}
+
 
 def _documents(path):
     return [document for document in yaml.safe_load_all(path.read_text()) if document]
@@ -118,6 +124,23 @@ def test_personal_bridge_is_enabled_with_its_own_secret():
     env = {entry["name"]: entry.get("value") for entry in bridge["env"]}
     assert env["SECRET_NAME"] == "codex-bridge-edani-auth"
     assert set(env["ALLOWED_MODELS"].split(",")) >= ACCOUNT_CATALOG["e-dani"]
+
+
+def test_gpt_56_models_publish_their_real_reasoning_efforts():
+    documents = _documents(MANIFEST)
+    config_map = _resource(documents, "ConfigMap", "litellm-config")
+    config = yaml.safe_load(config_map["data"]["config.yaml"])
+    models = {model["model_name"]: model for model in config["model_list"]}
+
+    for account in ("cloudblue", "e-dani", None):
+        for slug, efforts in REASONING_EFFORTS.items():
+            name = f"{account}/{slug}" if account else slug
+            info = models[name]["model_info"]
+            assert info["supports_reasoning"] is True
+            assert info["supports_low_reasoning_effort"] is True
+            assert info["supports_xhigh_reasoning_effort"] is True
+            assert info["supports_max_reasoning_effort"] is True
+            assert info["supported_reasoning_efforts"] == efforts
 
 
 def test_cloudblue_bridge_allows_its_complete_catalog():
