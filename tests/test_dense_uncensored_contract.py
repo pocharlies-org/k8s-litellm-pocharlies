@@ -41,10 +41,10 @@ def test_dense_uncensored_is_never_auto_routed():
     """El nombre explicito `dense-uncensored` no lo reescribe el router: una
     llamada directa debe fallar si DGX2 esta caido, no responder desde Ornith."""
     text = MANIFEST.read_text()
-    routed = _sync_block(text, "AUTO_ROUTED_MODELS = ", "# Where each shape goes")
+    routed = _sync_block(text, "AUTO_ROUTED_MODELS = ", "# All four routes")
     assert "dense-uncensored" not in routed
-    route = _sync_block(text, "ROUTE = {", "# Hard limit escape")
-    assert "dense-uncensored" not in route
+    route = _sync_block(text, "ROUTE = {", "# Deterministic hints")
+    assert "dense" not in route
 
 
 def test_openclaw_team_permission_is_reconciled_without_removing_models():

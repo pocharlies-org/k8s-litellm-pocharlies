@@ -267,9 +267,9 @@ def test_el_tier_sale_del_alias_PEDIDO_no_del_resuelto(hook):
     assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
 
 
-def test_router_y_auto_no_heredan_sin_pensar(hook):
-    """`router`/`auto` los reescribe el hook a `tooling`, pero nadie pidio "sin
-    pensar": se quedan con el default del servidor y el hook no toca nada."""
+def test_router_crudo_no_tiene_tier_propio(hook):
+    """El hook principal debe sustituir router por el alias que eligio. Esta
+    funcion pura no inventa un tier para un nombre automatico sin clasificar."""
     _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
     for alias in ("router", "auto", "litellmrouter", "dense", ""):
         data = {"model": "tooling"}

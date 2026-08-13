@@ -323,29 +323,13 @@ data:
       # ~4 min, so this only has to cover that window.
       allowed_fails: 3
       cooldown_time: 120
-      # 2026-07-27: the chat aliases are registered dynamically by
-      # litellm-dgx-backend-sync onto exactly TWO deployments, one per node:
-      #   tooling/router/auto/litellmrouter/qwen36-35b*   -> Ornith 35B-A3B (DGX1)
-      #   dense/dense-reasoning/dense-uncensored/taxonomy -> uncensored 27B (DGX2)
-      # There is no shared pool and no load-balancing between them: each alias has
-      # exactly one backend.
+      # These four aliases are four reasoning levels over the same dynamically
+      # registered tooling resident. They are not four model choices.
       #
-      # 2026-08-05: this block used to say cross-alias fallback was deliberately not
-      # configured, because it "would create alias-to-alias retry loops". That was
-      # right about MUTUAL fallbacks and wrong as a blanket rule, and the difference
-      # cost a real outage: on 2026-08-04 19:11 DGX1 swapped its resident model and
-      # Aurora died 40s into a live incident with "no healthy deployments for this
-      # model". A ONE-WAY entry is a DAG, not a cycle -- `tooling` falls to `dense`
-      # and `dense` declares nothing, so the walk terminates after one hop. Do NOT
-      # add the reverse; `dense: [tooling]` alongside this is the ping-pong the old
-      # comment warned about.
-      #
-      # WHAT THIS COVERS, AND WHAT IT CANNOT. There are two failure modes with two
-      # different errors, and they live in different layers:
+      # There are two failure modes with two different errors and layers:
       #   * alias REGISTERED but no healthy deployment (cooldown after allowed_fails,
       #     a wedged vLLM whose /health still answers 200) -> the Router raises from
-      #     inside async_function_with_fallbacks' try, so THIS fires. It is the mode
-      #     that actually took Aurora down.
+      #     inside async_function_with_fallbacks' try, so THIS fallback fires.
       #   * alias DELETED from model_list (litellm-dgx-backend-sync calls
       #     /model/delete when the Service goes NotReady) -> the proxy raises
       #     ProxyModelNotFoundError in route_llm_request.py BEFORE the Router is
@@ -353,45 +337,17 @@ data:
       #     the smart-router hook's chain, which runs at pre_call_hook, ahead of the
       #     model-name gate.
       # Both layers are load-bearing. Neither one substitutes for the other.
-      #
-      # Nothing reconciles these names against the live model_list: the sync only
-      # touches model_list, never router_settings. An entry naming an alias that no
-      # longer exists would sit here silently, so keep it to the two canonical big
-      # aliases.
-      # 2026-08-09: `tooling: ["dense"]` se retiro porque con DeepSeek ocupando los
-      # dos Sparks `dense` esta a 0 y el fallback apuntaba a un alias sin backend
-      # posible.
-      #
-      # 2026-08-10: RESTAURADO, y el razonamiento de ayer estaba medio mal. Esta es
-      # la UNICA capa que cubre "alias registrado pero sin deployment sano" (cooldown
-      # tras allowed_fails, un vLLM atascado que sigue contestando /health): ese error
-      # lo levanta el Router desde DENTRO del try de async_function_with_fallbacks,
-      # asi que la cadena del hook es ciega a el -- el hook pregunta si el alias esta
-      # REGISTRADO, no si esta sano. Es el modo que tumbo a Aurora el 2026-08-04 y el
-      # 400 que salio hoy al probar: "no healthy deployments for tooling ...
-      # Fallbacks=[]".
-      #
-      # Dejarlo vacio para no "apuntar a un alias sin backend" cambia un coste
-      # inexistente por un agujero real: con `dense` desregistrado el intento extra
-      # falla igual y el cliente recibe el mismo 400 de hoy, solo un salto mas tarde.
-      # Con el perfil qwen36-dual puesto, en cambio, es red de verdad. Asimetrico a
-      # favor de tenerlo.
-      #
-      # NO anadir el inverso `dense: ["tooling"]`: el par mutuo es el ping-pong que
-      # avisa el comentario de arriba. Una sola direccion es un DAG y termina.
       fallbacks:
-      - tooling: ["dense"]
-      # 2026-08-10: los tres tiers de pensamiento. Cubren el mismo modo que cubre
-      # `tooling` aqui -- "alias registrado pero sin deployment sano" -- que el hook
-      # no puede ver porque lo levanta el Router desde dentro. Igual que arriba: NO
-      # anadir el inverso desde `dense`, o vuelve el ping-pong.
-      # 2026-08-11: `agent` anade gpt-5.6-sol (ChatGPT Pro por codex-bridge, estatico)
-      # como ultimo eslabon: si DeepSeek se cae a mitad de la peticion (el FailoverError
-      # 500 de OpenClaw), el Router itera dense -> gpt-5.6-sol en vez de fallar. No crea
-      # ciclo: gpt-5.6-sol no tiene fallbacks propios.
-      - agent: ["dense", "gpt-5.6-sol"]
-      - high: ["dense"]
-      - max: ["dense"]
+      # 2026-08-13: los cuatro perfiles son niveles de pensamiento del MISMO
+      # residente. Su red debe terminar en una deployment real y estatica, nunca en
+      # `dense`: cuando DeepSeek TP=2 ocupa ambos Sparks no puede existir ningun
+      # residente dense y ese fallback fue el que convirtio un fallo de streaming
+      # del router en HTTP 500. gpt-5.6-sol no tiene fallback propio, asi que el
+      # grafo sigue siendo un DAG.
+      - tooling: ["gpt-5.6-sol"]
+      - agent: ["gpt-5.6-sol"]
+      - high: ["gpt-5.6-sol"]
+      - max: ["gpt-5.6-sol"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -961,75 +917,62 @@ data:
                 return "master"
         return "unknown"
 
-    # ── Routing policy (2026-07-27, Daniel) ──────────────────────────────────────
-    # Only the AUTO-ROUTED aliases are re-pointed by request shape. Everything else
-    # -- `dense`, `dense-reasoning`, `dense-uncensored`, `taxonomy`, `tooling` and
-    # the `qwen36-35b*` compat names -- is EXPLICIT client intent and passes through
-    # untouched to whichever backend the sync registered it on.
+    # ── Routing policy (2026-08-13, Daniel) ──────────────────────────────────────
+    # `router` does NOT choose a model family. It chooses how much the current
+    # tooling resident should think: off / low / high / max. This matters for
+    # OpenClaw, which attaches hundreds of tool definitions even to a trivial
+    # question; using "has tools" as a proxy for complexity routed every chat to
+    # `dense`, including "que modelo eres?", and made the automatic profile depend
+    # on a backend that cannot coexist with DeepSeek TP=2.
     #
-    # The rule itself:
-    #     request carries a tool  ->  dense           (the uncensored 27B DENSE)
-    #     no tool                 ->  tooling         (Ornith 35B-A3B MoE, DGX1)
-    #
-    # Rationale and the honest caveat: the 27B dense out-scored the old Qwen3.6-35B
-    # on tool calls when it was benchmarked (2026-07-02: 5/5 vs 3/5 single calls,
-    # 3/3 vs 2/3 agentic loops), which is where this rule comes from. Note both
-    # sides of that comparison have since been replaced -- `tooling` is now Ornith
-    # (an RL agentic-coding fine-tune, SWE-bench Verified 75.6 / Terminal-Bench 2.1
-    # 64.2, ~170 tok/s) and `dense` is the abliterated uncensored 27B (~41 tok/s, no
-    # published tool-calling numbers). So this rule trades ~4x decode latency on
-    # agentic loops for the dense model's per-token quality, and is pending
-    # measurement against Ornith's 346/370 internal tooling battery. Reverting is a
-    # two-line swap in ROUTE below.
+    # The four targets already are public capability aliases and carry the family
+    # translation in THINKING_TIERS. `router` only selects one of them. Explicit
+    # model names (`dense`, `ornith-1.0`, `deepseek-v4-flash-0731`...) still pass
+    # through untouched so benchmark intent remains exact.
     AUTO_ROUTED_MODELS = {"router", "auto", "litellmrouter"}
 
-    # Where each shape goes, as an ORDERED CHAIN. The head is the primary; each
-    # later entry is used only when every alias before it has no live deployments
-    # (see _alias_has_deployments and _degrade). Spelled with canonical names --
-    # they used to say `qwen36-35b-tooling`, which only worked by way of the compat
-    # aliases also being registered on Ornith.
-    #
-    # WHY A CHAIN AND NOT A SINGLE `fallback` (2026-08-04): the old form swapped to
-    # the fallback WITHOUT checking that the fallback itself was registered. When
-    # both nodes were mid-swap the router dispatched to a deregistered alias and
-    # 400-ed. The log caught both directions degrading within the same minute --
-    # `tooling` -> `dense` and `dense` -> `tooling`, with neither registered. It
-    # degraded into a hole. Every hop is now verified, and the chain ends on
-    # something that can actually be up.
-    #
-    # THIS CANNOT LOOP, and the mutual cover between `dense` and `tooling` is safe
-    # here: the chain is a finite ordered list walked ONCE per request, before
-    # dispatch. It is not a retry. LiteLLM's own `fallbacks:` config IS a retry, and
-    # alias-to-alias entries there would ping-pong forever -- which is exactly why
-    # degradation lives in this layer and not in that one.
-    #
-    # 2026-08-10: `qwen3-coder` RETIRADO de las tres cadenas y del cluster, por
-    # decision del owner. Iba delante de `tooling` en las vias con tools, y la medida
-    # que justificaba ese orden -- un test de opencode -- esta DESCARTADA por mala, asi
-    # que no se cita aqui. El modelo se retira entero, y una cadena no puede nombrar un
-    # alias que ningun backend declara: seria un salto perdido en cada peticion.
-    #
-    # Las tres cadenas quedan sobre los dos modelos que hay: el residente de tooling
-    # (DGX1, o los dos Sparks si es DeepSeek en TP=2) y el 27B denso de DGX2. Siguen
-    # cruzando de nodo, que es la invariante que importa.
+    # All four routes point at the SAME resident; only their thinking tier differs.
+    # The names deliberately match THINKING_TIERS so the selected alias can be fed
+    # to _apply_thinking_tier after the request model has been rewritten.
     ROUTE = {
-        "TOOLS": {"model": "dense", "fallbacks": ("tooling",)},
-        "TOOLS_REASONING": {"model": "dense-reasoning",
-                            "fallbacks": ("dense", "tooling")},
-        "NO_TOOLS": {"model": "tooling", "fallbacks": ("dense",)},
+        "OFF": {"model": "tooling", "fallbacks": ("gpt-5.6-sol",)},
+        "LOW": {"model": "agent", "fallbacks": ("gpt-5.6-sol",)},
+        "HIGH": {"model": "high", "fallbacks": ("gpt-5.6-sol",)},
+        "MAX": {"model": "max", "fallbacks": ("gpt-5.6-sol",)},
     }
 
-    # Hard limit escape: the uncensored 27B serves --max-model-len 229376 while
-    # Ornith serves 262144, so a tool-bearing request longer than this goes to
-    # Ornith instead of 400-ing on length. Deliberately below 229376 because
-    # _approx_input_tokens is a chars/4 estimate that does NOT count image tokens.
-    # (No multimodal escape is needed: Ornith's --limit-mm-per-prompt was raised to
-    # {"image":64} on 2026-07-27 to match the uncensored.)
-    DENSE_CTX_ESCAPE = 48000
+    # Deterministic hints for the automatic depth selector. The classifier remains
+    # local and cheap: no second LLM call just to decide whether the first may run.
+    # Explicit client effort / [think] markers win over lexical heuristics.
+    ROUTER_MAX_HINTS = (
+        "razonamiento maximo", "razonamiento máximo", "maximo razonamiento",
+        "máximo razonamiento", "piensa al maximo", "piensa al máximo",
+        "exhaustivo", "exhaustiva", "exhaustive", "deepest reasoning",
+        "prove rigorously", "máxima profundidad", "maxima profundidad",
+    )
+    ROUTER_HIGH_HINTS = (
+        "audita", "auditoria", "auditoría", "diagnostica", "diagnóstico",
+        "root cause", "causa raiz", "causa raíz", "investiga", "debug",
+        "depura", "arquitectura", "migra", "migración", "seguridad",
+        "vulnerabilidad", "incidente", "produccion", "producción",
+        "despliega", "deploy", "implementa", "arregla", "soluciona", "fix",
+        "refactoriza", "optimiza",
+        "compara opciones", "trade-off", "tradeoff", "plan detallado",
+    )
+    ROUTER_LOW_HINTS = (
+        "explica", "analiza", "resume", "resumen", "revisa", "evalua",
+        "evalúa", "recomienda", "planifica", "por que", "por qué",
+        "como funciona", "cómo funciona", "ayudame", "ayúdame",
+    )
+    ROUTER_OFF_HINTS = (
+        "exactamente", "solo responde", "responde solo", "sin explicar",
+        "traduce", "reescribe", "corrige el texto", "formatea", "extrae",
+        "lista ", "dime la hora", "que modelo eres", "qué modelo eres",
+    )
+    ROUTER_HIGH_CONTEXT_TOKENS = 12000
+    ROUTER_MAX_CONTEXT_TOKENS = 48000
 
-    FAST_CTX_LIMIT = 73000
-
-    # ── Fallback del alias de capacidad `tooling` ───────────────────────────────
+    # ── Fallback de los alias de capacidad del residente ────────────────────────
     #
     # RETIRADOS 2026-08-10: `tooling-ha` y `agentic-ha`. Eran nombres de mas.
     #
@@ -1059,31 +1002,30 @@ data:
     # falta comparar modelos pilotando un CLI agentico, hay que disenar la medida de
     # cero.
     #
-    # QUE HACE ESTO. Aplica la cadena tooling -> dense al PROPIO `tooling`, o sea que
-    # el fallback que aportaba el alias -ha ahora viene de serie. Cubre el modo
+    # QUE HACE ESTO. Los cuatro perfiles conservan su alias como cabeza y usan
+    # gpt-5.6-sol solo como red independiente. Cubre el modo
     # "alias DESREGISTRADO" (el sync llama a /model/delete cuando el Service se cae),
     # que el proxy rechaza en route_llm_request ANTES de que corra el Router, asi que
     # `router_settings.fallbacks` no puede salvarlo. El otro modo -- "registrado pero
     # sin deployment sano", que es el que de verdad tumbo a Aurora -- lo cubre
-    # `router_settings.fallbacks: tooling -> [dense]`. Las dos capas siguen siendo
+    # `router_settings.fallbacks`. Las dos capas siguen siendo
     # necesarias y ninguna sustituye a la otra.
     #
     # Funciona porque pre_call_hook reescribe data["model"] ANTES del gate de nombre
     # del proxy (proxy_server.py:8691 vs route_request en :8698).
-    # Los tres tiers llevan la MISMA red que `tooling` y por el mismo motivo: los
+    # Los cuatro perfiles llevan la MISMA red y por el mismo motivo: los
     # registra y los borra el mismo sync, contra el mismo Service. Si el residente
     # cae, `agent` se queda tan desregistrado como `tooling`, y sin cadena ese fallo
     # sale como 400 en vez de degradar. La cabeza es el propio alias para que el
-    # tier -- que se calcula sobre lo que pidio el cliente -- siga valiendo tras el
-    # salto: `agent` degradado a `dense` sigue pensando poco.
+    # selector automatico pueda conservar el nivel elegido.
     CAPABILITY_CHAINS = {
-        "tooling": {"model": "tooling", "fallbacks": ("dense",)},
-        # 2026-08-11: ultimo eslabon gpt-5.6-sol (estatico via codex-bridge, siempre
-        # live para _alias_has_deployments). Cubre el modo "alias DESREGISTRADO"
-        # cuando el Service DeepSeek se cae del todo; la cadena nunca queda en dry.
-        "agent": {"model": "agent", "fallbacks": ("dense", "gpt-5.6-sol")},
-        "high": {"model": "high", "fallbacks": ("dense",)},
-        "max": {"model": "max", "fallbacks": ("dense",)},
+        # gpt-5.6-sol es estatico via codex-bridge y no comparte el despliegue
+        # local. Cubre tanto alias desregistrado (esta cadena) como deployment
+        # registrado pero no sano (router_settings.fallbacks).
+        "tooling": {"model": "tooling", "fallbacks": ("gpt-5.6-sol",)},
+        "agent": {"model": "agent", "fallbacks": ("gpt-5.6-sol",)},
+        "high": {"model": "high", "fallbacks": ("gpt-5.6-sol",)},
+        "max": {"model": "max", "fallbacks": ("gpt-5.6-sol",)},
     }
     # ── Desvio de VISION (2026-08-11) ───────────────────────────────────────────
     #
@@ -1170,10 +1112,9 @@ data:
                         total += len(p.get("text") or "")
         return total // 4
 
-    # Item types that mean "this turn is tool-shaped" in the Responses API. The
-    # `function_call` prefix covers function_call and function_call_output; MCP and
-    # custom-tool turns use their own names and were previously invisible here,
-    # which now matters because the whole route hinges on this predicate.
+    # Item types that prove a tool was actually executed in the current Responses
+    # cycle. Declarations live in `tools` and are deliberately ignored by the
+    # depth selector.
     TOOL_ITEM_TYPES = ("function_call", "mcp_call", "mcp_list_tools",
                        "custom_tool_call", "tool_call")
 
@@ -1348,10 +1289,9 @@ data:
     #   max     -> effort max. El nivel con el que DeepSeek evalua sus benchmarks
     #              de code-agent. Piensa MUCHO: con 16384 de salida se trunca.
     #
-    # OJO: el tier se decide por el alias que pidio el CLIENTE, no por el que acaba
-    # sirviendo. Si `agent` degrada a `dense` sigue queriendo pensar poco; y `router`
-    # / `auto`, que el hook reescribe a `tooling`, NO heredan "sin pensar" -- no lo
-    # pidieron. Calcularlo tras la reescritura era justo el fallo contrario.
+    # En una llamada explicita manda el alias que pidio el cliente. En `router`,
+    # `auto` o `litellmrouter` manda el alias de profundidad elegido por el hook;
+    # asi OFF/LOW/HIGH/MAX se convierten de verdad en off/low/high/max.
     THINKING_TIERS = {
         "tooling": "off",
         "agent": "low",
@@ -1560,9 +1500,9 @@ data:
     def _apply_thinking_tier(data, requested_alias):
         """Fija el nivel de pensamiento que pide el NOMBRE del alias.
 
-        `requested_alias` es el que mando el cliente, capturado al entrar en el
-        hook: para entonces el router ya puede haber reescrito data["model"], y el
-        tier tiene que seguir al que se pidio, no al que sirve.
+        `requested_alias` es el alias explicito del cliente o, para una llamada
+        automatica, el alias de profundidad que eligio el clasificador. No tiene
+        por que coincidir con data["model"] si entro una red de disponibilidad.
 
         TRES COSAS QUE NO HACE, y las tres a proposito:
 
@@ -1570,8 +1510,9 @@ data:
            sabe mandar extra_body no necesita que le elijan el nivel -- es lo que
            hacen los perfiles del playground, y si el alias ganara no habria forma
            de probar `max` contra un alias que no se llame `max`.
-        2. NO toca los alias que no estan en la tabla. `router`, `auto`, `dense`...
-           siguen con el default del servidor.
+        2. NO toca los alias que no estan en la tabla. Los nombres de modelo como
+           `dense` siguen con el default del servidor; los automaticos se traducen
+           a un alias de la tabla antes de llegar aqui.
         3. NO piensa nunca con salida estructurada. El motivo esta medido: con
            thinking activo se cuela una llave suelta del razonamiento delante del
            JSON guiado y el parse revienta (3/3 reproducido el 2026-08-10). El
@@ -1618,8 +1559,7 @@ data:
 
         state is "primary" when the head served, "degraded" when a later hop did,
         and "dry" when NO alias in the chain is registered. One membership check
-        per alias, single pass, no retry -- see the ROUTE comment for why that is
-        what makes the mutual dense/tooling cover safe.
+        per alias, single pass, no retry.
 
         On "dry" we return the head: there is nothing better to choose, and a 400
         from the primary is the honest signal. It also preserves the fail-open
@@ -1657,24 +1597,85 @@ data:
         """_walk_chain for one of the shape-classified ROUTE categories."""
         return _walk_chain(ROUTE[category], alias_live=alias_live)
 
-    def _classify_route(data):
-        """Devuelve (route_key, rule, think_marker_present) para las peticiones
-        auto-enrutadas (router/auto/litellmrouter).
+    def _contains_router_hint(text, hints):
+        return any(hint in text for hint in hints)
 
-        La regla es deliberadamente simple: manda la presencia de tool. Solo hay un
-        escape, por limite fisico de contexto del dense. La intencion de reasoning
-        (marcador [think] o reasoning_effort medium+) elige la variante -reasoning
-        del dense; Ornith sirve todas sus formas bajo el mismo alias `tooling`.
+    def _has_executed_tool_history(data):
+        """Whether the current user/agent cycle already executed a tool.
+
+        Only inspect items after the latest user message. An execution from an
+        older turn must not pin every later question in the conversation to HIGH.
+        With no user item, inspect the whole payload because Responses continuations
+        may contain only function/MCP items.
         """
-        has_think = _has_think_marker(_entry_text(_last_user_entry(data)))
-        wants_reasoning = has_think or _wants_reasoning(data)
-        if _has_tools(data):
-            if _approx_input_tokens(data) > DENSE_CTX_ESCAPE:
-                return "NO_TOOLS", "ctx-escape", has_think
-            if wants_reasoning:
-                return "TOOLS_REASONING", "tools+reasoning", has_think
-            return "TOOLS", "tools", has_think
-        return "NO_TOOLS", "no-tools", has_think
+        inp = data.get("input")
+        if isinstance(inp, list):
+            last_user = max(
+                (i for i, item in enumerate(inp)
+                 if isinstance(item, dict) and item.get("role") == "user"),
+                default=-1,
+            )
+            for item in inp[last_user + 1:]:
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("type") or "")
+                if any(kind.startswith(prefix) for prefix in TOOL_ITEM_TYPES):
+                    return True
+        messages = data.get("messages") or ()
+        last_user = max(
+            (i for i, message in enumerate(messages)
+             if isinstance(message, dict) and message.get("role") == "user"),
+            default=-1,
+        )
+        for message in messages[last_user + 1:]:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") == "tool" or message.get("tool_calls"):
+                return True
+        return False
+
+    def _classify_route(data):
+        """Choose OFF/LOW/HIGH/MAX for router/auto/litellmrouter.
+
+        This classifier intentionally ignores declared tools. OpenClaw sends its
+        entire tool catalogue on ordinary conversation turns, so declarations say
+        nothing about the depth the user's request deserves. Explicit depth wins;
+        otherwise current intent, real execution history and context size decide.
+        """
+        last_text = _entry_text(_last_user_entry(data))
+        normalized = " ".join(last_text.lower().split())
+        has_think = _has_think_marker(last_text)
+        effort = _reasoning_effort_value(data)
+        # Complexity belongs to the current request, not to accumulated session
+        # history. Otherwise every old OpenClaw chat would eventually become MAX.
+        current_tokens = len(last_text) // 4
+
+        # A schema is an extraction contract. Thinking corrupts guided JSON on the
+        # current DeepSeek template, so this invariant outranks every depth hint.
+        if _is_structured_output(data):
+            return "OFF", "structured-output", has_think
+        if effort in {"xhigh", "max"} or _contains_router_hint(
+                normalized, ROUTER_MAX_HINTS):
+            return "MAX", "explicit-max", has_think
+        if effort in {"medium", "high"}:
+            return "HIGH", "explicit-high", has_think
+        if has_think:
+            return "HIGH", "think-marker", has_think
+        if current_tokens >= ROUTER_MAX_CONTEXT_TOKENS:
+            return "MAX", "context-max", has_think
+        if _contains_router_hint(normalized, ROUTER_HIGH_HINTS):
+            return "HIGH", "complex-intent", has_think
+        if _has_executed_tool_history(data):
+            return "HIGH", "execution-history", has_think
+        if current_tokens >= ROUTER_HIGH_CONTEXT_TOKENS:
+            return "HIGH", "context-high", has_think
+        if _contains_router_hint(normalized, ROUTER_LOW_HINTS):
+            return "LOW", "reasoned-intent", has_think
+        if _contains_router_hint(normalized, ROUTER_OFF_HINTS):
+            return "OFF", "direct-intent", has_think
+        if len(normalized) <= 80:
+            return "OFF", "short-simple", has_think
+        return "LOW", "default-low", has_think
 
 
     # ── Gate de validacion de args de tool (2026-07-27) ──────────────────────────
@@ -1869,6 +1870,7 @@ data:
                     data["metadata"]["_router_resolved_model"] = cap_resolved
                     data["metadata"]["_router_route_state"] = cap_state
 
+            thinking_alias = requested_model
             is_router_request = (
                 requested_model in AUTO_ROUTED_MODELS
                 or proxy_model in AUTO_ROUTED_MODELS
@@ -1906,11 +1908,13 @@ data:
                 data["metadata"]["_router_rule"] = rule
                 data["metadata"]["_router_original_model"] = proxy_model or requested_model
                 data["metadata"]["_router_resolved_model"] = resolved_model
+                data["metadata"]["_router_thinking_alias"] = target["model"]
                 data["metadata"]["_router_resolved_base"] = "model_list"
                 # primary / degraded / dry -- makes "was this request served by the
                 # model the rule chose?" answerable per request instead of only by
                 # correlating log lines against deployment state after the fact.
                 data["metadata"]["_router_route_state"] = route_state
+                thinking_alias = target["model"]
 
                 preview = _entry_text(_last_user_entry(data))[:120].replace("\n", " ")
                 tok_est = _approx_input_tokens(data)
@@ -1922,8 +1926,10 @@ data:
                     reasons.append(f"effort={effort}")
                 if _has_tools(data):
                     reasons.append(f"tools={len(data.get('tools') or [])}")
-                if tok_est > FAST_CTX_LIMIT:
-                    reasons.append(f"ctx={tok_est}>{FAST_CTX_LIMIT}")
+                current_tok_est = len(_entry_text(_last_user_entry(data))) // 4
+                if current_tok_est >= ROUTER_HIGH_CONTEXT_TOKENS:
+                    reasons.append(
+                        f"current_ctx={current_tok_est}>={ROUTER_HIGH_CONTEXT_TOKENS}")
                 if _has_part_type(data, IMAGE_PART_TYPES):
                     reasons.append("image")
                 if _has_part_type(data, VIDEO_PART_TYPES):
@@ -1979,11 +1985,10 @@ data:
             # checkpoint real -- calcularlo antes de las bifurcaciones daba el
             # perfil de un alias que no servia la peticion.
             _apply_family_sampling(data)
-            # Y el nivel de pensamiento, que va al reves: lo decide el alias que
-            # pidio el CLIENTE (`requested_model`, capturado al entrar), no el
-            # resuelto. La familia sigue saliendo del backend real, porque el
-            # nombre de la clave del chat template lo pone el checkpoint.
-            _apply_thinking_tier(data, requested_model)
+            # Explicit profiles follow the alias requested by the client. The
+            # automatic router follows the depth alias selected above. The family
+            # still comes from the backend that will really serve the request.
+            _apply_thinking_tier(data, thinking_alias)
             key_alias = _resolve_key_label(user_api_key_dict)
             model = data.get("model", "unknown")
             api_base = (
@@ -2157,7 +2162,7 @@ data:
         "dense-uncensored",
         "taxonomy",
         "tooling",
-        # Los tres tiers de pensamiento: mismo backend que `tooling`, asi que la
+        # Los cuatro perfiles de pensamiento: mismo backend residente, asi que la
         # telemetria de vLLM local tiene que contarlos igual.
         "agent",
         "high",

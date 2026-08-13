@@ -16,12 +16,7 @@ de los que puede.
 Lo que se fija aqui:
   1. los nombres de los campos son los de litellm, y `context_window` no vuelve
   2. ningun limite se hereda: todo backend declara los suyos
-  3. `DENSE_CTX_ESCAPE` del hook sigue por debajo de la ventana REAL del 27B
-
-El punto 3 es el que ata las tres copias que vivian sueltas (229376 en un
-comentario, 200000 en el hook, el default en el sync). El hook y el sync son
-procesos distintos y no pueden importarse, pero los dos salen del MISMO
-manifest.yaml, asi que un test si puede cruzarlos.
+  3. el router automatico ya no depende del 27B ni necesita un escape especial
 """
 import ast
 import os
@@ -119,9 +114,10 @@ def test_ningun_backend_hereda_sus_limites(cms, backends):
 
 
 def test_el_27b_declara_su_ventana_mas_estrecha(backends):
-    """Es el UNICO backend con ventana menor que 262144, y el motivo por el que
-    existe DENSE_CTX_ESCAPE. Si algun dia deja de ser el estrecho, el escape del
-    hook sobra y hay que enterarse por aqui."""
+    """El catalogo debe seguir publicando la ventana real del 27B.
+
+    El router automatico ya no lo usa ni depende de este limite.
+    """
     estrechos = {n: b["max_input_tokens"] for n, b in backends.items()
                  if b["max_input_tokens"] < 262144}
     assert estrechos == {DGX2_UNCENSORED_27B: 65536}, estrechos
@@ -178,23 +174,15 @@ def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
     assert "delete_model(model_id)" in reconcile
 
 
-def test_dense_ctx_escape_sigue_por_debajo_de_la_ventana_real_del_27b(cms, backends):
-    """La razon de ser de este fichero.
-
-    `DENSE_CTX_ESCAPE` manda a `tooling` las peticiones con tools demasiado largas
-    para el 27B, en vez de dejarlas dar un 400 por longitud. Si alguien sube el
-    --max-model-len del 27B y no toca el escape, se pierde capacidad en silencio;
-    si lo BAJA por debajo del escape, vuelven los 400 que el escape existia para
-    evitar. Los dos numeros viven en ConfigMaps distintos y en procesos distintos,
-    pero salen del mismo manifest: aqui se cruzan.
-    """
-    escape = _const(cms["hook"], "DENSE_CTX_ESCAPE")
-    ventana = backends[DGX2_UNCENSORED_27B]["max_input_tokens"]
-    assert escape < ventana, (
-        f"DENSE_CTX_ESCAPE={escape} no deja margen bajo la ventana real del 27B "
-        f"({ventana}): las peticiones entre los dos valores daran 400 por longitud")
-    # Margen suficiente para que el estimador de tokens del hook (aproximado por
-    # caracteres) no se pase por poco.
-    assert ventana - escape >= 16384, (
-        f"solo {ventana - escape} tokens de margen; _approx_input_tokens es una "
-        f"estimacion, no una cuenta exacta")
+def test_router_automatico_no_depende_del_dense(cms):
+    """Los limites del 27B no pueden volver a condicionar el perfil automatico."""
+    tree = ast.parse(cms["hook"])
+    route = _const(cms["hook"], "ROUTE")
+    assert {entry["model"] for entry in route.values()} == {
+        "tooling", "agent", "high", "max"}
+    assert all(not alias.startswith("dense")
+               for entry in route.values()
+               for alias in (entry["model"], *entry.get("fallbacks", ())))
+    assert not any(isinstance(node, ast.Assign) and any(
+        getattr(target, "id", "") == "DENSE_CTX_ESCAPE" for target in node.targets)
+        for node in tree.body)

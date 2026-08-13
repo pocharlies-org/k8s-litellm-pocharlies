@@ -41,8 +41,8 @@ def test_ornith_is_one_readiness_gated_backend_owning_the_tooling_routes():
         assert name in compat
 
     # ...pero los nombres de canary NO son auto-enrutados por el hook.
-    routed = text[text.index("AUTO_ROUTED_MODELS = "):text.index("# Where each shape goes")]
-    route = text[text.index("ROUTE = {"):text.index("# Hard limit escape")]
+    routed = text[text.index("AUTO_ROUTED_MODELS = "):text.index("# All four routes")]
+    route = text[text.index("ROUTE = {"):text.index("# Deterministic hints")]
     for block in (routed, route):
         assert "ornith-canary" not in block
         assert "ornith-1.0" not in block

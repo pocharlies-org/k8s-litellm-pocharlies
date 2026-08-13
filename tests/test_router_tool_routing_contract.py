@@ -1,7 +1,9 @@
-"""Contrato de la regla de enrutado (2026-07-27, decision del owner):
+"""Contrato del selector automatico de profundidad (2026-08-13, owner):
 
-    peticion CON tool incrustada  ->  dense   (uncensored 27B denso)
-    peticion SIN tool             ->  tooling (Ornith 35B-A3B MoE)
+    router -> tooling / agent / high / max segun la complejidad
+
+Las tools DECLARADAS no cuentan: OpenClaw adjunta su catalogo entero incluso a
+una pregunta trivial. Solo cuentan la intencion y las ejecuciones reales.
 
 Se carga el hook REAL desde el manifest y se ejecutan solo sus funciones puras,
 sin importar litellm, para que CI valide la logica y no solo el texto.
@@ -16,17 +18,20 @@ import yaml
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 WANT_FN = {"_has_tools", "_classify_route", "_approx_input_tokens", "_message_entries",
-           "_entry_text", "_last_user_entry", "_has_think_marker", "_wants_reasoning",
-           "_reasoning_effort_value", "_has_part_type",
+           "_entry_text", "_last_user_entry", "_has_think_marker",
+           "_reasoning_effort_value", "_has_part_type", "_is_structured_output",
+           "_contains_router_hint", "_has_executed_tool_history",
            # _degrade walks the fallback chain; _alias_has_deployments is its default
            # probe and has to exist for _degrade's signature to bind at def time. Its
            # body lazily imports litellm, so pulling it in costs nothing here -- the
            # chain tests inject a stub instead of calling it.
            "_degrade", "_alias_has_deployments", "_walk_chain", "_chain_of"}
-WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "DENSE_CTX_ESCAPE", "THINK_MARKERS",
+WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "THINK_MARKERS",
               "REASONING_EFFORT_SIGNAL", "TEXT_PART_TYPES", "IMAGE_PART_TYPES",
-              "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "FAST_CTX_LIMIT",
-              "CAPABILITY_CHAINS", "THINKING_TIERS"}
+              "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "CAPABILITY_CHAINS",
+              "THINKING_TIERS", "ROUTER_MAX_HINTS", "ROUTER_HIGH_HINTS",
+              "ROUTER_LOW_HINTS", "ROUTER_OFF_HINTS",
+              "ROUTER_HIGH_CONTEXT_TOKENS", "ROUTER_MAX_CONTEXT_TOKENS"}
 
 
 @pytest.fixture(scope="module")
@@ -54,40 +59,68 @@ def _route(hook, data):
 TOOL_DEF = [{"type": "function", "function": {"name": "f"}}]
 
 CASES = [
-    ("tools declaradas", {"messages": [{"role": "user", "content": "hola"}], "tools": TOOL_DEF},
-     "dense", "tools"),
-    ("sin tools", {"messages": [{"role": "user", "content": "hola"}]},
-     "tooling", "no-tools"),
+    ("tools declaradas no cambian pregunta trivial",
+     {"messages": [{"role": "user", "content": "hola"}], "tools": TOOL_DEF},
+     "tooling", "short-simple"),
+    ("sin tools trivial", {"messages": [{"role": "user", "content": "hola"}]},
+     "tooling", "short-simple"),
     ("tool_choice required", {"messages": [{"role": "user", "content": "x"}],
-                             "tool_choice": "required"}, "dense", "tools"),
+                             "tool_choice": "required"}, "tooling", "short-simple"),
     ("tool_choice none no cuenta", {"messages": [{"role": "user", "content": "x"}],
-                                   "tool_choice": "none"}, "tooling", "no-tools"),
+                                   "tool_choice": "none"}, "tooling", "short-simple"),
     ("resultado de tool en el historial",
      {"messages": [{"role": "user", "content": "x"}, {"role": "tool", "content": "r"}]},
-     "dense", "tools"),
+     "high", "execution-history"),
     ("assistant con tool_calls",
-     {"messages": [{"role": "assistant", "tool_calls": [{"id": "1"}]}]}, "dense", "tools"),
+     {"messages": [{"role": "user", "content": "continua"},
+                   {"role": "assistant", "tool_calls": [{"id": "1"}]}]},
+     "high", "execution-history"),
+    ("tool antigua no fija el turno nuevo en high",
+     {"messages": [{"role": "user", "content": "haz algo"},
+                   {"role": "assistant", "tool_calls": [{"id": "1"}]},
+                   {"role": "tool", "content": "hecho"},
+                   {"role": "user", "content": "gracias"}]},
+     "tooling", "short-simple"),
     ("Responses function_call", {"input": [{"type": "function_call", "name": "f"}]},
-     "dense", "tools"),
-    ("Responses mcp_call", {"input": [{"type": "mcp_call", "name": "m"}]}, "dense", "tools"),
-    ("escape de contexto: el dense corta en 229376",
-     {"messages": [{"role": "user", "content": "x" * 900_000}], "tools": TOOL_DEF},
-     "tooling", "ctx-escape"),
-    ("tools + marcador [think]",
+     "high", "execution-history"),
+    ("Responses mcp_call", {"input": [{"type": "mcp_call", "name": "m"}]},
+     "high", "execution-history"),
+    ("Responses tool antigua no fija el turno nuevo en high",
+     {"input": [{"role": "user", "content": "haz algo"},
+                {"type": "function_call", "name": "f"},
+                {"type": "function_call_output", "output": "hecho"},
+                {"role": "user", "content": "gracias"}]},
+     "tooling", "short-simple"),
+    ("marcador [think]",
      {"messages": [{"role": "user", "content": "[think] arregla esto"}], "tools": TOOL_DEF},
-     "dense-reasoning", "tools+reasoning"),
-    ("tools + effort high",
+     "high", "think-marker"),
+    ("effort high",
      {"messages": [{"role": "user", "content": "x"}], "tools": TOOL_DEF,
-      "reasoning_effort": "high"}, "dense-reasoning", "tools+reasoning"),
-    ("tools + effort low es ambiental, no fuerza reasoning",
+      "reasoning_effort": "high"}, "high", "explicit-high"),
+    ("effort xhigh", {"messages": [{"role": "user", "content": "x"}],
+                       "reasoning_effort": "xhigh"}, "max", "explicit-max"),
+    ("effort low ambiental no fuerza profundidad",
      {"messages": [{"role": "user", "content": "x"}], "tools": TOOL_DEF,
-      "reasoning_effort": "low"}, "dense", "tools"),
-    ("sin tools + [think] sigue en Ornith",
-     {"messages": [{"role": "user", "content": "[think] piensa"}]}, "tooling", "no-tools"),
-    ("multimodal sin tools: Ornith ya admite image:64",
+      "reasoning_effort": "low"}, "tooling", "short-simple"),
+    ("explicacion normal",
+     {"messages": [{"role": "user", "content": "explica como funciona el router"}]},
+     "agent", "reasoned-intent"),
+    ("implementacion compleja",
+     {"messages": [{"role": "user", "content": "implementa y despliega este cambio"}]},
+     "high", "complex-intent"),
+    ("maximo explicito",
+     {"messages": [{"role": "user", "content": "auditoria exhaustiva con maxima profundidad"}]},
+     "max", "explicit-max"),
+    ("salida estructurada siempre sin pensar",
+     {"messages": [{"role": "user", "content": "audita esto con maxima profundidad"}],
+      "response_format": {"type": "json_schema"}}, "tooling", "structured-output"),
+    ("peticion no trivial sin señal usa ligero",
+     {"messages": [{"role": "user", "content": "redacta una respuesta amable " + "x" * 100}]},
+     "agent", "default-low"),
+    ("multimodal trivial",
      {"messages": [{"role": "user", "content": [{"type": "image_url",
                                                  "image_url": {"url": "x"}}] * 6}]},
-     "tooling", "no-tools"),
+     "tooling", "short-simple"),
 ]
 
 
@@ -111,46 +144,34 @@ def _chain(hook, category):
     return (entry["model"],) + tuple(entry.get("fallbacks") or ())
 
 
-def test_fallbacks_cross_the_two_models(hook):
-    """dense y tooling se siguen cubriendo mutuamente: DGX2 es desalojable.
-
-    Aqui es seguro que el cruce sea mutuo porque _degrade recorre la cadena UNA
-    vez antes de despachar; no es un retry y no puede hacer ping-pong.
-    """
-    assert "tooling" in _chain(hook, "TOOLS")
-    assert "dense" in _chain(hook, "NO_TOOLS")
+def test_router_solo_selecciona_los_cuatro_tiers(hook):
+    assert {entry["model"] for entry in hook.ROUTE.values()} == set(hook.THINKING_TIERS)
+    for category in hook.ROUTE:
+        chain = _chain(hook, category)
+        assert chain[-1] == "gpt-5.6-sol"
+        assert not any(alias.startswith("dense") for alias in chain)
 
 
-def test_every_chain_ends_outside_its_own_node(hook):
-    """La invariante que faltaba el 2026-08-04.
-
-    El bug no era el cruce: era que se degradaba al fallback SIN comprobarlo, y
-    con los dos nodos a medio swap se despachaba a un alias desregistrado. Que
-    cada cadena tenga >= 2 saltos y toque los dos nodos es lo que impide que
-    degradar sea caer en un agujero. dense/dense-reasoning/qwen3-coder viven en
-    DGX2; tooling en DGX1.
-    """
-    dgx2 = {"dense", "dense-reasoning", "qwen3-coder"}
+def test_every_chain_ends_in_independent_cloud_fallback(hook):
     for category in hook.ROUTE:
         chain = _chain(hook, category)
         assert len(chain) >= 2, f"{category} no tiene a donde degradar: {chain}"
         assert len(set(chain)) == len(chain), f"{category} repite un alias: {chain}"
-        assert set(chain) & dgx2 and set(chain) - dgx2, (
-            f"{category} no sale de un solo nodo: {chain}")
+        assert chain[-1] == "gpt-5.6-sol", chain
 
 
 def test_degrade_walks_to_the_first_live_alias(hook):
     """Recorrido con sondas inyectadas: primario, degradado y cadena seca."""
-    tools = _chain(hook, "TOOLS")
+    tools = _chain(hook, "HIGH")
 
-    assert hook._degrade("TOOLS", alias_live=lambda a: True) == (tools[0], "primary")
+    assert hook._degrade("HIGH", alias_live=lambda a: True) == (tools[0], "primary")
 
     # Solo el ultimo vivo -> tiene que llegar hasta el, no pararse en el primero.
-    assert hook._degrade("TOOLS", alias_live=lambda a: a == tools[-1]) \
+    assert hook._degrade("HIGH", alias_live=lambda a: a == tools[-1]) \
         == (tools[-1], "degraded")
 
     # Cadena seca: devuelve el primario y lo marca, en vez de despachar a ciegas.
-    assert hook._degrade("TOOLS", alias_live=lambda a: False) == (tools[0], "dry")
+    assert hook._degrade("HIGH", alias_live=lambda a: False) == (tools[0], "dry")
 
 
 def test_solo_tooling_degrada_y_los_nombres_de_modelo_no(hook):
@@ -199,7 +220,8 @@ def test_tooling_es_no_op_cuando_esta_registrado(hook):
     proxy rechaza el nombre antes de que corra el Router."""
     entry = hook.CAPABILITY_CHAINS["tooling"]
     assert hook._walk_chain(entry, alias_live=lambda a: True) == ("tooling", "primary")
-    assert hook._walk_chain(entry, alias_live=lambda a: a == "dense") == ("dense", "degraded")
+    assert hook._walk_chain(entry, alias_live=lambda a: a == "gpt-5.6-sol") \
+        == ("gpt-5.6-sol", "degraded")
     assert hook._walk_chain(entry, alias_live=lambda a: False) == ("tooling", "dry")
 
 
@@ -211,8 +233,8 @@ def test_degrade_probes_each_alias_at_most_once(hook):
         seen.append(alias)
         return False
 
-    hook._degrade("NO_TOOLS", alias_live=probe)
-    assert seen == list(_chain(hook, "NO_TOOLS"))
+    hook._degrade("LOW", alias_live=probe)
+    assert seen == list(_chain(hook, "LOW"))
     assert len(seen) == len(set(seen))
 
 
@@ -239,8 +261,9 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
         for src, dsts in entry.items():
             graph.setdefault(src, []).extend(dsts or [])
 
-    assert graph.get("tooling") == ["dense"], (
-        f"se esperaba tooling -> [dense], hay {graph.get('tooling')!r}")
+    for profile in ("tooling", "agent", "high", "max"):
+        assert graph.get(profile) == ["gpt-5.6-sol"], (
+            f"se esperaba {profile} -> [gpt-5.6-sol], hay {graph.get(profile)!r}")
 
     # Recorrido completo: ningun camino puede volver a un nodo ya visitado.
     def walk(node, seen):
@@ -250,9 +273,3 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
 
     for src in graph:
         walk(src, [])
-
-
-def test_ctx_escape_stays_under_the_dense_limit(hook):
-    """229376 es el max-model-len del uncensored; el margen cubre que
-    _approx_input_tokens no cuenta tokens de imagen."""
-    assert hook.DENSE_CTX_ESCAPE < 229376
