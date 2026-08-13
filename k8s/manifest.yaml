@@ -345,6 +345,7 @@ data:
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
   litellm_strip_params.py: |
     import asyncio
+    import json
     import logging
     import os
     import threading
@@ -745,6 +746,110 @@ data:
         _register_refusal_state_route()
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo registrar %s: %s", REFUSAL_STATE_PATH, exc)
+
+
+    # LiteLLM 1.96 valida `model_info` contra su propio ModelInfo al construir la
+    # respuesta de /model/info. Eso elimina campos nuevos del catalogo y, ademas,
+    # vuelve a calcular algunos flags con su base de datos interna. El router SI
+    # conserva el model_info original: lo reponemos en la respuesta existente para
+    # que el catalogo configurado siga siendo la fuente de verdad. No hay tabla de
+    # modelos ni conocimiento de OpenCode aqui; futuras capacidades de effort se
+    # publican con la misma convencion sin cambiar este hook.
+    MODEL_INFO_PATHS = frozenset({"/model/info", "/v1/model/info"})
+
+
+    def _reasoning_effort_capabilities(model_info):
+        if not isinstance(model_info, dict):
+            return {}
+        return {
+            key: value
+            for key, value in model_info.items()
+            if key == "supported_reasoning_efforts"
+            or (key.startswith("supports_") and "reasoning_effort" in key)
+        }
+
+
+    def _merge_catalog_reasoning_capabilities(payload, model_list):
+        catalog = {}
+        for deployment in model_list or ():
+            if not isinstance(deployment, dict):
+                continue
+            name = deployment.get("model_name")
+            capabilities = _reasoning_effort_capabilities(
+                deployment.get("model_info")
+            )
+            if name and capabilities:
+                catalog.setdefault(str(name), {}).update(capabilities)
+
+        items = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(items, list):
+            return payload
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            capabilities = catalog.get(str(item.get("model_name") or ""))
+            if not capabilities:
+                continue
+            info = item.get("model_info")
+            if not isinstance(info, dict):
+                info = {}
+                item["model_info"] = info
+            info.update(capabilities)
+        return payload
+
+
+    def _register_model_info_capabilities_middleware():
+        from litellm.proxy.proxy_server import app, llm_router
+        from starlette.responses import Response
+
+        # El modulo puede reimportarse si se recarga la configuracion. Una sola
+        # capa basta y evita consumir/recrear dos veces el mismo body.
+        state_key = "catalog_reasoning_capabilities_middleware"
+        if getattr(app.state, state_key, False):
+            return
+        setattr(app.state, state_key, True)
+
+        @app.middleware("http")
+        async def _preserve_catalog_reasoning_capabilities(request, call_next):
+            response = await call_next(request)
+            if (
+                request.url.path not in MODEL_INFO_PATHS
+                or response.status_code != 200
+                or "application/json" not in response.headers.get("content-type", "")
+            ):
+                return response
+            try:
+                body = b"".join([chunk async for chunk in response.body_iterator])
+                payload = json.loads(body)
+                _merge_catalog_reasoning_capabilities(
+                    payload, getattr(llm_router, "model_list", None)
+                )
+                encoded = json.dumps(payload, separators=(",", ":")).encode()
+                headers = dict(response.headers)
+                headers.pop("content-length", None)
+                return Response(
+                    content=encoded,
+                    status_code=response.status_code,
+                    headers=headers,
+                    background=response.background,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # No convertir una respuesta valida en un 500 por metadatos. Si
+                # alguna version futura cambia el response, devolvemos el body
+                # original y dejamos evidencia clara en el log.
+                log.warning("no se pudo completar /model/info: %s", exc)
+                return Response(
+                    content=locals().get("body", b""),
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                    background=response.background,
+                )
+
+
+    try:
+        _register_model_info_capabilities_middleware()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo preservar el catalogo de /model/info: %s", exc)
 
 
     def _track_end(request_id):
@@ -3735,7 +3840,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c56a42458139
+        config.k8s.e-dani.com/revision: config-c0d122efbb99
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

@@ -4,6 +4,8 @@ Cada ID publico se compone como ``cuenta/slug``. El prefijo selecciona de forma
 inequivoca el bridge, mientras OpenAI recibe siempre el slug real sin prefijo.
 """
 
+import ast
+import types
 from pathlib import Path
 
 import yaml
@@ -141,6 +143,68 @@ def test_gpt_56_models_publish_their_real_reasoning_efforts():
             assert info["supports_xhigh_reasoning_effort"] is True
             assert info["supports_max_reasoning_effort"] is True
             assert info["supported_reasoning_efforts"] == efforts
+
+
+def _reasoning_merge_functions():
+    documents = _documents(MANIFEST)
+    config_map = _resource(documents, "ConfigMap", "litellm-config")
+    tree = ast.parse(config_map["data"]["litellm_strip_params.py"])
+    wanted = {
+        "_reasoning_effort_capabilities",
+        "_merge_catalog_reasoning_capabilities",
+    }
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    assert {function.name for function in functions} == wanted
+    module = types.ModuleType("model_info_reasoning_contract")
+    exec(
+        compile(ast.Module(body=functions, type_ignores=[]), "<hook>", "exec"),
+        module.__dict__,
+    )
+    return module._merge_catalog_reasoning_capabilities
+
+
+def test_model_info_preserves_catalog_reasoning_capabilities_generically():
+    merge = _reasoning_merge_functions()
+    response = {
+        "data": [{
+            "model_name": "future/model",
+            "model_info": {
+                "supports_xhigh_reasoning_effort": False,
+                "max_input_tokens": 123,
+            },
+        }]
+    }
+    catalog = [{
+        "model_name": "future/model",
+        "model_info": {
+            "supported_reasoning_efforts": ["low", "ultra"],
+            "supports_xhigh_reasoning_effort": True,
+            "supports_ultra_reasoning_effort": True,
+            "max_input_tokens": 999,
+        },
+    }]
+
+    assert merge(response, catalog) is response
+    info = response["data"][0]["model_info"]
+    assert info["supported_reasoning_efforts"] == ["low", "ultra"]
+    assert info["supports_xhigh_reasoning_effort"] is True
+    assert info["supports_ultra_reasoning_effort"] is True
+    assert info["max_input_tokens"] == 123
+
+
+def test_model_info_capability_merge_does_not_guess_from_model_names():
+    merge = _reasoning_merge_functions()
+    response = {"data": [{"model_name": "gpt-999-ultra", "model_info": {}}]}
+    merge(response, [{"model_name": "gpt-999-ultra", "model_info": {}}])
+    assert response["data"][0]["model_info"] == {}
+
+    hook = _resource(_documents(MANIFEST), "ConfigMap", "litellm-config")["data"][
+        "litellm_strip_params.py"
+    ]
+    assert 'MODEL_INFO_PATHS = frozenset({"/model/info", "/v1/model/info"})' in hook
 
 
 def test_cloudblue_bridge_allows_its_complete_catalog():

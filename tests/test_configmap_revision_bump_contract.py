@@ -40,9 +40,9 @@ MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 # ConfigMap cuyo contenido gobierna un Deployment que NO lo relee en caliente.
 VIGILADOS = {
-    "litellm-dgx-backend-sync": "litellm-dgx-backend-sync",
+    "litellm-dgx-backend-sync": ("litellm-dgx-backend-sync", "sync-"),
+    "litellm-config": ("litellm", "config-"),
 }
-PREFIJO = "sync-"
 
 
 def _docs():
@@ -70,8 +70,8 @@ def _anotacion(deployment: str) -> str | None:
 
 
 def test_la_anotacion_lleva_el_hash_del_configmap_que_monta():
-    for cm, deployment in VIGILADOS.items():
-        esperado = PREFIJO + _hash_configmap(cm)
+    for cm, (deployment, prefijo) in VIGILADOS.items():
+        esperado = prefijo + _hash_configmap(cm)
         actual = _anotacion(deployment)
         assert actual == esperado, (
             f"{deployment}: la anotacion dice {actual!r} y el contenido de {cm} "
@@ -106,8 +106,8 @@ def test_el_sync_sigue_sin_recargar_en_caliente():
 
 def _fix() -> int:
     texto = MANIFEST.read_text()
-    for cm, deployment in VIGILADOS.items():
-        esperado = PREFIJO + _hash_configmap(cm)
+    for cm, (deployment, prefijo) in VIGILADOS.items():
+        esperado = prefijo + _hash_configmap(cm)
         actual = _anotacion(deployment)
         if actual == esperado:
             print(f"  {deployment}: ya esta en {esperado}")
