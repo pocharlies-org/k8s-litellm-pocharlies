@@ -2026,7 +2026,11 @@ data:
                         _rl, _mvar, id(data), id(_meta), _slm,
                     )
                 else:
-                    log.warning("REFUSAL-STAMP saltado: _rl=None api_base=%s", api_base)
+                    log.warning(
+                        "REFUSAL-STAMP saltado: _rl=None model=%r api_base=%r "
+                        "data.model=%r proxy_model=%r",
+                        model, api_base, data.get("model"), proxy_model,
+                    )
             except Exception as e:
                 log.warning("refusal stamp error: %s", e)
             try:
