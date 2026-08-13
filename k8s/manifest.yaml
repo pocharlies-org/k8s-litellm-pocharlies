@@ -3690,9 +3690,27 @@ spec:
       labels:
         app: litellm-dgx-backend-sync
       annotations:
-        # Bumped 2026-08-11: sync.py now publishes DeepSeek's deployed 384K
-        # context. The ConfigMap alone does not restart this pod.
-        config.k8s.e-dani.com/revision: deepseek-384k-context-v2-20260811
+        # HASH del contenido del ConfigMap sync.py, no una etiqueta a mano.
+        #
+        # Este pod NO relee su ConfigMap en caliente: main() es un `while True` +
+        # sleep, sin importlib.reload ni watcher, asi que Python importa el
+        # modulo al arrancar y ya no vuelve a mirarlo. Kubelet SI refresca el
+        # fichero montado, con lo que el disco queda bien y el proceso mal, sin
+        # un solo error en ningun log.
+        #
+        # Paso el 2026-08-13 con 7f8634f (retirada de los alias qwen36-35b*):
+        # ArgoCD `Synced / Healthy`, fichero refrescado a las 11:08 — y los cinco
+        # alias siguieron registrados DOCE HORAS, hasta un restart a mano.
+        # `Synced` dice que el manifiesto coincide con git, no que el proceso
+        # ejecute ese codigo.
+        #
+        # Antes esto era una etiqueta descriptiva que habia que acordarse de
+        # bumpear. Ahora es el sha256 del `data` del ConfigMap: cualquier edicion
+        # del sync cambia el hash, cambia la plantilla del pod y ArgoCD dispara
+        # el rollout solo. Lo vigila
+        # tests/test_configmap_revision_bump_contract.py, y se recalcula con
+        #     python3 tests/test_configmap_revision_bump_contract.py --fix
+        config.k8s.e-dani.com/revision: sync-2e0e6f99aaf0
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
