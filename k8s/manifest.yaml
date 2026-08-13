@@ -598,6 +598,15 @@ data:
         "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/admin/refusal_lambda",
     )
     REFUSAL_TTL_S = float(os.environ.get("LITELLM_REFUSAL_TTL_S", "5"))
+    # 8 s, no 1.5. Este endpoint NO es como /health (0,11 s): consulta a los DOS
+    # ranks TP y se pone a la cola detras del trabajo del motor, asi que con trafico
+    # real tarda 3,7-7,0 s (medido 13-08-2026 con 2 peticiones corriendo y 2
+    # esperando). Con 1.5 s NUNCA respondia a tiempo y el sellado quedaba
+    # permanentemente a None sin que nada lo delatara — justo el modo de fallo
+    # silencioso que se intentaba evitar. El coste esta acotado por el TTL: como
+    # mucho una espera por ventana de 5 s, y en el camino de la peticion es `await`,
+    # asi que no bloquea a nadie mas.
+    REFUSAL_TIMEOUT_S = float(os.environ.get("LITELLM_REFUSAL_TIMEOUT_S", "8"))
     # `reason` explica POR QUE no hay valor. Sin el, una peticion sin sellar y un
     # head caido son indistinguibles desde fuera, que es justo la duda que aparece
     # cuando en el panel falta la insignia de lambda.
@@ -612,37 +621,64 @@ data:
             if now - _refusal_cache["ts"] < REFUSAL_TTL_S:
                 return _refusal_cache["value"]
             _refusal_cache["ts"] = now
-        value = None
-        reason = None
         try:
-            # Timeout agresivo a proposito: esto corre en el camino de la peticion.
-            # Si el head no contesta rapido, mejor no sellar que retrasar a nadie.
-            # httpx y no urllib: ya esta importado en este modulo y es el cliente
-            # que usa el resto del hook.
-            body = httpx.get(REFUSAL_ADMIN_URL, timeout=1.5).json()
-            v = body.get("lambda")
-            # consistent:false = los ranks TP no coinciden. Sellar un numero ahi
-            # seria mentir sobre como se sirvio: se deja sin sellar.
-            if body.get("consistent") is False:
-                reason = "tp_inconsistent"
-            elif v is None:
-                reason = "no_lambda_field"
-            else:
-                value = float(v)
+            # httpx y no urllib: ya esta importado y es el cliente que usa el resto
+            # del hook. Version SINCRONA: solo para la ruta de diagnostico
+            # /admin/refusal-state, que corre en el threadpool de FastAPI. El camino
+            # de la peticion usa _refusal_lambda_now_async.
+            body = httpx.get(REFUSAL_ADMIN_URL, timeout=REFUSAL_TIMEOUT_S).json()
+            return _apply_refusal_cache(*_parse_refusal_body(body))
         except Exception as exc:  # noqa: BLE001
-            value = None
-            reason = "head_unreachable: {}".format(type(exc).__name__)
+            return _apply_refusal_cache(
+                None, "head_unreachable: {}".format(type(exc).__name__)
+            )
+
+
+    def _apply_refusal_cache(value, reason):
         with _refusal_lock:
             _refusal_cache["value"] = value
             _refusal_cache["reason"] = reason
         return value
 
 
-    def _refusal_lambda_for(api_base):
-        """Solo se sella lo que sirve DeepSeek-V4; el resto no lleva proyeccion."""
+    def _parse_refusal_body(body):
+        """(value, reason) a partir del cuerpo del endpoint admin. No lanza."""
+        v = body.get("lambda")
+        # consistent:false = los ranks TP no coinciden. Sellar un numero ahi seria
+        # mentir sobre como se sirvio: se deja sin sellar.
+        if body.get("consistent") is False:
+            return None, "tp_inconsistent"
+        if v is None:
+            return None, "no_lambda_field"
+        return float(v), None
+
+
+    async def _refusal_lambda_now_async():
+        """Igual que _refusal_lambda_now pero SIN bloquear el event loop.
+
+        Esto lo llama async_pre_call_hook, que es `async def`: un httpx.get sincrono
+        ahi congela el proxy ENTERO durante lo que tarde la respuesta — y este
+        endpoint tarda segundos bajo carga. Mismo patron que _compute_mode_state.
+        """
+        now = time.time()
+        with _refusal_lock:
+            if now - _refusal_cache["ts"] < REFUSAL_TTL_S:
+                return _refusal_cache["value"]
+            _refusal_cache["ts"] = now
+        try:
+            async with httpx.AsyncClient(timeout=REFUSAL_TIMEOUT_S) as client:
+                body = (await client.get(REFUSAL_ADMIN_URL)).json()
+            return _apply_refusal_cache(*_parse_refusal_body(body))
+        except Exception as exc:  # noqa: BLE001
+            return _apply_refusal_cache(
+                None, "head_unreachable: {}".format(type(exc).__name__)
+            )
+
+
+    async def _refusal_lambda_for_async(api_base):
         if "deepseek-v4-flash" not in str(api_base or "").lower():
             return None
-        return _refusal_lambda_now()
+        return await _refusal_lambda_now_async()
 
 
     # ── Exponer ese mismo lambda por el propio proxy ─────────────────────────────
@@ -1942,7 +1978,7 @@ data:
                     # la via oficial para claves propias (la doc la marca "enterprise",
                     # pero en este build el camino no tiene ningun gate de premium_user
                     # — verificado con premium_user=False y un sello real en SQL).
-                    _rl = _refusal_lambda_for(api_base)
+                    _rl = await _refusal_lambda_for_async(api_base)
                     if _rl is not None:
                         _slm = model_call_details["metadata"].get("spend_logs_metadata")
                         if not isinstance(_slm, dict):
@@ -1966,7 +2002,7 @@ data:
                     model=model,
                     call_type=call_type,
                     api_base=api_base,
-                    refusal_lambda=_refusal_lambda_for(api_base),
+                    refusal_lambda=await _refusal_lambda_for_async(api_base),
                 )
             except Exception as e:
                 log.debug("track_start error: %s", e)
