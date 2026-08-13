@@ -1,8 +1,7 @@
-"""Contrato de las dos cuentas ChatGPT/Codex publicadas por LiteLLM.
+"""Contrato del catalogo ChatGPT/Codex publicado por cuenta en LiteLLM.
 
-Cada cuenta debe ofrecer el mismo catalogo manual: Sol, Terra, Luna y Codex
-Spark. La cuenta se selecciona exclusivamente por el Service del bridge; el
-slug que recibe OpenAI permanece sin sufijos locales.
+Cada ID publico se compone como ``cuenta/slug``. El prefijo selecciona de forma
+inequivoca el bridge, mientras OpenAI recibe siempre el slug real sin prefijo.
 """
 
 from pathlib import Path
@@ -14,11 +13,21 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "k8s" / "manifest.yaml"
 BRIDGES = ROOT / "k8s" / "codex-bridge.yaml"
 
-UPSTREAM_MODELS = {
+COMMON_MODELS = {
     "gpt-5.6-sol",
+    "gpt-5.6-sol-wm",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.3-codex-spark",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "codex-auto-review",
+}
+
+ACCOUNT_MODELS = {
+    "cloudblue": COMMON_MODELS,
+    "e-dani": COMMON_MODELS | {"gpt-daybreak-blue-latest"},
 }
 
 
@@ -37,27 +46,22 @@ def _resource(documents, kind, name):
     return matches[0]
 
 
-def test_both_accounts_publish_sol_terra_luna_and_codex_spark():
+def test_accounts_publish_the_live_catalog_with_account_prefixed_ids():
     documents = _documents(MANIFEST)
     config_map = _resource(documents, "ConfigMap", "litellm-config")
     config = yaml.safe_load(config_map["data"]["config.yaml"])
     models = {model["model_name"]: model for model in config["model_list"]}
 
+    services = {
+        "cloudblue": "http://codex-bridge.litellm.svc.cluster.local:8080/v1",
+        "e-dani": "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1",
+    }
     expected = {
-        "cloudblue": {
-            model: (
-                model,
-                "http://codex-bridge.litellm.svc.cluster.local:8080/v1",
-            )
-            for model in UPSTREAM_MODELS
-        },
-        "edani": {
-            f"{model}-edani": (
-                model,
-                "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1",
-            )
-            for model in UPSTREAM_MODELS
-        },
+        account: {
+            f"{account}/{model}": (model, services[account])
+            for model in account_models
+        }
+        for account, account_models in ACCOUNT_MODELS.items()
     }
 
     for account in expected.values():
@@ -66,6 +70,13 @@ def test_both_accounts_publish_sol_terra_luna_and_codex_spark():
             params = models[alias]["litellm_params"]
             assert params["model"] == f"openai/{upstream}"
             assert params["api_base"] == api_base
+
+    public_names = {
+        name for name in models
+        if name.startswith("cloudblue/") or name.startswith("e-dani/")
+    }
+    assert public_names == set().union(*[set(account) for account in expected.values()])
+    assert not any(name.endswith("-edani") for name in models)
 
 
 def test_personal_bridge_is_enabled_with_its_own_secret():
@@ -80,4 +91,16 @@ def test_personal_bridge_is_enabled_with_its_own_secret():
     bridge = next(container for container in pod_spec["containers"] if container["name"] == "bridge")
     env = {entry["name"]: entry.get("value") for entry in bridge["env"]}
     assert env["SECRET_NAME"] == "codex-bridge-edani-auth"
-    assert set(env["ALLOWED_MODELS"].split(",")) >= UPSTREAM_MODELS
+    assert set(env["ALLOWED_MODELS"].split(",")) >= ACCOUNT_MODELS["e-dani"]
+
+
+def test_cloudblue_bridge_allows_its_complete_catalog():
+    documents = _documents(BRIDGES)
+    deployment = _resource(documents, "Deployment", "codex-bridge")
+    bridge = next(
+        container
+        for container in deployment["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "bridge"
+    )
+    env = {entry["name"]: entry.get("value") for entry in bridge["env"]}
+    assert set(env["ALLOWED_MODELS"].split(",")) >= ACCOUNT_MODELS["cloudblue"]

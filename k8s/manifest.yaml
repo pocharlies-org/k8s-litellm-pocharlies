@@ -103,149 +103,70 @@ data:
         api_key: not-used
       model_info:
         mode: audio_speech
-    # ── ChatGPT Pro (suscripción, no API key) vía codex-bridge ──
-    # El único modelo del gateway que NO corre en el DGX: sale a chatgpt.com con
-    # las credenciales OAuth del Codex del usuario. Por eso es estático y no lo
-    # gestiona litellm-dgx-backend-sync — no hay Service que vigilar.
-    # OJO con la cuota: comparte límites con el Codex interactivo del usuario y
-    # OpenAI estrangula por cliente. Para chat manual, no para cargas masivas.
-    # `supports_vision` NO es decorativo: mientras el residente sea DeepSeek (solo
-    # texto) estos son los únicos modelos del gateway que VEN, y el hook desvía
-    # aquí las peticiones con imagen (VISION_FALLBACK_MODEL). Verificado contra el
-    # upstream real el 2026-08-11 — el puente traduce las partes de imagen.
-    - model_name: gpt-5.6-sol
-      litellm_params:
-        model: openai/gpt-5.6-sol
-        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-    - model_name: gpt-5.6-terra
-      litellm_params:
-        model: openai/gpt-5.6-terra
-        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-    - model_name: gpt-5.6-luna
-      litellm_params:
-        model: openai/gpt-5.6-luna
-        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-    # `gpt-5.3-codex-spark` (2026-08-12). El slug es ESE, con `-spark`: el
-    # `gpt-5.3-codex` a secas no está en el catálogo de la cuenta y por eso daba
-    # 400. Declara `supported_in_api: false` y aun así responde 200 por
-    # /codex/responses (probado) — ese flag es la vía API key, no la de
-    # suscripción. Es SOLO TEXTO y su ventana son 128k, no 272k: por eso
-    # supports_vision false y max_input_tokens explícito (litellm no conoce este
-    # modelo, así que si no se declara sale null).
-    #
-    # NO puede ser destino del desvío de visión ni eslabón de ningún fallback:
-    # un modelo ciego como VISION_FALLBACK_MODEL contesta a ciegas, que es peor
-    # que fallar.
-    - model_name: gpt-5.3-codex-spark
-      litellm_params:
-        model: openai/gpt-5.3-codex-spark
-        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: false
-        max_input_tokens: 128000
-    # `gpt-5.5` y `gpt-5.4-mini` (2026-08-13). Los sirve la misma cuenta y SÍ ven
-    # (text+image, 272k, según el catálogo). Van aquí por pedirlos el usuario,
-    # no porque haga falta: siguen fuera de toda cadena automática, igual que el
-    # resto de esta sección.
-    - model_name: gpt-5.5
-      litellm_params:
-        model: openai/gpt-5.5
-        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-        max_input_tokens: 272000
-    - model_name: gpt-5.4-mini
-      litellm_params:
-        model: openai/gpt-5.4-mini
-        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-        max_input_tokens: 272000
-    # ── Segunda cuenta ChatGPT: me@e-dani.com, por codex-bridge-edani ──────────
-    #
-    # Los cuatro alias de arriba salen por la cuenta daniel.ibanez@cloudblue.com;
-    # estos cuatro, por la personal. QUIEN DISTINGUE LA CUENTA ES EL `api_base`.
-    #
-    # `litellm_params.model` lleva el slug DESNUDO, sin el sufijo `-edani`, y es
-    # obligatorio: el puente manda al UPSTREAM_MODEL todo lo que no esté en su
-    # ALLOWED_MODELS, así que `openai/gpt-5.6-sol-edani` contestaría con sol
-    # devolviendo 200. La sustitución no se ve en el campo `model` de la
-    # respuesta (LiteLLM lo normaliza al alias pedido): se ve en el log del
-    # puente, línea "modelo no soportado por la cuenta".
-    #
-    # CUOTA: esta es la MISMA que el Codex interactivo del usuario. Son opt-in
-    # por nombre a propósito — no están en router_settings.fallbacks, ni en
-    # CAPABILITY_CHAINS, ni son VISION_FALLBACK_MODEL. Lo automático (Aurora, el
-    # desvío de visión, el último eslabón de `agent`) sigue en cloudblue.
-    - model_name: gpt-5.6-sol-edani
-      litellm_params:
-        model: openai/gpt-5.6-sol
-        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-    - model_name: gpt-5.6-terra-edani
-      litellm_params:
-        model: openai/gpt-5.6-terra
-        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-    - model_name: gpt-5.6-luna-edani
-      litellm_params:
-        model: openai/gpt-5.6-luna
-        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-    - model_name: gpt-5.3-codex-spark-edani
-      litellm_params:
-        model: openai/gpt-5.3-codex-spark
-        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: false
-        max_input_tokens: 128000
-    - model_name: gpt-5.5-edani
-      litellm_params:
-        model: openai/gpt-5.5
-        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-        max_input_tokens: 272000
-    - model_name: gpt-5.4-mini-edani
-      litellm_params:
-        model: openai/gpt-5.4-mini
-        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
-        api_key: not-used
-      model_info:
-        mode: chat
-        supports_vision: true
-        max_input_tokens: 272000
+    # ── Catálogo ChatGPT/Codex por cuenta ────────────────────────────────────
+    # El ID público une cuenta y slug real: `cloudblue/<slug>` o
+    # `e-dani/<slug>`. Así ambos catálogos pueden contener el mismo modelo sin
+    # colisionar. OpenAI recibe únicamente el slug real de `litellm_params.model`.
+    # Catálogo vivo consultado por cuenta el 2026-08-13: 9 + 10 = 19 entradas.
+    # Los modelos `visibility=hide` también se publican porque este catálogo es
+    # completo; Codex decide su presentación mediante el catálogo sincronizado.
+    - model_name: cloudblue/gpt-5.6-sol
+      litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.6-sol-wm
+      litellm_params: { model: openai/gpt-5.6-sol-wm, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.6-terra
+      litellm_params: { model: openai/gpt-5.6-terra, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.6-luna
+      litellm_params: { model: openai/gpt-5.6-luna, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.5
+      litellm_params: { model: openai/gpt-5.5, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.4
+      litellm_params: { model: openai/gpt-5.4, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.4-mini
+      litellm_params: { model: openai/gpt-5.4-mini, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: cloudblue/gpt-5.3-codex-spark
+      litellm_params: { model: openai/gpt-5.3-codex-spark, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: false, max_input_tokens: 128000 }
+    - model_name: cloudblue/codex-auto-review
+      litellm_params: { model: openai/codex-auto-review, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-5.6-sol
+      litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-5.6-sol-wm
+      litellm_params: { model: openai/gpt-5.6-sol-wm, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-5.6-terra
+      litellm_params: { model: openai/gpt-5.6-terra, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-5.6-luna
+      litellm_params: { model: openai/gpt-5.6-luna, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-daybreak-blue-latest
+      litellm_params: { model: openai/gpt-daybreak-blue-latest, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-5.5
+      litellm_params: { model: openai/gpt-5.5, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-5.4
+      litellm_params: { model: openai/gpt-5.4, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-5.4-mini
+      litellm_params: { model: openai/gpt-5.4-mini, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: e-dani/gpt-5.3-codex-spark
+      litellm_params: { model: openai/gpt-5.3-codex-spark, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: false, max_input_tokens: 128000 }
+    - model_name: e-dani/codex-auto-review
+      litellm_params: { model: openai/codex-auto-review, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -342,12 +263,13 @@ data:
       # residente. Su red debe terminar en una deployment real y estatica, nunca en
       # `dense`: cuando DeepSeek TP=2 ocupa ambos Sparks no puede existir ningun
       # residente dense y ese fallback fue el que convirtio un fallo de streaming
-      # del router en HTTP 500. gpt-5.6-luna no tiene fallback propio, asi que el
+      # del router en HTTP 500. cloudblue/gpt-5.6-luna no tiene fallback propio,
+      # asi que el
       # grafo sigue siendo un DAG.
-      - tooling: ["gpt-5.6-luna"]
-      - agent: ["gpt-5.6-luna"]
-      - high: ["gpt-5.6-luna"]
-      - max: ["gpt-5.6-luna"]
+      - tooling: ["cloudblue/gpt-5.6-luna"]
+      - agent: ["cloudblue/gpt-5.6-luna"]
+      - high: ["cloudblue/gpt-5.6-luna"]
+      - max: ["cloudblue/gpt-5.6-luna"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -935,10 +857,10 @@ data:
     # The names deliberately match THINKING_TIERS so the selected alias can be fed
     # to _apply_thinking_tier after the request model has been rewritten.
     ROUTE = {
-        "OFF": {"model": "tooling", "fallbacks": ("gpt-5.6-luna",)},
-        "LOW": {"model": "agent", "fallbacks": ("gpt-5.6-luna",)},
-        "HIGH": {"model": "high", "fallbacks": ("gpt-5.6-luna",)},
-        "MAX": {"model": "max", "fallbacks": ("gpt-5.6-luna",)},
+        "OFF": {"model": "tooling", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        "LOW": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        "HIGH": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        "MAX": {"model": "max", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
     }
 
     # Deterministic hints for the automatic depth selector. The classifier remains
@@ -1003,7 +925,7 @@ data:
     # cero.
     #
     # QUE HACE ESTO. Los cuatro perfiles conservan su alias como cabeza y usan
-    # gpt-5.6-luna solo como red independiente. Cubre el modo
+    # cloudblue/gpt-5.6-luna solo como red independiente. Cubre el modo
     # "alias DESREGISTRADO" (el sync llama a /model/delete cuando el Service se cae),
     # que el proxy rechaza en route_llm_request ANTES de que corra el Router, asi que
     # `router_settings.fallbacks` no puede salvarlo. El otro modo -- "registrado pero
@@ -1019,13 +941,14 @@ data:
     # sale como 400 en vez de degradar. La cabeza es el propio alias para que el
     # selector automatico pueda conservar el nivel elegido.
     CAPABILITY_CHAINS = {
-        # gpt-5.6-luna es estatico via codex-bridge y no comparte el despliegue
+        # cloudblue/gpt-5.6-luna es estatico via codex-bridge y no comparte el
+        # despliegue
         # local. Cubre tanto alias desregistrado (esta cadena) como deployment
         # registrado pero no sano (router_settings.fallbacks).
-        "tooling": {"model": "tooling", "fallbacks": ("gpt-5.6-luna",)},
-        "agent": {"model": "agent", "fallbacks": ("gpt-5.6-luna",)},
-        "high": {"model": "high", "fallbacks": ("gpt-5.6-luna",)},
-        "max": {"model": "max", "fallbacks": ("gpt-5.6-luna",)},
+        "tooling": {"model": "tooling", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        "agent": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        "high": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        "max": {"model": "max", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
     }
     # ── Desvio de VISION (2026-08-11) ───────────────────────────────────────────
     #
@@ -1044,7 +967,9 @@ data:
     # y desde el 2026-08-11 TODO lo que lleve imagen sale por aqui salvo que el
     # backend que iba a servir declare que ve (decision del owner). Se apaga entero
     # con LITELLM_VISION_FALLBACK_MODEL="".
-    VISION_FALLBACK_MODEL = os.environ.get("LITELLM_VISION_FALLBACK_MODEL", "gpt-5.6-luna")
+    VISION_FALLBACK_MODEL = os.environ.get(
+        "LITELLM_VISION_FALLBACK_MODEL", "cloudblue/gpt-5.6-luna"
+    )
     # Nombres de CAPACIDAD, los unicos que se desvian. Un nombre de MODELO
     # (`deepseek-v4-flash-0731`, `dense`, `ornith-1.0`...) NO se desvia jamas, por
     # la misma razon por la que no degrada: quien lo nombra sabe a que habla, y las
@@ -3085,7 +3010,7 @@ data:
             # de prueba correctamente, 257 tokens de imagen, y el servidor arranca
             # con limit_mm_per_prompt {'image': 8}.
             # Con False aqui, _vision_target desviaba TODA peticion con imagen a
-            # gpt-5.6-luna (cuota de ChatGPT del usuario) y OpenClaw contestaba
+            # cloudblue/gpt-5.6-luna (cuota ChatGPT separada) y OpenClaw contestaba
             # "este modelo no admite entrada de imagenes" sin llegar a preguntar.
             # Este flag es la unica pieza que faltaba: el modelo ya veia.
             "supports_vision": True,
@@ -3652,7 +3577,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-dae0e19232d5
+        config.k8s.e-dani.com/revision: sync-8ee6732f8f4c
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -3689,21 +3614,21 @@ spec:
             # es aditivo, asi que esto solo ensancha.
             #
             # 2026-08-13: +dense, +dense-reasoning, +tooling, +deepseek-v4-flash-0731
-            # y los 12 alias del codex-bridge (peticion del owner: OpenClaw tiene que
+            # y los 19 IDs por cuenta del codex-bridge (peticion del owner:
+            # OpenClaw tiene que
             # poder con gpt-5.*, DeepSeek V4 y dense). Dos avisos:
             #
             #   - Esto abre PERMISO, no uso: el modelo que corre cada agente sigue
             #     declarado en values.yaml del chart de OpenClaw.
-            #   - Los seis `*-edani` salen por la cuenta personal del usuario, o sea
-            #     la MISMA cuota que su Codex interactivo. Que OpenClaw pueda
-            #     nombrarlos no significa que deba: para carga automatica, los seis
-            #     sin sufijo (cuenta cloudblue).
+            #   - Los diez `e-dani/*` salen por la cuenta personal del usuario, o sea
+            #     la MISMA cuota que su Codex interactivo. Para carga automatica se
+            #     usan de forma explicita los nueve `cloudblue/*`.
             #
             # Esto solo toca el EQUIPO `openclaw` y la key OPENCLAW_KEY_ALIAS. NO
             # tocar desde aqui `openclaw-codex-app-server` ni
             # `openclaw-operator-readonly`: sus bootstraps comparan igualdad EXACTA
             # de la lista de modelos y ensancharlas rompe el sync.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4-mini,gpt-5.6-sol-edani,gpt-5.6-terra-edani,gpt-5.6-luna-edani,gpt-5.3-codex-spark-edani,gpt-5.5-edani,gpt-5.4-mini-edani" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-sol-wm,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-sol-wm,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-daybreak-blue-latest,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY

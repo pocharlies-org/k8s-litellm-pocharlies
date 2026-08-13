@@ -51,11 +51,11 @@
 #   codex-bridge         -> daniel.ibanez@cloudblue.com  (Secret codex-bridge-auth)
 #   codex-bridge-edani   -> me@e-dani.com                (Secret codex-bridge-edani-auth)
 #
-# QUIÉN DISTINGUE LA CUENTA ES EL `api_base`, NO EL NOMBRE DEL MODELO. En
-# manifest.yaml los alias `*-edani` apuntan a este Service pero su
+# QUIÉN DISTINGUE LA CUENTA ES EL `api_base`. En manifest.yaml los IDs publicos
+# tienen forma `cloudblue/gpt-5.6-sol` o `e-dani/gpt-5.6-sol`, mientras que
 # `litellm_params.model` lleva el slug DESNUDO (`openai/gpt-5.6-sol`). Es
 # obligatorio: `resolve_model()` manda al UPSTREAM_MODEL todo lo que no esté en
-# ALLOWED_MODELS, así que un `openai/gpt-5.6-sol-edani` contestaría con sol
+# ALLOWED_MODELS, así que enviar el prefijo local aguas arriba contestaría con sol
 # SIN ERROR NINGUNO. Si dudas de si hubo sustitución, el testigo es el log
 # ("modelo no soportado por la cuenta"), no el campo `model` de la respuesta:
 # LiteLLM ese lo normaliza al alias que pidió el cliente.
@@ -1033,7 +1033,7 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: AUTH_FILE, value: /auth/auth.json }
-            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4-mini" }
+            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-sol-wm,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4,gpt-5.4-mini,codex-auto-review" }
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-auth }
             - name: POD_NAMESPACE
@@ -1203,7 +1203,7 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: AUTH_FILE, value: /auth/auth.json }
-            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4-mini" }
+            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-sol-wm,gpt-5.6-terra,gpt-5.6-luna,gpt-daybreak-blue-latest,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4,gpt-5.4-mini,codex-auto-review" }
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-edani-auth }
             - name: POD_NAMESPACE
