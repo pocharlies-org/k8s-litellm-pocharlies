@@ -92,14 +92,14 @@ data:
     - model_name: omnivoice-tts
       litellm_params:
         model: openai/omnivoice
-        api_base: http://omnivoice-tts-dgx2-static.llm.svc.cluster.local:8000/v1
+        api_base: http://omnivoice-tts.llm.svc.cluster.local:8000/v1
         api_key: not-used
       model_info:
         mode: audio_speech
     - model_name: tts-1               # OpenAI-SDK-compatible alias -> same OmniVoice backend
       litellm_params:
         model: openai/omnivoice
-        api_base: http://omnivoice-tts-dgx2-static.llm.svc.cluster.local:8000/v1
+        api_base: http://omnivoice-tts.llm.svc.cluster.local:8000/v1
         api_key: not-used
       model_info:
         mode: audio_speech
