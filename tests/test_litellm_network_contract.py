@@ -81,12 +81,19 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         Lo que este test protege sigue siendo lo mismo — runner fijo, acciones
         pineadas por SHA de 40 hex, deps con --require-hashes — solo cambia el
         alcance de lo que se ejecuta.
+
+        2026-08-13: el runner fijo pasa de ubuntu-24.04 a arc-k8s. Lo que se
+        protege aqui es que este PINEADO, no que sea de GitHub: arc-k8s es el
+        pool propio de la org, con nodeSelector kubernetes.io/arch=amd64, asi
+        que el guard de x86_64 de mas abajo sigue valiendo. No hay motivo de red
+        en esta eleccion — los contratos de este fichero se leen de los YAML del
+        repo, no salen a la red.
         """
         workflow = yaml.safe_load(WORKFLOW.read_text())
         job = workflow["jobs"]["litellm-contracts"]
         steps = job["steps"]
 
-        self.assertEqual(job["runs-on"], "ubuntu-24.04")
+        self.assertEqual(job["runs-on"], "arc-k8s")
         self.assertEqual(job["timeout-minutes"], 10)
         checkout = next(step for step in steps if step.get("uses") == CHECKOUT_ACTION)
         self.assertEqual(checkout["with"], {"persist-credentials": False})
