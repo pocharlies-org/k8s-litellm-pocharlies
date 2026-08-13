@@ -13,8 +13,10 @@
 # LÍMITES CONOCIDOS (verificados contra el endpoint real el 2026-08-05)
 #
 #   - La cuenta sirve varios modelos, no uno: `gpt-5.6-sol`, `gpt-5.6-terra`,
-#     `gpt-5.6-luna`, `gpt-5.3-codex-spark` y `gpt-5.5`. Los sufijos de la
-#     familia 5.6 son variantes reales, no adornos. En cambio `gpt-5.6` a secas
+#     `gpt-5.6-luna`, `gpt-5.3-codex-spark`, `gpt-5.5` y `gpt-5.4-mini`. Los
+#     sufijos de la familia 5.6 son variantes reales, no adornos. Y `gpt-5.5` /
+#     `gpt-5.4-mini` SÍ ven (text+image, 272k), a diferencia de spark. En cambio
+#     `gpt-5.6` a secas
 #     y los sufijos -codex, -pro y -high devuelven 400 "not supported when
 #     using Codex with a ChatGPT account", igual que gpt-5.2 y o3. El puente
 #     enruta por el modelo que pida el cliente si está en ALLOWED_MODELS.
@@ -148,7 +150,9 @@ data:
       - `stream: false` devuelve 400 "Stream must be set to true". SIEMPRE se pide
         streaming aguas arriba; el modo no-stream del cliente se sirve agregando.
       - La cuenta ChatGPT no sirve cualquier modelo. Responden `gpt-5.6-sol`,
-        `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.3-codex-spark` y `gpt-5.5`;
+        `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.3-codex-spark`, `gpt-5.5` y
+        `gpt-5.4-mini` (los dos ultimos probados contra la cuenta cloudblue el
+        2026-08-13, HTTP 200);
         devuelven 400 "not supported when using Codex with a ChatGPT account" el
         `gpt-5.6` a secas y los sufijos -codex, -pro y -high, además de gpt-5.2 y
         o3. Los sufijos de la familia 5.6 son variantes reales (sol/terra/luna),
@@ -184,7 +188,7 @@ data:
     CLIENT_ID = os.environ.get("CODEX_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
     ALLOWED_MODELS = [m.strip() for m in os.environ.get(
         "ALLOWED_MODELS",
-        "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5",
+        "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4-mini",
     ).split(",") if m.strip()]
     UPSTREAM_MODEL = os.environ.get("UPSTREAM_MODEL", ALLOWED_MODELS[0])
     BRIDGE_API_KEY = os.environ.get("BRIDGE_API_KEY", "")
@@ -1012,7 +1016,7 @@ spec:
       annotations:
         # El codigo del puente vive en un ConfigMap y se lee al arrancar: sin esto
         # un cambio en bridge.py se sincroniza y NO rota el pod.
-        config.k8s.e-dani.com/revision: responses-nostream-output-20260812
+        config.k8s.e-dani.com/revision: add-55-54mini-20260813
     spec:
       serviceAccountName: codex-bridge
       enableServiceLinks: false
@@ -1029,7 +1033,7 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: AUTH_FILE, value: /auth/auth.json }
-            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5" }
+            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4-mini" }
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-auth }
             - name: POD_NAMESPACE
@@ -1182,7 +1186,7 @@ spec:
       annotations:
         # Igual que el otro: el codigo se lee al arrancar, asi que un cambio en
         # bridge.py NO rota el pod sin tocar esto.
-        config.k8s.e-dani.com/revision: responses-nostream-output-20260812
+        config.k8s.e-dani.com/revision: add-55-54mini-20260813
     spec:
       serviceAccountName: codex-bridge-edani
       enableServiceLinks: false
@@ -1199,7 +1203,7 @@ spec:
           env:
             - { name: PORT, value: "8080" }
             - { name: AUTH_FILE, value: /auth/auth.json }
-            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5" }
+            - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4-mini" }
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-edani-auth }
             - name: POD_NAMESPACE

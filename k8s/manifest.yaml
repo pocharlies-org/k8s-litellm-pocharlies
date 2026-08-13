@@ -157,6 +157,28 @@ data:
         mode: chat
         supports_vision: false
         max_input_tokens: 128000
+    # `gpt-5.5` y `gpt-5.4-mini` (2026-08-13). Los sirve la misma cuenta y SÍ ven
+    # (text+image, 272k, según el catálogo). Van aquí por pedirlos el usuario,
+    # no porque haga falta: siguen fuera de toda cadena automática, igual que el
+    # resto de esta sección.
+    - model_name: gpt-5.5
+      litellm_params:
+        model: openai/gpt-5.5
+        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: true
+        max_input_tokens: 272000
+    - model_name: gpt-5.4-mini
+      litellm_params:
+        model: openai/gpt-5.4-mini
+        api_base: http://codex-bridge.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: true
+        max_input_tokens: 272000
     # ── Segunda cuenta ChatGPT: me@e-dani.com, por codex-bridge-edani ──────────
     #
     # Los cuatro alias de arriba salen por la cuenta daniel.ibanez@cloudblue.com;
@@ -206,6 +228,24 @@ data:
         mode: chat
         supports_vision: false
         max_input_tokens: 128000
+    - model_name: gpt-5.5-edani
+      litellm_params:
+        model: openai/gpt-5.5
+        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: true
+        max_input_tokens: 272000
+    - model_name: gpt-5.4-mini-edani
+      litellm_params:
+        model: openai/gpt-5.4-mini
+        api_base: http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1
+        api_key: not-used
+      model_info:
+        mode: chat
+        supports_vision: true
+        max_input_tokens: 272000
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -3578,7 +3618,7 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: sellar-lambda-por-peticion-20260812
+        config.k8s.e-dani.com/revision: add-55-54mini-20260813
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
