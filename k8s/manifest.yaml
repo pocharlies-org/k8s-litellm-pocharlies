@@ -1267,8 +1267,6 @@ data:
     SWAPPABLE_ALIASES = frozenset({
         "tooling", "router", "auto", "litellmrouter",
         "agent", "high", "max",
-        "qwen36-35b", "qwen36-35b-tooling", "qwen36-35b-reasoning",
-        "qwen36-35b-nvfp4", "qwen-36-35b",
         "dense", "dense-reasoning", "dense-uncensored", "taxonomy",
     })
 
@@ -2167,11 +2165,6 @@ data:
         "agent",
         "high",
         "max",
-        "qwen36-35b",
-        "qwen36-35b-tooling",
-        "qwen36-35b-reasoning",
-        "qwen36-35b-nvfp4",
-        "qwen-36-35b",
         "ornith",
         "ornith-1.0",
         "ornith-canary",
@@ -2922,14 +2915,19 @@ data:
         # Ornith keeps the alias servable even if the hook rewrite is ever
         # disabled.
         "litellmrouter",
-        "qwen36-35b",
-        # Contractual alias: explicit model+purpose name kept for clients that
-        # pinned the old Qwen3.6-35B tooling route. It now resolves to Ornith,
-        # which owns every name in this tuple.
-        "qwen36-35b-tooling",
-        "qwen36-35b-reasoning",
-        "qwen36-35b-nvfp4",
-        "qwen-36-35b",
+        # 2026-08-13: RETIRADOS los cinco alias de compatibilidad qwen36-35b*
+        # (qwen36-35b, -tooling, -reasoning, -nvfp4 y qwen-36-35b). Eran nombres
+        # heredados del residente Ornith 35B-A3B, retirado del cluster el
+        # 10-08-2026; desde entonces los servia DeepSeek V4, o sea el MISMO
+        # backend que `tooling`, con otro nombre.
+        # Consumidores migrados ANTES de retirarlos, todos a `tooling`:
+        #   - synapse: adapter-conversation, adapter-messaging, drafts.py y
+        #     spawner.py (ab1d8e1a). Produccion ya usaba litellm/tooling.
+        #   - skirmshop-brain-v2: MODEL_CHAIN de recaudit (ccbe80b).
+        #   - dgx-infra studio-bot: ya estaba en `tooling` en master.
+        # Las 65 menciones del ConfigMap skirmshop-wiki-content son HTML de
+        # documentacion historica, no configuracion: no se tocan.
+        # Si algun cliente sin identificar los pedia, la sustitucion es `tooling`.
     )
     # 2026-07-22 cutover (Daniel): the compatibility aliases are owned by the
     # DGX1 Ornith backend (gates passed: parser/tooling battery 370, speed
@@ -3185,6 +3183,18 @@ data:
         "dgx1-gemma4-26b-a4b-nvfp4-tooling",
         "dgx1-gemma4-26b-a4b-nvfp4-router",
         "dgx1-gemma4-26b-a4b-nvfp4-auto",
+        # 2026-08-13: los cinco alias de compatibilidad qwen36-35b* retirados de
+        # ORNITH_ALIASES. Van por ID y no por prefijo porque comparten el prefijo
+        # `ds4-flash-0731-tp2-` con los alias VIVOS de DeepSeek (tooling, router,
+        # max...): purgar por prefijo se los llevaria por delante.
+        # Sin esto, quitarlos de la tupla solo evita registros NUEVOS -- los ya
+        # existentes en la BD de LiteLLM sobreviven para siempre, porque el
+        # reconciler solo repara lo que declara.
+        "ds4-flash-0731-tp2-qwen36-35b",
+        "ds4-flash-0731-tp2-qwen36-35b-tooling",
+        "ds4-flash-0731-tp2-qwen36-35b-reasoning",
+        "ds4-flash-0731-tp2-qwen36-35b-nvfp4",
+        "ds4-flash-0731-tp2-qwen-36-35b",
     )
     RETIRED_MANAGED_ID_PREFIXES = (
         # Every deployment behind these prefixes was deleted on 2026-07-26, so the

@@ -7,6 +7,9 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 def test_ornith_is_one_readiness_gated_backend_owning_the_tooling_routes():
     """Ornith es el UNICO backend de DGX1 y dueño de tooling/router/auto y de los
     alias de compatibilidad qwen36-35b*, mas sus dos nombres de canary.
+    (2026-08-13: los cinco qwen36-35b* se RETIRARON de ORNITH_ALIASES tras
+    migrar a synapse, al brain y al studio-bot a `tooling`; este test no los
+    afirmaba, solo los mencionaba aqui.)
 
     NOTA: este test estaba ROJO antes del 2026-07-27 por dos asserts rancios --
     esperaba `"aliases": ORNITH_CANARY_ALIASES` (el backend usa ORNITH_ALIASES,
