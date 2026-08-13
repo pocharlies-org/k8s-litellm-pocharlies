@@ -3767,7 +3767,9 @@ spec:
     metadata:
       labels: { app: litellm }
       annotations:
-        config.k8s.e-dani.com/revision: add-55-54mini-20260813
+        # The smart-router hook lives in the mounted ConfigMap and is imported at
+        # process start, so every material hook change must roll this pod.
+        config.k8s.e-dani.com/revision: router-thinking-depth-20260813
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
