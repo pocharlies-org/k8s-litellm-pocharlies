@@ -480,6 +480,61 @@ data:
         return payload
 
 
+    # ── Cuota del plan, capturada AL VUELO ──────────────────────────────────
+    # chatgpt.com devuelve el consumo en cabeceras de CADA respuesta; no hay
+    # endpoint que preguntar. Se guardan aquí y se sirven en /quota, así que
+    # saber cuánto queda NO gasta cuota: la gastaría un sondeo, y sería del
+    # mismo contador que el Codex interactivo del usuario.
+    #
+    # El precio de ser pasivo es que el dato envejece si nadie usa la cuenta.
+    # Por eso se guarda `captured_at` y quien lo pinte dice la antigüedad, en
+    # vez de dar por fresco un porcentaje de hace horas.
+    _quota = {"captured_at": None}
+    _quota_lock = threading.Lock()
+
+    _QUOTA_HEADERS = {
+        "x-codex-plan-type": ("plan_type", str),
+        "x-codex-primary-used-percent": ("primary_used_percent", float),
+        "x-codex-primary-window-minutes": ("primary_window_minutes", int),
+        "x-codex-primary-reset-after-seconds": ("primary_reset_after_s", int),
+        "x-codex-primary-reset-at": ("primary_reset_at", int),
+        "x-codex-secondary-used-percent": ("secondary_used_percent", float),
+        "x-codex-secondary-window-minutes": ("secondary_window_minutes", int),
+        "x-codex-secondary-reset-after-seconds": ("secondary_reset_after_s", int),
+        "x-codex-secondary-reset-at": ("secondary_reset_at", int),
+        "x-codex-credits-unlimited": ("credits_unlimited", lambda v: str(v).lower() == "true"),
+        "x-codex-primary-over-secondary-limit-percent": ("primary_over_secondary_percent", float),
+    }
+
+
+    def capture_quota(headers):
+        """Extrae las cabeceras x-codex-* de una respuesta. Nunca lanza."""
+        if headers is None:
+            return
+        found = {}
+        for header, (key, cast) in _QUOTA_HEADERS.items():
+            raw = headers.get(header)
+            if raw is None or raw == "":
+                continue
+            try:
+                found[key] = cast(raw)
+            except (TypeError, ValueError):
+                continue
+        if not found:
+            return
+        found["captured_at"] = time.time()
+        try:
+            # El email vive en el auth.json, no en `_tokens`. Es lo que
+            # distingue una cuenta de la otra en el panel, así que si el
+            # fichero no se puede leer se queda a None y no se inventa.
+            found["account_email"] = read_auth_file().get("account_email")
+        except Exception:
+            found["account_email"] = None
+        with _quota_lock:
+            _quota.clear()
+            _quota.update(found)
+
+
     def open_upstream(payload):
         refresh_if_needed()
         req = urllib.request.Request(
@@ -493,7 +548,14 @@ data:
                 "Accept": "text/event-stream",
                 "session_id": str(uuid.uuid4()),
             })
-        return urllib.request.urlopen(req, timeout=600)
+        try:
+            resp = urllib.request.urlopen(req, timeout=600)
+        except urllib.error.HTTPError as exc:
+            # Un 429 trae la cuota igual que un 200 — y es justo cuando importa.
+            capture_quota(getattr(exc, "headers", None))
+            raise
+        capture_quota(resp.headers)
+        return resp
 
 
     def iter_events(stream):
@@ -578,6 +640,14 @@ data:
                 return self._json(200, {"status": "ok", "models": ALLOWED_MODELS,
                                         "default": UPSTREAM_MODEL,
                                         "token_expires_in_s": int(exp - time.time())})
+            if self.path.rstrip("/") == "/quota":
+                with _quota_lock:
+                    snapshot = dict(_quota)
+                captured = snapshot.get("captured_at")
+                snapshot["age_s"] = (int(time.time() - captured)
+                                     if isinstance(captured, (int, float)) else None)
+                snapshot["upstream_model"] = UPSTREAM_MODEL
+                return self._json(200, snapshot)
             if self.path.rstrip("/") in ("/v1/models", "/models"):
                 return self._json(200, {"object": "list", "data": [
                     {"id": m, "object": "model", "owned_by": "chatgpt-codex"}
