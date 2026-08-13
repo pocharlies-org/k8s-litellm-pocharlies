@@ -2021,16 +2021,6 @@ data:
                     # str(): LiteLLM serializa este dict a JSON tal cual, y un float
                     # 1.5 vs "1.5" complica el filtrado en SQL.
                     _slm["refusal_lambda"] = str(_rl)
-                    log.warning(
-                        "REFUSAL-STAMP escrito rl=%s mvar=%s data_id=%s meta_id=%s slm=%s",
-                        _rl, _mvar, id(data), id(_meta), _slm,
-                    )
-                else:
-                    log.warning(
-                        "REFUSAL-STAMP saltado: _rl=None model=%r api_base=%r "
-                        "data.model=%r proxy_model=%r",
-                        model, api_base, data.get("model"), proxy_model,
-                    )
             except Exception as e:
                 log.warning("refusal stamp error: %s", e)
             try:
@@ -2054,23 +2044,6 @@ data:
             return data
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-            # DIAGNOSTICO TEMPORAL (13-08-2026): saber donde acaba de verdad el sello
-            # de refusal_lambda en el kwargs que consume SpendLogs. Quitar cuando el
-            # sellado este confirmado.
-            try:
-                if "deepseek" in str(kwargs.get("model") or "").lower():
-                    _lp = kwargs.get("litellm_params") or {}
-                    log.warning(
-                        "REFUSAL-DIAG model=%s lp.metadata.keys=%s lp.metadata.slm=%s "
-                        "lp.litellm_metadata.slm=%s top.metadata.slm=%s",
-                        kwargs.get("model"),
-                        [k for k in (_lp.get("metadata") or {}) if "spend" in k or "refusal" in k],
-                        (_lp.get("metadata") or {}).get("spend_logs_metadata"),
-                        (_lp.get("litellm_metadata") or {}).get("spend_logs_metadata"),
-                        (kwargs.get("metadata") or {}).get("spend_logs_metadata"),
-                    )
-            except Exception:
-                pass
             try:
                 _update_tracking_from_payload(
                     kwargs,
