@@ -32,7 +32,7 @@ COMMON_MODELS = {
 
 ACCOUNT_CATALOG = {
     "cloudblue": COMMON_MODELS,
-    "e-dani": COMMON_MODELS | {"gpt-daybreak-blue-latest"},
+    "e-dani": COMMON_MODELS,
 }
 
 # Lo que LiteLLM PUBLICA con prefijo de cuenta, que ya no es el catalogo entero.
@@ -43,7 +43,8 @@ ACCOUNT_CATALOG = {
 #     routing alias for GPT-5.6 Sol". Los mismos pesos que `gpt-5.6-sol`; lo que
 #     hace distinto a Work (prompt, conectores, formato) vive en el cliente de
 #     ChatGPT y no viaja por `/responses`, donde el puente pone los suyos.
-#   - `gpt-daybreak-blue-latest` solo esta en el catalogo de e-dani.
+#   - `gpt-daybreak-blue-latest` no se publica en ninguna cuenta (2026-08-13,
+#     decision del operador). Solo existia en el catalogo de e-dani.
 #
 # CLOUDBLUE SE REPUBLICA (2026-08-13, decision del operador). Estuvo retirado unas
 # horas ese mismo dia con el motivo "sus 4 keys estan bloqueadas a proposito", que

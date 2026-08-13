@@ -138,7 +138,8 @@ data:
     # Cuota separada de la personal a propósito, para que lo automático no se
     # coma el cupo del Codex interactivo. Puente: codex-bridge.
     # `gpt-5.6-sol-wm` NO se publica (ver la excepción de arriba).
-    # `gpt-daybreak-blue-latest` tampoco: solo está en el catálogo de e-dani.
+    # `gpt-daybreak-blue-latest` NO se publica en ninguna cuenta (2026-08-13,
+    # decision del operador): solo existia en el catalogo de e-dani.
     - model_name: cloudblue/gpt-5.6-sol
       litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
@@ -175,9 +176,6 @@ data:
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
     - model_name: e-dani/gpt-5.6-luna
       litellm_params: { model: openai/gpt-5.6-luna, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
-      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
-    - model_name: e-dani/gpt-daybreak-blue-latest
-      litellm_params: { model: openai/gpt-daybreak-blue-latest, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
     - model_name: e-dani/gpt-5.5
       litellm_params: { model: openai/gpt-5.5, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
@@ -3700,7 +3698,7 @@ spec:
             # tocar desde aqui `openclaw-codex-app-server` ni
             # `openclaw-operator-readonly`: sus bootstraps comparan igualdad EXACTA
             # de la lista de modelos y ensancharlas rompe el sync.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-daybreak-blue-latest,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
