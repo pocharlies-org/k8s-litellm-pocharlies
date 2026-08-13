@@ -47,9 +47,14 @@ MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 # Todo backend LOCAL declarado en el controlador. Si se anade uno nuevo hay que
 # tocar esta lista a proposito: es justo el momento de decidir si ve o no.
+# 2026-08-13: retirados `ornith-dgx1` y `nvidia-qwen36-dgx1`. Estaban a replicas 0
+# Y SIN PESOS EN DISCO (Ornith borrado el 10-08; la carpeta
+# nvidia-qwen36-35b-a3b-nvfp4 no existe en dgx1), o sea que no podian arrancar.
+# `qwen36-27b-uncensored-dgx2` se CONSERVA aunque su checkpoint tampoco este:
+# es el unico dueño declarado de dense/dense-reasoning/dense-uncensored/taxonomy,
+# y es preferible que la config diga "este backend deberia servir dense y esta
+# caido" a que esos nombres no tengan dueño en ningun sitio.
 BACKENDS_LOCALES = {
-    "ornith-dgx1",
-    "nvidia-qwen36-dgx1",
     "qwen36-27b-uncensored-dgx2",
     "deepseek-v4-flash-tp2",
 }

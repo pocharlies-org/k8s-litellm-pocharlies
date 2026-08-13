@@ -2890,11 +2890,6 @@ data:
         if model.strip()
     )
 
-    # Direct aliases for the Ornith deployment.
-    ORNITH_CANARY_ALIASES = (
-        "ornith-canary",
-        "ornith-1.0",
-    )
     # Los tres hermanos de `tooling` que solo cambian cuanto se piensa (2026-08-10).
     # `tooling` ya vive en QWEN36_COMPAT_ALIASES y significa "sin pensar"; estos son
     # low / high / max. Los sirve el MISMO backend -- no son modelos distintos, son
@@ -2932,15 +2927,21 @@ data:
     # 2026-07-22 cutover (Daniel): the compatibility aliases are owned by the
     # DGX1 Ornith backend (gates passed: parser/tooling battery 370, speed
     # 170 tok/s @8K).
-    ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES + THINKING_TIER_ALIASES
-    # 2026-08-03: DGX1 stops being "the Ornith node" and becomes "the tooling
-    # resident node". Three deployments are now candidates for that seat -- Ornith,
-    # Qwen3-Coder-30B-A3B and NVIDIA-Qwen3.6-35B -- selected by GitOps: the
-    # replicas switch at the top of the ai overlay's kustomization.yaml. Whichever one is up owns the tooling-shaped names, so
-    # those names live in their own tuple instead of being spelled `Ornith's`.
-    # ORNITH_CANARY_ALIASES stay on Ornith alone: `ornith-canary` / `ornith-1.0`
-    # name a specific model, so a direct call to them MUST fail when Ornith is not
-    # the resident rather than silently answer from Qwen3-Coder.
+    # 2026-08-13: RETIRADOS los backends `ornith-dgx1` y `nvidia-qwen36-dgx1`, y con
+    # ellos ORNITH_ALIASES / ORNITH_CANARY_ALIASES. Los dos candidatos al "asiento de
+    # residente de DGX1" estaban a replicas 0 en el overlay Y SIN PESOS EN DISCO:
+    # Ornith se borro el 10-08 y la carpeta nvidia-qwen36-35b-a3b-nvfp4 no existe en
+    # dgx1. Ninguno de los dos puede arrancar, asi que declararlos era config que
+    # describe un mundo que ya no existe.
+    #
+    # El diseno del asiento (varios candidatos, uno Ready a la vez) caduco el 08-08:
+    # asumia UN modelo por GPU alternandose, y DeepSeek TP=2 se queda los DOS Sparks
+    # enteros. Mientras este arriba, ningun candidato de DGX1 cabe -- no por politica,
+    # sino por memoria.
+    #
+    # `ornith-1.0` y `ornith-canary` desaparecen como alias servibles. Ya fallaban:
+    # nadie los servia. Ver la ventana RHO en
+    # analysis/deepseek-v4-flash-2xspark/rho-backend-sync/.
     TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES + THINKING_TIER_ALIASES
     # Nombre directo y exclusivo de DeepSeek. A diferencia de los aliases de
     # capacidad anteriores, este NO se comparte con Ornith/NVIDIA Qwen: quien
@@ -3002,65 +3003,6 @@ data:
     # Gemma-4 deployments were DELETED on 2026-07-26 -- not scaled to zero -- so
     # their backends were removed from this controller on 2026-07-27.
     BACKENDS = (
-        {
-            # DGX1 Ornith production resident: owns tooling/router/auto and
-            # the qwen36-35b* compatibility aliases (2026-07-22 cutover).
-            "name": "ornith-dgx1",
-            "label": "DGX1_ORNITH_35B",
-            "backend": "dgx1",
-            "base_model": "openai/ornith-1.0-35b-nvfp4-mtp",
-            "aliases": ORNITH_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_ORNITH_DGX1",
-                "vllm-ornith-35b-nvfp4-mtp-dgx1",
-            ),
-            "api_base": os.getenv(
-                "ORNITH_DGX1_API_BASE",
-                "http://vllm-ornith-35b-nvfp4-mtp-dgx1.llm.svc.cluster.local:8000/v1",
-            ),
-            "id_prefix": "dgx1-ornith-35b-nvfp4-mtp",
-            "max_parallel_requests": 4,
-            "max_output_tokens": 16384,
-            "max_input_tokens": 262144,
-            "supports_function_calling": True,
-            "supports_vision": True,
-        },
-        {
-            # DGX1 tooling-resident candidate #3: NVIDIA-Qwen3.6-35B-A3B NVFP4
-            # (modelopt checkpoint) with native MTP. qwen3_5_moe MULTIMODAL, same
-            # shape as Ornith. Never Ready at the same time as the other two DGX1
-            # candidates: same single GPU.
-            "name": "nvidia-qwen36-dgx1",
-            "label": "DGX1_NVIDIA_QWEN36_35B",
-            "backend": "dgx1",
-            # Deliberately NOT `openai/qwen36-...`: that prefix is what
-            # extra_litellm_params() keys the repetition-penalty guard on, and this
-            # checkpoint has not been measured against it. Renaming it into the
-            # qwen36- namespace would silently enable the guard.
-            "base_model": os.getenv(
-                "NVIDIA_QWEN36_DGX1_MODEL",
-                "openai/nvidia-qwen36-35b-nvfp4",
-            ),
-            "aliases": TOOLING_RESIDENT_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_NVIDIA_QWEN36_DGX1",
-                "vllm-nvidia-qwen36-35b-dgx1",
-            ),
-            "api_base": os.getenv(
-                "NVIDIA_QWEN36_DGX1_API_BASE",
-                "http://vllm-nvidia-qwen36-35b-dgx1.llm.svc.cluster.local:8000/v1",
-            ),
-            # `dgx1-nvidia-...` deliberately does NOT start with the retired
-            # `dgx1-qwen36-35b-nvfp4-` prefix, which cleanup_retired_models() purges
-            # every cycle -- naming it `dgx1-qwen36-35b-nvfp4-*` would make this
-            # backend delete its own registrations on every loop.
-            "id_prefix": "dgx1-nvidia-qwen36-35b-nvfp4",
-            "max_parallel_requests": 4,
-            "max_output_tokens": 16384,
-            "max_input_tokens": 262144,
-            "supports_function_calling": True,
-            "supports_vision": True,
-        },
         {
             # Stable backend identity for the cluster's only DENSE model. The
             # compatibility Service keeps its historical DGX2 name, but Creative
@@ -3710,7 +3652,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-2e0e6f99aaf0
+        config.k8s.e-dani.com/revision: sync-dae0e19232d5
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -3727,9 +3669,6 @@ spec:
             - { name: K8S_NAMESPACE, value: "llm" }
             # DGX1 tooling seat: three mutually exclusive candidates, one GPU. The
             # dashboard's DGX1 model-mode button scales exactly one of them to 1.
-            - { name: K8S_SERVICE_ORNITH_DGX1, value: "vllm-ornith-35b-nvfp4-mtp-dgx1" }
-            - { name: K8S_SERVICE_NVIDIA_QWEN36_DGX1, value: "vllm-nvidia-qwen36-35b-dgx1" }
-            - { name: NVIDIA_QWEN36_DGX1_MODEL, value: "openai/nvidia-qwen36-35b-nvfp4" }
     # The Qwen3.6-35B, censored 27B F2 and Gemma-4 Services were DELETED on
     # 2026-07-26, so their backends and K8S_SERVICE_* envs were removed here on
     # 2026-07-27; there is no scale-to-zero rollback path left.

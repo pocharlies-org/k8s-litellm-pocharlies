@@ -74,15 +74,18 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
 
 
 def test_backends_cubren_las_formas_de_exclusion():
-    """4 backends declarados, y la exclusion tiene dos formas distintas.
+    """2 backends declarados, y la exclusion tiene dos formas distintas.
 
-    Actualizado 2026-08-10: hasta el corte a DeepSeek habia 4 y solo dos formas.
-    El test se quedo asertando `count == 4` y llevaba rojo desde entonces sin que
-    nadie lo viera, porque CI solo corre el contrato de red.
+    Actualizado 2026-08-13 (ventana RHO backend-sync): eran 4. Se retiraron
+    `ornith-dgx1` y `nvidia-qwen36-dgx1`, los dos candidatos al asiento de DGX1:
+    estaban a replicas 0 en el overlay Y SIN PESOS EN DISCO (Ornith borrado el
+    10-08; la carpeta nvidia-qwen36-35b-a3b-nvfp4 no existe en dgx1), asi que
+    ninguno podia arrancar. El asiento en si caduco el 08-08, cuando DeepSeek TP=2
+    paso a ocupar los DOS Sparks: mientras corre no cabe residente en DGX1, no por
+    politica sino por memoria.
 
-    DGX1: dos candidatos MUTUAMENTE EXCLUYENTES al mismo asiento (una GPU con
-    sharing-strategy=none, ambos piden nvidia.com/gpu: 1), asi que comparten el
-    mismo tuple de alias y la readiness decide.
+    (Nota historica que sigue valiendo: este test estuvo ROJO desde el 10-08 sin
+    que nadie lo viera, porque CI solo corre el contrato de red.)
 
     DGX2: desde el 2026-08-10 solo queda el 27B denso. Habia co-residencia (2
     replicas de GPU por time-slicing) con Qwen3-Coder, que se retiro del cluster
@@ -96,9 +99,8 @@ def test_backends_cubren_las_formas_de_exclusion():
     """
     text = MANIFEST.read_text()
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    assert backends.count('"name": "') == 4
-    for name in ("ornith-dgx1", "nvidia-qwen36-dgx1",
-                 "qwen36-27b-uncensored-dgx2", "deepseek-v4-flash-tp2"):
+    assert backends.count('"name": "') == 2
+    for name in ("qwen36-27b-uncensored-dgx2", "deepseek-v4-flash-tp2"):
         assert f'"name": "{name}"' in backends
     # El de TP=2 tiene que decir que vive en los dos nodos: es lo que justifica que
     # comparta los alias de tooling sin romper la unicidad.
@@ -107,7 +109,9 @@ def test_backends_cubren_las_formas_de_exclusion():
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",
                  "qwen36-27b-dense-dgx1", "qwen36-27b-dense-dgx2",
                  # retirado del cluster entero el 2026-08-10
-                 "qwen3coder-dgx2", "qwen3coder-dgx1"):
+                 "qwen3coder-dgx2", "qwen3coder-dgx1",
+                 # 2026-08-13: sin pesos en disco, no podian arrancar
+                 "ornith-dgx1", "nvidia-qwen36-dgx1"):
         assert f'"name": "{dead}"' not in backends
 
     # El backend conserva su identidad estable, pero Creative lo sirve en DGX1
@@ -138,25 +142,29 @@ def test_shared_tooling_alias_is_guarded_against_double_registration():
     controlador (endpoint_ready devuelve None y se SALTA el backend), asi que
     habilitar un backend debe expulsar explicitamente a sus hermanos."""
     text = MANIFEST.read_text()
-    # Los dos candidatos de DGX1 comparten los nombres de tooling, pero NO con el
-    # mismo literal: Ornith los recibe via ORNITH_ALIASES (que suma sus canary),
-    # NVIDIA via TOOLING_RESIDENT_ALIASES. Se comprueba la invariante SEMANTICA,
-    # no el nombre de la constante, para que renombrarla no de un falso verde.
+    # 2026-08-13: ya solo hay UN backend con los nombres de tooling. Los dos
+    # candidatos de DGX1 (ornith-dgx1 via ORNITH_ALIASES, nvidia-qwen36-dgx1 via
+    # TOOLING_RESIDENT_ALIASES) se retiraron por no tener pesos en disco, y con
+    # ellos desaparecio ORNITH_ALIASES. La invariante que protege este test NO es
+    # el numero de candidatos: es que TODO el que declare esos alias excluya a los
+    # demas por hardware. Con uno solo se cumple trivialmente, y el assert de
+    # abajo es lo que impide que se anada un segundo sin exclusion fisica.
     assert "TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES" in text
-    assert "ORNITH_ALIASES = ORNITH_CANARY_ALIASES + QWEN36_COMPAT_ALIASES" in text
+    assert "ORNITH_ALIASES" not in _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS"), (
+        "ORNITH_ALIASES volvio a BACKENDS: sus dos duenos estan retirados"
+    )
 
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
     comparten = [n for n, a in re.findall(r'"name":\s*"([a-z0-9-]+)".*?"aliases":\s*(\w+)',
                                           backends, re.S)
                  if a in ("ORNITH_ALIASES", "TOOLING_RESIDENT_ALIASES")]
-    # 2026-08-10: TRES, no dos. DeepSeek-V4-Flash entra en el conjunto porque su
-    # TP=2 ocupa los dos Sparks, asi que la exclusion fisica sigue garantizada --
-    # solo que ahora abarca los dos nodos en vez del asiento de DGX1. Si algun dia
-    # se anade aqui un backend que NO excluya a los otros por hardware, `tooling`
-    # acabaria servido por dos api_base a la vez y el router balancearia contra uno
-    # muerto: eso es lo que este test protege, no el numero.
-    assert sorted(comparten) == ["deepseek-v4-flash-tp2", "nvidia-qwen36-dgx1",
-                                 "ornith-dgx1"], comparten
+    # 2026-08-13: UNO. Eran tres (los dos candidatos de DGX1 + DeepSeek); los de
+    # DGX1 se retiraron sin pesos en disco. DeepSeek se queda los nombres porque su
+    # TP=2 ocupa los DOS Sparks, o sea que su exclusion fisica abarca el cluster
+    # entero. Si algun dia se anade aqui un backend que NO excluya a los otros por
+    # hardware, `tooling` acabaria servido por dos api_base a la vez y el router
+    # balancearia contra uno muerto: eso es lo que protege este test, no el numero.
+    assert sorted(comparten) == ["deepseek-v4-flash-tp2"], comparten
 
     # El backend de DGX2 NO puede compartirlos: no hay exclusion fisica entre nodos
     # distintos, asi que `tooling` acabaria servido por dos backends.
