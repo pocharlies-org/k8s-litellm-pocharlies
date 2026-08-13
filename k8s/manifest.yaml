@@ -675,6 +675,39 @@ data:
             )
 
 
+    # Que alias sirve HOY el head de DeepSeek. Se pregunta al router EN MEMORIA (es
+    # el mismo proceso, no hay HTTP) y se cachea: la lista solo cambia cuando el sync
+    # dinamico reescribe el model_list.
+    _ds_alias_cache = {"ts": 0.0, "names": frozenset()}
+    _DS_ALIAS_TTL_S = 60.0
+
+
+    def _serves_deepseek(model):
+        """True si ese alias lo atiende el head de DeepSeek-V4. Nunca lanza."""
+        name = str(model or "")
+        if not name:
+            return False
+        now = time.time()
+        if now - _ds_alias_cache["ts"] >= _DS_ALIAS_TTL_S:
+            try:
+                from litellm.proxy.proxy_server import llm_router
+                names = {
+                    str(d.get("model_name") or "")
+                    for d in (getattr(llm_router, "model_list", None) or [])
+                    if "deepseek-v4-flash" in str(
+                        (d.get("litellm_params") or {}).get("api_base") or ""
+                    ).lower()
+                }
+                # Lista vacia = el router aun no esta listo. Se conserva lo ultimo
+                # conocido en vez de vaciarla, que apagaria el sellado entero.
+                if names:
+                    _ds_alias_cache["names"] = frozenset(names)
+            except Exception:  # noqa: BLE001
+                pass
+            _ds_alias_cache["ts"] = now
+        return name in _ds_alias_cache["names"]
+
+
     async def _refusal_lambda_for_async(model, api_base):
         """Solo se sella lo que sirve DeepSeek-V4; el resto no lleva proyeccion.
 
@@ -686,14 +719,17 @@ data:
         """
         haystack = "{} {}".format(model or "", api_base or "").lower()
         if "deepseek-v4-flash" not in haystack:
-            # Ultimo recurso: resolver el backend real. Cubre los alias cuyo nombre
-            # no menciona el modelo (`agent`, `max`, `high`...), que son justo los
-            # que usa todo el mundo. Es la misma via que _is_local_vllm_request.
-            try:
-                sid = resolve_server_id(model, api_base)
-            except Exception:  # noqa: BLE001
-                sid = None
-            if "deepseek-v4-flash" not in str(sid or "").lower():
+            # El nombre tampoco basta: `agent`, `high`, `max`, `tooling`, `router`...
+            # los sirve el MISMO head y no lo mencionan. Filtrar solo por nombre
+            # sellaba unicamente a quien pedia `deepseek-v4-flash-0731` a pelo: 8 de
+            # 723 filas, todas de mis pruebas. El trafico real usa alias.
+            #
+            # Se resuelve por el api_base VIVO del router y no por una lista fija:
+            # los alias los inyecta el sync dinamico (el config.yaml solo trae 20
+            # entradas estaticas) y LOCAL_VLLM_ALIASES incluye `dense`, que NO es
+            # DeepSeek — sellar ahi seria mentir sobre otro modelo, peor que no
+            # sellar. `resolve_server_id` tampoco sirve: sin api_base devuelve None.
+            if not _serves_deepseek(model):
                 return None
         return await _refusal_lambda_now_async()
 
