@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "k8s" / "manifest.yaml"
 BRIDGES = ROOT / "k8s" / "codex-bridge.yaml"
 
+# Lo que la CUENTA sirve aguas arriba, segun el catalogo autoritativo
+# (GET /backend-api/codex/models). Gobierna el ALLOWED_MODELS de cada puente y se
+# comprueba como SUPERCONJUNTO: un puente puede aceptar mas de lo que LiteLLM
+# publique, pero nunca menos, porque el slug que no esta en ALLOWED_MODELS cae al
+# UPSTREAM_MODEL y contesta 200 con otro modelo, sin error ninguno.
 COMMON_MODELS = {
     "gpt-5.6-sol",
     "gpt-5.6-sol-wm",
@@ -25,9 +30,24 @@ COMMON_MODELS = {
     "codex-auto-review",
 }
 
-ACCOUNT_MODELS = {
+ACCOUNT_CATALOG = {
     "cloudblue": COMMON_MODELS,
     "e-dani": COMMON_MODELS | {"gpt-daybreak-blue-latest"},
+}
+
+# Lo que LiteLLM PUBLICA con prefijo de cuenta, que ya no es el catalogo entero.
+# Se comprueba por IGUALDAD, asi que todo lo que no este aqui es un alias de mas.
+# Dos divergencias, ambas del 2026-08-13 y ambas deliberadas:
+#
+#   - No hay ninguna cuenta `cloudblue`: sus 4 keys estan bloqueadas a proposito,
+#     asi que eran 9 alias que no podian funcionar pasara lo que pasara. El puente
+#     sigue en pie y su test de ALLOWED_MODELS tambien.
+#   - `gpt-5.6-sol-wm` no se publica: el catalogo lo describe como "Work Mode
+#     routing alias for GPT-5.6 Sol". Los mismos pesos que `gpt-5.6-sol`; lo que
+#     hace distinto a Work (prompt, conectores, formato) vive en el cliente de
+#     ChatGPT y no viaja por `/responses`, donde el puente pone los suyos.
+PUBLISHED_MODELS = {
+    "e-dani": ACCOUNT_CATALOG["e-dani"] - {"gpt-5.6-sol-wm"},
 }
 
 
@@ -61,7 +81,7 @@ def test_accounts_publish_the_live_catalog_with_account_prefixed_ids():
             f"{account}/{model}": (model, services[account])
             for model in account_models
         }
-        for account, account_models in ACCOUNT_MODELS.items()
+        for account, account_models in PUBLISHED_MODELS.items()
     }
 
     for account in expected.values():
@@ -91,7 +111,7 @@ def test_personal_bridge_is_enabled_with_its_own_secret():
     bridge = next(container for container in pod_spec["containers"] if container["name"] == "bridge")
     env = {entry["name"]: entry.get("value") for entry in bridge["env"]}
     assert env["SECRET_NAME"] == "codex-bridge-edani-auth"
-    assert set(env["ALLOWED_MODELS"].split(",")) >= ACCOUNT_MODELS["e-dani"]
+    assert set(env["ALLOWED_MODELS"].split(",")) >= ACCOUNT_CATALOG["e-dani"]
 
 
 def test_cloudblue_bridge_allows_its_complete_catalog():
@@ -103,4 +123,4 @@ def test_cloudblue_bridge_allows_its_complete_catalog():
         if container["name"] == "bridge"
     )
     env = {entry["name"]: entry.get("value") for entry in bridge["env"]}
-    assert set(env["ALLOWED_MODELS"].split(",")) >= ACCOUNT_MODELS["cloudblue"]
+    assert set(env["ALLOWED_MODELS"].split(",")) >= ACCOUNT_CATALOG["cloudblue"]

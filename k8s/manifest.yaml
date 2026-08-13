@@ -113,11 +113,18 @@ data:
     # alias que no podían funcionar pase lo que pase y sólo ensuciaban /v1/models.
     # Los modelos `visibility=hide` también se publican porque este catálogo es
     # completo; Codex decide su presentación mediante el catálogo sincronizado.
+    # UNA EXCEPCIÓN, y no volver a añadirla al refrescar el catálogo (2026-08-13):
+    # `gpt-5.6-sol-wm` NO se publica. Su descripción en el catálogo de la cuenta
+    # es literal: "Work Mode routing alias for GPT-5.6 Sol" — mismos pesos que
+    # `gpt-5.6-sol`, no otro modelo. Work es un MODO del cliente de ChatGPT (otro
+    # prompt de sistema, otros conectores, otro formato de salida), y nada de ese
+    # aparato viaja por `/backend-api/codex/responses`: el puente manda su propio
+    # prompt y sus propias tools. Por aquí el alias era Sol repetido con un nombre
+    # peor. Sigue en ALLOWED_MODELS de los dos puentes a propósito: la cuenta SÍ lo
+    # sirve (probado, HTTP 200 pese a `supported_in_api: false`) y quitarlo de allí
+    # abriría el fallback silencioso a UPSTREAM_MODEL en vez de un error.
     - model_name: e-dani/gpt-5.6-sol
       litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
-      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
-    - model_name: e-dani/gpt-5.6-sol-wm
-      litellm_params: { model: openai/gpt-5.6-sol-wm, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
     - model_name: e-dani/gpt-5.6-terra
       litellm_params: { model: openai/gpt-5.6-terra, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
@@ -153,9 +160,6 @@ data:
     # quiera la cuenta personal usa `e-dani/<slug>`.
     - model_name: gpt-5.6-sol
       litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
-      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
-    - model_name: gpt-5.6-sol-wm
-      litellm_params: { model: openai/gpt-5.6-sol-wm, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
     - model_name: gpt-5.6-terra
       litellm_params: { model: openai/gpt-5.6-terra, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
@@ -3652,7 +3656,7 @@ spec:
             # tocar desde aqui `openclaw-codex-app-server` ni
             # `openclaw-operator-readonly`: sus bootstraps comparan igualdad EXACTA
             # de la lista de modelos y ensancharlas rompe el sync.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-sol-wm,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-sol-wm,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-daybreak-blue-latest,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-daybreak-blue-latest,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
@@ -3689,7 +3693,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2dd029657af7
+        config.k8s.e-dani.com/revision: config-c56a42458139
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
