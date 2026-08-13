@@ -540,6 +540,28 @@ data:
                       "max_output_tokens")
 
 
+    # El upstream exige `content` VACIO en los items `reasoning`:
+    #   Invalid 'input[15].content': array too long. Expected an array with
+    #   maximum length 0, but got an array with length 1 instead.
+    # Codex reenvia el historial completo (aqui `store` es False y
+    # `previous_response_id` se descarta), asi que en cuanto un turno lleva
+    # razonamiento la conversacion ENTERA muere en 400 y no vuelve a arrancar.
+    # Medido el 2026-08-13 contra `gpt-5.6-sol`: mismo payload con `content` ->
+    # 400, con `content` vacio -> 200.
+    #
+    # Se vacia en vez de borrar el item: `encrypted_content` y `summary` son lo
+    # que el upstream necesita para encadenar el razonamiento entre turnos.
+    def vaciar_content_de_reasoning(items):
+        if not isinstance(items, list):
+            return items
+        salida = []
+        for item in items:
+            if isinstance(item, dict) and item.get("type") == "reasoning" and item.get("content"):
+                item = dict(item, content=[])
+            salida.append(item)
+        return salida
+
+
     def to_upstream_responses(req):
         """Payload de /v1/responses -> payload del upstream, casi tal cual.
 
@@ -550,6 +572,7 @@ data:
         """
         payload = {k: v for k, v in req.items() if k not in RESPONSES_DROP}
         payload["model"] = resolve_model(req.get("model"))
+        payload["input"] = vaciar_content_de_reasoning(payload.get("input"))
         payload["stream"] = True    # el upstream devuelve 400 con cualquier otra cosa
         payload["store"] = False
         if not payload.get("input"):
@@ -1033,7 +1056,7 @@ spec:
       annotations:
         # El codigo del puente vive en un ConfigMap y se lee al arrancar: sin esto
         # un cambio en bridge.py se sincroniza y NO rota el pod.
-        config.k8s.e-dani.com/revision: bridge-805db83041fe
+        config.k8s.e-dani.com/revision: bridge-1a154271d59e
     spec:
       serviceAccountName: codex-bridge
       enableServiceLinks: false
@@ -1203,7 +1226,7 @@ spec:
       annotations:
         # Igual que el otro: el codigo se lee al arrancar, asi que un cambio en
         # bridge.py NO rota el pod sin tocar esto.
-        config.k8s.e-dani.com/revision: bridge-805db83041fe
+        config.k8s.e-dani.com/revision: bridge-1a154271d59e
     spec:
       serviceAccountName: codex-bridge-edani
       enableServiceLinks: false
