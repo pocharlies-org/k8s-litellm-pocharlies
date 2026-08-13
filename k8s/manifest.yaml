@@ -1932,9 +1932,27 @@ data:
                     # LiteLLM_SpendLogs. El fichero de tracking solo cubre las
                     # peticiones VIVAS; el historico de 1h sale de SQL, y sin esto
                     # no habria forma de saber como se sirvio algo de hace 20 min.
+                    #
+                    # TIENE que ir dentro de `spend_logs_metadata`, NO como clave
+                    # plana del metadata. `_get_spend_logs_metadata` filtra con
+                    # `{k: metadata.get(k) for k in SpendLogsMetadata.__annotations__}`
+                    # — una allowlist: lo que no es campo declarado del TypedDict se
+                    # tira EN SILENCIO. Asi estuvo, y por eso 0 de 380.591 filas
+                    # llevaban el sello. `spend_logs_metadata` si esta declarado y es
+                    # la via oficial para claves propias (la doc la marca "enterprise",
+                    # pero en este build el camino no tiene ningun gate de premium_user
+                    # — verificado con premium_user=False y un sello real en SQL).
                     _rl = _refusal_lambda_for(api_base)
                     if _rl is not None:
-                        model_call_details["metadata"]["refusal_lambda"] = _rl
+                        _slm = model_call_details["metadata"].get("spend_logs_metadata")
+                        if not isinstance(_slm, dict):
+                            _slm = {}
+                            model_call_details["metadata"]["spend_logs_metadata"] = _slm
+                        # str(): el valor del cliente manda si ya venia con esta clave,
+                        # pero aqui no hay cliente que lo ponga. Se guarda como texto
+                        # porque LiteLLM serializa este dict a JSON tal cual y un float
+                        # 1.5 vs "1.5" complica el filtrado en SQL.
+                        _slm["refusal_lambda"] = str(_rl)
                 model_call_details.setdefault("litellm_params", {})
                 if isinstance(model_call_details["litellm_params"], dict):
                     model_call_details["litellm_params"].setdefault("metadata", {})
