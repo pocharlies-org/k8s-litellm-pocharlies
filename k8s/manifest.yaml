@@ -3587,7 +3587,23 @@ spec:
             # con la key abierta y el equipo no, los pods salen Healthy y TODA
             # inferencia da 403 team_model_access_denied. reconcile_required_team_models
             # es aditivo, asi que esto solo ensancha.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense-uncensored,router,agent,high,max" }
+            #
+            # 2026-08-13: +dense, +dense-reasoning, +tooling, +deepseek-v4-flash-0731
+            # y los 12 alias del codex-bridge (peticion del owner: OpenClaw tiene que
+            # poder con gpt-5.*, DeepSeek V4 y dense). Dos avisos:
+            #
+            #   - Esto abre PERMISO, no uso: el modelo que corre cada agente sigue
+            #     declarado en values.yaml del chart de OpenClaw.
+            #   - Los seis `*-edani` salen por la cuenta personal del usuario, o sea
+            #     la MISMA cuota que su Codex interactivo. Que OpenClaw pueda
+            #     nombrarlos no significa que deba: para carga automatica, los seis
+            #     sin sufijo (cuenta cloudblue).
+            #
+            # Esto solo toca el EQUIPO `openclaw` y la key OPENCLAW_KEY_ALIAS. NO
+            # tocar desde aqui `openclaw-codex-app-server` ni
+            # `openclaw-operator-readonly`: sus bootstraps comparan igualdad EXACTA
+            # de la lista de modelos y ensancharlas rompe el sync.
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4-mini,gpt-5.6-sol-edani,gpt-5.6-terra-edani,gpt-5.6-luna-edani,gpt-5.3-codex-spark-edani,gpt-5.5-edani,gpt-5.4-mini-edani" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
