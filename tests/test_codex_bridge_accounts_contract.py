@@ -39,14 +39,19 @@ ACCOUNT_CATALOG = {
 # Se comprueba por IGUALDAD, asi que todo lo que no este aqui es un alias de mas.
 # Dos divergencias, ambas del 2026-08-13 y ambas deliberadas:
 #
-#   - No hay ninguna cuenta `cloudblue`: sus 4 keys estan bloqueadas a proposito,
-#     asi que eran 9 alias que no podian funcionar pasara lo que pasara. El puente
-#     sigue en pie y su test de ALLOWED_MODELS tambien.
 #   - `gpt-5.6-sol-wm` no se publica: el catalogo lo describe como "Work Mode
 #     routing alias for GPT-5.6 Sol". Los mismos pesos que `gpt-5.6-sol`; lo que
 #     hace distinto a Work (prompt, conectores, formato) vive en el cliente de
 #     ChatGPT y no viaja por `/responses`, donde el puente pone los suyos.
+#   - `gpt-daybreak-blue-latest` solo esta en el catalogo de e-dani.
+#
+# CLOUDBLUE SE REPUBLICA (2026-08-13, decision del operador). Estuvo retirado unas
+# horas ese mismo dia con el motivo "sus 4 keys estan bloqueadas a proposito", que
+# NO aplica a este camino: esas keys son VIRTUALES de LiteLLM y el puente no las
+# usa — habla con ChatGPT por su propia sesion OAuth. Comprobado llamando al
+# puente directamente: 200 en 1 s. Los alias si pueden funcionar.
 PUBLISHED_MODELS = {
+    "cloudblue": ACCOUNT_CATALOG["cloudblue"] - {"gpt-5.6-sol-wm"},
     "e-dani": ACCOUNT_CATALOG["e-dani"] - {"gpt-5.6-sol-wm"},
 }
 
