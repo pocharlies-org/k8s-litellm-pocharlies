@@ -519,8 +519,25 @@ data:
     # sea que lo que manda es exactamente lo que este upstream espera
     # (`reasoning`, `include`, `text.verbosity`, `tool_choice`...). Filtrar por
     # allowlist romperia justo eso.
+    # `max_output_tokens` NO es un metadato: es un parametro legitimo de la
+    # Responses API que ESTE upstream rechaza en duro.
+    #   [codex-bridge] error 400: upstream: {"detail":"Unsupported parameter: max_output_tokens"}
+    # chatgpt.com/backend-api/codex/responses no es la API publica de OpenAI: es
+    # el endpoint interno del CLI de Codex, y acepta menos cosas. Misma familia
+    # que `stream: false` y `store`, ya impuestos arriba.
+    #
+    # Aparecio el 2026-08-13 al pasar opencode al proveedor autodescubierto: el
+    # plugin publica `limit.output` desde `max_output_tokens` de /model/info y el
+    # SDK lo manda; el proveedor declarado a mano no lo hacia. Descartar el
+    # parametro no pierde nada — el upstream nunca lo iba a respetar, y el
+    # recorte real de salida lo hace el cliente.
+    #
+    # OJO al reproducirlo: por LiteLLM directamente NO falla (lo filtra antes de
+    # llegar aqui). Solo se ve entrando por la ruta que usa opencode. Y solo lo
+    # da la cuenta `cloudblue`; `codex-bridge-edani` no lo reporta.
     RESPONSES_DROP = ("metadata", "user", "service_tier", "previous_response_id",
-                      "litellm_metadata", "litellm_session_id")
+                      "litellm_metadata", "litellm_session_id",
+                      "max_output_tokens")
 
 
     def to_upstream_responses(req):
@@ -1016,7 +1033,7 @@ spec:
       annotations:
         # El codigo del puente vive en un ConfigMap y se lee al arrancar: sin esto
         # un cambio en bridge.py se sincroniza y NO rota el pod.
-        config.k8s.e-dani.com/revision: add-55-54mini-20260813
+        config.k8s.e-dani.com/revision: bridge-805db83041fe
     spec:
       serviceAccountName: codex-bridge
       enableServiceLinks: false
@@ -1186,7 +1203,7 @@ spec:
       annotations:
         # Igual que el otro: el codigo se lee al arrancar, asi que un cambio en
         # bridge.py NO rota el pod sin tocar esto.
-        config.k8s.e-dani.com/revision: add-55-54mini-20260813
+        config.k8s.e-dani.com/revision: bridge-805db83041fe
     spec:
       serviceAccountName: codex-bridge-edani
       enableServiceLinks: false
