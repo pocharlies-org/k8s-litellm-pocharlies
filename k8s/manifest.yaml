@@ -4005,11 +4005,22 @@ spec:
   # estado en proceso (cooldowns del router, active-requests) pasa a ser por-pod
   # y se asume: es telemetria y proteccion local, no correctness.
   replicas: 4
+  # maxSurge 0 / maxUnavailable 1, NO al reves, y es por el pool ks5 (2026-08-14).
+  #
+  # Con maxSurge 1 / maxUnavailable 0 el rollout se QUEDO MUERTO: hacen falta 4
+  # replicas de 300m mas una quinta de sobra, y el scheduler no encontraba sitio.
+  #     0/7 nodes are available: ... 3 Insufficient cpu ...
+  # El pod nuevo llevaba 10 min en Pending mientras las 4 viejas seguian sirviendo
+  # la config antigua. O sea que un arreglo urgente de config no podia llegar.
+  #
+  # Con 4 replicas, reemplazar en el sitio cuesta poco: quedan 3 sirviendo mientras
+  # una se cambia. Es exactamente lo que ya aprendieron en skirmshop-brain-k8s con
+  # el ingest sobre este mismo pool, y esta escrito en su ingest-api.yaml.
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: 0
+      maxUnavailable: 1
   selector: { matchLabels: { app: litellm } }
   template:
     metadata:
