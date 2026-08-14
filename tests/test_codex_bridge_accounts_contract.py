@@ -2,6 +2,8 @@
 
 Cada ID publico se compone como ``cuenta/slug``. El prefijo selecciona de forma
 inequivoca el bridge, mientras OpenAI recibe siempre el slug real sin prefijo.
+La cuenta e-dani publica además ``slug-edani`` como alias aditivo para clientes
+como Codex Desktop que colapsan variantes con prefijo de cuenta.
 """
 
 import ast
@@ -58,6 +60,10 @@ PUBLISHED_MODELS = {
     "e-dani": ACCOUNT_CATALOG["e-dani"] - {"gpt-5.6-sol-wm"},
 }
 
+LEGACY_PERSONAL_ALIASES = {
+    f"{model}-edani": model for model in PUBLISHED_MODELS["e-dani"]
+}
+
 REASONING_EFFORTS = {
     "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max", "ultra"],
     "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max", "ultra"],
@@ -80,7 +86,7 @@ def _resource(documents, kind, name):
     return matches[0]
 
 
-def test_accounts_publish_the_live_catalog_with_account_prefixed_ids():
+def test_accounts_publish_prefixed_ids_and_desktop_personal_aliases():
     documents = _documents(MANIFEST)
     config_map = _resource(documents, "ConfigMap", "litellm-config")
     config = yaml.safe_load(config_map["data"]["config.yaml"])
@@ -110,7 +116,16 @@ def test_accounts_publish_the_live_catalog_with_account_prefixed_ids():
         if name.startswith("cloudblue/") or name.startswith("e-dani/")
     }
     assert public_names == set().union(*[set(account) for account in expected.values()])
-    assert not any(name.endswith("-edani") for name in models)
+
+    for alias, upstream in LEGACY_PERSONAL_ALIASES.items():
+        assert alias in models
+        params = models[alias]["litellm_params"]
+        assert params["model"] == f"openai/{upstream}"
+        assert params["api_base"] == services["e-dani"]
+
+    assert {
+        name for name in models if name.endswith("-edani")
+    } == set(LEGACY_PERSONAL_ALIASES)
 
 
 def test_personal_bridge_is_enabled_with_its_own_secret():
@@ -134,9 +149,14 @@ def test_gpt_56_models_publish_their_real_reasoning_efforts():
     config = yaml.safe_load(config_map["data"]["config.yaml"])
     models = {model["model_name"]: model for model in config["model_list"]}
 
-    for account in ("cloudblue", "e-dani", None):
-        for slug, efforts in REASONING_EFFORTS.items():
-            name = f"{account}/{slug}" if account else slug
+    for slug, efforts in REASONING_EFFORTS.items():
+        names = (
+            f"cloudblue/{slug}",
+            f"e-dani/{slug}",
+            f"{slug}-edani",
+            slug,
+        )
+        for name in names:
             info = models[name]["model_info"]
             assert info["supports_reasoning"] is True
             assert info["supports_low_reasoning_effort"] is True

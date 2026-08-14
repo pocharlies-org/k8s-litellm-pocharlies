@@ -192,14 +192,44 @@ data:
     - model_name: e-dani/codex-auto-review
       litellm_params: { model: openai/codex-auto-review, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    # ── Alias E-DANI compatibles con el picker de Codex Desktop (2026-08-14) ──
+    # Desktop puede colapsar `cloudblue/<slug>` y `e-dani/<slug>` como una sola
+    # familia y conservar solo la primera. Los ids `*-edani` hacen inequívoca la
+    # variante personal para el picker sin retirar ni renombrar el contrato
+    # canónico `e-dani/<slug>`. Todos apuntan al mismo bridge personal y conservan
+    # exactamente las mismas capacidades y permisos; no publican una capacidad
+    # nueva en AgentGateway.
+    - model_name: gpt-5.6-sol-edani
+      litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, supports_reasoning: true, supports_low_reasoning_effort: true, supports_xhigh_reasoning_effort: true, supports_max_reasoning_effort: true, supported_reasoning_efforts: [low, medium, high, xhigh, max, ultra], max_input_tokens: 272000 }
+    - model_name: gpt-5.6-terra-edani
+      litellm_params: { model: openai/gpt-5.6-terra, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, supports_reasoning: true, supports_low_reasoning_effort: true, supports_xhigh_reasoning_effort: true, supports_max_reasoning_effort: true, supported_reasoning_efforts: [low, medium, high, xhigh, max, ultra], max_input_tokens: 272000 }
+    - model_name: gpt-5.6-luna-edani
+      litellm_params: { model: openai/gpt-5.6-luna, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, supports_reasoning: true, supports_low_reasoning_effort: true, supports_xhigh_reasoning_effort: true, supports_max_reasoning_effort: true, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 272000 }
+    - model_name: gpt-5.5-edani
+      litellm_params: { model: openai/gpt-5.5, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.4-edani
+      litellm_params: { model: openai/gpt-5.4, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.4-mini-edani
+      litellm_params: { model: openai/gpt-5.4-mini, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    - model_name: gpt-5.3-codex-spark-edani
+      litellm_params: { model: openai/gpt-5.3-codex-spark, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: false, max_input_tokens: 128000 }
+    - model_name: codex-auto-review-edani
+      litellm_params: { model: openai/codex-auto-review, api_base: "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1", api_key: not-used }
+      model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
     # ── Alias del esquema VIEJO (compatibilidad, 2026-08-13) ─────────────────
     # El picker de Codex Desktop solo ofrece los ids que trae bundleados: no
     # muestra `cuenta/slug` y sigue mandando el nombre desnudo. Documentado en
     # pocharlies-org/litellm-model-sync (README, 'Codex Desktop limitation').
     # Se conserva la semantica anterior al rename: id desnudo = CloudBlue.
-    # El sufijo `-edani` NO vuelve: lo prohibe
-    # tests/test_codex_bridge_accounts_contract.py por ambiguo. Un cliente que
-    # quiera la cuenta personal usa `e-dani/<slug>`.
+    # La cuenta personal conserva ambos nombres: el canónico `e-dani/<slug>` y
+    # el compatible con Desktop `<slug>-edani` definido justo arriba.
     - model_name: gpt-5.6-sol
       litellm_params: { model: openai/gpt-5.6-sol, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, supports_reasoning: true, supports_low_reasoning_effort: true, supports_xhigh_reasoning_effort: true, supports_max_reasoning_effort: true, supported_reasoning_efforts: [low, medium, high, xhigh, max, ultra], max_input_tokens: 272000 }
@@ -3884,7 +3914,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e75f080fc3ba
+        config.k8s.e-dani.com/revision: config-3cc7507bc71e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
