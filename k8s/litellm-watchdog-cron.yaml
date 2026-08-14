@@ -233,14 +233,24 @@ spec:
                   else:
                       avisar = clase != "ok" or clase_antes in ("caido", "cuota")
 
-                  guarda_estado({"clase": clase,
-                                 "desde": antes.get("desde", ahora)
-                                          if clase == clase_antes else ahora,
-                                 "ultimo_aviso": ahora if avisar else ultimo,
-                                 "vuelve": vuelve})
+                  # Solo "caido" hace fallar el Job. Con la cuota agotada el Job
+                  # correría a rojo cada 10 min durante dias y dejaria la Application
+                  # de Argo en Degraded — justo mientras el aviso dice que el cluster
+                  # esta bien, y tapando un Degraded de verdad. El aviso es la señal.
+                  SALIDA = 1 if clase == "caido" else 0
+                  desde = antes.get("desde", ahora) if clase == clase_antes else ahora
+
+                  def apunta(enviado):
+                      # ultimo_aviso solo se mueve si el mensaje SALIO. Si Telegram
+                      # falla, la proxima corrida vuelve a intentarlo en vez de dar
+                      # el aviso por dado.
+                      guarda_estado({"clase": clase, "desde": desde,
+                                     "ultimo_aviso": ahora if enviado else ultimo,
+                                     "vuelve": vuelve})
 
                   if not avisar:
-                      raise SystemExit(1 if clase != "ok" else 0)
+                      apunta(False)
+                      raise SystemExit(SALIDA)
 
                   if clase == "caido":
                       titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
@@ -275,7 +285,9 @@ spec:
                   chat = os.environ.get("TELEGRAM_CHAT_ID", "")
                   if not tok or not chat:
                       print("[litellm-watchdog] sin token/chat: no puedo avisar")
-                      raise SystemExit(1 if clase != "ok" else 0)
+                      apunta(False)
+                      raise SystemExit(SALIDA)
+                  enviado = False
                   try:
                       body = urllib.parse.urlencode({
                           "chat_id": chat, "parse_mode": "HTML",
@@ -284,13 +296,14 @@ spec:
                           "https://api.telegram.org/bot%s/sendMessage" % tok,
                           data=body, method="POST")
                       with urllib.request.urlopen(req, timeout=20) as r:
-                          print("[litellm-watchdog] telegram:",
-                                json.loads(r.read()).get("ok"))
+                          enviado = bool(json.loads(r.read()).get("ok"))
+                          print("[litellm-watchdog] telegram:", enviado)
                   except Exception as exc:
                       print("[litellm-watchdog] telegram fallo:", str(exc)[:150])
-                  # El Job falla si LiteLLM esta mal, para que quede en los Jobs
-                  # fallidos del namespace aunque Telegram no llegue.
-                  raise SystemExit(1 if clase != "ok" else 0)
+                  apunta(enviado)
+                  # El Job solo falla si LiteLLM esta CAIDO, para que quede en los
+                  # Jobs fallidos del namespace aunque Telegram no llegue.
+                  raise SystemExit(SALIDA)
               env:
                 - name: LITELLM_MASTER_KEY
                   valueFrom:
