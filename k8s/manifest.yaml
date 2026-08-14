@@ -3254,6 +3254,12 @@ data:
             # peticiones simultaneas a longitud completa de 384K.
             "max_input_tokens": 393216,
             "supports_function_calling": True,
+            # OpenCode/OpenChamber can send reasoning_effort directly. Publish
+            # the exact client-facing tiers so they render as variants of this
+            # model instead of forcing users to pick the compatibility aliases
+            # agent/high/max as if they were separate checkpoints.
+            "supports_reasoning": True,
+            "supported_reasoning_efforts": ("none", "low", "high", "max"),
             # 2026-08-13: YA VE. El servidor no sirve DeepseekV4ForCausalLM sino
             # DeepseekV4VisionForCausalLM (plugin FlyCockpit dsv4_vision_vllm:
             # tower DeepEncoderV2 congelado + adapter BF16, imagen
@@ -3562,6 +3568,10 @@ data:
                         "max_input_tokens": backend["max_input_tokens"],
                         "supports_function_calling": backend["supports_function_calling"],
                         "supports_vision": backend["supports_vision"],
+                        "supports_reasoning": bool(backend.get("supports_reasoning", False)),
+                        "supported_reasoning_efforts": list(
+                            backend.get("supported_reasoning_efforts", ())
+                        ),
                         "managed_by": "litellm-dgx-backend-sync",
                         "backend": backend["backend"],
                         "k8s_namespace": K8S_NAMESPACE,
@@ -3612,6 +3622,10 @@ data:
             "max_input_tokens": info.get("max_input_tokens"),
             "supports_function_calling": info.get("supports_function_calling"),
             "supports_vision": info.get("supports_vision"),
+            "supports_reasoning": bool(info.get("supports_reasoning", False)),
+            "supported_reasoning_efforts": list(
+                info.get("supported_reasoning_efforts") or ()
+            ),
             "backend": info.get("backend"),
             "k8s_namespace": info.get("k8s_namespace"),
             "k8s_service": info.get("k8s_service"),
