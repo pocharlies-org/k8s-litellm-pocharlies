@@ -353,29 +353,42 @@ data:
       #     model-name gate.
       # Both layers are load-bearing. Neither one substitutes for the other.
       fallbacks:
-      # 2026-08-13: los cuatro perfiles son niveles de pensamiento del MISMO
-      # residente. Su red debe terminar en una deployment real y estatica, nunca en
-      # `dense`: cuando DeepSeek TP=2 ocupa ambos Sparks no puede existir ningun
-      # residente dense y ese fallback fue el que convirtio un fallo de streaming
-      # del router en HTTP 500.
+      # Los cuatro perfiles son niveles de pensamiento del MISMO residente. Su red
+      # debe terminar en una deployment real y estatica, nunca en `dense`: cuando
+      # DeepSeek TP=2 ocupa ambos Sparks no puede existir ningun residente dense, y
+      # ese fallback fue el que convirtio un fallo de streaming del router en HTTP 500.
       #
-      # APUNTABAN A cloudblue/gpt-5.6-luna, QUE ERA UN PUNTERO MUERTO. Ese alias
-      # esta en una cuenta con las keys bloqueadas a proposito, y ademas el proceso
-      # ni siquiera lo tenia cargado. O sea que estos cuatro NO tenian red: si
-      # DeepSeek caia, caian ellos y su fallback tambien. Y no son alias residuales
-      # — medido en vivo el mismo dia: high 25,6 tps, max 45,8 tps, agent 30,9 tps,
-      # con trafico concurrente. Son las rutas calientes.
+      # HISTORIA, porque las dos versiones anteriores estaban mal de formas distintas:
       #
-      # Ahora terminan en la cuenta personal de ChatGPT, que es infraestructura
-      # DISTINTA: si se cae el DGX entero, esto sigue contestando. Sigue siendo un
-      # DAG: tooling/agent/high/max -> e-dani/gpt-5.6-sol -> deepseek-v4-flash-0731,
-      # tres nombres distintos y sin ciclos.
-      - tooling: ["e-dani/gpt-5.6-sol"]
-      - agent: ["e-dani/gpt-5.6-sol"]
-      - high: ["e-dani/gpt-5.6-sol"]
-      - max: ["e-dani/gpt-5.6-sol"]
-      # Y la vuelta: si la cuenta de ChatGPT falla (cuota, token caducado, la app de
-      # Meta caida), se cae al residente local.
+      #   1) Apuntaban a cloudblue/gpt-5.6-luna, un PUNTERO MUERTO: cuenta con las
+      #      keys bloqueadas y, encima, un alias que el proceso ni tenia cargado. No
+      #      habia red ninguna.
+      #   2) El 13-08 los repunte a e-dani/gpt-5.6-sol "porque es infraestructura
+      #      distinta". PEOR. Ese alias vive detras de codex-bridge-edani, que llevaba
+      #      12 reinicios en 18 h. El 14-08 el puente entro en CrashLoopBackOff y
+      #      LiteLLM se paso media tarde reintentando contra un host caido hasta que
+      #      lo mato el OOM (2 veces, limite 3Gi). Mandar las CUATRO rutas calientes
+      #      a un backend externo e inestable convierte un fallo instantaneo en una
+      #      tormenta de reintentos. Ese fue el coste.
+      #
+      # Ahora caen a deepseek-v4-flash-0731, que es el MISMO backend que ya los sirve
+      # pero por su nombre directo. Parece un no-op y no lo es: los grupos de modelo
+      # se registran y se DESREGISTRAN de forma independiente (lo hace
+      # litellm-dgx-backend-sync via /model/new y /model/delete segun readiness). Un
+      # alias puede quedarse sin deployments mientras el backend sigue vivo, y ahi es
+      # donde esta red sirve. Y no puede provocar tormenta: si DeepSeek esta caido, el
+      # fallback tambien lo esta y falla igual de rapido.
+      #
+      # Nada de rutas calientes hacia la cuenta personal de ChatGPT. Esa cuenta es
+      # para cuando alguien pide gpt-5.6-sol a proposito, no para absorber el trafico
+      # de tooling/agent/high/max sin que nadie lo haya decidido.
+      - tooling: ["deepseek-v4-flash-0731"]
+      - agent: ["deepseek-v4-flash-0731"]
+      - high: ["deepseek-v4-flash-0731"]
+      - max: ["deepseek-v4-flash-0731"]
+      # Esto SI se queda, y es lo unico que se pidio: si la cuenta de ChatGPT falla
+      # (cuota, token caducado, el puente reventado), lo que se pidio explicitamente
+      # como gpt-5.6-sol cae al residente local en vez de devolver un error.
       - e-dani/gpt-5.6-sol: ["deepseek-v4-flash-0731"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
@@ -4008,7 +4021,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-67e050789902
+        config.k8s.e-dani.com/revision: config-3a44e91b9017
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
