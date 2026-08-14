@@ -2402,6 +2402,18 @@ data:
             "openai/qwen35-9b",
             "http://192.168.50.142:8210/v1",
         ): "vllm-9b",
+        (
+            "qwen35-4b",
+            "http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1",
+        ): "qwen35-4b-int4",
+        (
+            "qwen3.5-4b",
+            "http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1",
+        ): "qwen35-4b-int4",
+        (
+            "openai/qwen3.5-4b",
+            "http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1",
+        ): "qwen35-4b-int4",
     }
 
 
@@ -3143,8 +3155,16 @@ data:
     QWEN36_REPEAT_GUARD_PARAMS = {
         "repetition_penalty": float(os.getenv("QWEN36_REPETITION_PENALTY", "1.08")),
     }
-    # Cluster topology (2026-08-04). CUATRO backends declarados, y la exclusion
-    # mutua NO es uniforme: depende del nodo.
+    # Direct, text-only aliases for the small llama.cpp resident on the RTX.
+    # They do not overlap with tooling/dense: asking for this checkpoint must
+    # never silently route to one of the much larger Spark residents.
+    QWEN35_4B_ALIASES = (
+        "qwen35-4b",
+        "qwen3.5-4b",
+    )
+    # Cluster topology (2026-08-04). The exclusion between Spark backends is not
+    # uniform and depends on the node. Qwen3.5-4B is independent of those seats:
+    # it lives on the x86 RTX and co-resides there through raw CUDA.
     #
     # DGX1 (nvidia-dgx) = asiento UNICO de tooling. Una GPU fisica con
     # nvidia.com/gpu.sharing-strategy=none, y los dos candidatos piden
@@ -3271,6 +3291,37 @@ data:
             # "este modelo no admite entrada de imagenes" sin llegar a preguntar.
             # Este flag es la unica pieza que faltaba: el modelo ya veia.
             "supports_vision": True,
+        },
+        {
+            # Small latency-oriented text resident on the x86 RTX 3080 Ti.
+            # llama.cpp serves one slot at 32K with Q4_K_M weights and Q8 KV.
+            # The EndpointSlice is the ownership signal: if the pod is not Ready,
+            # the sync removes both aliases instead of routing to a dead backend.
+            "name": "qwen35-4b-int4",
+            "label": "RTX_QWEN35_4B_INT4",
+            "backend": "rtx",
+            "base_model": os.getenv(
+                "QWEN35_4B_MODEL",
+                "openai/qwen3.5-4b",
+            ),
+            "aliases": QWEN35_4B_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN35_4B",
+                "qwen35-4b-int4",
+            ),
+            "api_base": os.getenv(
+                "QWEN35_4B_API_BASE",
+                "http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "rtx-qwen35-4b-int4",
+            "max_parallel_requests": 1,
+            "max_input_tokens": 32768,
+            "max_output_tokens": 8192,
+            # Keep catalog claims conservative. The deployed acceptance gate
+            # covered text chat, not tool-call quality or multimodal input.
+            "supports_function_calling": False,
+            "supports_reasoning": False,
+            "supports_vision": False,
         },
     )
     # ── Los limites son OBLIGATORIOS, no opcionales (2026-08-10) ────────────────
@@ -3842,7 +3893,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-b3324021584e
+        config.k8s.e-dani.com/revision: sync-4a045989286d
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -3930,7 +3981,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-983277d8997f
+        config.k8s.e-dani.com/revision: config-85f9ffaa8adc
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

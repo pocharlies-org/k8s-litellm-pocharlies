@@ -74,7 +74,7 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
 
 
 def test_backends_cubren_las_formas_de_exclusion():
-    """2 backends declarados, y la exclusion tiene dos formas distintas.
+    """3 backends declarados; los dos Spark conservan su exclusion y el RTX es independiente.
 
     Actualizado 2026-08-13 (ventana RHO backend-sync): eran 4. Se retiraron
     `ornith-dgx1` y `nvidia-qwen36-dgx1`, los dos candidatos al asiento de DGX1:
@@ -99,8 +99,12 @@ def test_backends_cubren_las_formas_de_exclusion():
     """
     text = MANIFEST.read_text()
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    assert backends.count('"name": "') == 2
-    for name in ("qwen36-27b-uncensored-dgx2", "deepseek-v4-flash-tp2"):
+    assert backends.count('"name": "') == 3
+    for name in (
+        "qwen36-27b-uncensored-dgx2",
+        "deepseek-v4-flash-tp2",
+        "qwen35-4b-int4",
+    ):
         assert f'"name": "{name}"' in backends
     # El de TP=2 tiene que decir que vive en los dos nodos: es lo que justifica que
     # comparta los alias de tooling sin romper la unicidad.

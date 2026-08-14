@@ -32,6 +32,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 # --max-model-len, este numero y el del sync tienen que moverse juntos.
 DGX2_UNCENSORED_27B = "qwen36-27b-uncensored-dgx2"
 DEEPSEEK_V4_FLASH = "deepseek-v4-flash-tp2"
+QWEN35_4B = "qwen35-4b-int4"
 
 
 @pytest.fixture(scope="module")
@@ -55,6 +56,7 @@ def backends(cms):
     wanted = {"ORNITH_CANARY_ALIASES", "QWEN36_COMPAT_ALIASES", "ORNITH_ALIASES",
               "THINKING_TIER_ALIASES",
               "TOOLING_RESIDENT_ALIASES", "DEEPSEEK_V4_FLASH_DIRECT_ALIASES",
+              "QWEN35_4B_ALIASES",
               "QWEN3CODER_ALIASES",
               "QWEN36_27B_UNCENSORED_ALIASES", "QWEN36_REPEAT_GUARD_PARAMS",
               "BACKENDS"}
@@ -120,13 +122,21 @@ def test_el_27b_declara_su_ventana_mas_estrecha(backends):
     """
     estrechos = {n: b["max_input_tokens"] for n, b in backends.items()
                  if b["max_input_tokens"] < 262144}
-    assert estrechos == {DGX2_UNCENSORED_27B: 65536}, estrechos
+    assert estrechos == {
+        DGX2_UNCENSORED_27B: 65536,
+        QWEN35_4B: 32768,
+    }, estrechos
 
 
 def test_deepseek_publica_la_ventana_operativa_de_384k(backends):
     """El catalogo solo puede anunciar el max_model_len que sirve vLLM."""
     assert backends[DEEPSEEK_V4_FLASH]["max_input_tokens"] == 393216
     assert backends[DEEPSEEK_V4_FLASH]["max_output_tokens"] == 16384
+
+
+def test_qwen35_4b_publica_el_contexto_real_de_llama_cpp(backends):
+    assert backends[QWEN35_4B]["max_input_tokens"] == 32768
+    assert backends[QWEN35_4B]["max_output_tokens"] == 8192
 
 
 def test_deepseek_publica_su_nombre_directo_solo_en_su_backend(backends):

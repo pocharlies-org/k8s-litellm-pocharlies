@@ -58,6 +58,7 @@ MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 BACKENDS_LOCALES = {
     "qwen36-27b-uncensored-dgx2",
     "deepseek-v4-flash-tp2",
+    "qwen35-4b-int4",
 }
 
 
