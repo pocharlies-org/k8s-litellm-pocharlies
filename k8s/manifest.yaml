@@ -40,10 +40,18 @@ data:
     # vLLM Service has ready Kubernetes endpoints. This avoids routing local,
     # tooling, router, litellmrouter, or auto to a baseline pod that is still
     # pulling/starting.
+    # 2026-08-14: los cuatro apuntaban a los Services `-cpu`, cuyos Deployments
+    # llevan 0/0 replicas y no tienen ningun KEDA que los levante: LiteLLM daba
+    # "Connect call failed" en /v1/embeddings y /v1/rerank teniendo los backends
+    # sanos al lado. No era protocolo -- el embedder responde /v1/embeddings con
+    # forma OpenAI y el reranker su /rerank nativo, que es lo que traduce el
+    # provider `infinity/`. Los Services buenos seleccionan por la etiqueta
+    # `bge-pool`, que es la que llevan los pods `-creative` vivos, y son los
+    # mismos a los que el brain ya iba directo (TEI_DENSE_URL / TEI_RERANKER_URL).
     - model_name: bge-m3
       litellm_params:
         model: openai/bge-m3
-        api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
+        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
         api_key: not-used
       model_info:
         mode: embedding
@@ -51,7 +59,7 @@ data:
     - model_name: bge-m3-embedding
       litellm_params:
         model: openai/bge-m3
-        api_base: http://bge-m3-embedding-cpu.llm.svc.cluster.local:8000/v1
+        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
         api_key: not-used
       model_info:
         mode: embedding
@@ -59,7 +67,7 @@ data:
     - model_name: bge-reranker
       litellm_params:
         model: infinity/bge-reranker
-        api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
+        api_base: http://bge-reranker.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
@@ -67,7 +75,7 @@ data:
     - model_name: bge-reranker-v2-m3
       litellm_params:
         model: infinity/bge-reranker
-        api_base: http://bge-reranker-cpu.llm.svc.cluster.local:8000
+        api_base: http://bge-reranker.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
@@ -4043,7 +4051,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f668debd50e9
+        config.k8s.e-dani.com/revision: config-0d928b732773
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
