@@ -48,9 +48,9 @@ def test_qwen_backend_uses_its_ready_clusterip_and_one_slot():
     assert backend["max_output_tokens"] == 8192
 
 
-def test_qwen_backend_does_not_overclaim_unverified_capabilities():
+def test_qwen_backend_exposes_only_verified_capabilities():
     backend = _qwen_backend()
-    assert backend["supports_function_calling"] is False
+    assert backend["supports_function_calling"] is True
     assert backend["supports_reasoning"] is False
     assert backend["supports_vision"] is False
 
@@ -61,3 +61,15 @@ def test_qwen_aliases_are_specific_and_do_not_take_over_fast():
     assert '"qwen35-4b"' in aliases
     assert '"qwen3.5-4b"' in aliases
     assert '"fast"' not in aliases
+
+
+def test_openclaw_key_reconciler_grants_only_the_canonical_qwen_alias():
+    code = _sync_code()
+    assert "OPENCLAW_TEAM_REQUIRED_MODELS" in code
+    manifest = MANIFEST.read_text()
+    required_line = next(
+        line for line in manifest.splitlines()
+        if "OPENCLAW_TEAM_REQUIRED_MODELS, value:" in line
+    )
+    assert "qwen35-4b" in required_line
+    assert "qwen3.5-4b" not in required_line

@@ -3317,9 +3317,11 @@ data:
             "max_parallel_requests": 1,
             "max_input_tokens": 32768,
             "max_output_tokens": 8192,
-            # Keep catalog claims conservative. The deployed acceptance gate
-            # covered text chat, not tool-call quality or multimodal input.
-            "supports_function_calling": False,
+            # Tool calling was verified end-to-end through LiteLLM on 2026-08-14:
+            # a forced get_weather call returned finish_reason=tool_calls and a
+            # schema-valid {"city":"Madrid"} argument object. Vision and exposed
+            # reasoning remain unverified and therefore stay disabled.
+            "supports_function_calling": True,
             "supports_reasoning": False,
             "supports_vision": False,
         },
@@ -3893,7 +3895,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-4a045989286d
+        config.k8s.e-dani.com/revision: sync-f13b66f5981d
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -3944,7 +3946,7 @@ spec:
             # tocar desde aqui `openclaw-codex-app-server` ni
             # `openclaw-operator-readonly`: sus bootstraps comparan igualdad EXACTA
             # de la lista de modelos y ensancharlas rompe el sync.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,qwen35-4b,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
