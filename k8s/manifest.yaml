@@ -4040,6 +4040,11 @@ spec:
       # Sin node-pool: `ubuntu` (el x86 de la RTX) no lo tiene y queremos una
       # replica alli. La lista es explicita -- sauvage tambien es amd64 y NO
       # entra: sus 128G son de los 150 pods que ya corren alli.
+      # `ubuntu` lleva un taint BLANDO pool=dev:PreferNoSchedule: sin tolerarlo
+      # el scheduler lo deja siempre para el final y la 4a replica acaba doblada
+      # en un ks5, que es exactamente lo que paso en el primer rollout (2/1/1/0).
+      tolerations:
+        - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
