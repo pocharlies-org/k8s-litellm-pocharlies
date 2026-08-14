@@ -1396,6 +1396,22 @@ data:
         "high": "high",
         "max": "max",
     }
+    # `/effort` de OpenClaw. Viaja como `reasoning_effort` de primer nivel y
+    # GANA al nombre del alias: quien lo manda esta opinando explicitamente, y
+    # los cuatro alias no son cuatro modelos sino cuatro niveles del mismo.
+    #
+    # El menu del cliente se declara low/high/max y `medium` se quito A
+    # PROPOSITO: DeepSeek no tiene ese nivel y el tokenizer parcheado del
+    # launch.sh hace caer lo desconocido a "low", asi que traducirlo aqui seria
+    # un nombre que miente. Lo que no este en esta tabla NO se adivina -- se
+    # devuelve None y sigue mandando el alias, exactamente como hasta ahora.
+    CLIENT_EFFORT_TIERS = {
+        "none": "off",
+        "off": "off",
+        "low": "low",
+        "high": "high",
+        "max": "max",
+    }
     # Cada familia dice lo mismo con otras palabras. DeepSeek lee `thinking` (bool)
     # + `reasoning_effort`; Qwen solo tiene `enable_thinking`, no gradua, asi que
     # low/high/max colapsan a "piensa". Un alias sin traduccion para la familia viva
@@ -1595,8 +1611,31 @@ data:
         except Exception as e:  # nunca romper una peticion por esto
             log.debug("_apply_family_sampling error: %s", e)
 
+    def _client_thinking_tier(data):
+        """El nivel que pidio el cliente por `reasoning_effort`, o None.
+
+        None significa dos cosas distintas a proposito: que no vino nada, o que
+        vino algo que no sabemos traducir. En los dos casos la respuesta correcta
+        es la misma -- no inventarse un nivel y dejar que mande el alias.
+        """
+        effort = _reasoning_effort_value(data)
+        if not effort:
+            return None
+        tier = CLIENT_EFFORT_TIERS.get(effort)
+        if tier is None:
+            sampling_log.info(
+                "thinking: effort=%s sin traduccion para el residente; manda el alias",
+                effort,
+            )
+        return tier
+
     def _apply_thinking_tier(data, requested_alias):
-        """Fija el nivel de pensamiento que pide el NOMBRE del alias.
+        """Fija el nivel de pensamiento: `reasoning_effort` o, si no, el alias.
+
+        Un `reasoning_effort` traducible GANA al nombre del alias. Es la mitad de
+        servidor del `/effort` de OpenClaw: los cuatro perfiles no son cuatro
+        modelos sino cuatro niveles del mismo residente, asi que quien sabe pedir
+        el nivel no necesita cambiar de modelo para subirlo.
 
         `requested_alias` es el alias explicito del cliente o, para una llamada
         automatica, el alias de profundidad que eligio el clasificador. No tiene
@@ -1619,10 +1658,14 @@ data:
            una peticion de mas pensamiento, es una contradiccion.
         """
         try:
-            tier = THINKING_TIERS.get((requested_alias or "").strip())
+            requested_tier = _client_thinking_tier(data)
+            tier = requested_tier or THINKING_TIERS.get((requested_alias or "").strip())
             if not tier:
                 return
             if _is_structured_output(data):
+                # El esquema manda incluso sobre un effort explicito: pedir `max`
+                # y un json_schema a la vez sigue siendo una contradiccion, no
+                # una peticion de mas pensamiento (medido 3/3 el 2026-08-10).
                 tier = "off"
             fam = _family_of_alias((data.get("model") or "").strip())
             kwargs = (THINKING_KWARGS.get(fam) or {}).get(tier)
@@ -1643,7 +1686,8 @@ data:
                 ctk[k] = v
                 applied.append("%s=%s" % (k, v))
             if applied:
-                sampling_log.info("thinking: alias=%s tier=%s familia=%s -> %s",
+                sampling_log.info("thinking: origen=%s alias=%s tier=%s familia=%s -> %s",
+                                  "effort" if requested_tier else "alias",
                                   requested_alias, tier, fam, ",".join(applied))
         except Exception as e:  # nunca romper una peticion por esto
             log.debug("_apply_thinking_tier error: %s", e)
@@ -3840,7 +3884,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c0d122efbb99
+        config.k8s.e-dani.com/revision: config-e75f080fc3ba
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

@@ -24,9 +24,13 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 WANT_FN = {"_apply_family_sampling", "_family_of_alias",
            "_is_structured_output", "_disable_thinking",
-           "_apply_thinking_tier"}
+           "_apply_thinking_tier",
+           # 2026-08-14: `_apply_thinking_tier` mira primero el `reasoning_effort`
+           # del cliente. Sin estos dos el except de la funcion se traga un
+           # NameError y el tier deja de aplicarse EN SILENCIO.
+           "_client_thinking_tier", "_reasoning_effort_value"}
 WANT_CONST = {"FAMILY_SAMPLING", "SWAPPABLE_ALIASES",
-              "THINKING_TIERS", "THINKING_KWARGS"}
+              "THINKING_TIERS", "THINKING_KWARGS", "CLIENT_EFFORT_TIERS"}
 
 
 def _install_fake_litellm(deployments):
