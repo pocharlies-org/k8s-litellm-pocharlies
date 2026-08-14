@@ -314,6 +314,13 @@ data:
       # DB down must degrade auth (restricted internal token), not kill inference.
       # Incident 2026-07-20: postgres-shared out for 9h => litellm hard-down.
       allow_requests_on_db_unavailable: true
+      # 2026-08-14: con 4 replicas, Prisma sin limite son ~98 conexiones por pod
+      # = ~400, que es EXACTAMENTE el max_connections de postgres-shared.
+      # 25 x 4 = 100 deja 300 al resto de tenants. Se fija aqui y no en el DSN a
+      # proposito: el mismo parametro en la URL tumba el arranque de cualquier
+      # consumidor psycopg que la herede.
+      database_connection_pool_limit: 25
+      database_connection_timeout: 60
       background_health_checks: true
       enable_passthrough_logging: false
       maximum_spend_logs_retention_period: 30d
@@ -3960,13 +3967,31 @@ spec:
         - name: sync
           configMap: { name: litellm-dgx-backend-sync }
 ---
+# Con 4 replicas repartidas 1-por-nodo, un drain (los reinicios de Ansible de
+# los ks5 son rutina) no debe poder dejar el proxy por debajo de 2.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: litellm
+  namespace: litellm
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: litellm } }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: litellm
   namespace: litellm
 spec:
-  replicas: 1
+  # 2026-08-14: de singleton a 4 replicas, una por nodo amd64 util (los tres
+  # ks5-cp + ubuntu/x86). Motivo: dos OOMKill seguidos a 3Gi con ~74 req/min --
+  # LiteLLM es hoy el proxy de TODO (residente local + ChatGPT) y un singleton
+  # es un punto unico de fallo con cola. El registro dinamico de modelos vive en
+  # postgres (store_model_in_db), asi que las replicas comparten catalogo; el
+  # estado en proceso (cooldowns del router, active-requests) pasa a ser por-pod
+  # y se asume: es telemetria y proteccion local, no correctness.
+  replicas: 4
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -3983,14 +4008,27 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-85f9ffaa8adc
+        config.k8s.e-dani.com/revision: config-67e050789902
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
       terminationGracePeriodSeconds: 720
-      nodeSelector:
-        kubernetes.io/arch: amd64
-        node-pool: ks5-nvme
+      # Sin node-pool: `ubuntu` (el x86 de la RTX) no lo tiene y queremos una
+      # replica alli. La lista es explicita -- sauvage tambien es amd64 y NO
+      # entra: sus 128G son de los 150 pods que ya corren alli.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [ks5-cp-1, ks5-cp-2, ks5-cp-3, ubuntu]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector: { matchLabels: { app: litellm } }
       containers:
         - name: litellm
           image: ghcr.io/berriai/litellm:v1.96.0
@@ -4034,8 +4072,11 @@ spec:
             - { name: config, mountPath: /app/active_request_tracking.py, subPath: active_request_tracking.py, readOnly: true }
             - { name: tracking, mountPath: /shared/tracking }
           resources:
-            requests: { cpu: 200m, memory: 512Mi }
-            limits:   { memory: 3Gi }
+            # 2026-08-14: 512Mi/3Gi eran de la era singleton y el OOM lo probo.
+            # El request de CPU sube tambien a proposito: un request bajo aqui ya
+            # dio ConnectTimeout contra todo pareciendo un fallo de red.
+            requests: { cpu: "1", memory: 2Gi }
+            limits:   { memory: 6Gi }
           lifecycle:
             preStop:
               exec:
