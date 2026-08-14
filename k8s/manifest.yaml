@@ -385,6 +385,22 @@ data:
       # Y el unico que cruza infraestructura: quien pide e-dani/gpt-5.6-sol A
       # PROPOSITO (Codex) cae al residente local si la cuenta de ChatGPT falla.
       - e-dani/gpt-5.6-sol: ["deepseek-v4-flash-0731"]
+      # 2026-08-14, peticion del owner: el residente tambien tiene red. Cubre el
+      # modo "registrado pero sin deployment sano" -- el que tumbo a Aurora --
+      # para quien pide el modelo por su nombre. El modo "alias BORRADO" (el sync
+      # llama a /model/delete cuando el Service se cae) NO lo cubre esto ni puede:
+      # el proxy responde 400 antes de que corra el Router, y la cadena del hook
+      # solo desvia nombres de CAPACIDAD, no de modelo.
+      #
+      # AVISO, que esto ya mordio: el destino NO es un alias del mismo backend,
+      # que es lo que recomienda la historia de arriba. Son las dos cuentas de
+      # ChatGPT por codex-bridge, la misma forma del caso 2) del 13-08 que dejo a
+      # LiteLLM reintentando contra un puente en CrashLoop hasta dos OOM. Se monta
+      # asi a peticion expresa del owner. Dos saltos y en cuentas distintas
+      # (cloudblue -> e-dani) para que la caida de un puente no agote la cadena.
+      # Si vuelve a haber OOM del proxy con el puente reiniciandose, esta linea es
+      # la primera sospechosa.
+      - deepseek-v4-flash-0731: ["cloudblue/gpt-5.6-luna", "e-dani/gpt-5.6-luna"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -4027,7 +4043,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e13c817caa41
+        config.k8s.e-dani.com/revision: config-f668debd50e9
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
