@@ -29,6 +29,24 @@
 #
 # Se pide una suma y se comprueba el RESULTADO. Una respuesta vacia con HTTP 200 es
 # un fallo, no un exito, y esto lo trata como tal.
+#
+# LA MEMORIA VA EN UN CONFIGMAP (2026-08-15)
+# ------------------------------------------
+# La primera version guardaba el estado previo en /tmp, dentro del pod del Job, que
+# muere en cada corrida. O sea que `antes` valia SIEMPRE None y la rama verde, que
+# exige `antes is True`, no se ejecuto nunca: el aviso de RECUPERADO estaba escrito
+# y era inalcanzable. Se vio el 15-08, con el rojo repitiendose cada 10 min.
+# Ahora el estado vive en el ConfigMap litellm-watchdog-estado, que el propio Job
+# crea la primera vez. NO se versiona aqui a proposito: la app tiene selfHeal, y un
+# objeto en git cuyo contenido cambia cada 10 min seria drift permanente.
+#
+# CUOTA AGOTADA NO ES "CAIDO"
+# ---------------------------
+# El 15-08 el aviso decia CAIDO y LiteLLM estaba perfectamente: 4 pods 2/2 y 46
+# modelos en el catalogo. Lo agotado era el limite semanal del plan de arriba, que
+# responde 429 usage_limit_reached con el `resets_at` dentro. Son dos incidentes
+# distintos: uno se arregla en el cluster y el otro solo se espera. El upstream ya
+# dice cuando vuelve — decirlo tambien es gratis.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -55,6 +73,7 @@ spec:
           labels: { app: litellm-watchdog }
         spec:
           restartPolicy: Never
+          serviceAccountName: litellm-watchdog
           containers:
             - name: watchdog
               image: python:3.12-slim
@@ -62,12 +81,64 @@ spec:
                 - python3
                 - -c
                 - |
-                  import json, os, time, urllib.error, urllib.parse, urllib.request
+                  import json, os, ssl, time, urllib.error, urllib.parse, urllib.request
 
                   BASE = "http://litellm.litellm.svc.cluster.local:4000"
                   KEY = os.environ.get("LITELLM_MASTER_KEY", "")
-                  ESTADO = "/tmp/estado.json"   # efimero a proposito: ver abajo
 
+                  # --- memoria entre corridas: un ConfigMap del namespace ------------
+                  SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+                  NS = open(SA + "/namespace").read().strip()
+                  CM = "litellm-watchdog-estado"
+                  RUTA = "/api/v1/namespaces/%s/configmaps" % NS
+                  CTX = ssl.create_default_context(cafile=SA + "/ca.crt")
+
+                  def k8s(metodo, path, cuerpo=None, tipo="application/json"):
+                      tok = open(SA + "/token").read().strip()
+                      d = json.dumps(cuerpo).encode() if cuerpo is not None else None
+                      r = urllib.request.Request(
+                          "https://kubernetes.default.svc" + path, data=d,
+                          method=metodo,
+                          headers={"authorization": "Bearer " + tok,
+                                   "content-type": tipo, "accept": "application/json"})
+                      with urllib.request.urlopen(r, timeout=15, context=CTX) as resp:
+                          return json.loads(resp.read())
+
+                  def lee_estado():
+                      try:
+                          d = k8s("GET", RUTA + "/" + CM)
+                          return json.loads(d.get("data", {}).get("estado", "{}"))
+                      except urllib.error.HTTPError as exc:
+                          if exc.code != 404:
+                              print("[litellm-watchdog] leer estado:", exc.code)
+                          return {}
+                      except Exception as exc:
+                          print("[litellm-watchdog] leer estado:", str(exc)[:110])
+                          return {}
+
+                  def guarda_estado(e):
+                      cuerpo = {"data": {"estado": json.dumps(e)}}
+                      try:
+                          k8s("PATCH", RUTA + "/" + CM, cuerpo,
+                              "application/merge-patch+json")
+                          return
+                      except urllib.error.HTTPError as exc:
+                          if exc.code != 404:
+                              print("[litellm-watchdog] guardar estado:", exc.code)
+                              return
+                      except Exception as exc:
+                          print("[litellm-watchdog] guardar estado:", str(exc)[:110])
+                          return
+                      # No existia: lo crea. Sin tracking-id de Argo a proposito —
+                      # es estado vivo, no un objeto declarado en git.
+                      try:
+                          k8s("POST", RUTA, {"metadata": {"name": CM, "namespace": NS,
+                                                          "labels": {"app": "litellm-watchdog"}},
+                                             "data": {"estado": json.dumps(e)}})
+                      except Exception as exc:
+                          print("[litellm-watchdog] crear estado:", str(exc)[:110])
+
+                  # --- comprobaciones ------------------------------------------------
                   def pide(path, payload=None, timeout=45):
                       d = json.dumps(payload).encode() if payload else None
                       r = urllib.request.Request(
@@ -81,6 +152,7 @@ spec:
                   fallos = []
                   modelos = None
                   latencia = None
+                  vuelve = None      # epoch de reset si el upstream lo dice
 
                   # 1. ¿Publica catalogo? Si esto falla, ni arranco.
                   try:
@@ -109,46 +181,93 @@ spec:
                               fallos.append("inferencia: HTTP 200 con contenido VACIO")
                           elif "391" not in txt:
                               fallos.append("inferencia: respuesta incorrecta %r" % txt[:40])
+                      except urllib.error.HTTPError as exc:
+                          # El cuerpo del 429 trae el motivo y el reset; sin leerlo,
+                          # "Too Many Requests" no distingue cuota agotada de
+                          # rate-limit por rafaga.
+                          try:
+                              crudo = exc.read().decode("utf-8", "replace")
+                          except Exception:
+                              crudo = ""
+                          if exc.code == 429 and "usage_limit_reached" in crudo:
+                              for trozo in crudo.split("resets_at"):
+                                  digitos = "".join(
+                                      c for c in trozo[:24] if c.isdigit())
+                                  if len(digitos) >= 10:
+                                      vuelve = int(digitos[:10])
+                                      break
+                              fallos.append("cuota del plan agotada (429 "
+                                            "usage_limit_reached)")
+                          else:
+                              fallos.append("inferencia: HTTP %d %s"
+                                            % (exc.code, crudo[:90]))
                       except Exception as exc:
                           fallos.append("inferencia: %s" % str(exc)[:110])
 
-                  malo = bool(fallos)
+                  # --- clase del incidente -------------------------------------------
+                  # "cuota" no es "caido": el cluster esta bien y no hay nada que tocar,
+                  # solo esperar. Mezclarlos fue el error del aviso del 15-08.
+                  if not fallos:
+                      clase = "ok"
+                  elif vuelve or any("cuota del plan" in f for f in fallos):
+                      clase = "cuota"
+                  else:
+                      clase = "caido"
 
-                  # El estado previo va en /tmp, que muere con el pod, asi que en la
-                  # practica cada corrida empieza sin memoria. Es DELIBERADO: montar
-                  # un PVC para esto seria mas cosas que se pueden romper, y el coste
-                  # de no recordar es que un fallo largo repite el aviso cada 10 min.
-                  # Eso es aceptable — un servicio caido MERECE insistir — y se corta
-                  # solo con el mensaje de recuperado.
-                  antes = None
-                  try:
-                      antes = json.load(open(ESTADO)).get("malo")
-                  except Exception:
-                      pass
-                  json.dump({"malo": malo}, open(ESTADO, "w"))
+                  ahora = int(time.time())
+                  antes = lee_estado()
+                  clase_antes = antes.get("clase")
+                  ultimo = antes.get("ultimo_aviso", 0)
 
                   print("[litellm-watchdog]", json.dumps(
-                      {"modelos": modelos, "latencia_ms": round(latencia or 0),
-                       "fallos": fallos}))
+                      {"clase": clase, "antes": clase_antes, "modelos": modelos,
+                       "latencia_ms": round(latencia or 0), "fallos": fallos,
+                       "vuelve": vuelve}))
 
-                  if not malo and antes is not True:
-                      raise SystemExit(0)          # todo bien y nada que desmentir
+                  # Se avisa al CAMBIAR de clase. Si sigue caido, se insiste cada hora
+                  # (no cada 10 min: 6 mensajes/hora de lo mismo se ignoran solos). Si
+                  # es cuota, ni se insiste — ya sabes la hora a la que vuelve.
+                  RECORDAR = 3600
+                  if clase == clase_antes:
+                      avisar = clase == "caido" and (ahora - ultimo) >= RECORDAR
+                  else:
+                      avisar = clase != "ok" or clase_antes in ("caido", "cuota")
 
-                  if malo:
+                  guarda_estado({"clase": clase,
+                                 "desde": antes.get("desde", ahora)
+                                          if clase == clase_antes else ahora,
+                                 "ultimo_aviso": ahora if avisar else ultimo,
+                                 "vuelve": vuelve})
+
+                  if not avisar:
+                      raise SystemExit(1 if clase != "ok" else 0)
+
+                  if clase == "caido":
                       titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
                       intro = "No esta sirviendo."
                       cuerpo = ["· " + f for f in fallos]
                       quehacer = ("Lo usa TODO: Codex, OpenClaw, el brain, el panel.\n"
                                   "Mira <code>kubectl get pods -n litellm</code>.\n"
-                                  "Si pone OOMKilled, el limite esta en el manifiesto;\n"
-                                  "si el culpable es codex-bridge-edani, ese lleva\n"
-                                  "reventando desde el 14-08 y es la causa raiz.")
+                                  "Si pone OOMKilled, el limite esta en el manifiesto.\n"
+                                  "Si un pod reinicia en bucle, mira SUS logs antes de\n"
+                                  "culpar a nadie — el aviso no sabe quien es.")
+                  elif clase == "cuota":
+                      cuando = (time.strftime("%a %d-%m a las %H:%M",
+                                              time.localtime(vuelve))
+                                if vuelve else "sin fecha en la respuesta")
+                      titulo = "\U0001F7E0 <b>LiteLLM SIN CUOTA</b>"
+                      intro = "El cluster esta bien; el plan de arriba agoto el limite."
+                      cuerpo = ["· %d modelos publicados, el catalogo sirve" % (modelos or 0),
+                                "· la inferencia da 429 usage_limit_reached",
+                                "· vuelve: <b>%s</b>" % cuando]
+                      quehacer = ("Nada en el cluster. No hay fallback local desde el\n"
+                                  "10-08, asi que ningun alias contesta hasta el reset.")
                   else:
                       titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
                       intro = "Vuelve a servir."
                       cuerpo = ["· %d modelos · inferencia en %d ms" % (
                           modelos or 0, round(latencia or 0))]
-                      quehacer = "Nada. El aviso rojo anterior queda desmentido."
+                      quehacer = "Nada. El aviso anterior queda desmentido."
 
                   texto = "\n".join([titulo, "", intro, ""] + cuerpo +
                                     ["", "<b>Qué hacer</b>", quehacer])
@@ -156,7 +275,7 @@ spec:
                   chat = os.environ.get("TELEGRAM_CHAT_ID", "")
                   if not tok or not chat:
                       print("[litellm-watchdog] sin token/chat: no puedo avisar")
-                      raise SystemExit(1 if malo else 0)
+                      raise SystemExit(1 if clase != "ok" else 0)
                   try:
                       body = urllib.parse.urlencode({
                           "chat_id": chat, "parse_mode": "HTML",
@@ -171,7 +290,7 @@ spec:
                       print("[litellm-watchdog] telegram fallo:", str(exc)[:150])
                   # El Job falla si LiteLLM esta mal, para que quede en los Jobs
                   # fallidos del namespace aunque Telegram no llegue.
-                  raise SystemExit(1 if malo else 0)
+                  raise SystemExit(1 if clase != "ok" else 0)
               env:
                 - name: LITELLM_MASTER_KEY
                   valueFrom:
@@ -181,12 +300,57 @@ spec:
                 # re-embebido del brain.
                 - name: TELEGRAM_CHAT_ID
                   value: "33285833"
+                # La imagen es UTC. Sin esto, "vuelve el jueves a las 03:30" seria
+                # dos horas antes de la verdad y el humano miraria cuando no toca.
+                - name: TZ
+                  value: Europe/Madrid
                 - name: TELEGRAM_BOT_TOKEN
                   valueFrom:
                     secretKeyRef: { name: litellm-watchdog-telegram, key: bot_token }
               resources:
                 requests: { cpu: 20m, memory: 64Mi }
                 limits: { memory: 256Mi }
+---
+# Permiso minimo para la memoria del vigilante. `create` no admite resourceNames
+# (el objeto aun no existe cuando se pide), asi que ese verbo si es de namespace;
+# get y patch van clavados al unico ConfigMap que toca. Nada mas: ni secretos, ni
+# pods, ni el resto del namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm-watchdog
+  namespace: litellm
+  labels: { app: litellm-watchdog }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-watchdog-estado
+  namespace: litellm
+  labels: { app: litellm-watchdog }
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["litellm-watchdog-estado"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-watchdog-estado
+  namespace: litellm
+  labels: { app: litellm-watchdog }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: litellm-watchdog-estado
+subjects:
+  - kind: ServiceAccount
+    name: litellm-watchdog
+    namespace: litellm
 ---
 # Token de @oppocharliesllmbot, el bot con el que el humano habla en privado.
 # Se lee de Vault, del mismo sitio del que lo saca el telegram-router de
