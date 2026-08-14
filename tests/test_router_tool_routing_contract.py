@@ -27,12 +27,14 @@ WANT_FN = {"_has_tools", "_classify_route", "_approx_input_tokens", "_message_en
            # body lazily imports litellm, so pulling it in costs nothing here -- the
            # chain tests inject a stub instead of calling it.
            "_degrade", "_alias_has_deployments", "_walk_chain", "_chain_of"}
+WANT_FN.update({"_compute_mode_allows_local", "_tooling_target_for_compute_mode"})
 WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "THINK_MARKERS",
               "REASONING_EFFORT_SIGNAL", "TEXT_PART_TYPES", "IMAGE_PART_TYPES",
               "VIDEO_PART_TYPES", "TOOL_ITEM_TYPES", "CAPABILITY_CHAINS",
               "THINKING_TIERS", "ROUTER_MAX_HINTS", "ROUTER_HIGH_HINTS",
               "ROUTER_LOW_HINTS", "ROUTER_OFF_HINTS",
-              "ROUTER_HIGH_CONTEXT_TOKENS", "ROUTER_MAX_CONTEXT_TOKENS"}
+              "ROUTER_HIGH_CONTEXT_TOKENS", "ROUTER_MAX_CONTEXT_TOKENS",
+              "TOOLING_MODE_TARGETS"}
 
 
 @pytest.fixture(scope="module")
@@ -147,14 +149,15 @@ def _chain(hook, category):
 
 def test_router_solo_selecciona_los_cuatro_tiers(hook):
     assert {entry["model"] for entry in hook.ROUTE.values()} == set(hook.THINKING_TIERS)
-    for category in hook.ROUTE:
+    assert _chain(hook, "OFF") == ("tooling",)
+    for category in ("LOW", "HIGH", "MAX"):
         chain = _chain(hook, category)
         assert chain[-1] == "cloudblue/gpt-5.6-luna"
         assert not any(alias.startswith("dense") for alias in chain)
 
 
 def test_every_chain_ends_in_independent_cloud_fallback(hook):
-    for category in hook.ROUTE:
+    for category in ("LOW", "HIGH", "MAX"):
         chain = _chain(hook, category)
         assert len(chain) >= 2, f"{category} no tiene a donde degradar: {chain}"
         assert len(set(chain)) == len(chain), f"{category} repite un alias: {chain}"
@@ -221,9 +224,28 @@ def test_tooling_es_no_op_cuando_esta_registrado(hook):
     proxy rechaza el nombre antes de que corra el Router."""
     entry = hook.CAPABILITY_CHAINS["tooling"]
     assert hook._walk_chain(entry, alias_live=lambda a: True) == ("tooling", "primary")
-    assert hook._walk_chain(entry, alias_live=lambda a: a == "cloudblue/gpt-5.6-luna") \
-        == ("cloudblue/gpt-5.6-luna", "degraded")
     assert hook._walk_chain(entry, alias_live=lambda a: False) == ("tooling", "dry")
+
+
+def test_tooling_target_follows_effective_compute_mode_and_never_cloud(hook):
+    ready_tp = {"phase": "ready", "desired_mode": "llm-tp", "effective_mode": "llm-tp"}
+    ready_creative = {
+        "phase": "ready", "desired_mode": "creative", "effective_mode": "creative"
+    }
+    transition = {
+        "phase": "switching", "desired_mode": "creative", "effective_mode": "llm-tp"
+    }
+
+    assert hook._tooling_target_for_compute_mode(ready_tp) == ("tooling", None)
+    assert hook._tooling_target_for_compute_mode(ready_creative) == ("dense", None)
+    assert hook._tooling_target_for_compute_mode(transition) == (
+        None,
+        "compute_mode_transition",
+    )
+    assert not any(
+        target.startswith(("cloudblue/", "e-dani/"))
+        for target in hook.TOOLING_MODE_TARGETS.values()
+    )
 
 
 def test_degrade_probes_each_alias_at_most_once(hook):
@@ -262,13 +284,13 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
         for src, dsts in entry.items():
             graph.setdefault(src, []).extend(dsts or [])
 
-    # 2026-08-13: el destino paso de cloudblue/gpt-5.6-luna a e-dani/gpt-5.6-sol.
-    # El motivo esta escrito en el manifiesto y sigue en pie aunque cloudblue se
-    # haya republicado: el alias viejo era un PUNTERO MUERTO — el proceso ni
-    # siquiera lo tenia cargado —, asi que estos cuatro perfiles se quedaban sin
-    # red justo cuando DeepSeek caia. Lo que se comprueba aqui NO es la cuenta,
-    # es que los cuatro terminen en el MISMO destino y que ese destino exista.
-    destinos = {p_: graph.get(p_) for p_ in ("tooling", "agent", "high", "max")}
+    # `tooling` es fail-closed y se resuelve por compute mode en el hook. Si
+    # reaparece aqui, puede encadenar tooling -> DeepSeek -> CloudBlue y volver a
+    # convertir un fallo local en consumo de una cuenta externa.
+    assert "tooling" not in graph
+
+    # Los tres perfiles con razonamiento conservan la red local por cooldown.
+    destinos = {p_: graph.get(p_) for p_ in ("agent", "high", "max")}
     unicos = {tuple(v or []) for v in destinos.values()}
     assert len(unicos) == 1, f"los perfiles no comparten red: {destinos}"
     destino = list(unicos)[0]

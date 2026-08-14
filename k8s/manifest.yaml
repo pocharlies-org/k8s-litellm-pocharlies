@@ -361,10 +361,9 @@ data:
       #     model-name gate.
       # Both layers are load-bearing. Neither one substitutes for the other.
       fallbacks:
-      # Los ocho alias (tooling, agent, high, max, router, auto, litellmrouter y
-      # deepseek-v4-flash-0731) son el MISMO backend: /model/info da para los ocho
-      # `openai/deepseek-v4-flash-0731` contra deepseek-v4-flash-0731.llm.svc:8000,
-      # y salen de UNA sola entrada de BACKENDS en sync.py (linea 212).
+      # En llm-tp, agent/high/max y deepseek-v4-flash-0731 son el MISMO backend.
+      # `tooling` no usa esta red: el hook lo resuelve por perfil y debe fallar
+      # cerrado para que una traduccion nunca salga a CloudBlue.
       #
       # Parece que un fallback entre ellos no puede servir de nada. LO PARECE Y NO
       # ES ASI, y por poco lo borro entero el 14-08 creyendolo. El COOLDOWN es POR
@@ -386,7 +385,6 @@ data:
       #   3) borrarlos (14-08): dejaba sin red el caso del cooldown, que es real.
       # El destino tiene que ser un alias DEL MISMO backend (para que no haya
       # reintentos contra una maquina caida) pero con OTRO contador de cooldown.
-      - tooling: ["deepseek-v4-flash-0731"]
       - agent: ["deepseek-v4-flash-0731"]
       - high: ["deepseek-v4-flash-0731"]
       - max: ["deepseek-v4-flash-0731"]
@@ -475,6 +473,21 @@ data:
             return False, "compute_mode_inconsistent"
         return True, None
 
+    TOOLING_MODE_TARGETS = {
+        "llm-tp": "tooling",
+        "creative": "dense",
+    }
+
+    def _tooling_target_for_compute_mode(state):
+        allowed, reason = _compute_mode_allows_local(state)
+        if not allowed:
+            return None, reason
+        effective = state.get("effective_mode")
+        target = TOOLING_MODE_TARGETS.get(effective)
+        if not target:
+            return None, "compute_mode_invalid"
+        return target, None
+
     async def _compute_mode_state():
         now = time.monotonic()
         if now < _compute_mode_cache["expires"]:
@@ -510,6 +523,31 @@ data:
             detail={
                 "error": "local LLM admission is closed during compute profile transition",
                 "blocked": reason,
+                "desired_mode": (state or {}).get("desired_mode"),
+                "effective_mode": (state or {}).get("effective_mode"),
+                "phase": (state or {}).get("phase"),
+            },
+        )
+
+    async def _resolve_tooling_profile():
+        """Resolve tooling only inside the active local compute profile.
+
+        The profile is fail-closed: a transition, inconsistent controller state,
+        or missing target returns a retryable 503 instead of escaping to a hosted
+        account. In llm-tp the dynamically registered ``tooling`` group is
+        DeepSeek V4; in creative the resident target is ``dense``.
+        """
+        state = await _compute_mode_state()
+        target, reason = _tooling_target_for_compute_mode(state)
+        if target and _alias_has_deployments(target):
+            return target
+        raise HTTPException(
+            status_code=503,
+            headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)},
+            detail={
+                "error": "tooling profile target is unavailable",
+                "blocked": reason or "compute_profile_target_unavailable",
+                "target": target,
                 "desired_mode": (state or {}).get("desired_mode"),
                 "effective_mode": (state or {}).get("effective_mode"),
                 "phase": (state or {}).get("phase"),
@@ -1101,7 +1139,10 @@ data:
     # The names deliberately match THINKING_TIERS so the selected alias can be fed
     # to _apply_thinking_tier after the request model has been rewritten.
     ROUTE = {
-        "OFF": {"model": "tooling", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        # OFF is the tooling profile itself. Its backend is selected from the
+        # effective compute mode and must fail with 503 rather than leave the
+        # local profile for CloudBlue.
+        "OFF": {"model": "tooling", "fallbacks": ()},
         "LOW": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "HIGH": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "MAX": {"model": "max", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
@@ -1168,8 +1209,8 @@ data:
     # falta comparar modelos pilotando un CLI agentico, hay que disenar la medida de
     # cero.
     #
-    # QUE HACE ESTO. Los cuatro perfiles conservan su alias como cabeza y usan
-    # cloudblue/gpt-5.6-luna solo como red independiente. Cubre el modo
+    # QUE HACE ESTO. Los perfiles con razonamiento conservan su alias como cabeza
+    # y usan cloudblue/gpt-5.6-luna como red independiente. Cubre el modo
     # "alias DESREGISTRADO" (el sync llama a /model/delete cuando el Service se cae),
     # que el proxy rechaza en route_llm_request ANTES de que corra el Router, asi que
     # `router_settings.fallbacks` no puede salvarlo. El otro modo -- "registrado pero
@@ -1179,17 +1220,15 @@ data:
     #
     # Funciona porque pre_call_hook reescribe data["model"] ANTES del gate de nombre
     # del proxy (proxy_server.py:8691 vs route_request en :8698).
-    # Los cuatro perfiles llevan la MISMA red y por el mismo motivo: los
-    # registra y los borra el mismo sync, contra el mismo Service. Si el residente
-    # cae, `agent` se queda tan desregistrado como `tooling`, y sin cadena ese fallo
-    # sale como 400 en vez de degradar. La cabeza es el propio alias para que el
-    # selector automatico pueda conservar el nivel elegido.
+    # `tooling` es distinto: representa el perfil local, no un proveedor. El hook
+    # lo resuelve por modo efectivo (`llm-tp` -> DeepSeek V4, `creative` -> dense)
+    # y devuelve 503 durante una transicion o si falta el target. No tiene salida
+    # externa, para que un 429 nunca se convierta en una respuesta de otra cuenta.
     CAPABILITY_CHAINS = {
-        # cloudblue/gpt-5.6-luna es estatico via codex-bridge y no comparte el
-        # despliegue
-        # local. Cubre tanto alias desregistrado (esta cadena) como deployment
-        # registrado pero no sano (router_settings.fallbacks).
-        "tooling": {"model": "tooling", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        # `tooling` se resuelve por modo en _resolve_tooling_profile y nunca usa
+        # esta cadena como salida externa.
+        "tooling": {"model": "tooling", "fallbacks": ()},
+        # Los perfiles con razonamiento conservan la red independiente anterior.
         "agent": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "high": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "max": {"model": "max", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
@@ -2061,7 +2100,11 @@ data:
             )
             if cap_alias is not None:
                 cap_entry = CAPABILITY_CHAINS[cap_alias]
-                cap_resolved, cap_state = _walk_chain(cap_entry)
+                if cap_alias == "tooling":
+                    cap_resolved = await _resolve_tooling_profile()
+                    cap_state = "primary" if cap_resolved == cap_alias else "profile"
+                else:
+                    cap_resolved, cap_state = _walk_chain(cap_entry)
                 if cap_state == "degraded":
                     router_log.warning(
                         "capability: %s no esta registrado; degradado a %r",
@@ -2094,7 +2137,11 @@ data:
                 if marker_present:
                     _strip_think_from_last_user(data)
                 target = ROUTE[category]
-                resolved_model, route_state = _degrade(category)
+                if target["model"] == "tooling":
+                    resolved_model = await _resolve_tooling_profile()
+                    route_state = "primary" if resolved_model == "tooling" else "profile"
+                else:
+                    resolved_model, route_state = _degrade(category)
                 if route_state == "degraded":
                     router_log.warning(
                         "router: %s primary %r has no live deployments; degraded to %r",
@@ -4051,7 +4098,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-0d928b732773
+        config.k8s.e-dani.com/revision: config-7873cba865bb
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
