@@ -131,7 +131,9 @@ def test_accounts_publish_prefixed_ids_and_desktop_personal_aliases():
 def test_personal_bridge_is_enabled_with_its_own_secret():
     documents = _documents(BRIDGES)
     deployment = _resource(documents, "Deployment", "codex-bridge-edani")
-    assert deployment["spec"]["replicas"] == 1
+    # Master/replica desde 2026-08-14: dos pods sirven; el refresh es exclusivo
+    # via Lease (ver test_codex_bridge_lease_contract).
+    assert deployment["spec"]["replicas"] == 2
 
     pod_spec = deployment["spec"]["template"]["spec"]
     auth_volume = next(volume for volume in pod_spec["volumes"] if volume["name"] == "auth")

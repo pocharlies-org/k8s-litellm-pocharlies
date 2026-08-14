@@ -42,11 +42,18 @@
 #     estrangula por cliente: cargas masivas (p.ej. los RCA de Aurora) pueden
 #     dejar sin Codex al usuario. Pensado para chat manual, no para RCA.
 #
-# DOS INSTANCIAS, UNA POR CUENTA (2026-08-12)
+# DOS INSTANCIAS, UNA POR CUENTA (2026-08-12) — Y MASTER/REPLICA (2026-08-14)
 #
-# Un pod = una credencial: `bridge.py` guarda UN juego de tokens en memoria y los
-# persiste en UN Secret. Para servir dos cuentas hay dos Deployments del MISMO
-# ConfigMap de código, que se diferencian solo en el env:
+# Una CREDENCIAL = un Secret = un Deployment. Desde el 14-08 cada Deployment
+# corre DOS pods: servir trafico es de cualquiera, pero REFRESCAR es de uno solo
+# — el refresh consume el refresh_token y OpenAI lo rota, asi que dos refrescos
+# concurrentes se matan la sesion. La exclusion la da un Lease de Kubernetes
+# (`codex-bridge[-edani]-refresh`): quien no lo consigue NO toca OpenAI, relee
+# el Secret por API y adopta lo del holder. El CronJob de rotacion toma el mismo
+# Lease, asi que cron y emergencia tampoco pueden cruzarse.
+#
+# Para servir dos cuentas hay dos Deployments del MISMO ConfigMap de codigo,
+# que se diferencian solo en el env:
 #
 #   codex-bridge         -> daniel.ibanez@cloudblue.com  (Secret codex-bridge-auth)
 #   codex-bridge-edani   -> me@e-dani.com                (Secret codex-bridge-edani-auth)
@@ -111,6 +118,15 @@ rules:
     resources: ["secrets"]
     resourceNames: ["codex-bridge-auth"]
     verbs: ["get", "patch"]
+  # Master/replica (2026-08-14): refrescar exige ser holder del Lease. `create`
+  # no admite resourceNames (el nombre no existe hasta crearlo); get/update si.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["codex-bridge-refresh"]
+    verbs: ["get", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -175,6 +191,7 @@ data:
     import json
     import os
     import base64
+    import calendar
     import threading
     import time
     import urllib.error
@@ -196,10 +213,21 @@ data:
     SECRET_NAME = os.environ.get("SECRET_NAME", "codex-bridge-auth")
     NAMESPACE = os.environ.get("POD_NAMESPACE", "litellm")
     REFRESH_MARGIN = int(os.environ.get("REFRESH_MARGIN_SECONDS", "3600"))
+    # Master/replica (2026-08-14): servir es de todos, refrescar es de UNO.
+    # El refresh de emergencia consume el refresh_token, y OpenAI lo ROTA:
+    # dos replicas refrescando a la vez se matan la sesion entre ellas. La
+    # exclusion la da un Lease de Kubernetes -- CAS del apiserver, un 409
+    # significa "perdiste: adopta lo del ganador y no toques OpenAI".
+    POD_NAME = os.environ.get("POD_NAME", os.uname().nodename)
+    LEASE_NAME = os.environ.get("LEASE_NAME", "codex-bridge-refresh")
+    LEASE_TTL = int(os.environ.get("LEASE_TTL_SECONDS", "120"))
+    API = "https://kubernetes.default.svc"
+    SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
     _lock = threading.Lock()
     _tokens = {}
     _earliest_refresh = 0
+    _last_emergency_at = 0.0
 
 
     def log(msg):
@@ -247,6 +275,111 @@ data:
     def read_auth_file():
         with open(AUTH_FILE) as fh:
             return json.load(fh)
+
+
+    def _k8s(method, path, body=None, content_type="application/merge-patch+json"):
+        """Llamada minima al apiserver con el token de la SA.
+
+        Devuelve (status, json|None). Los 4xx NO levantan: el 409 del Lease es
+        una respuesta, no un error -- significa que otro escribio primero.
+        """
+        with open(f"{SA_DIR}/token") as fh:
+            sa = fh.read()
+        headers = {"Authorization": "Bearer " + sa}
+        if body is not None:
+            headers["Content-Type"] = content_type
+        req = urllib.request.Request(API + path, data=body, method=method, headers=headers)
+        ctx = __import__("ssl").create_default_context(cafile=f"{SA_DIR}/ca.crt")
+        try:
+            with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+                return resp.status, json.loads(resp.read() or b"null")
+        except urllib.error.HTTPError as exc:
+            return exc.code, None
+
+
+    def read_secret_auth():
+        """El auth.json del Secret LEIDO POR API, no del volumen.
+
+        El kubelet tarda ~1 min en propagar el Secret al volumen; en la ventana
+        de una emergencia ese minuto es exactamente la carrera que hay que
+        cerrar. Devuelve None si no se puede leer (RBAC, red): el que llama ya
+        tiene los tokens de disco como plan B.
+        """
+        status, secret = _k8s("GET", f"/api/v1/namespaces/{NAMESPACE}/secrets/{SECRET_NAME}")
+        if status != 200 or not secret:
+            return None
+        try:
+            return json.loads(base64.b64decode(secret["data"]["auth.json"]))
+        except Exception:
+            return None
+
+
+    def _lease_now():
+        return time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime())
+
+
+    def _lease_parse(stamp):
+        # calendar.timegm y NO mktime-timezone: mktime interpreta hora LOCAL y
+        # con DST se desplaza una hora, con lo que un lease VIVO pareceria
+        # expirado y las dos replicas podrian robarselo a la vez -- la carrera
+        # exacta que este lease existe para impedir. timegm interpreta UTC
+        # siempre, corra donde corra el proceso.
+        try:
+            return float(calendar.timegm(
+                time.strptime(stamp.split(".")[0], "%Y-%m-%dT%H:%M:%S")))
+        except Exception:
+            return 0.0
+
+
+    def acquire_refresh_lease():
+        """True solo si ESTE pod es ahora el holder del Lease de refresh.
+
+        Toda escritura pasa por el CAS del apiserver (resourceVersion en el
+        update, colision de nombre en el create): perder la carrera devuelve
+        409/False, nunca un holder duplicado. Un Lease expirado (holder muerto
+        a mitad de refresh) se puede robar pasado LEASE_TTL.
+        """
+        path = f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases/{LEASE_NAME}"
+        status, lease = _k8s("GET", path)
+        if status == 404:
+            body = json.dumps({
+                "apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
+                "metadata": {"name": LEASE_NAME, "namespace": NAMESPACE},
+                "spec": {"holderIdentity": POD_NAME,
+                         "leaseDurationSeconds": LEASE_TTL,
+                         "acquireTime": _lease_now(), "renewTime": _lease_now()},
+            }).encode()
+            status, _ = _k8s(
+                "POST",
+                f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases",
+                body, content_type="application/json")
+            return status in (200, 201)
+        if status != 200 or not lease:
+            return False
+        spec = lease.get("spec") or {}
+        holder = spec.get("holderIdentity") or ""
+        renew = _lease_parse(spec.get("renewTime") or "")
+        expired = (time.time() - renew) > LEASE_TTL
+        if holder and holder != POD_NAME and not expired:
+            return False
+        lease["spec"] = {"holderIdentity": POD_NAME,
+                         "leaseDurationSeconds": LEASE_TTL,
+                         "acquireTime": _lease_now(), "renewTime": _lease_now()}
+        status, _ = _k8s("PUT", path, json.dumps(lease).encode(),
+                         content_type="application/json")
+        return status == 200
+
+
+    def release_refresh_lease():
+        """Suelta el Lease sin esperar al TTL. Best-effort: si falla, expira solo."""
+        path = f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases/{LEASE_NAME}"
+        status, lease = _k8s("GET", path)
+        if status != 200 or not lease:
+            return
+        if (lease.get("spec") or {}).get("holderIdentity") != POD_NAME:
+            return
+        lease["spec"]["holderIdentity"] = ""
+        _k8s("PUT", path, json.dumps(lease).encode(), content_type="application/json")
 
 
     def load_tokens():
@@ -329,7 +462,7 @@ data:
         nuestra cuenta ROTA el refresh_token y deja fuera a los demás
         consumidores de la misma credencial, así que es el último recurso.
         """
-        global _earliest_refresh
+        global _earliest_refresh, _last_emergency_at
         with _lock:
             exp = _jwt_exp(_tokens.get("access_token", ""))
             if exp - time.time() > REFRESH_MARGIN:
@@ -346,7 +479,30 @@ data:
                         return
             except Exception as exc:
                 log(f"AVISO: no pude releer el Secret: {exc!r}")
-            log("access token cerca de caducar y el Secret no trae uno mejor: refrescando")
+            # El volumen va ~1 min por detras del Secret: antes de tocar OpenAI,
+            # mirar la version por API -- si la otra replica (o el cron) ya
+            # refresco, esto lo adopta y aqui se acaba.
+            fresh_auth = read_secret_auth()
+            if fresh_auth:
+                api_tokens = fresh_auth.get("tokens", fresh_auth)
+                if _jwt_exp(api_tokens.get("access_token", "")) > exp:
+                    _tokens.update(api_tokens)
+                    _earliest_refresh = fresh_auth.get("earliest_refresh_at", _earliest_refresh)
+                    exp = _jwt_exp(_tokens["access_token"])
+                    log("credenciales adoptadas del Secret via API (otro escritor refresco)")
+                    if exp - time.time() > REFRESH_MARGIN:
+                        return
+            # Amortiguador: si acabamos de perder el lease, no martillear el
+            # apiserver en cada peticion -- el token sigue vivo REFRESH_MARGIN.
+            if time.time() - _last_emergency_at < 30:
+                return
+            _last_emergency_at = time.time()
+            if not acquire_refresh_lease():
+                log("refresh de emergencia NECESARIO pero el Lease lo tiene otro: "
+                    "no toco OpenAI; adoptare su resultado del Secret")
+                return
+            log("access token cerca de caducar y el Secret no trae uno mejor: "
+                "refrescando (holder del Lease)")
             body = json.dumps({
                 "client_id": CLIENT_ID,
                 "grant_type": "refresh_token",
@@ -359,6 +515,7 @@ data:
             try:
                 data = json.loads(urllib.request.urlopen(req, timeout=30).read())
             except urllib.error.HTTPError as exc:
+                release_refresh_lease()
                 log(f"ERROR refrescando ({exc.code}): hay que resembrar el Secret "
                     f"con un `codex login` nuevo")
                 raise
@@ -372,6 +529,7 @@ data:
             if data.get("earliest_refresh_at"):
                 _earliest_refresh = data["earliest_refresh_at"]
             persist_tokens()
+            release_refresh_lease()
 
 
     # --------------------------------------------------------------------------
@@ -936,6 +1094,7 @@ data:
     """
 
     import base64
+    import calendar
     import json
     import os
     import ssl
@@ -954,21 +1113,85 @@ data:
 
     API = "https://kubernetes.default.svc"
     SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+    # Master/replica (2026-08-14): el mismo Lease que gatea el refresh de
+    # emergencia de los bridges. Este cron es el rotador NORMAL, asi que si el
+    # Lease esta cogido (una emergencia en vuelo), espera y reintenta -- y si
+    # sigue cogido, se va: la emergencia ya rota, y el proximo cron es en 6 h.
+    POD_NAME = os.environ.get("POD_NAME", "codex-rotate-job")
+    LEASE_NAME = os.environ.get("LEASE_NAME", "codex-bridge-refresh")
+    LEASE_TTL = int(os.environ.get("LEASE_TTL_SECONDS", "120"))
 
 
     def log(msg):
         print(f"[codex-rotate] {msg}", flush=True)
 
 
-    def k8s(method, path, body=None):
+    def k8s(method, path, body=None, content_type="application/merge-patch+json"):
         with open(f"{SA_DIR}/token") as fh:
             token = fh.read()
         headers = {"Authorization": "Bearer " + token}
         if body is not None:
-            headers["Content-Type"] = "application/merge-patch+json"
+            headers["Content-Type"] = content_type
         req = urllib.request.Request(API + path, data=body, method=method, headers=headers)
         ctx = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
         return json.loads(urllib.request.urlopen(req, timeout=30, context=ctx).read())
+
+
+    def _lease_now():
+        return time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime())
+
+
+    def acquire_lease():
+        path = f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases/{LEASE_NAME}"
+        try:
+            lease = k8s("GET", path)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            body = json.dumps({
+                "apiVersion": "coordination.k8s.io/v1", "kind": "Lease",
+                "metadata": {"name": LEASE_NAME, "namespace": NAMESPACE},
+                "spec": {"holderIdentity": POD_NAME,
+                         "leaseDurationSeconds": LEASE_TTL,
+                         "acquireTime": _lease_now(), "renewTime": _lease_now()},
+            }).encode()
+            try:
+                k8s("POST",
+                    f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases",
+                    body, content_type="application/json")
+                return True
+            except urllib.error.HTTPError:
+                return False
+        spec = lease.get("spec") or {}
+        holder = spec.get("holderIdentity") or ""
+        try:
+            renew = float(calendar.timegm(time.strptime(
+                (spec.get("renewTime") or "").split(".")[0],
+                "%Y-%m-%dT%H:%M:%S")))
+        except Exception:
+            renew = 0.0
+        if holder and holder != POD_NAME and (time.time() - renew) <= LEASE_TTL:
+            return False
+        lease["spec"] = {"holderIdentity": POD_NAME,
+                         "leaseDurationSeconds": LEASE_TTL,
+                         "acquireTime": _lease_now(), "renewTime": _lease_now()}
+        try:
+            k8s("PUT", path, json.dumps(lease).encode(), content_type="application/json")
+            return True
+        except urllib.error.HTTPError:
+            return False
+
+
+    def release_lease():
+        path = f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases/{LEASE_NAME}"
+        try:
+            lease = k8s("GET", path)
+            if (lease.get("spec") or {}).get("holderIdentity") != POD_NAME:
+                return
+            lease["spec"]["holderIdentity"] = ""
+            k8s("PUT", path, json.dumps(lease).encode(), content_type="application/json")
+        except Exception:
+            pass  # expira solo en LEASE_TTL
 
 
     def jwt_exp(token):
@@ -1001,6 +1224,19 @@ data:
             log("sin earliest_refresh_at y queda margen de sobra: no toco nada")
             return 0
 
+        got = False
+        for intento in range(3):
+            got = acquire_lease()
+            if got:
+                break
+            log(f"Lease {LEASE_NAME} cogido (refresh de emergencia en vuelo); "
+                f"espero 20 s ({intento + 1}/3)")
+            time.sleep(20)
+        if not got:
+            log("el Lease sigue cogido: la emergencia ya esta rotando por mi. "
+                "Me voy; el proximo cron entra en 6 h.")
+            return 0
+
         body = json.dumps({
             "client_id": CLIENT_ID,
             "grant_type": "refresh_token",
@@ -1012,6 +1248,7 @@ data:
         try:
             fresh = json.loads(urllib.request.urlopen(req, timeout=30).read())
         except urllib.error.HTTPError as exc:
+            release_lease()
             detail = exc.read()[:300].decode(errors="replace")
             log(f"ERROR: el refresh devolvió {exc.code}: {detail}")
             log("La credencial ya no sirve. Resiembra el Secret desde un "
@@ -1035,6 +1272,7 @@ data:
             json.dumps({"data": {SECRET_KEY: payload}}).encode())
         log(f"Secret actualizado; nuevo access token vive "
             f"{(jwt_exp(tokens['access_token']) - time.time()) / 3600:.1f} h")
+        release_lease()
         log("El bridge lo recoge solo del volumen; el Mac, con codex-auth-sync.")
         return 0
 
@@ -1048,7 +1286,9 @@ metadata:
   name: codex-bridge
   namespace: litellm
 spec:
-  replicas: 1
+  # Master/replica (2026-08-14): dos pods sirven, refrescar exige el Lease
+  # `codex-bridge-refresh`.
+  replicas: 2
   selector: { matchLabels: { app: codex-bridge } }
   template:
     metadata:
@@ -1056,13 +1296,20 @@ spec:
       annotations:
         # El codigo del puente vive en un ConfigMap y se lee al arrancar: sin esto
         # un cambio en bridge.py se sincroniza y NO rota el pod.
-        config.k8s.e-dani.com/revision: bridge-1a154271d59e
+        config.k8s.e-dani.com/revision: bridge-e222a3c5eed4
     spec:
       serviceAccountName: codex-bridge
       enableServiceLinks: false
       nodeSelector:
         kubernetes.io/arch: amd64
         node-pool: ks5-nvme
+      # HA real: una replica por nodo. `required`, no `preferred` -- dos copias
+      # en el mismo ks5 no sobreviven a su reinicio de Ansible.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector: { matchLabels: { app: codex-bridge } }
       containers:
         - name: bridge
           image: python:3.12-slim
@@ -1076,6 +1323,9 @@ spec:
             - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-sol-wm,gpt-5.6-terra,gpt-5.6-luna,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4,gpt-5.4-mini,codex-auto-review" }
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-auth }
+            - { name: LEASE_NAME, value: codex-bridge-refresh }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
           volumeMounts:
@@ -1153,6 +1403,7 @@ spec:
               command: ["python", "-u", "/code/rotate.py"]
               env:
                 - { name: SECRET_NAME, value: codex-bridge-auth }
+                - { name: LEASE_NAME, value: codex-bridge-refresh }
                 - name: POD_NAMESPACE
                   valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
               volumeMounts:
@@ -1200,6 +1451,13 @@ rules:
     resources: ["secrets"]
     resourceNames: ["codex-bridge-edani-auth"]
     verbs: ["get", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["codex-bridge-edani-refresh"]
+    verbs: ["get", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -1222,9 +1480,10 @@ metadata:
   namespace: litellm
 spec:
   # La credencial `codex-bridge-edani-auth` se crea fuera de Git antes de
-  # publicar este cambio. Un pod por cuenta mantiene separados los refresh
-  # tokens y hace que los alias `*-edani` consuman solo la cuota personal.
-  replicas: 1
+  # publicar este cambio. Un DEPLOYMENT por cuenta mantiene separados los
+  # refresh tokens; desde 2026-08-14 cada cuenta corre master/replica: dos pods
+  # sirven y refrescar exige el Lease `codex-bridge-edani-refresh`.
+  replicas: 2
   selector: { matchLabels: { app: codex-bridge-edani } }
   template:
     metadata:
@@ -1232,13 +1491,20 @@ spec:
       annotations:
         # Igual que el otro: el codigo se lee al arrancar, asi que un cambio en
         # bridge.py NO rota el pod sin tocar esto.
-        config.k8s.e-dani.com/revision: bridge-1a154271d59e
+        config.k8s.e-dani.com/revision: bridge-e222a3c5eed4
     spec:
       serviceAccountName: codex-bridge-edani
       enableServiceLinks: false
       nodeSelector:
         kubernetes.io/arch: amd64
         node-pool: ks5-nvme
+      # HA real: una replica por nodo. `required`, no `preferred` -- dos copias
+      # en el mismo ks5 no sobreviven a su reinicio de Ansible.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector: { matchLabels: { app: codex-bridge-edani } }
       containers:
         - name: bridge
           image: python:3.12-slim
@@ -1252,6 +1518,9 @@ spec:
             - { name: ALLOWED_MODELS, value: "gpt-5.6-sol,gpt-5.6-sol-wm,gpt-5.6-terra,gpt-5.6-luna,gpt-daybreak-blue-latest,gpt-5.3-codex-spark,gpt-5.5,gpt-5.4,gpt-5.4-mini,codex-auto-review" }
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-edani-auth }
+            - { name: LEASE_NAME, value: codex-bridge-edani-refresh }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
           volumeMounts:
@@ -1321,6 +1590,7 @@ spec:
               command: ["python", "-u", "/code/rotate.py"]
               env:
                 - { name: SECRET_NAME, value: codex-bridge-edani-auth }
+                - { name: LEASE_NAME, value: codex-bridge-edani-refresh }
                 - name: POD_NAMESPACE
                   valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
               volumeMounts:
