@@ -1426,19 +1426,23 @@ data:
         "high": "high",
         "max": "max",
     }
-    # `/effort` de OpenClaw. Viaja como `reasoning_effort` de primer nivel y
-    # GANA al nombre del alias: quien lo manda esta opinando explicitamente, y
-    # los cuatro alias no son cuatro modelos sino cuatro niveles del mismo.
+    # `/effort` de OpenClaw, que viaja como `reasoning_effort` de primer nivel.
     #
-    # El menu del cliente se declara low/high/max y `medium` se quito A
-    # PROPOSITO: DeepSeek no tiene ese nivel y el tokenizer parcheado del
-    # launch.sh hace caer lo desconocido a "low", asi que traducirlo aqui seria
-    # un nombre que miente. Lo que no este en esta tabla NO se adivina -- se
-    # devuelve None y sigue mandando el alias, exactamente como hasta ahora.
+    # SOLO ESTAN LOS DELIBERADOS, y es la parte que importa. Vale la misma regla
+    # que REASONING_EFFORT_SIGNAL de arriba: los clientes agente adjuntan un
+    # effort a TODAS las llamadas, asi que un `low` no significa "quiero low",
+    # significa "no he tocado nada". Meterlo aqui convertiria el ambiente en una
+    # orden y `tooling` -- etiquetado "sin pensar" -- se pondria a pensar en cada
+    # turno. Un effort ambiente cae fuera de la tabla, devuelve None, y sigue
+    # decidiendo el alias o el clasificador del router.
+    #
+    # `medium` tampoco esta, por otro motivo: DeepSeek no tiene ese nivel y el
+    # tokenizer parcheado del launch.sh hace caer lo desconocido a "low", asi que
+    # traducirlo seria un nombre que miente. Por eso se quita del menu que
+    # publica OpenClaw.
     CLIENT_EFFORT_TIERS = {
         "none": "off",
         "off": "off",
-        "low": "low",
         "high": "high",
         "max": "max",
     }
@@ -1653,19 +1657,17 @@ data:
             return None
         tier = CLIENT_EFFORT_TIERS.get(effort)
         if tier is None:
-            sampling_log.info(
-                "thinking: effort=%s sin traduccion para el residente; manda el alias",
-                effort,
-            )
+            sampling_log.debug(
+                "thinking: effort=%s no es deliberado; decide el alias", effort)
         return tier
 
     def _apply_thinking_tier(data, requested_alias):
         """Fija el nivel de pensamiento: `reasoning_effort` o, si no, el alias.
 
-        Un `reasoning_effort` traducible GANA al nombre del alias. Es la mitad de
-        servidor del `/effort` de OpenClaw: los cuatro perfiles no son cuatro
-        modelos sino cuatro niveles del mismo residente, asi que quien sabe pedir
-        el nivel no necesita cambiar de modelo para subirlo.
+        Un `reasoning_effort` DELIBERADO (high/max, o none para apagar) gana al
+        nombre del alias. Es la mitad de servidor del `/effort` de OpenClaw: el
+        residente es uno solo y el nivel se pide, no se elige cambiando de
+        modelo. Un effort ambiente no cuenta -- ver CLIENT_EFFORT_TIERS.
 
         `requested_alias` es el alias explicito del cliente o, para una llamada
         automatica, el alias de profundidad que eligio el clasificador. No tiene
@@ -3914,7 +3916,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-3cc7507bc71e
+        config.k8s.e-dani.com/revision: config-983277d8997f
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

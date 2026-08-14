@@ -8,10 +8,13 @@ nombre del alias.
 
 Lo que se fija aqui, y por que cada cosa:
 
-* `medium` NO se traduce. DeepSeek solo tiene low/high/max y el tokenizer
-  parcheado del launch.sh hace caer lo desconocido a "low", asi que traducirlo
-  seria un nombre que miente. Por eso se quito del menu del cliente, y por eso
-  aqui cae al alias en vez de inventarse un nivel.
+* Solo cuentan los efforts DELIBERADOS (high/max, y none para apagar). Los
+  clientes agente adjuntan un effort a todas las llamadas, asi que un `low` es
+  ambiente, no una orden: si mandara, `tooling` -- "sin pensar" -- pensaria en
+  cada turno. Misma regla que REASONING_EFFORT_SIGNAL.
+* `medium` no se traduce nunca. DeepSeek no tiene ese nivel y el tokenizer
+  parcheado hace caer lo desconocido a "low", asi que seria un nombre que
+  miente. Por eso tampoco esta en el menu del cliente.
 * La salida estructurada gana incluso a un effort explicito. Medido 3/3 el
   2026-08-10: con thinking activo se cuela una llave del razonamiento delante
   del JSON guiado y el parse revienta.
@@ -93,14 +96,26 @@ def ctk(hook, body, alias, backend="openai/deepseek-v4-flash-0731"):
     # El alias dice off y el cliente pide el maximo: manda el cliente. Es el
     # caso que justifica todo esto -- subir el nivel sin cambiar de modelo.
     ("tooling", "max", {"thinking": True, "reasoning_effort": "max"}),
-    # Y al reves: bajar desde un alias caro sin cambiar de modelo.
-    ("max", "low", {"thinking": True, "reasoning_effort": "low"}),
-    ("agent", "high", {"thinking": True, "reasoning_effort": "high"}),
-    # `none` apaga de verdad, no se ignora por venir de un alias que piensa.
+    ("tooling", "high", {"thinking": True, "reasoning_effort": "high"}),
+    # Bajar tambien: `none` apaga aunque el alias sea el mas caro.
     ("max", "none", {"thinking": False}),
 ])
-def test_el_effort_del_cliente_gana_al_nombre_del_alias(hook, alias, effort, esperado):
+def test_un_effort_deliberado_gana_al_nombre_del_alias(hook, alias, effort, esperado):
     assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == esperado
+
+
+@pytest.mark.parametrize("alias,esperado", [
+    # LA REGRESION QUE ESTE TEST EXISTE PARA CAZAR. OpenClaw manda un effort en
+    # TODAS las llamadas y a falta de eleccion resuelve a "high" (y los agentes
+    # traen thinkingDefault=low). Si un effort ambiente contara como orden,
+    # `tooling` -- "sin pensar", primary de culturismo e image-cloud -- pensaria
+    # en cada turno y la etiqueta del selector mentiria.
+    ("tooling", {"thinking": False}),
+    ("agent", {"thinking": True, "reasoning_effort": "low"}),
+])
+@pytest.mark.parametrize("ambiente", ["low", "minimal"])
+def test_un_effort_ambiente_NO_pisa_al_alias(hook, alias, esperado, ambiente):
+    assert ctk(hook, {"model": alias, "reasoning_effort": ambiente}, alias) == esperado
 
 
 def test_tambien_lee_la_forma_de_la_responses_api(hook):
@@ -110,14 +125,11 @@ def test_tambien_lee_la_forma_de_la_responses_api(hook):
 
 
 @pytest.mark.parametrize("effort,alias,esperado", [
-    # `medium` fuera del menu: NO se traduce a low por su cuenta. Cae al alias,
-    # que aqui es `agent` = low. El resultado coincide con low de casualidad; lo
-    # que fija el contrato es que el nivel lo puso el ALIAS, no la traduccion.
-    ("medium", "agent", {"thinking": True, "reasoning_effort": "low"}),
-    # Y con un alias que no piensa, `medium` no lo enciende.
+    # `medium` no se traduce por su cuenta: con un alias que no piensa, no lo
+    # enciende. Es el nivel que no existe en DeepSeek.
     ("medium", "tooling", {"thinking": False}),
+    # `xhigh` tampoco se adivina como max: no esta en el menu publicado.
     ("xhigh", "tooling", {"thinking": False}),
-    ("minimal", "high", {"thinking": True, "reasoning_effort": "high"}),
 ])
 def test_un_effort_sin_traduccion_no_se_adivina(hook, effort, alias, esperado):
     assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == esperado
@@ -154,7 +166,11 @@ def test_el_menu_publicado_y_la_tabla_del_hook_no_se_separan(hook):
     """`medium` fuera de la tabla es la mitad del contrato; la otra mitad es que
     los tres niveles que SI se ofrecen esten aqui. Si alguien mete `medium`, este
     test cae antes de que el nombre empiece a mentir en produccion."""
-    assert set(hook.CLIENT_EFFORT_TIERS) == {"none", "off", "low", "high", "max"}
+    assert set(hook.CLIENT_EFFORT_TIERS) == {"none", "off", "high", "max"}
     assert set(hook.THINKING_KWARGS["deepseek-v4"]) == {"off", "low", "high", "max"}
-    for nivel in ("low", "high", "max"):
+    for nivel in ("high", "max"):
         assert hook.CLIENT_EFFORT_TIERS[nivel] == nivel
+    # `low` fuera es la mitad del contrato: es el valor ambiente y no puede
+    # convertirse en una orden. `medium` fuera es la otra mitad.
+    assert "low" not in hook.CLIENT_EFFORT_TIERS
+    assert "medium" not in hook.CLIENT_EFFORT_TIERS
