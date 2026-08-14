@@ -1,0 +1,214 @@
+# Vigilante de LiteLLM. Avisa por Telegram al privado del humano cuando deja de
+# servir, y avisa TAMBIEN cuando se recupera.
+#
+# POR QUE EXISTE (2026-08-14)
+# ---------------------------
+# LiteLLM se cayo dos veces esta tarde (OOMKilled, exit 137, limite de 3Gi) y NADIE
+# aviso: se entero el humano por su cuenta. Y LiteLLM no es un servicio mas — por el
+# pasan Codex, OpenClaw, el brain, el panel y los MCP. Si muere de madrugada, muere
+# todo lo que habla con un modelo.
+#
+# La cadena de aquel dia, para que se entienda que hay que vigilar:
+#   codex-bridge-edani entra en CrashLoopBackOff (12 reinicios en 18 h)
+#     -> LiteLLM acumula reintentos contra un host caido
+#       -> OOMKilled, dos veces
+#
+# NO se avisa por el webhook de synapse. Comprobado el mismo dia:
+# https://synapse.e-dani.com/webhooks/brain-audit devuelve 404, y su propio contrato
+# (webhook.brain_audit.received) dice "NO workflow triggers on it today". O sea que
+# ningun aviso mandado por ahi ha llegado NUNCA — tampoco los del audit diario del
+# brain, que sigue apuntando alli. Telegram directo al bot es lo unico demostrado.
+#
+# QUE COMPRUEBA, Y POR QUE ASI
+# ----------------------------
+# Una INFERENCIA REAL, no /health. En esta casa hay precedentes de sobra de
+# servicios con el semaforo en verde y la funcion rota: el pool bge con cero
+# endpoints y el brain devolviendo 200 sin fuentes, o el propio LiteLLM sirviendo
+# 16 modelos mientras su ConfigMap declaraba 27. Un /health que solo dice que el
+# proceso esta vivo no distingue "sirve" de "esta ahi".
+#
+# Se pide una suma y se comprueba el RESULTADO. Una respuesta vacia con HTTP 200 es
+# un fallo, no un exito, y esto lo trata como tal.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: litellm-watchdog
+  namespace: litellm
+  labels: { app: litellm-watchdog }
+spec:
+  # Cada 10 min. Es el compromiso entre enterarse pronto y no hacer ruido: peor caso
+  # 10 min de caida sin avisar, y 6 comprobaciones/hora que le cuestan a LiteLLM una
+  # inferencia de 20 tokens.
+  schedule: "*/10 * * * *"
+  timeZone: Europe/Madrid
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: { app: litellm-watchdog }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: watchdog
+              image: python:3.12-slim
+              command:
+                - python3
+                - -c
+                - |
+                  import json, os, time, urllib.error, urllib.parse, urllib.request
+
+                  BASE = "http://litellm.litellm.svc.cluster.local:4000"
+                  KEY = os.environ.get("LITELLM_MASTER_KEY", "")
+                  ESTADO = "/tmp/estado.json"   # efimero a proposito: ver abajo
+
+                  def pide(path, payload=None, timeout=45):
+                      d = json.dumps(payload).encode() if payload else None
+                      r = urllib.request.Request(
+                          BASE + path, data=d,
+                          headers={"content-type": "application/json",
+                                   "authorization": "Bearer " + KEY})
+                      t = time.time()
+                      with urllib.request.urlopen(r, timeout=timeout) as resp:
+                          return json.loads(resp.read()), (time.time() - t) * 1000
+
+                  fallos = []
+                  modelos = None
+                  latencia = None
+
+                  # 1. ¿Publica catalogo? Si esto falla, ni arranco.
+                  try:
+                      d, _ = pide("/v1/models")
+                      modelos = len(d.get("data", []))
+                      if modelos == 0:
+                          fallos.append("/v1/models devuelve CERO modelos")
+                  except Exception as exc:
+                      fallos.append("/v1/models: %s" % str(exc)[:110])
+
+                  # 2. Una inferencia DE VERDAD contra el alias que mas se usa.
+                  #    max_tokens generoso a proposito: con un modelo de razonamiento,
+                  #    un limite corto se lo come el pensamiento y devuelve content
+                  #    vacio con HTTP 200. Eso paso de verdad y parecia un fallo del
+                  #    servidor cuando era del test.
+                  if modelos:
+                      try:
+                          d, latencia = pide("/v1/chat/completions", {
+                              "model": "agent",
+                              "messages": [{"role": "user",
+                                            "content": "Responde SOLO el numero: 17*23"}],
+                              "max_tokens": 400,
+                          }, timeout=120)
+                          txt = (d["choices"][0]["message"].get("content") or "").strip()
+                          if not txt:
+                              fallos.append("inferencia: HTTP 200 con contenido VACIO")
+                          elif "391" not in txt:
+                              fallos.append("inferencia: respuesta incorrecta %r" % txt[:40])
+                      except Exception as exc:
+                          fallos.append("inferencia: %s" % str(exc)[:110])
+
+                  malo = bool(fallos)
+
+                  # El estado previo va en /tmp, que muere con el pod, asi que en la
+                  # practica cada corrida empieza sin memoria. Es DELIBERADO: montar
+                  # un PVC para esto seria mas cosas que se pueden romper, y el coste
+                  # de no recordar es que un fallo largo repite el aviso cada 10 min.
+                  # Eso es aceptable — un servicio caido MERECE insistir — y se corta
+                  # solo con el mensaje de recuperado.
+                  antes = None
+                  try:
+                      antes = json.load(open(ESTADO)).get("malo")
+                  except Exception:
+                      pass
+                  json.dump({"malo": malo}, open(ESTADO, "w"))
+
+                  print("[litellm-watchdog]", json.dumps(
+                      {"modelos": modelos, "latencia_ms": round(latencia or 0),
+                       "fallos": fallos}))
+
+                  if not malo and antes is not True:
+                      raise SystemExit(0)          # todo bien y nada que desmentir
+
+                  if malo:
+                      titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
+                      intro = "No esta sirviendo."
+                      cuerpo = ["· " + f for f in fallos]
+                      quehacer = ("Lo usa TODO: Codex, OpenClaw, el brain, el panel.\n"
+                                  "Mira <code>kubectl get pods -n litellm</code>.\n"
+                                  "Si pone OOMKilled, el limite esta en el manifiesto;\n"
+                                  "si el culpable es codex-bridge-edani, ese lleva\n"
+                                  "reventando desde el 14-08 y es la causa raiz.")
+                  else:
+                      titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
+                      intro = "Vuelve a servir."
+                      cuerpo = ["· %d modelos · inferencia en %d ms" % (
+                          modelos or 0, round(latencia or 0))]
+                      quehacer = "Nada. El aviso rojo anterior queda desmentido."
+
+                  texto = "\n".join([titulo, "", intro, ""] + cuerpo +
+                                    ["", "<b>Qué hacer</b>", quehacer])
+                  tok = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                  chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+                  if not tok or not chat:
+                      print("[litellm-watchdog] sin token/chat: no puedo avisar")
+                      raise SystemExit(1 if malo else 0)
+                  try:
+                      body = urllib.parse.urlencode({
+                          "chat_id": chat, "parse_mode": "HTML",
+                          "disable_web_page_preview": "true", "text": texto}).encode()
+                      req = urllib.request.Request(
+                          "https://api.telegram.org/bot%s/sendMessage" % tok,
+                          data=body, method="POST")
+                      with urllib.request.urlopen(req, timeout=20) as r:
+                          print("[litellm-watchdog] telegram:",
+                                json.loads(r.read()).get("ok"))
+                  except Exception as exc:
+                      print("[litellm-watchdog] telegram fallo:", str(exc)[:150])
+                  # El Job falla si LiteLLM esta mal, para que quede en los Jobs
+                  # fallidos del namespace aunque Telegram no llegue.
+                  raise SystemExit(1 if malo else 0)
+              env:
+                - name: LITELLM_MASTER_KEY
+                  valueFrom:
+                    secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY }
+                # Chat PRIVADO con @paxanguero. Los ids negativos son grupos; este es
+                # positivo porque es una persona. Mismo destino que el vigilante del
+                # re-embebido del brain.
+                - name: TELEGRAM_CHAT_ID
+                  value: "33285833"
+                - name: TELEGRAM_BOT_TOKEN
+                  valueFrom:
+                    secretKeyRef: { name: litellm-watchdog-telegram, key: bot_token }
+              resources:
+                requests: { cpu: 20m, memory: 64Mi }
+                limits: { memory: 256Mi }
+---
+# Token de @oppocharliesllmbot, el bot con el que el humano habla en privado.
+# Se lee de Vault, del mismo sitio del que lo saca el telegram-router de
+# openclaw-qwen36, para que rote a la vez que el original.
+#
+# OJO: ese bot tiene un WEBHOOK activo (el router). No llamar a getUpdates ni a
+# deleteWebhook contra el o se queda el router de OpenClaw sin recibir nada.
+# sendMessage no le molesta.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-watchdog-telegram
+  namespace: litellm
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: vault-backend
+  target:
+    name: litellm-watchdog-telegram
+  data:
+    - secretKey: bot_token
+      remoteRef:
+        key: openclaw-qwen36/social
+        property: TELEGRAM_BOT_TOKEN

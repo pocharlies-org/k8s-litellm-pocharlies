@@ -353,35 +353,37 @@ data:
       #     model-name gate.
       # Both layers are load-bearing. Neither one substitutes for the other.
       fallbacks:
-      # UN SOLO fallback, y es el unico que puede hacer algo.
+      # Los ocho alias (tooling, agent, high, max, router, auto, litellmrouter y
+      # deepseek-v4-flash-0731) son el MISMO backend: /model/info da para los ocho
+      # `openai/deepseek-v4-flash-0731` contra deepseek-v4-flash-0731.llm.svc:8000,
+      # y salen de UNA sola entrada de BACKENDS en sync.py (linea 212).
       #
-      # tooling, agent, high, max, router, auto, litellmrouter y
-      # deepseek-v4-flash-0731 son OCHO NOMBRES DEL MISMO BACKEND. Comprobado en
-      # /model/info: los ocho dan `openai/deepseek-v4-flash-0731` contra
-      # deepseek-v4-flash-0731.llm.svc.cluster.local:8000. Y se registran JUNTOS:
-      # una sola entrada de BACKENDS en sync.py (linea 212,
-      # TOOLING_RESIDENT_ALIASES + DEEPSEEK_V4_FLASH_DIRECT_ALIASES), asi que
-      # /model/new y /model/delete los mete y los saca a la vez.
+      # Parece que un fallback entre ellos no puede servir de nada. LO PARECE Y NO
+      # ES ASI, y por poco lo borro entero el 14-08 creyendolo. El COOLDOWN es POR
+      # GRUPO DE MODELO: con allowed_fails 3 y cooldown_time 120 (mas abajo),
+      # `tooling` puede estar penalizado mientras `deepseek-v4-flash-0731` no lo
+      # esta. Mismo backend, distinto contador. Ahi es donde esta red dispara.
       #
-      # Por eso CUALQUIER fallback entre ellos es circular y no puede dispararse
-      # nunca: si uno esta caido, todos lo estan. Las dos versiones anteriores lo
-      # ignoraban de formas distintas y las dos costaron algo:
+      # El otro modo de fallo —alias BORRADO del model_list por /model/delete— no lo
+      # cubre ningun fallback: el proxy lanza ProxyModelNotFoundError antes de
+      # llegar al Router. De ese se encarga la cadena del hook. Los dos modos estan
+      # explicados en detalle en el comentario de router_settings, mas abajo.
       #
-      #   - apuntando a cloudblue/gpt-5.6-luna: un alias que el proceso ni tenia
-      #     cargado. Cero red, y encima daba la falsa sensacion de tenerla.
-      #   - apuntando a e-dani/gpt-5.6-sol (mio, 13-08): mandaba las cuatro rutas
-      #     CALIENTES a un backend externo con 12 reinicios en 18 h. Cuando el
-      #     puente entro en CrashLoopBackOff, LiteLLM se paso la tarde reintentando
-      #     contra un host muerto hasta que lo mato el OOM dos veces.
-      #
-      # Un fallback que no puede funcionar es peor que ninguno: ocupa el sitio del
-      # que si haria falta y hace creer que hay red donde no la hay. Si algun dia
-      # se quiere red de verdad para estos ocho, tiene que apuntar a un backend en
-      # OTRA maquina y que este arriba de verdad.
-      #
-      # El que queda es el unico que cruza infraestructura: quien pide
-      # e-dani/gpt-5.6-sol A PROPOSITO (Codex) cae al residente local si la cuenta
-      # de ChatGPT falla — cuota, token caducado o el puente reventado.
+      # Historia de este bloque, que ha estado mal tres veces:
+      #   1) cloudblue/gpt-5.6-luna: alias que el proceso ni tenia cargado. Cero red.
+      #   2) e-dani/gpt-5.6-sol (13-08): mandaba las CUATRO rutas calientes a un
+      #      backend externo con 12 reinicios en 18 h. Cuando el puente entro en
+      #      CrashLoopBackOff, LiteLLM se paso la tarde reintentando contra un host
+      #      muerto hasta que lo mato el OOM, dos veces.
+      #   3) borrarlos (14-08): dejaba sin red el caso del cooldown, que es real.
+      # El destino tiene que ser un alias DEL MISMO backend (para que no haya
+      # reintentos contra una maquina caida) pero con OTRO contador de cooldown.
+      - tooling: ["deepseek-v4-flash-0731"]
+      - agent: ["deepseek-v4-flash-0731"]
+      - high: ["deepseek-v4-flash-0731"]
+      - max: ["deepseek-v4-flash-0731"]
+      # Y el unico que cruza infraestructura: quien pide e-dani/gpt-5.6-sol A
+      # PROPOSITO (Codex) cae al residente local si la cuenta de ChatGPT falla.
       - e-dani/gpt-5.6-sol: ["deepseek-v4-flash-0731"]
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
@@ -4025,7 +4027,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6ac980d95393
+        config.k8s.e-dani.com/revision: config-e13c817caa41
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
