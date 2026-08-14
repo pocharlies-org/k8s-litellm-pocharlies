@@ -3116,12 +3116,12 @@ data:
             ),
             "aliases": QWEN36_27B_UNCENSORED_ALIASES,
             "service": os.getenv(
-                "K8S_SERVICE_QWEN36_27B_UNCENSORED_DGX2",
-                "vllm-qwen36-27b-uncensored-dgx2",
+                "K8S_SERVICE_QWEN36_27B_UNCENSORED",
+                "vllm-qwen36-27b-uncensored",
             ),
             "api_base": os.getenv(
-                "QWEN36_27B_UNCENSORED_DGX2_API_BASE",
-                "http://vllm-qwen36-27b-uncensored-dgx2.llm.svc.cluster.local:8000/v1",
+                "QWEN36_27B_UNCENSORED_API_BASE",
+                "http://vllm-qwen36-27b-uncensored.llm.svc.cluster.local:8000/v1",
             ),
             "id_prefix": "dgx2-qwen36-27b-uncensored-nvfp4",
             "max_parallel_requests": 4,
@@ -3752,7 +3752,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-8ee6732f8f4c
+        config.k8s.e-dani.com/revision: sync-b3324021584e
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -3774,7 +3774,7 @@ spec:
     # 2026-07-27; there is no scale-to-zero rollback path left.
             # DGX1 permanent floor plus the optional DGX2 dense F2 twin.
             # Isolated explicit alias: one DGX2 backend, no fallback.
-            - { name: K8S_SERVICE_QWEN36_27B_UNCENSORED_DGX2, value: "vllm-qwen36-27b-uncensored-dgx2" }
+            - { name: K8S_SERVICE_QWEN36_27B_UNCENSORED, value: "vllm-qwen36-27b-uncensored" }
             - { name: QWEN36_27B_UNCENSORED_MODEL, value: "openai/qwen36-27b-uncensored-nvfp4" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
             - { name: READY_GRACE_SECONDS, value: "20" }

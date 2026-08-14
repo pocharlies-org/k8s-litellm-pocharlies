@@ -26,7 +26,7 @@ aqui, por dos razones comprobadas el 2026-08-13:
 
   - Los tres estan MUERTOS. `vllm-ornith-35b-nvfp4-mtp-dgx1` y
     `vllm-nvidia-qwen36-35b-dgx1` ni siquiera existen como Deployment (Ornith se
-    retiro el 10-08), y `vllm-qwen36-27b-uncensored-dgx2` esta a 0 replicas.
+    retiro el 10-08), y `vllm-qwen36-27b-uncensored` esta a 0 replicas.
     Ninguno aparece registrado en LiteLLM: de los backends locales solo responde
     `deepseek-v4-flash-0731`, con sus 13 alias.
   - Sus valores no estan igual de justificados. El de NVIDIA lleva su razon en el
