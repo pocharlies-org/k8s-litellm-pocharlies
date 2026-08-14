@@ -9,6 +9,7 @@ Se carga el hook REAL desde el manifest y se ejecutan solo sus funciones puras,
 sin importar litellm, para que CI valide la logica y no solo el texto.
 """
 import ast
+import re
 import types
 from pathlib import Path
 
@@ -272,7 +273,23 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
     assert len(unicos) == 1, f"los perfiles no comparten red: {destinos}"
     destino = list(unicos)[0]
     assert len(destino) == 1, f"se espera UN destino por perfil, hay {destino}"
-    assert destino[0] in {m["model_name"] for m in proxy_config.get("model_list", [])}, (
+    # 2026-08-14 (f914e56): el destino volvio al residente local, que NO esta en
+    # el model_list estatico -- lo registra y desregistra litellm-dgx-backend-sync
+    # contra la deployment viva (store_model_in_db). Un alias gestionado por el
+    # sync es un destino legitimo: su "existencia" la garantiza el controlador,
+    # y cuando el residente cae el hook ya walked la cadena antes de dispatch.
+    sync_managed = set()
+    docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+    sync_source = next(
+        d["data"]["sync.py"] for d in docs
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-dgx-backend-sync"
+    )
+    for var in ("DEEPSEEK_V4_FLASH_DIRECT_ALIASES", "QWEN36_27B_UNCENSORED_ALIASES"):
+        bloque = re.search(var + r" = \(([^)]*)\)", sync_source)
+        assert bloque, f"el sync ya no define {var}"
+        sync_managed |= set(re.findall(r'"([^"]+)"', bloque.group(1)))
+    registrables = {m["model_name"] for m in proxy_config.get("model_list", [])} | sync_managed
+    assert destino[0] in registrables, (
         f"el fallback {destino[0]} no esta en model_list: seria un puntero muerto, "
         "que es exactamente el fallo que este contrato existe para impedir")
 

@@ -4086,9 +4086,11 @@ spec:
             - { name: tracking, mountPath: /shared/tracking }
           resources:
             # 2026-08-14: 512Mi/3Gi eran de la era singleton y el OOM lo probo.
-            # El request de CPU sube tambien a proposito: un request bajo aqui ya
-            # dio ConnectTimeout contra todo pareciendo un fallo de red.
-            requests: { cpu: "1", memory: 2Gi }
+            # CPU request 300m y no mas: los ks5 estan al 86-97% de CPU PEDIDA
+            # (comprometida de verdad, no sobre-pedida -- finding del 07-08) y
+            # con "1" el scheduler no encontraba hueco y el rollout se quedo en
+            # Pending. Sin limite de CPU, el pod burstea sobre lo libre real.
+            requests: { cpu: 300m, memory: 2Gi }
             limits:   { memory: 6Gi }
           lifecycle:
             preStop:

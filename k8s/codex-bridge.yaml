@@ -1082,8 +1082,14 @@ spec:
             - { name: code, mountPath: /code, readOnly: true }
             - { name: auth, mountPath: /auth, readOnly: true }
           resources:
-            requests: { cpu: 10m, memory: 64Mi }
-            limits: { memory: 256Mi }
+            # 2026-08-14: los dos bridges vivian a 195-223Mi contra un limite de
+            # 256Mi y murieron por OOM 8 y 15 veces -- cada muerte es "Cannot
+            # connect to host codex-bridge*" en todo el trafico de ChatGPT.
+            # NO se replica: cada refresh ROTA el refresh_token (ver cabecera),
+            # dos replicas se invalidarian la sesion mutuamente. HA real =
+            # separar el refresco a un lider unico; mientras, aire de memoria.
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { memory: 1Gi }
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 3
@@ -1252,8 +1258,14 @@ spec:
             - { name: code, mountPath: /code, readOnly: true }
             - { name: auth, mountPath: /auth, readOnly: true }
           resources:
-            requests: { cpu: 10m, memory: 64Mi }
-            limits: { memory: 256Mi }
+            # 2026-08-14: los dos bridges vivian a 195-223Mi contra un limite de
+            # 256Mi y murieron por OOM 8 y 15 veces -- cada muerte es "Cannot
+            # connect to host codex-bridge*" en todo el trafico de ChatGPT.
+            # NO se replica: cada refresh ROTA el refresh_token (ver cabecera),
+            # dos replicas se invalidarian la sesion mutuamente. HA real =
+            # separar el refresco a un lider unico; mientras, aire de memoria.
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { memory: 1Gi }
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 3
