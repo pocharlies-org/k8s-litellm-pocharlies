@@ -4087,6 +4087,25 @@ spec:
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
+  # 1200s, y NO es el default de 600 (2026-08-15). El default hacia que CADA sync
+  # que tocara este Deployment dejara la Application en Degraded y la operacion de
+  # Argo en Failed, con las 4 replicas Available todo el rato. Un flag mal
+  # calibrado sobre un drenaje que esta bien: no se perdio disponibilidad nunca.
+  #
+  # La aritmetica, porque el numero no es redondo por gusto:
+  #   - terminationGracePeriodSeconds: 720. El preStop drena streams en vuelo y
+  #     ese tiempo es deliberado.
+  #   - maxSurge 0 + topologySpread maxSkew 1 sobre exactamente 4 nodos: al bajar
+  #     una replica el reparto queda 1,1,1,0 y el pod nuevo SOLO cabe en el nodo
+  #     que se acaba de vaciar -- en cualquier otro el skew se iria a 2. Y ese
+  #     nodo no suelta la CPU hasta que el viejo termina de drenar, con ks5-cp-1
+  #     y ks5-cp-2 al 97% de CPU pedida. O sea que el pod nuevo espera los 720s
+  #     enteros en Pending, por diseño, no por falta de sitio.
+  #   - +120s de arranque hasta ready (initialDelaySeconds 20 + probes) y margen.
+  # Medido el 15-08: 24 FailedScheduling en 12 min clavados (los 720s) antes de
+  # programarse. progressDeadline cuenta desde el ultimo progreso, asi que basta
+  # con que UNA replica se pase de 600 para marcar todo el rollout como fallido.
+  progressDeadlineSeconds: 1200
   selector: { matchLabels: { app: litellm } }
   template:
     metadata:
