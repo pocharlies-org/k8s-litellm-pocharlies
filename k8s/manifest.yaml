@@ -391,6 +391,38 @@ data:
       # Y el unico que cruza infraestructura: quien pide e-dani/gpt-5.6-sol A
       # PROPOSITO (Codex) cae al residente local si la cuenta de ChatGPT falla.
       - e-dani/gpt-5.6-sol: ["deepseek-v4-flash-0731"]
+      # 2026-08-15, peticion del owner: cloudblue -> e-dani, la simetrica de la
+      # linea de arriba, que faltaba. Hasta hoy NINGUN alias cloudblue/* tenia
+      # red: el 15-08 una peticion a cloudblue/gpt-5.6-sol murio con
+      # "No fallback model group found for original model_group=..." — el Router
+      # SI busco fallback, simplemente no habia ninguno declarado.
+      #
+      # Aqui el fallback si sirve, y por un motivo que no es el cooldown: son
+      # DOS CUENTAS de ChatGPT distintas detras de DOS deployments distintos
+      # (cloudblue/* -> codex-bridge, e-dani/* -> codex-bridge-edani). El limite
+      # del plan es POR CUENTA, asi que un `usage_limit_reached` de cloudblue
+      # deja a e-dani intacto. Verificado el 15-08: cloudblue/gpt-5.6-sol
+      # devolvia 429 con `resets_in_seconds` ~448000 (5 dias) mientras
+      # gpt-5.6-terra-edani contestaba normal.
+      #
+      # Esto NO repite el caso 2) del 13-08 que provoco los dos OOM. Alli el
+      # destino era el MISMO puente que estaba en CrashLoopBackOff, asi que los
+      # reintentos se apilaban contra un host muerto. Aqui el destino es el OTRO
+      # deployment: si codex-bridge cae, la red mueve el trafico FUERA del que
+      # esta roto, no dentro.
+      #
+      # El coste real es de cuota, no de estabilidad: cuando cloudblue se agota,
+      # su trafico pasa a consumir la cuenta personal (e-dani), que es la que usa
+      # Codex. Es lo que se quiere —contestar en vez de fallar— pero si un dia
+      # e-dani se queda sin cuota antes de tiempo, mirar aqui primero.
+      - cloudblue/gpt-5.6-sol: ["e-dani/gpt-5.6-sol"]
+      - cloudblue/gpt-5.6-terra: ["e-dani/gpt-5.6-terra"]
+      - cloudblue/gpt-5.6-luna: ["e-dani/gpt-5.6-luna"]
+      - cloudblue/gpt-5.5: ["e-dani/gpt-5.5"]
+      - cloudblue/gpt-5.4: ["e-dani/gpt-5.4"]
+      - cloudblue/gpt-5.4-mini: ["e-dani/gpt-5.4-mini"]
+      - cloudblue/gpt-5.3-codex-spark: ["e-dani/gpt-5.3-codex-spark"]
+      - cloudblue/codex-auto-review: ["e-dani/codex-auto-review"]
       # 2026-08-14, peticion del owner: el residente tambien tiene red. Cubre el
       # modo "registrado pero sin deployment sano" -- el que tumbo a Aurora --
       # para quien pide el modelo por su nombre. El modo "alias BORRADO" (el sync
@@ -4117,7 +4149,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7873cba865bb
+        config.k8s.e-dani.com/revision: config-33fbeede1556
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
