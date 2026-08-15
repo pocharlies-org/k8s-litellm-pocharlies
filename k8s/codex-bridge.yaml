@@ -1547,11 +1547,24 @@ spec:
             #
             # El puente es un ThreadingHTTPServer SIN tope de hilos (se han
             # contado entre 4 y 35 vivos a la vez, y HTTP/1.1 los mantiene con
-            # keep-alive). glibc le da una arena propia a cada hilo, cada arena
-            # crece hasta el pico de lo que ese hilo llego a pedir, y las arenas
-            # no-principales no se devuelven al SO. Los hilos mueren; las arenas
-            # no. Con nproc=8 el techo por defecto es 8*nproc = 64 arenas, o sea
-            # 4GB de margen para reventar un limite de 1Gi.
+            # keep-alive). glibc le da una arena propia a cada hilo. Con nproc=8
+            # el techo por defecto es 8*nproc = 64 arenas de 64MB, o sea 4GB de
+            # margen para reventar un limite de 1Gi.
+            #
+            # PRECISION SOBRE EL MECANISMO (auditoria adversarial del 15-08, que
+            # corrigio la primera version de este comentario). Es FALSO que "las
+            # arenas no se devuelven al SO" a secas. Reproducido en
+            # python:3.12-slim con la MISMA cadena de glibc que el pod
+            # (Debian GLIBC 2.41-12+deb13u3), tres ejecuciones por configuracion:
+            #   sin superviviente:  13332-13344 kB retenidos, 11 arenas
+            #   con superviviente:  418588-418704 kB retenidos, 20 arenas
+            # O sea que la arena se devuelve BIEN mientras no sobreviva nada
+            # dentro. Basta UNA asignacion pequena viva en lo alto del heap --4KB
+            # por hilo en el laboratorio-- para fijar la arena entera. La
+            # condicion es "arena + superviviente", no "arena". Cual es el
+            # superviviente concreto dentro del bridge NO esta demostrado: se
+            # sospecha de las cadenas que cada peticion deja en _quota/_tokens,
+            # pero es inferencia, no medicion.
             #
             # COMO SE DESCARTO que fuera una fuga de Python, por si vuelve:
             #   - La memoria sube con el pod OCIOSO: a las 01:54 habia 4 hilos
@@ -1565,9 +1578,37 @@ spec:
             #     concluir que el proceso libera.
             #
             # El gemelo `codex-bridge` no reventaba porque su cuenta tiene la
-            # cuota agotada: contesta 429 sin procesar cuerpo (559MB recibidos
-            # en 8,5 h, contra 5,3GB en 53 min aqui). No es que este sano, es
-            # que no trabaja -- por eso lleva las mismas dos variables.
+            # cuota agotada y contesta 429 sin procesar cuerpo. NO es un control
+            # limpio, y la primera version de este comentario lo daba por tal:
+            # cuando la carga la tenia EL, murio 8 veces entre las 11:16 y las
+            # 13:16 UTC del 14-08. Muere el que tiene la carga -- que es una
+            # PREDICCION de este mecanismo, no una explicacion rival. Por eso
+            # lleva las mismas variables.
+            #
+            # DOS CORRECCIONES A NUMEROS DE APOYO, para que nadie los reutilice:
+            #   - "cuerpos de peticion de 30-40MB" era INFERIDO del mapa de
+            #     memoria y es FALSO. Medido: media ~71,9 KB y maximo ~1,05 MB
+            #     (Langfuse tapa el input observado en 983.439 B en 12h). El
+            #     mecanismo no necesita cuerpos grandes: 1MB de JSON construye un
+            #     grafo de objetos varias veces mayor.
+            #   - "5,3 GB en 53 min" no se reproduce. Medicion independiente:
+            #     ~1,1 GiB/h por pod.
+            #
+            # De las dos variables la que carga el peso es MALLOC_ARENA_MAX.
+            # MALLOC_TRIM_THRESHOLD_ salio INDISTINGUIBLE de no poner nada en el
+            # laboratorio (418572-418644 kB con trim solo, contra 418588-418704
+            # kB sin env), y no aporta nada encima de ARENA_MAX. Se deja porque
+            # quitarlo cuesta un rollout y no molesta, pero no le atribuyas el
+            # arreglo.
+            #
+            # NO bajar a MALLOC_ARENA_MAX=1 pese a que retiene menos (7252 kB en
+            # el laboratorio): con 19-28 hilos serializa todo malloc contra la
+            # arena principal.
+            #
+            # RESULTADO EN PRODUCCION, 45 min de A/B con 25% MAS trafico por
+            # minuto que la linea base: pendiente de 0,797 Mi/MB a 0,0115 Mi/MB
+            # (46-69x), y 1 arena donde antes se contaban 41. 608 MB recibidos
+            # habrian predicho +484 Mi a la pendiente vieja; se midieron +7,0 Mi.
             - { name: MALLOC_ARENA_MAX, value: "2" }
             - { name: MALLOC_TRIM_THRESHOLD_, value: "131072" }
           volumeMounts:
