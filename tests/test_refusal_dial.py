@@ -65,6 +65,11 @@ def run(coro):
 
 class DialTest(unittest.TestCase):
     def setUp(self):
+        # Se reinstala en CADA test, no una vez al importar: otros tests de esta
+        # carpeta meten sus propios stubs de litellm en sys.modules y el que quede
+        # el ultimo gana. Aislado pasaba; en la suite entera el bloque veia el
+        # router de otro test y la resolucion alias -> runtime salia vacia.
+        sys.modules["litellm.proxy.proxy_server"] = proxy_server
         heads.clear(); calls["n"] = 0
         for slot in ns["_refusal_cache"].values():
             slot.update({"ts": 0.0, "value": None, "reason": "never_read", "raw": None})
