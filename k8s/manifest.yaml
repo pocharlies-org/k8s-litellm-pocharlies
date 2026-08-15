@@ -705,21 +705,104 @@ data:
         stale_threshold=STALE_THRESHOLD,
     )
 
-    # ── Lambda de la proyeccion rank-1, para sellar cada peticion ────────────────
+    # ── Dial de la proyeccion rank-1: AQUI vive la configuracion ────────────────
     #
-    # El modo uncensored es GLOBAL y conmutable en caliente, asi que "esta activado
+    # El vLLM sigue siendo quien APLICA la proyeccion: es su competencia y no se
+    # puede mover. Lo que vive AQUI es la CONFIGURACION — que runtimes tienen dial,
+    # en que URL admin se conmuta cada uno, y con que lambda se considera
+    # "encendido". LiteLLM es quien enruta los alias a esos heads y quien sella cada
+    # peticion, asi que es el unico proceso donde ese mapa esta completo. El panel
+    # DGX lo lee y lo escribe por /admin/refusal-state y /admin/refusal-dial; ya no
+    # habla con los heads ni repite la lista por su cuenta.
+    #
+    # LOS DOS RUNTIMES NO COMPARTEN EL VALOR DE ENCENDIDO. Ese es el motivo de que
+    # esto sea una LISTA y no el escalar unico que habia antes:
+    #
+    #   deepseek-v4-flash-0731  on=1.5  Medido sobre 10 disparadores de rechazo + 4
+    #                                   controles: lambda=1 todavia rechaza 5-7/10
+    #                                   — NO es "sin censura"; 1.5 rechaza 0/10 y no
+    #                                   cuesta calidad (acceptance 0,5647 frente a
+    #                                   0,5661 del base).
+    #   qwen38-27b-nvfp4        on=1.0  1.0 reproduce el perfil POR CAPA del
+    #                                   checkpoint Ektome horneado. Ni el mismo
+    #                                   numero ni la misma escala que el de arriba.
+    #
+    # Un escalar global degradaria DeepSeek de 1.5 a 1.0 en silencio, que es el peor
+    # fallo posible aqui: el panel diria "uncensored" y el modelo seguiria
+    # rechazando la mitad de las veces.
+    REFUSAL_RUNTIMES_DEFAULT = [
+        {
+            "key": "deepseek-v4-flash-0731",
+            "label": "DeepSeek-V4-Flash (TP=2)",
+            "admin_url": "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000"
+                         "/admin/refusal_lambda",
+            # Se compara contra el api_base VIVO del router, en minusculas y por
+            # subcadena: asi los alias que inyecta el sync dinamico entran solos.
+            "api_base_match": "deepseek-v4-flash",
+            "on_lambda": 1.5,
+        },
+        {
+            "key": "qwen38-27b-nvfp4",
+            "label": "Qwen3.8-27B NVFP4 (dense)",
+            # El Service publica 8000 aunque el contenedor sirva en 8888: la URL
+            # es la del Service, no la del pod.
+            "admin_url": "http://vllm-qwen36-27b-uncensored.llm.svc.cluster.local:8000"
+                         "/admin/refusal_lambda",
+            "api_base_match": "vllm-qwen36-27b-uncensored",
+            "on_lambda": 1.0,
+        },
+    ]
+
+
+    def _load_refusal_runtimes():
+        """Registro efectivo. El env override es JSON con la MISMA forma."""
+        raw = os.environ.get("LITELLM_REFUSAL_RUNTIMES", "").strip()
+        if not raw:
+            return list(REFUSAL_RUNTIMES_DEFAULT)
+        try:
+            parsed = json.loads(raw)
+            out = []
+            for item in parsed:
+                # key y admin_url son obligatorios: sin ellos la entrada no puede
+                # ni sellar ni conmutar. on_lambda tiene default 1.0, pero una
+                # entrada SIN on_lambda explicito es sospechosa — se avisa.
+                if not (item.get("key") and item.get("admin_url")):
+                    log.warning("refusal runtime sin key/admin_url, ignorada: %s", item)
+                    continue
+                if "on_lambda" not in item:
+                    log.warning("refusal runtime %s sin on_lambda: se asume 1.0",
+                                item.get("key"))
+                out.append({
+                    "key": str(item["key"]),
+                    "label": str(item.get("label") or item["key"]),
+                    "admin_url": str(item["admin_url"]),
+                    "api_base_match": str(item.get("api_base_match") or "").lower(),
+                    "on_lambda": float(item.get("on_lambda", 1.0)),
+                })
+            # Una lista vacia apagaria el sellado ENTERO sin decirlo. Se prefiere el
+            # default horneado a quedarse sin dial por un JSON mal escrito.
+            if out:
+                return out
+            log.warning("LITELLM_REFUSAL_RUNTIMES no dejo ninguna entrada valida")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("LITELLM_REFUSAL_RUNTIMES ilegible (%s): se usa el default",
+                        type(exc).__name__)
+        return list(REFUSAL_RUNTIMES_DEFAULT)
+
+
+    REFUSAL_RUNTIMES = _load_refusal_runtimes()
+    REFUSAL_RUNTIMES_BY_KEY = {r["key"]: r for r in REFUSAL_RUNTIMES}
+
+    # El modo es GLOBAL por runtime y conmutable en caliente, asi que "esta activado
     # ahora" no dice nada sobre una peticion de hace un rato. Se sella al empezar.
     #
     # Cacheado con TTL corto: leerlo por peticion metria una llamada HTTP en el
     # camino critico de CADA request. El TTL es la ventana de ambiguedad — si el
     # modo cambia justo dentro de ella, alguna peticion queda sellada con el valor
-    # anterior. 5 s es despreciable frente a lo que dura una peticion de este modelo.
-    REFUSAL_ADMIN_URL = os.environ.get(
-        "LITELLM_REFUSAL_ADMIN_URL",
-        "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/admin/refusal_lambda",
-    )
+    # anterior. 5 s es despreciable frente a lo que dura una peticion de estos
+    # modelos.
     REFUSAL_TTL_S = float(os.environ.get("LITELLM_REFUSAL_TTL_S", "5"))
-    # 8 s, no 1.5. Este endpoint NO es como /health (0,11 s): consulta a los DOS
+    # 8 s, no 1.5. Este endpoint NO es como /health (0,11 s): consulta a TODOS los
     # ranks TP y se pone a la cola detras del trabajo del motor, asi que con trafico
     # real tarda 3,7-7,0 s (medido 13-08-2026 con 2 peticiones corriendo y 2
     # esperando). Con 1.5 s NUNCA respondia a tiempo y el sellado quedaba
@@ -728,45 +811,77 @@ data:
     # mucho una espera por ventana de 5 s, y en el camino de la peticion es `await`,
     # asi que no bloquea a nadie mas.
     REFUSAL_TIMEOUT_S = float(os.environ.get("LITELLM_REFUSAL_TIMEOUT_S", "8"))
+    # UNA ENTRADA DE CACHE POR RUNTIME. Con un solo dict compartido (lo que habia
+    # cuando solo DeepSeek tenia dial) la primera lectura ganaba el TTL y las
+    # peticiones del OTRO modelo se sellaban con SU lambda: un numero equivocado en
+    # la tarjeta, que es peor que no tener numero.
+    #
     # `reason` explica POR QUE no hay valor. Sin el, una peticion sin sellar y un
     # head caido son indistinguibles desde fuera, que es justo la duda que aparece
     # cuando en el panel falta la insignia de lambda.
-    _refusal_cache = {"ts": 0.0, "value": None, "reason": "never_read"}
+    _refusal_cache = {
+        r["key"]: {"ts": 0.0, "value": None, "reason": "never_read"}
+        for r in REFUSAL_RUNTIMES
+    }
     _refusal_lock = threading.Lock()
 
 
-    def _refusal_lambda_now():
-        """Lambda actual del head, o None si no se pudo leer. NUNCA lanza."""
+    def _refusal_slot(rt_key):
+        """Entrada de cache del runtime. Se crea al vuelo si el registro cambio."""
+        slot = _refusal_cache.get(rt_key)
+        if slot is None:
+            slot = {"ts": 0.0, "value": None, "reason": "never_read"}
+            _refusal_cache[rt_key] = slot
+        return slot
+
+
+    def _refusal_lambda_now(rt):
+        """Lambda actual de ESE head, o None si no se pudo leer. NUNCA lanza."""
         now = time.time()
         with _refusal_lock:
-            if now - _refusal_cache["ts"] < REFUSAL_TTL_S:
-                return _refusal_cache["value"]
-            _refusal_cache["ts"] = now
+            slot = _refusal_slot(rt["key"])
+            if now - slot["ts"] < REFUSAL_TTL_S:
+                return slot["value"]
+            slot["ts"] = now
         try:
             # httpx y no urllib: ya esta importado y es el cliente que usa el resto
             # del hook. Version SINCRONA: solo para la ruta de diagnostico
             # /admin/refusal-state, que corre en el threadpool de FastAPI. El camino
             # de la peticion usa _refusal_lambda_now_async.
-            body = httpx.get(REFUSAL_ADMIN_URL, timeout=REFUSAL_TIMEOUT_S).json()
-            return _apply_refusal_cache(*_parse_refusal_body(body))
+            body = httpx.get(rt["admin_url"], timeout=REFUSAL_TIMEOUT_S).json()
+            return _apply_refusal_cache(
+                rt["key"], *_parse_refusal_body(body), raw=body
+            )
         except Exception as exc:  # noqa: BLE001
             return _apply_refusal_cache(
-                None, "head_unreachable: {}".format(type(exc).__name__)
+                rt["key"], None, "head_unreachable: {}".format(type(exc).__name__)
             )
 
 
-    def _apply_refusal_cache(value, reason):
+    def _apply_refusal_cache(rt_key, value, reason, raw=None):
         with _refusal_lock:
-            _refusal_cache["value"] = value
-            _refusal_cache["reason"] = reason
+            slot = _refusal_slot(rt_key)
+            slot["value"] = value
+            slot["reason"] = reason
+            # El cuerpo entero: `consistent` y `per_rank` los quiere el panel y no
+            # se pueden reconstruir desde el numero. En un fallo se deja el ultimo
+            # cuerpo bueno fuera — mejor sin datos que con datos de otra lectura.
+            slot["raw"] = raw if isinstance(raw, dict) else None
         return value
+
+
+    def _invalidate_refusal_cache(rt_key):
+        """Tras conmutar el dial, la entrada cacheada ya no vale."""
+        with _refusal_lock:
+            _refusal_slot(rt_key)["ts"] = 0.0
 
 
     def _parse_refusal_body(body):
         """(value, reason) a partir del cuerpo del endpoint admin. No lanza."""
         v = body.get("lambda")
         # consistent:false = los ranks TP no coinciden. Sellar un numero ahi seria
-        # mentir sobre como se sirvio: se deja sin sellar.
+        # mentir sobre como se sirvio: se deja sin sellar. En un runtime de un solo
+        # rank el campo no viene y None NO es False: eso no bloquea el sellado.
         if body.get("consistent") is False:
             return None, "tp_inconsistent"
         if v is None:
@@ -774,7 +889,7 @@ data:
         return float(v), None
 
 
-    async def _refusal_lambda_now_async():
+    async def _refusal_lambda_now_async(rt):
         """Igual que _refusal_lambda_now pero SIN bloquear el event loop.
 
         Esto lo llama async_pre_call_hook, que es `async def`: un httpx.get sincrono
@@ -783,141 +898,287 @@ data:
         """
         now = time.time()
         with _refusal_lock:
-            if now - _refusal_cache["ts"] < REFUSAL_TTL_S:
-                return _refusal_cache["value"]
-            _refusal_cache["ts"] = now
+            slot = _refusal_slot(rt["key"])
+            if now - slot["ts"] < REFUSAL_TTL_S:
+                return slot["value"]
+            slot["ts"] = now
         try:
             async with httpx.AsyncClient(timeout=REFUSAL_TIMEOUT_S) as client:
-                body = (await client.get(REFUSAL_ADMIN_URL)).json()
-            return _apply_refusal_cache(*_parse_refusal_body(body))
+                body = (await client.get(rt["admin_url"])).json()
+            return _apply_refusal_cache(
+                rt["key"], *_parse_refusal_body(body), raw=body
+            )
         except Exception as exc:  # noqa: BLE001
             return _apply_refusal_cache(
-                None, "head_unreachable: {}".format(type(exc).__name__)
+                rt["key"], None, "head_unreachable: {}".format(type(exc).__name__)
             )
 
 
-    # Que alias sirve HOY el head de DeepSeek. Se pregunta al router EN MEMORIA (es
+    # Que alias sirve HOY cada head con dial. Se pregunta al router EN MEMORIA (es
     # el mismo proceso, no hay HTTP) y se cachea: la lista solo cambia cuando el sync
     # dinamico reescribe el model_list.
-    _ds_alias_cache = {"ts": 0.0, "names": frozenset()}
-    _DS_ALIAS_TTL_S = 60.0
+    _alias_runtime_cache = {"ts": 0.0, "map": {}}
+    _ALIAS_RUNTIME_TTL_S = 60.0
 
 
-    def _serves_deepseek(model):
-        """True si ese alias lo atiende el head de DeepSeek-V4. Nunca lanza."""
-        name = str(model or "")
-        if not name:
-            return False
+    def _alias_runtime_map():
+        """alias -> key de runtime con dial, segun el api_base VIVO. Nunca lanza."""
         now = time.time()
-        if now - _ds_alias_cache["ts"] >= _DS_ALIAS_TTL_S:
+        if now - _alias_runtime_cache["ts"] >= _ALIAS_RUNTIME_TTL_S:
             try:
                 from litellm.proxy.proxy_server import llm_router
-                names = {
-                    str(d.get("model_name") or "")
-                    for d in (getattr(llm_router, "model_list", None) or [])
-                    if "deepseek-v4-flash" in str(
+                mapping = {}
+                for d in (getattr(llm_router, "model_list", None) or []):
+                    name = str(d.get("model_name") or "")
+                    if not name:
+                        continue
+                    api_base = str(
                         (d.get("litellm_params") or {}).get("api_base") or ""
                     ).lower()
-                }
-                # Lista vacia = el router aun no esta listo. Se conserva lo ultimo
-                # conocido en vez de vaciarla, que apagaria el sellado entero.
-                if names:
-                    _ds_alias_cache["names"] = frozenset(names)
+                    for rt in REFUSAL_RUNTIMES:
+                        match = rt.get("api_base_match")
+                        if match and match in api_base:
+                            mapping[name] = rt["key"]
+                            break
+                # Mapa vacio = el router aun no esta listo. Se conserva lo ultimo
+                # conocido en vez de vaciarlo, que apagaria el sellado entero.
+                if mapping:
+                    _alias_runtime_cache["map"] = mapping
             except Exception:  # noqa: BLE001
                 pass
-            _ds_alias_cache["ts"] = now
-        return name in _ds_alias_cache["names"]
+            _alias_runtime_cache["ts"] = now
+        return _alias_runtime_cache["map"]
 
 
-    async def _refusal_lambda_for_async(model, api_base):
-        """Solo se sella lo que sirve DeepSeek-V4; el resto no lleva proyeccion.
+    def _refusal_runtime_for(model, api_base):
+        """Runtime con dial que atiende ese alias, o None. Nunca lanza.
 
         Se mira el MODELO y no solo el api_base: en el pre_call_hook `api_base`
         viene None salvo que lo mande el cliente (lo resuelve el router, DESPUES).
-        Filtrar por api_base ahi dejaba _rl a None SIEMPRE — el sello no se escribia
-        nunca, y el fallo era mudo porque "no sellar" es la salida prevista cuando
-        no se puede leer el estado.
+        Filtrar por api_base ahi dejaba el sello a None SIEMPRE — y el fallo era mudo
+        porque "no sellar" es la salida prevista cuando no se puede leer el estado.
         """
         haystack = "{} {}".format(model or "", api_base or "").lower()
-        if "deepseek-v4-flash" not in haystack:
-            # El nombre tampoco basta: `agent`, `high`, `max`, `tooling`, `router`...
-            # los sirve el MISMO head y no lo mencionan. Filtrar solo por nombre
-            # sellaba unicamente a quien pedia `deepseek-v4-flash-0731` a pelo: 8 de
-            # 723 filas, todas de mis pruebas. El trafico real usa alias.
-            #
-            # Se resuelve por el api_base VIVO del router y no por una lista fija:
-            # los alias los inyecta el sync dinamico (el config.yaml solo trae 20
-            # entradas estaticas) y LOCAL_VLLM_ALIASES incluye `dense`, que NO es
-            # DeepSeek — sellar ahi seria mentir sobre otro modelo, peor que no
-            # sellar. `resolve_server_id` tampoco sirve: sin api_base devuelve None.
-            if not _serves_deepseek(model):
-                return None
-        return await _refusal_lambda_now_async()
+        for rt in REFUSAL_RUNTIMES:
+            match = rt.get("api_base_match")
+            if match and match in haystack:
+                return rt
+        # El nombre tampoco basta: `agent`, `high`, `max`, `tooling`, `dense`...
+        # los sirven estos heads y no los mencionan. Filtrar solo por nombre sellaba
+        # unicamente a quien pedia el alias literal: 8 de 723 filas, todas de
+        # pruebas. El trafico real usa alias.
+        #
+        # Y por eso NO vale una lista fija de nombres: `tooling`/`dense` cambian de
+        # head con el perfil de computo (creative -> Qwen3.8, llm-tp -> DeepSeek).
+        # Sellar por lista seria mentir sobre que modelo contesto en cuanto el
+        # arbitro conmuta. Se resuelve por el api_base vivo del router.
+        return REFUSAL_RUNTIMES_BY_KEY.get(_alias_runtime_map().get(str(model or "")))
 
 
-    # ── Exponer ese mismo lambda por el propio proxy ─────────────────────────────
+    async def _refusal_lambda_for_async(model, api_base):
+        """(lambda, key del runtime) para esa peticion. (None, None) si no aplica."""
+        rt = _refusal_runtime_for(model, api_base)
+        if rt is None:
+            return None, None
+        return await _refusal_lambda_now_async(rt), rt["key"]
+
+
+    # ── El dial por el propio proxy: leer Y CONMUTAR ─────────────────────────────
     #
-    # El panel DGX ya puede leer y cambiar el dial preguntando a vLLM. Esto contesta
-    # una pregunta DISTINTA: que va a sellar LiteLLM. Si el head no responde, el
-    # panel dice el estado real pero LiteLLM no sella nada — y sin esta ruta esa
-    # discrepancia no se ve.
+    # Dos rutas. La de lectura no contesta "que hay en el vLLM" sino la pregunta que
+    # el panel necesita de verdad: QUE VA A SELLAR LiteLLM y SOBRE QUE ALIAS. Si un
+    # head no responde, sus alias dejan de sellarse mientras los del otro runtime
+    # siguen — sin esto esa asimetria no se ve por ningun lado.
+    #
+    # La de escritura existe para que el panel NO tenga que hablar con los heads:
+    # el mapa de runtimes, el valor de encendido de cada uno y el tope viven aqui,
+    # en un sitio solo. El panel manda `enabled` y ni siquiera necesita saber si el
+    # encendido de ese modelo es 1.0 o 1.5.
     #
     # SOLO MASTER KEY / PROXY_ADMIN, y no es configurable desde aqui: LiteLLM
     # clasifica las rutas por pertenencia EXPLICITA a sus listas (openai_routes,
     # info_routes, management_routes...). Una ruta que no esta en ninguna cae al
     # default-deny final de `non_proxy_admin_allowed_routes_check` -> 403 para
     # cualquier key virtual. Renombrar el path no lo arregla (no va por prefijo);
-    # habria que inyectarlo en las listas internas de litellm, que no compensa
-    # para un endpoint de diagnostico.
+    # habria que inyectarlo en las listas internas de litellm, que no compensa. El
+    # dashboard ya llama con la master key (LITELLM_MASTER_KEY), como en
+    # /internal/active-requests.
     REFUSAL_STATE_PATH = "/admin/refusal-state"
+    REFUSAL_DIAL_PATH = "/admin/refusal-dial"
+    # Tope duro. Por encima de 1.5 se entra en el regimen del checkpoint horneado
+    # (lambda_eff 2,43), que SI degrada: acceptance 0,5128, por debajo del suelo de
+    # 0,55. Un panel con campo numerico no puede poder meter un 10.
+    REFUSAL_MAX_LAMBDA = float(os.environ.get("LITELLM_REFUSAL_MAX_LAMBDA", "2.0"))
 
 
-    def _register_refusal_state_route():
-        from fastapi import Depends
+    def _refusal_fleet_name(rt):
+        """Nombre con el que el panel conoce a ese runtime en la flota.
+
+        Se DERIVA del host del admin_url (`vllm-qwen36-27b-uncensored.llm.svc...`
+        -> `vllm-qwen36-27b-uncensored`) en vez de repetirlo a mano: si alguien
+        repunta un runtime a otro head, la chapa del panel se mueve con el. Es la
+        regla que ya usaba el dashboard cuando el dial era de un solo modelo.
+        """
+        host = rt["admin_url"].split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+        return host.split(".")[0]
+
+
+    def _refusal_aliases_by_runtime():
+        """key de runtime -> alias que enruta ahi AHORA, para que el panel lo diga."""
+        out = {r["key"]: [] for r in REFUSAL_RUNTIMES}
+        for alias, key in _alias_runtime_map().items():
+            out.setdefault(key, []).append(alias)
+        for key in out:
+            out[key] = sorted(out[key])
+        return out
+
+
+    def _refusal_runtime_state(rt, aliases):
+        """Estado publicado de un runtime. Lee de la cache; no toca la red."""
+        # Los campos, en la MISMA toma del lock: leerlos por separado podria mezclar
+        # dos refrescos y dar un motivo que no corresponde al valor.
+        with _refusal_lock:
+            slot = _refusal_slot(rt["key"])
+            lam = slot["value"]
+            reason = slot["reason"]
+            ts = slot["ts"]
+            raw = slot.get("raw") or {}
+        return {
+            "key": rt["key"],
+            "label": rt["label"],
+            # Nombre EXACTO del runtime en la flota: el panel casa por igualdad, no
+            # por prefijo — con substring, `deepseek-v4-flash-0731-unc` casaria con
+            # `deepseek-v4-flash-0731`.
+            "fleet_name": _refusal_fleet_name(rt),
+            "lambda": lam,
+            # None NO es False: es "no se pudo leer".
+            "enabled": None if lam is None else lam > 0,
+            # Valor de encendido de ESTE runtime. No es global: DeepSeek necesita
+            # 1.5 y Qwen3.8 se enciende con 1.0.
+            "on_lambda": rt["on_lambda"],
+            "max_lambda": REFUSAL_MAX_LAMBDA,
+            # lo que de verdad se pregunta: ¿las peticiones llevaran sello?
+            "stamping": lam is not None,
+            "reason": reason,
+            # `consistent` = todos los ranks TP reportan el mismo valor. En un
+            # runtime de UN SOLO rank el campo no viene: None es "no aplica", no
+            # es un fallo, y el panel no puede exigirlo.
+            "consistent": raw.get("consistent"),
+            "per_rank": raw.get("per_rank"),
+            # Los alias que hoy enrutan a este head. Es la respuesta a "y esto a
+            # que afecta", que con `tooling`/`dense` cambiando de head segun el
+            # perfil de computo no se puede adivinar desde fuera.
+            "aliases": aliases.get(rt["key"], []),
+            "admin_url": rt["admin_url"],
+            "cache_age_s": round(time.time() - ts, 2),
+            "ttl_s": REFUSAL_TTL_S,
+            "source": "litellm-hook-cache",
+        }
+
+
+    def _register_refusal_routes():
+        from fastapi import Body, Depends, HTTPException as _HTTPException
         from litellm.proxy.proxy_server import app
         from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 
         # Starlette NO deduplica rutas: si el config recarga y este modulo se
         # reimporta, se apilaria una segunda copia identica.
-        if any(getattr(r, "path", None) == REFUSAL_STATE_PATH
-               for r in app.router.routes):
-            return
+        existing = {getattr(r, "path", None) for r in app.router.routes}
 
-        # `def` y NO `async def` a proposito: _refusal_lambda_now hace un httpx.get
-        # BLOQUEANTE. FastAPI corre las rutas sincronas en su threadpool, asi que
-        # una consulta de diagnostico no puede parar el event loop del proxy.
-        @app.get(REFUSAL_STATE_PATH, tags=["admin"],
-                 dependencies=[Depends(user_api_key_auth)])
-        def _refusal_state():
-            _refusal_lambda_now()  # refresca si vencio el TTL; el valor se lee abajo
-            # Los tres campos, en la MISMA toma del lock: leer el valor del return
-            # de arriba y `reason`/`ts` por separado podria mezclar dos refrescos y
-            # dar un motivo que no corresponde al valor.
-            with _refusal_lock:
-                lam = _refusal_cache["value"]
-                reason = _refusal_cache["reason"]
-                ts = _refusal_cache["ts"]
-            return {
-                "lambda": lam,
-                # None NO es False: es "no se pudo leer".
-                "enabled": None if lam is None else lam > 0,
-                # lo que de verdad se pregunta: ¿las peticiones llevaran sello?
-                "stamping": lam is not None,
-                "reason": reason,
-                "cache_age_s": round(time.time() - ts, 2),
-                "ttl_s": REFUSAL_TTL_S,
-                "admin_url": REFUSAL_ADMIN_URL,
-                "source": "litellm-hook-cache",
-            }
+        if REFUSAL_STATE_PATH not in existing:
+            # `def` y NO `async def` a proposito: _refusal_lambda_now hace un
+            # httpx.get BLOQUEANTE. FastAPI corre las rutas sincronas en su
+            # threadpool, asi que una consulta de estado no puede parar el event
+            # loop del proxy.
+            @app.get(REFUSAL_STATE_PATH, tags=["admin"],
+                     dependencies=[Depends(user_api_key_auth)])
+            def _refusal_state():
+                aliases = _refusal_aliases_by_runtime()
+                runtimes = []
+                for rt in REFUSAL_RUNTIMES:
+                    # refresca si vencio el TTL; el valor se lee de la cache abajo
+                    _refusal_lambda_now(rt)
+                    runtimes.append(_refusal_runtime_state(rt, aliases))
+                return {
+                    "runtimes": runtimes,
+                    # Un head caido NO es un fallo de esta ruta: DeepSeek vive a 0
+                    # replicas fuera del perfil llm-tp. Se reporta cuantos hablan.
+                    "reachable": sum(1 for r in runtimes if r["stamping"]),
+                    "total": len(runtimes),
+                    "source": "litellm-hook-cache",
+                }
+
+        if REFUSAL_DIAL_PATH not in existing:
+            @app.post(REFUSAL_DIAL_PATH, tags=["admin"],
+                      dependencies=[Depends(user_api_key_auth)])
+            async def _refusal_dial(payload: dict = Body(...)):
+                key = str(payload.get("runtime") or "").strip()
+                rt = REFUSAL_RUNTIMES_BY_KEY.get(key)
+                if rt is None:
+                    raise _HTTPException(status_code=404, detail={
+                        "error": "runtime desconocido: {!r}".format(key),
+                        "known": sorted(REFUSAL_RUNTIMES_BY_KEY),
+                    })
+                if payload.get("lambda") is not None:
+                    try:
+                        lam = float(payload["lambda"])
+                    except (TypeError, ValueError):
+                        raise _HTTPException(status_code=400, detail={
+                            "error": "lambda no es un numero"})
+                elif "enabled" in payload:
+                    # El panel manda un booleano y no necesita saber el numero: el
+                    # valor de encendido es configuracion de ESTE registro.
+                    lam = rt["on_lambda"] if payload.get("enabled") else 0.0
+                else:
+                    raise _HTTPException(status_code=400, detail={
+                        "error": "falta `enabled` (bool) o `lambda` (numero)"})
+                if lam < 0 or lam > REFUSAL_MAX_LAMBDA:
+                    raise _HTTPException(status_code=400, detail={
+                        "error": "lambda fuera de rango [0, {}]".format(
+                            REFUSAL_MAX_LAMBDA),
+                        "requested": lam,
+                    })
+
+                try:
+                    async with httpx.AsyncClient(timeout=REFUSAL_TIMEOUT_S) as client:
+                        r = await client.post(rt["admin_url"], json={"lambda": lam})
+                        r.raise_for_status()
+                        # Releer en vez de fiarse del POST: el endpoint de vLLM
+                        # confirma que TODOS los ranks aplicaron el valor, y esa es
+                        # la garantia que importa.
+                        g = await client.get(rt["admin_url"])
+                        g.raise_for_status()
+                        body = g.json()
+                except Exception as exc:  # noqa: BLE001
+                    # El head cae con cada cambio de modo del arbitro de GPU y tarda
+                    # ~8 min en cargar. Eso NO es un error del proxy: 503.
+                    _invalidate_refusal_cache(rt["key"])
+                    raise _HTTPException(status_code=503, detail={
+                        "error": "{}: {}".format(type(exc).__name__, exc),
+                        "runtime": rt["key"],
+                        "hint": "el head no responde: puede estar cargando (~8 min) "
+                                "o el perfil de computo no incluirlo",
+                    })
+
+                _apply_refusal_cache(rt["key"], *_parse_refusal_body(body), raw=body)
+                with _refusal_lock:
+                    _refusal_slot(rt["key"])["ts"] = time.time()
+                state = _refusal_runtime_state(rt, _refusal_aliases_by_runtime())
+                if state.get("consistent") is False:
+                    raise _HTTPException(status_code=500, detail={
+                        "error": "los ranks TP no aplicaron el mismo lambda",
+                        "per_rank": state.get("per_rank"),
+                    })
+                return state
 
 
     # Envuelto entero: esto corre en el modulo del hook, que esta en el camino de
-    # TODAS las peticiones. Una ruta de diagnostico no puede impedir que arranque el
+    # TODAS las peticiones. Unas rutas de control no pueden impedir que arranque el
     # proxy.
     try:
-        _register_refusal_state_route()
+        _register_refusal_routes()
     except Exception as exc:  # noqa: BLE001
-        log.warning("no se pudo registrar %s: %s", REFUSAL_STATE_PATH, exc)
+        log.warning("no se pudieron registrar las rutas del dial: %s", exc)
 
 
     # LiteLLM 1.96 valida `model_info` contra su propio ModelInfo al construir la
@@ -2367,8 +2628,13 @@ data:
             # SILENCIO. La doc marca esto como "enterprise", pero este build no
             # tiene gate de premium_user (verificado con premium_user=False y un
             # sello real persistido en SQL).
+            # Fuera del try: el tracker de abajo los reusa, y si el sellado fallara
+            # antes de asignarlos el arranque del tracking moriria por NameError —
+            # perdiendo la peticion entera del panel por un fallo del sello.
+            _rl = None
+            _rt_key = None
             try:
-                _rl = await _refusal_lambda_for_async(model, api_base)
+                _rl, _rt_key = await _refusal_lambda_for_async(model, api_base)
                 if _rl is not None:
                     # "metadata" en chat/completions; "litellm_metadata" en
                     # threads/assistants. Se respeta el que ya traiga la peticion.
@@ -2384,6 +2650,14 @@ data:
                     # str(): LiteLLM serializa este dict a JSON tal cual, y un float
                     # 1.5 vs "1.5" complica el filtrado en SQL.
                     _slm["refusal_lambda"] = str(_rl)
+                    # QUE runtime lo sello. Con dos modelos con dial, el numero solo
+                    # ya no identifica nada: 1.0 es "encendido" en Qwen3.8 y
+                    # "encendido a medias" en DeepSeek. Va DENTRO de
+                    # spend_logs_metadata, que es un dict libre; una clave nueva
+                    # fuera de ahi la tira la allowlist de SpendLogsMetadata en
+                    # silencio. Se AÑADE: `refusal_lambda` no se renombra, lo
+                    # consume el historico del panel por SQL.
+                    _slm["refusal_runtime"] = str(_rt_key)
             except Exception as e:
                 log.warning("refusal stamp error: %s", e)
             try:
@@ -2394,7 +2668,10 @@ data:
                     model=model,
                     call_type=call_type,
                     api_base=api_base,
-                    refusal_lambda=await _refusal_lambda_for_async(model, api_base),
+                    # Cacheado: esta es la MISMA lectura que la del sello de arriba,
+                    # dentro de la misma ventana de TTL. No hay segunda llamada HTTP.
+                    refusal_lambda=_rl,
+                    refusal_runtime=_rt_key,
                 )
             except Exception as e:
                 log.debug("track_start error: %s", e)
@@ -2669,6 +2946,7 @@ data:
             call_type: Any,
             api_base: Any,
             refusal_lambda: Any = None,
+            refusal_runtime: Any = None,
         ) -> Dict[str, Any]:
             now = self.clock()
             with self._lock:
@@ -2684,9 +2962,13 @@ data:
                     # Lambda de la proyeccion rank-1 VIGENTE al empezar la peticion.
                     # Es un modo GLOBAL que cambia en caliente, asi que el valor
                     # actual no dice como se sirvio una peticion de hace diez
-                    # minutos: hay que sellarlo aqui. None = backend que no es
-                    # DeepSeek-V4, o no se pudo leer.
+                    # minutos: hay que sellarlo aqui. None = backend sin dial, o no
+                    # se pudo leer.
                     "refusal_lambda": refusal_lambda,
+                    # QUE runtime lo sello. Con dos modelos con dial el numero solo
+                    # ya no identifica el estado: 1.0 es uncensored en Qwen3.8 y
+                    # medio censurado en DeepSeek (ahi sigue rechazando 5-7/10).
+                    "refusal_runtime": str(refusal_runtime) if refusal_runtime else None,
                     "ts": now,
                     "first_token_ts": None,
                     "last_sample_ts": None,
@@ -3052,6 +3334,7 @@ data:
                     "call_type": raw.get("call_type"),
                     "server_id": raw.get("server_id"),
                     "refusal_lambda": raw.get("refusal_lambda"),
+                    "refusal_runtime": raw.get("refusal_runtime"),
                     "prompt_tokens": raw.get("prompt_tokens"),
                     "completion_tokens": raw.get("completion_tokens"),
                     "output_speed_tps": raw.get("output_speed_tps"),
