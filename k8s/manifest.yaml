@@ -3671,6 +3671,26 @@ data:
             "max_output_tokens": 16384,
             "supports_function_calling": True,
             "supports_vision": True,
+            # 2026-08-15: MEDIDO contra el motor vivo, no copiado de otro backend.
+            # `reasoning_effort` se acepta en los seis niveles sin error, pero solo
+            # `high` y `max` activan el pensamiento de verdad:
+            #   none/low/medium/ultra -> reasoning_content 0, responde directo
+            #   high  -> reasoning_content 200 chars
+            #   max   -> reasoning_content 148 chars
+            # `ultra` NO se declara: el motor lo acepta pero no lo distingue de
+            # `none`, y anunciarlo seria volver a mentir en el catalogo.
+            #
+            # Esto estaba SIN DECLARAR, o sea que el catalogo decia
+            # supports_reasoning=False mientras el modelo si razonaba. Los clientes
+            # que leen /model/info para saber si pueden pedir razonamiento —el
+            # plugin opencode-litellm deriva de aqui `reasoning` y sus variantes—
+            # nunca ofrecian la opcion.
+            #
+            # OJO al presupuesto: con high/max el modelo gasta el pensamiento ANTES
+            # de contestar. Con max_tokens corto sale `finish_reason: length` y
+            # content VACIO. Medido: 700 tokens no bastan, 4000 si.
+            "supports_reasoning": True,
+            "supported_reasoning_efforts": ("none", "low", "medium", "high", "max"),
         },
         {
             # DeepSeek-V4-Flash-0731 (284B MoE / 13B activos) en TP=2 REPARTIDO
@@ -3764,7 +3784,15 @@ data:
             # schema-valid {"city":"Madrid"} argument object. Vision and exposed
             # reasoning remain unverified and therefore stay disabled.
             "supports_function_calling": True,
-            "supports_reasoning": False,
+            # 2026-08-15: era False y ENTREGABA razonamiento igualmente. Medido
+            # contra el motor vivo, mismo patron que el 27B:
+            #   none/low/medium -> reasoning_content 0
+            #   high  -> 1231 chars    max -> 1405 chars
+            # En un modelo de 4B el pensamiento se come casi todo el presupuesto:
+            # con high/max el `content` baja a ~15 chars y hace falta max_tokens
+            # holgado o sale `length` sin respuesta.
+            "supports_reasoning": True,
+            "supported_reasoning_efforts": ("none", "low", "medium", "high", "max"),
             "supports_vision": False,
         },
     )
@@ -3815,25 +3843,19 @@ data:
         "ds4-flash-0731-tp2-qwen36-35b-nvfp4",
         "ds4-flash-0731-tp2-qwen-36-35b",
     )
+    # 2026-08-15: de 8 prefijos a 1. Los siete que se van (gemma4 x2, qwen36-35b x2,
+    # qwen36-27b-dense x2, qwen3coder) son de modelos borrados del cluster entre el
+    # 26-07 y el 10-08: llevaban semanas recorriendose cada 10 s para purgar
+    # registros que ya no puede crear nadie, porque sus backends no existen ni en
+    # BACKENDS ni en disco. Una tumba solo hace falta mientras quede algo que
+    # enterrar. La que se queda es la de HOY, que si tiene filas vivas que purgar.
     RETIRED_MANAGED_ID_PREFIXES = (
-        # Every deployment behind these prefixes was deleted on 2026-07-26, so the
-        # whole prefix is safe to purge -- there is no live backend left to clobber.
-        "dgx1-gemma4-26b-a4b-nvfp4-",
-        "dgx2-gemma4-26b-a4b-nvfp4-",
-        "dgx1-qwen36-35b-nvfp4-",
-        "dgx2-qwen36-35b-nvfp4-",
-        "dgx1-qwen36-27b-dense-nvfp4-",
-        "dgx2-qwen36-27b-dense-nvfp4-",
-        # 2026-08-15: el 27B uncensored pasa su id_prefix de
-        # `dgx2-qwen36-27b-uncensored-nvfp4` a `qwen38-27b`. Sin esta entrada sus
-        # 5 filas viejas (-tooling, -dense, -dense-reasoning, -dense-uncensored,
-        # -taxonomy) quedan huerfanas en el model_list: el ciclo solo reconoce como
-        # suyas las del prefijo ACTIVO, asi que nadie las retiraria.
+        # El 27B uncensored cambio su id_prefix de
+        # `dgx2-qwen36-27b-uncensored-nvfp4` a `qwen38-27b` el 15-08. Sin esto sus
+        # filas viejas quedan huerfanas: el ciclo solo reconoce como suyas las del
+        # prefijo ACTIVO. Retirar esta entrada cuando /model/info confirme que no
+        # queda ninguna.
         "dgx2-qwen36-27b-uncensored-nvfp4-",
-        # 2026-08-10: Qwen3-Coder retirado del cluster entero (deployment, pesos y
-        # config). El prefijo se purga en cada ciclo para que no sobreviva ningun
-        # registro suyo en el model_list.
-        "dgx2-qwen3coder-30b-a3b-nvfp4-",
     )
 
     TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -4149,8 +4171,26 @@ data:
             log.info("enabled %s backend %s for alias %s", backend, model_id, deployment["model_name"])
         except RuntimeError as exc:
             msg = str(exc).lower()
-            if "already" in msg and "exist" in msg:
-                log.info("backend %s already exists", model_id)
+            # 2026-08-15: la deteccion de duplicado solo miraba "already"+"exist",
+            # y LiteLLM NO dice eso. Devuelve un 500 generico ("Failed to add model
+            # to db") y deja el UniqueViolationError solo en SUS logs, asi que el
+            # match nunca casaba y el reconcile fallaba cada 10 s en bucle.
+            #
+            # POR QUE se reintenta crear algo que ya existe: el sync escribe por el
+            # Service de LiteLLM, que balancea entre 4 replicas. Crea en la replica
+            # A y relee en la B, que aun no tiene la fila en su router en memoria;
+            # como no la ve, vuelve a crear. Es read-after-write inconsistente, no
+            # un fallo de logica del reconcile.
+            #
+            # Un choque de clave primaria SIGNIFICA que la fila existe, que es el
+            # estado deseado. Se toma como exito y se avisa, en vez de repetir el
+            # ciclo indefinidamente. Un fallo de BD real (conexion, permisos) no
+            # lleva esta firma y sigue propagandose.
+            if ("already" in msg and "exist" in msg) or "failed to add model to db" in msg:
+                log.warning(
+                    "backend %s ya existia al crearlo (read-after-write entre "
+                    "replicas de litellm); se toma como exito", model_id
+                )
                 return
             raise
 
@@ -4346,7 +4386,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-35b3a44a4664
+        config.k8s.e-dani.com/revision: sync-5106534532f3
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false

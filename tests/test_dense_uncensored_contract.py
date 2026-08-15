@@ -138,9 +138,16 @@ def test_backends_cubren_las_formas_de_exclusion():
                    "qwen38-27b-"):
         for dead in dead_prefixes:
             assert not prefix.startswith(dead), f"{prefix} seria purgado por {dead}"
-    # Y el del coder retirado SI tiene que estar purgado, para que no le sobreviva
-    # ningun registro en el model_list.
-    assert any("dgx2-qwen3coder-30b-a3b-nvfp4-".startswith(d) for d in dead_prefixes)
+    # 2026-08-15: la lista pasa de 8 tumbas a 1. Las siete que se van (gemma4 x2,
+    # qwen36-35b x2, qwen36-27b-dense x2, qwen3coder) eran de modelos borrados del
+    # cluster entre el 26-07 y el 10-08. Se comprobo contra /model/info que las
+    # OCHO tienen 0 filas vivas: la purga ya se completo hace semanas y no queda
+    # backend capaz de recrearlas. Una tumba solo hace falta mientras quede algo
+    # que enterrar; recorrerlas cada 10 s no protegia de nada.
+    #
+    # La unica que se conserva es la del rename de HOY, porque es la reciente y es
+    # la que podria tener carrera con una replica rezagada.
+    assert dead_prefixes == ["dgx2-qwen36-27b-uncensored-nvfp4-"], dead_prefixes
 
 
 def test_shared_tooling_alias_is_guarded_against_double_registration():
