@@ -11,7 +11,7 @@ def _sync_block(text, start, end):
     return text[text.index(start):text.index(end)]
 
 
-def test_uncensored_is_the_single_backend_owning_every_dense_alias():
+def test_uncensored_is_the_creative_backend_owning_tooling_and_dense_aliases():
     """Since the censored 27B F2 deployments were deleted (2026-07-26) the
     uncensored 27B is the cluster's ONLY dense model, so it owns every
     dense-shaped alias -- including `taxonomy`, which used to be registered by
@@ -20,7 +20,7 @@ def test_uncensored_is_the_single_backend_owning_every_dense_alias():
 
     assert "QWEN36_27B_UNCENSORED_ALIASES = (" in text
     aliases = _sync_block(text, "QWEN36_27B_UNCENSORED_ALIASES = (", "QWEN36_REPEAT_GUARD_PARAMS")
-    for name in ('"dense-uncensored"', '"dense"', '"dense-reasoning"', '"taxonomy"'):
+    for name in ('"tooling"', '"dense-uncensored"', '"dense"', '"dense-reasoning"', '"taxonomy"'):
         assert name in aliases, f"{name} debe registrarlo el uncensored"
 
     assert text.count('"aliases": QWEN36_27B_UNCENSORED_ALIASES') == 1
@@ -140,19 +140,16 @@ def test_backends_cubren_las_formas_de_exclusion():
 
 
 def test_shared_tooling_alias_is_guarded_against_double_registration():
-    """LiteLLM no impone unicidad de alias: si dos backends de DGX1 quedaran
+    """LiteLLM no impone unicidad de alias: si dos backends de Spark quedaran
     registrados a la vez sobre `tooling`, el router balancearia contra un
     api_base muerto. La exclusion por hardware NO es una invariante de este
     controlador (endpoint_ready devuelve None y se SALTA el backend), asi que
     habilitar un backend debe expulsar explicitamente a sus hermanos."""
     text = MANIFEST.read_text()
-    # 2026-08-13: ya solo hay UN backend con los nombres de tooling. Los dos
-    # candidatos de DGX1 (ornith-dgx1 via ORNITH_ALIASES, nvidia-qwen36-dgx1 via
-    # TOOLING_RESIDENT_ALIASES) se retiraron por no tener pesos en disco, y con
-    # ellos desaparecio ORNITH_ALIASES. La invariante que protege este test NO es
-    # el numero de candidatos: es que TODO el que declare esos alias excluya a los
-    # demas por hardware. Con uno solo se cumple trivialmente, y el assert de
-    # abajo es lo que impide que se anada un segundo sin exclusion fisica.
+    # 2026-08-15: hay dos dueños deliberados de `tooling`, pero nunca coexisten:
+    # DeepSeek TP=2 ocupa ambos Sparks en llm-tp; Qwen3.6 27B ocupa DGX1 en
+    # creative. El controlador de perfil hace la exclusion fisica y el sync
+    # expulsa cualquier registro saliente antes de dar de alta el entrante.
     assert "TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES" in text
     assert "ORNITH_ALIASES" not in _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS"), (
         "ORNITH_ALIASES volvio a BACKENDS: sus dos duenos estan retirados"
@@ -161,22 +158,19 @@ def test_shared_tooling_alias_is_guarded_against_double_registration():
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
     comparten = [n for n, a in re.findall(r'"name":\s*"([a-z0-9-]+)".*?"aliases":\s*(\w+)',
                                           backends, re.S)
-                 if a in ("ORNITH_ALIASES", "TOOLING_RESIDENT_ALIASES")]
-    # 2026-08-13: UNO. Eran tres (los dos candidatos de DGX1 + DeepSeek); los de
-    # DGX1 se retiraron sin pesos en disco. DeepSeek se queda los nombres porque su
-    # TP=2 ocupa los DOS Sparks, o sea que su exclusion fisica abarca el cluster
-    # entero. Si algun dia se anade aqui un backend que NO excluya a los otros por
-    # hardware, `tooling` acabaria servido por dos api_base a la vez y el router
-    # balancearia contra uno muerto: eso es lo que protege este test, no el numero.
-    assert sorted(comparten) == ["deepseek-v4-flash-tp2"], comparten
+                 if a in ("QWEN36_27B_UNCENSORED_ALIASES", "TOOLING_RESIDENT_ALIASES")]
+    assert sorted(comparten) == [
+        "deepseek-v4-flash-tp2",
+        "qwen36-27b-uncensored-dgx2",
+    ], comparten
 
-    # El backend de DGX2 NO puede compartirlos: no hay exclusion fisica entre nodos
-    # distintos, asi que `tooling` acabaria servido por dos backends.
     dense = backends[backends.index('"name": "qwen36-27b-uncensored-dgx2"'):
                      backends.index('"name": "deepseek-v4-flash-tp2"')]
     assert '"aliases": QWEN36_27B_UNCENSORED_ALIASES' in dense
-    # Comprobar la DECLARACION, no cualquier mencion.
-    assert '"aliases": TOOLING_RESIDENT_ALIASES' not in dense
+    aliases = _sync_block(
+        text, "QWEN36_27B_UNCENSORED_ALIASES = (", "QWEN36_REPEAT_GUARD_PARAMS"
+    )
+    assert '"tooling"' in aliases
     # Y los alias del coder retirado no vuelven por la puerta de atras.
     assert "QWEN3CODER_ALIASES" not in text
 

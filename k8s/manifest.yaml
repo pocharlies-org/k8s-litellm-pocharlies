@@ -362,8 +362,12 @@ data:
       # Both layers are load-bearing. Neither one substitutes for the other.
       fallbacks:
       # En llm-tp, agent/high/max y deepseek-v4-flash-0731 son el MISMO backend.
-      # `tooling` no usa esta red: el hook lo resuelve por perfil y debe fallar
-      # cerrado para que una traduccion nunca salga a CloudBlue.
+      # `tooling` es distinto: siempre nombra al residente del perfil global
+      # (`llm-tp` -> DeepSeek V4; `creative` -> Qwen3.6 27B) y, por decision del
+      # owner del 15-08-2026, si ese residente sigue registrado pero deja de estar
+      # sano cae a GPT-5.6 Terra. CloudBlue es la primera cuenta y su propia red de
+      # abajo continua hacia e-dani; no se declara la vuelta y el grafo sigue siendo
+      # un DAG.
       #
       # Parece que un fallback entre ellos no puede servir de nada. LO PARECE Y NO
       # ES ASI, y por poco lo borro entero el 14-08 creyendolo. El COOLDOWN es POR
@@ -383,8 +387,10 @@ data:
       #      CrashLoopBackOff, LiteLLM se paso la tarde reintentando contra un host
       #      muerto hasta que lo mato el OOM, dos veces.
       #   3) borrarlos (14-08): dejaba sin red el caso del cooldown, que es real.
-      # El destino tiene que ser un alias DEL MISMO backend (para que no haya
-      # reintentos contra una maquina caida) pero con OTRO contador de cooldown.
+      # Para agent/high/max el destino sigue siendo un alias DEL MISMO backend,
+      # pero con OTRO contador de cooldown. `tooling` es la excepcion deliberada:
+      # por la decision nueva cae a Terra cuando el residente no esta sano.
+      - tooling: ["cloudblue/gpt-5.6-terra"]
       - agent: ["deepseek-v4-flash-0731"]
       - high: ["deepseek-v4-flash-0731"]
       - max: ["deepseek-v4-flash-0731"]
@@ -510,8 +516,12 @@ data:
 
     TOOLING_MODE_TARGETS = {
         "llm-tp": "tooling",
-        "creative": "dense",
+        "creative": "tooling",
     }
+    TOOLING_TERRA_FALLBACKS = (
+        "cloudblue/gpt-5.6-terra",
+        "e-dani/gpt-5.6-terra",
+    )
 
     def _tooling_target_for_compute_mode(state):
         allowed, reason = _compute_mode_allows_local(state)
@@ -522,6 +532,22 @@ data:
         if not target:
             return None, "compute_mode_invalid"
         return target, None
+
+    def _tooling_route_for_state(state, alias_live):
+        """Choose the profile resident, then the two independent Terra accounts.
+
+        The local head is considered only while the global profile is coherent and
+        Ready. During a transition a stale ``tooling`` registration must not win:
+        the request goes straight to Terra instead of hitting the outgoing resident
+        or being rejected by local compute-mode admission.
+        """
+        target, reason = _tooling_target_for_compute_mode(state)
+        if target and alias_live(target):
+            return target, "primary", reason
+        for fallback in TOOLING_TERRA_FALLBACKS:
+            if alias_live(fallback):
+                return fallback, "degraded", reason or "compute_profile_target_unavailable"
+        return None, "dry", reason or "compute_profile_target_unavailable"
 
     async def _compute_mode_state():
         now = time.monotonic()
@@ -565,24 +591,28 @@ data:
         )
 
     async def _resolve_tooling_profile():
-        """Resolve tooling only inside the active local compute profile.
+        """Resolve tooling to the active resident, then to GPT-5.6 Terra.
 
-        The profile is fail-closed: a transition, inconsistent controller state,
-        or missing target returns a retryable 503 instead of escaping to a hosted
-        account. In llm-tp the dynamically registered ``tooling`` group is
-        DeepSeek V4; in creative the resident target is ``dense``.
+        Both compute profiles dynamically register ``tooling`` on their own local
+        resident. If the profile is transitioning, its target is missing, or its
+        alias was deleted by backend-sync, use CloudBlue Terra and then e-dani Terra.
+        A 503 remains only when neither the local target nor either Terra account is
+        registered.
         """
         state = await _compute_mode_state()
-        target, reason = _tooling_target_for_compute_mode(state)
-        if target and _alias_has_deployments(target):
-            return target
+        resolved, route_state, reason = _tooling_route_for_state(
+            state, _alias_has_deployments
+        )
+        if resolved:
+            return resolved, route_state
         raise HTTPException(
             status_code=503,
             headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)},
             detail={
                 "error": "tooling profile target is unavailable",
-                "blocked": reason or "compute_profile_target_unavailable",
-                "target": target,
+                "blocked": reason,
+                "target": _tooling_target_for_compute_mode(state)[0],
+                "fallbacks": list(TOOLING_TERRA_FALLBACKS),
                 "desired_mode": (state or {}).get("desired_mode"),
                 "effective_mode": (state or {}).get("effective_mode"),
                 "phase": (state or {}).get("phase"),
@@ -1175,8 +1205,8 @@ data:
     # to _apply_thinking_tier after the request model has been rewritten.
     ROUTE = {
         # OFF is the tooling profile itself. Its backend is selected from the
-        # effective compute mode and must fail with 503 rather than leave the
-        # local profile for CloudBlue.
+        # effective compute mode. If that resident is unavailable it follows the
+        # tooling fallback policy: CloudBlue Terra and then e-dani Terra.
         "OFF": {"model": "tooling", "fallbacks": ()},
         "LOW": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "HIGH": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
@@ -1255,14 +1285,13 @@ data:
     #
     # Funciona porque pre_call_hook reescribe data["model"] ANTES del gate de nombre
     # del proxy (proxy_server.py:8691 vs route_request en :8698).
-    # `tooling` es distinto: representa el perfil local, no un proveedor. El hook
-    # lo resuelve por modo efectivo (`llm-tp` -> DeepSeek V4, `creative` -> dense)
-    # y devuelve 503 durante una transicion o si falta el target. No tiene salida
-    # externa, para que un 429 nunca se convierta en una respuesta de otra cuenta.
+    # `tooling` representa el perfil local, no un checkpoint: backend-sync lo
+    # registra sobre DeepSeek V4 en `llm-tp` y sobre Qwen3.6 27B en `creative`.
+    # Desde el 15-08-2026 tiene salida explicita a las dos cuentas Terra. Este
+    # mismo orden cubre el alias DESREGISTRADO; router_settings cubre el alias aun
+    # registrado cuyo deployment ya no esta sano.
     CAPABILITY_CHAINS = {
-        # `tooling` se resuelve por modo en _resolve_tooling_profile y nunca usa
-        # esta cadena como salida externa.
-        "tooling": {"model": "tooling", "fallbacks": ()},
+        "tooling": {"model": "tooling", "fallbacks": TOOLING_TERRA_FALLBACKS},
         # Los perfiles con razonamiento conservan la red independiente anterior.
         "agent": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "high": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
@@ -2136,8 +2165,7 @@ data:
             if cap_alias is not None:
                 cap_entry = CAPABILITY_CHAINS[cap_alias]
                 if cap_alias == "tooling":
-                    cap_resolved = await _resolve_tooling_profile()
-                    cap_state = "primary" if cap_resolved == cap_alias else "profile"
+                    cap_resolved, cap_state = await _resolve_tooling_profile()
                 else:
                     cap_resolved, cap_state = _walk_chain(cap_entry)
                 if cap_state == "degraded":
@@ -2173,8 +2201,7 @@ data:
                     _strip_think_from_last_user(data)
                 target = ROUTE[category]
                 if target["model"] == "tooling":
-                    resolved_model = await _resolve_tooling_profile()
-                    route_state = "primary" if resolved_model == "tooling" else "profile"
+                    resolved_model, route_state = await _resolve_tooling_profile()
                 else:
                     resolved_model, route_state = _degrade(category)
                 if route_state == "degraded":
@@ -2469,7 +2496,15 @@ data:
         "qwen36-27b-uncensored-nvfp4",
     }
 
+    HOSTED_MODEL_PREFIXES = ("cloudblue/", "e-dani/")
+
     def _is_local_vllm_request(model, proxy_model, api_base):
+        # The hook may have rewritten an originally local `tooling` request to a
+        # hosted Terra fallback. The resolved model wins over proxy_model here;
+        # otherwise compute-mode admission would turn that valid fallback back
+        # into a 503 merely because the original body still says `tooling`.
+        if str(model or "").startswith(HOSTED_MODEL_PREFIXES):
+            return False
         if resolve_server_id(model, api_base):
             return True
         return str(proxy_model or model or "") in LOCAL_VLLM_ALIASES
@@ -3258,16 +3293,20 @@ data:
     DEEPSEEK_V4_FLASH_DIRECT_ALIASES = (
         "deepseek-v4-flash-0731",
     )
-    # The DGX2 uncensored 27B is the ONLY dense model in the cluster, so it owns
-    # every dense-shaped name. `taxonomy` was added here on 2026-07-27: it used to
-    # be registered solely by the censored 27B deployments (deleted 2026-07-26), so
-    # it survived only because the strip-params hook rewrote it before routing --
-    # it would have broken the moment the hook was disabled. Registering it makes
-    # it a real alias again.
+    # The uncensored 27B is the ONLY dense model in the cluster. Creative pins it
+    # on DGX1, where it owns `tooling` as well as every dense-shaped name.
+    # `taxonomy` was added here on 2026-07-27: it used to be registered solely by
+    # the censored 27B deployments (deleted 2026-07-26), so it survived only because
+    # the strip-params hook rewrote it before routing. Registering it makes it a real
+    # alias again.
     # `dense-uncensored` is the explicit, un-fallbacked name: it is never rewritten
-    # by the hook, so a direct call fails hard if DGX2 is down instead of silently
-    # answering from Ornith.
+    # by the hook, so a direct call fails hard if the Creative resident is down
+    # instead of silently answering from another checkpoint.
     QWEN36_27B_UNCENSORED_ALIASES = (
+        # In creative this is the tooling resident. DeepSeek owns the same alias
+        # only in llm-tp; the profiles are physically exclusive on the Sparks and the
+        # conflict guard below evicts any stale registration before adding one.
+        "tooling",
         "dense-uncensored",
         "dense",
         "dense-reasoning",
@@ -3283,39 +3322,21 @@ data:
         "qwen35-4b",
         "qwen3.5-4b",
     )
-    # Cluster topology (2026-08-04). The exclusion between Spark backends is not
-    # uniform and depends on the node. Qwen3.5-4B is independent of those seats:
+    # Cluster topology (2026-08-15). Qwen3.5-4B is independent of the Spark seats:
     # it lives on the x86 RTX and co-resides there through raw CUDA.
     #
-    # DGX1 (nvidia-dgx) = asiento UNICO de tooling. Una GPU fisica con
-    # nvidia.com/gpu.sharing-strategy=none, y los dos candidatos piden
-    # `nvidia.com/gpu: 1`, asi que como maximo uno puede estar Ready. Declaran el
-    # MISMO conjunto (TOOLING_RESIDENT_ALIASES): la readiness decide quien tiene el
-    # alias, y la eviction explicita de reconcile_backend() garantiza que no lo
-    # sirvan dos ni un instante. Quien esta arriba se decide en git (los patches de
-    # replicas del overlay de la app `ai`), asi que el cambio es auditable y
-    # reversible re-pineando targetRevision.
-    #   - `ornith-dgx1`  Ornith 1.0 35B-A3B + MTP injertado. Ademas posee sus
-    #     propios ornith-canary/ornith-1.0, que NO se comparten: nombran un modelo
-    #     concreto, asi que una llamada directa debe fallar si no es el residente.
-    #   - `nvidia-qwen36-dgx1`  NVIDIA-Qwen3.6-35B NVFP4 + MTP nativo. Multimodal.
-    #     Residente desde 2026-08-04: gana en tooling con rangos que no se solapan
-    #     (350-352 vs 340-345 de 370) a cambio de ~14% de decode.
+    # The two global compute profiles are physically exclusive:
+    #   - `creative`: Qwen3.6 27B uncensored occupies DGX1 and registers `tooling`
+    #     plus its explicit dense aliases.
+    #   - `llm-tp`: DeepSeek V4 TP=2 occupies DGX1 + DGX2 and registers `tooling`,
+    #     the thinking-tier aliases, and its explicit DeepSeek alias.
+    # The profile controller performs the workload switch. backend-sync's conflict
+    # guard evicts registrations from the outgoing Spark backend before registering
+    # the incoming one, so `tooling` never becomes a load-balanced pool.
     #
-    # DGX2 (gx10-ec3d) = dos slots por time-slicing, asi que aqui PODRIA haber
-    # co-residencia. Desde el 2026-08-10 no la hay: `qwen3coder-dgx2` era el
-    # co-residente y se retiro del cluster entero, asi que en DGX2 solo queda el 27B
-    # denso. La regla que justificaba sus alias propios sigue en pie para quien meta
-    # otro co-residente aqui: al no compartir nodo con DGX1 no hay exclusion fisica,
-    # asi que si declarara los alias de tooling, ese alias acabaria servido por dos
-    # backends a la vez.
-    #
-    # Sigue sin haber pool de aliases ni balanceo en ningun caso.
-    #   - `qwen36-27b-uncensored-dgx2` (DGX2, gx10-ec3d): the uncensored 27B DENSE.
-    #     Owns dense/dense-reasoning/dense-uncensored/taxonomy. Evictable: the GPU
-    #     arbiter can hand DGX2 to image/video work, which takes its EndpointSlice
-    #     NotReady; reconcile_backend(enable=False) then deletes its model IDs and
-    #     the hook's `_alias_has_deployments` guard degrades `dense` to Ornith.
+    # `qwen36-27b-uncensored-dgx2` remains the stable historical backend identity;
+    # the compatibility Service and IDs keep that name although Creative now pins
+    # the workload on DGX1.
     # The Qwen3.6-35B (`vllm-35b-nvfp4*`), censored 27B F2 (`...-v024-f2-*`) and
     # Gemma-4 deployments were DELETED on 2026-07-26 -- not scaled to zero -- so
     # their backends were removed from this controller on 2026-07-27.
@@ -4016,7 +4037,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-f13b66f5981d
+        config.k8s.e-dani.com/revision: sync-92d320eb533a
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -4152,7 +4173,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b6dd5fc507f9
+        config.k8s.e-dani.com/revision: config-969cbc9ea410
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

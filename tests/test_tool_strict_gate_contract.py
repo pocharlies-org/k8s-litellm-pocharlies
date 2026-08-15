@@ -89,6 +89,39 @@ def test_gate_is_wired_into_local_vllm_requests():
     assert "_enforce_tool_strict(data" in block
 
 
+def test_hosted_tooling_fallback_bypasses_local_admission():
+    """El modelo ya resuelto manda sobre el alias original de la peticion.
+
+    Cuando `tooling` cae a Terra, `proxy_model` sigue diciendo `tooling`. La
+    deteccion debe tratar los dos destinos hosted como externos para que el gate
+    de compute-mode no convierta el fallback valido en un 503.
+    """
+    docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+    src = next(d["data"]["litellm_strip_params.py"] for d in docs
+               if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
+    tree = ast.parse(src)
+    keep = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name == "_is_local_vllm_request")
+            or (isinstance(n, ast.Assign)
+                and any(getattr(t, "id", "") == "HOSTED_MODEL_PREFIXES"
+                        for t in n.targets))]
+    mod = types.ModuleType("localrequestpure")
+    mod.__dict__.update({
+        "LOCAL_VLLM_ALIASES": {"tooling"},
+        "resolve_server_id": lambda model, api_base: None,
+    })
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "<local-request>", "exec"),
+         mod.__dict__)
+
+    assert mod._is_local_vllm_request("tooling", "tooling", "")
+    assert not mod._is_local_vllm_request(
+        "cloudblue/gpt-5.6-terra", "tooling", ""
+    )
+    assert not mod._is_local_vllm_request(
+        "e-dani/gpt-5.6-terra", "tooling", ""
+    )
+
+
 def test_gate_has_an_env_kill_switch():
     text = MANIFEST.read_text()
     assert 'LITELLM_TOOL_STRICT_GATE' in text
