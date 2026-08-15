@@ -92,7 +92,7 @@ def test_gate_is_wired_into_local_vllm_requests():
 def test_hosted_tooling_fallback_bypasses_local_admission():
     """El modelo ya resuelto manda sobre el alias original de la peticion.
 
-    Cuando `tooling` cae a Luna, `proxy_model` sigue diciendo `tooling`. La
+    Cuando `tooling` cae a Terra, `proxy_model` sigue diciendo `tooling`. La
     deteccion debe tratar los dos destinos hosted como externos para que el gate
     de compute-mode no convierta el fallback valido en un 503.
     """
@@ -115,10 +115,10 @@ def test_hosted_tooling_fallback_bypasses_local_admission():
 
     assert mod._is_local_vllm_request("tooling", "tooling", "")
     assert not mod._is_local_vllm_request(
-        "cloudblue/gpt-5.6-luna", "tooling", ""
+        "cloudblue/gpt-5.6-terra", "tooling", ""
     )
     assert not mod._is_local_vllm_request(
-        "e-dani/gpt-5.6-luna", "tooling", ""
+        "e-dani/gpt-5.6-terra", "tooling", ""
     )
 
 

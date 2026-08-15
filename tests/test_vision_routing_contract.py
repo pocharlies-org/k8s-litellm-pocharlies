@@ -32,7 +32,7 @@ WANT_FN = {"_vision_target", "_has_part_type", "_message_entries",
            # _vision_target ligue en el `def`. Los tests inyectan stubs.
            "_alias_supports_vision", "_alias_has_deployments"}
 WANT_CONST = {"VISION_FALLBACK_MODEL", "VISION_DIVERTIBLE", "AUTO_ROUTED_MODELS",
-              "CAPABILITY_CHAINS", "IMAGE_PART_TYPES", "TOOLING_LUNA_FALLBACKS"}
+              "CAPABILITY_CHAINS", "IMAGE_PART_TYPES", "TOOLING_TERRA_FALLBACKS"}
 
 
 @pytest.fixture(scope="module")
