@@ -35,7 +35,7 @@ WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "THINK_MARKERS",
               "THINKING_TIERS", "ROUTER_MAX_HINTS", "ROUTER_HIGH_HINTS",
               "ROUTER_LOW_HINTS", "ROUTER_OFF_HINTS",
               "ROUTER_HIGH_CONTEXT_TOKENS", "ROUTER_MAX_CONTEXT_TOKENS",
-              "TOOLING_MODE_TARGETS", "TOOLING_TERRA_FALLBACKS"}
+              "TOOLING_MODE_TARGETS", "TOOLING_LUNA_FALLBACKS"}
 
 
 @pytest.fixture(scope="module")
@@ -218,7 +218,7 @@ def test_solo_tooling_degrada_y_los_nombres_de_modelo_no(hook):
             f"{explicit} degradaria en silencio")
 
 
-def test_tooling_usa_terra_si_el_alias_local_no_esta_registrado(hook):
+def test_tooling_usa_luna_si_el_alias_local_no_esta_registrado(hook):
     """Lo importante de fusionar el -ha dentro de `tooling`: en el caso normal no
     cambia NADA. Solo actua cuando el alias no esta, que es el hueco donde antes
     salia un 400 duro que `router_settings.fallbacks` no puede cubrir, porque el
@@ -226,15 +226,15 @@ def test_tooling_usa_terra_si_el_alias_local_no_esta_registrado(hook):
     entry = hook.CAPABILITY_CHAINS["tooling"]
     assert hook._walk_chain(entry, alias_live=lambda a: True) == ("tooling", "primary")
     assert hook._walk_chain(
-        entry, alias_live=lambda a: a == "cloudblue/gpt-5.6-terra"
-    ) == ("cloudblue/gpt-5.6-terra", "degraded")
+        entry, alias_live=lambda a: a == "cloudblue/gpt-5.6-luna"
+    ) == ("cloudblue/gpt-5.6-luna", "degraded")
     assert hook._walk_chain(
-        entry, alias_live=lambda a: a == "e-dani/gpt-5.6-terra"
-    ) == ("e-dani/gpt-5.6-terra", "degraded")
+        entry, alias_live=lambda a: a == "e-dani/gpt-5.6-luna"
+    ) == ("e-dani/gpt-5.6-luna", "degraded")
     assert hook._walk_chain(entry, alias_live=lambda a: False) == ("tooling", "dry")
 
 
-def test_tooling_target_follows_profile_and_falls_back_to_terra(hook):
+def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
     ready_tp = {"phase": "ready", "desired_mode": "llm-tp", "effective_mode": "llm-tp"}
     ready_creative = {
         "phase": "ready", "desired_mode": "creative", "effective_mode": "creative"
@@ -249,9 +249,9 @@ def test_tooling_target_follows_profile_and_falls_back_to_terra(hook):
         None,
         "compute_mode_transition",
     )
-    assert hook.TOOLING_TERRA_FALLBACKS == (
-        "cloudblue/gpt-5.6-terra",
-        "e-dani/gpt-5.6-terra",
+    assert hook.TOOLING_LUNA_FALLBACKS == (
+        "cloudblue/gpt-5.6-luna",
+        "e-dani/gpt-5.6-luna",
     )
 
     local_live = lambda alias: alias == "tooling"
@@ -262,15 +262,15 @@ def test_tooling_target_follows_profile_and_falls_back_to_terra(hook):
         "tooling", "primary", None
     )
     # A stale local registration cannot win while the profile is switching.
-    stale_local_and_terra = lambda alias: alias in {
-        "tooling", "cloudblue/gpt-5.6-terra"
+    stale_local_and_luna = lambda alias: alias in {
+        "tooling", "cloudblue/gpt-5.6-luna"
     }
-    assert hook._tooling_route_for_state(transition, stale_local_and_terra) == (
-        "cloudblue/gpt-5.6-terra", "degraded", "compute_mode_transition"
+    assert hook._tooling_route_for_state(transition, stale_local_and_luna) == (
+        "cloudblue/gpt-5.6-luna", "degraded", "compute_mode_transition"
     )
-    only_edani = lambda alias: alias == "e-dani/gpt-5.6-terra"
+    only_edani = lambda alias: alias == "e-dani/gpt-5.6-luna"
     assert hook._tooling_route_for_state(ready_creative, only_edani) == (
-        "e-dani/gpt-5.6-terra", "degraded", "compute_profile_target_unavailable"
+        "e-dani/gpt-5.6-luna", "degraded", "compute_profile_target_unavailable"
     )
 
 
@@ -310,10 +310,10 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
         for src, dsts in entry.items():
             graph.setdefault(src, []).extend(dsts or [])
 
-    # Alias registrado pero residente no sano: Terra CloudBlue es la primera red;
+    # Alias registrado pero residente no sano: Luna CloudBlue es la primera red;
     # si esa cuenta falla, su propia arista continua a la cuenta e-dani.
-    assert graph.get("tooling") == ["cloudblue/gpt-5.6-terra"]
-    assert graph.get("cloudblue/gpt-5.6-terra") == ["e-dani/gpt-5.6-terra"]
+    assert graph.get("tooling") == ["cloudblue/gpt-5.6-luna"]
+    assert graph.get("cloudblue/gpt-5.6-luna") == ["e-dani/gpt-5.6-luna"]
 
     # Los tres perfiles con razonamiento conservan la red local por cooldown.
     destinos = {p_: graph.get(p_) for p_ in ("agent", "high", "max")}

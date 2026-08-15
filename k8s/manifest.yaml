@@ -365,7 +365,7 @@ data:
       # `tooling` es distinto: siempre nombra al residente del perfil global
       # (`llm-tp` -> DeepSeek V4; `creative` -> Qwen3.6 27B) y, por decision del
       # owner del 15-08-2026, si ese residente sigue registrado pero deja de estar
-      # sano cae a GPT-5.6 Terra. CloudBlue es la primera cuenta y su propia red de
+      # sano cae a GPT-5.6 Luna. CloudBlue es la primera cuenta y su propia red de
       # abajo continua hacia e-dani; no se declara la vuelta y el grafo sigue siendo
       # un DAG.
       #
@@ -389,8 +389,8 @@ data:
       #   3) borrarlos (14-08): dejaba sin red el caso del cooldown, que es real.
       # Para agent/high/max el destino sigue siendo un alias DEL MISMO backend,
       # pero con OTRO contador de cooldown. `tooling` es la excepcion deliberada:
-      # por la decision nueva cae a Terra cuando el residente no esta sano.
-      - tooling: ["cloudblue/gpt-5.6-terra"]
+      # por la decision nueva cae a Luna cuando el residente no esta sano.
+      - tooling: ["cloudblue/gpt-5.6-luna"]
       - agent: ["deepseek-v4-flash-0731"]
       - high: ["deepseek-v4-flash-0731"]
       - max: ["deepseek-v4-flash-0731"]
@@ -518,9 +518,9 @@ data:
         "llm-tp": "tooling",
         "creative": "tooling",
     }
-    TOOLING_TERRA_FALLBACKS = (
-        "cloudblue/gpt-5.6-terra",
-        "e-dani/gpt-5.6-terra",
+    TOOLING_LUNA_FALLBACKS = (
+        "cloudblue/gpt-5.6-luna",
+        "e-dani/gpt-5.6-luna",
     )
 
     def _tooling_target_for_compute_mode(state):
@@ -534,17 +534,17 @@ data:
         return target, None
 
     def _tooling_route_for_state(state, alias_live):
-        """Choose the profile resident, then the two independent Terra accounts.
+        """Choose the profile resident, then the two independent Luna accounts.
 
         The local head is considered only while the global profile is coherent and
         Ready. During a transition a stale ``tooling`` registration must not win:
-        the request goes straight to Terra instead of hitting the outgoing resident
+        the request goes straight to Luna instead of hitting the outgoing resident
         or being rejected by local compute-mode admission.
         """
         target, reason = _tooling_target_for_compute_mode(state)
         if target and alias_live(target):
             return target, "primary", reason
-        for fallback in TOOLING_TERRA_FALLBACKS:
+        for fallback in TOOLING_LUNA_FALLBACKS:
             if alias_live(fallback):
                 return fallback, "degraded", reason or "compute_profile_target_unavailable"
         return None, "dry", reason or "compute_profile_target_unavailable"
@@ -591,12 +591,12 @@ data:
         )
 
     async def _resolve_tooling_profile():
-        """Resolve tooling to the active resident, then to GPT-5.6 Terra.
+        """Resolve tooling to the active resident, then to GPT-5.6 Luna.
 
         Both compute profiles dynamically register ``tooling`` on their own local
         resident. If the profile is transitioning, its target is missing, or its
-        alias was deleted by backend-sync, use CloudBlue Terra and then e-dani Terra.
-        A 503 remains only when neither the local target nor either Terra account is
+        alias was deleted by backend-sync, use CloudBlue Luna and then e-dani Luna.
+        A 503 remains only when neither the local target nor either Luna account is
         registered.
         """
         state = await _compute_mode_state()
@@ -612,7 +612,7 @@ data:
                 "error": "tooling profile target is unavailable",
                 "blocked": reason,
                 "target": _tooling_target_for_compute_mode(state)[0],
-                "fallbacks": list(TOOLING_TERRA_FALLBACKS),
+                "fallbacks": list(TOOLING_LUNA_FALLBACKS),
                 "desired_mode": (state or {}).get("desired_mode"),
                 "effective_mode": (state or {}).get("effective_mode"),
                 "phase": (state or {}).get("phase"),
@@ -1206,7 +1206,7 @@ data:
     ROUTE = {
         # OFF is the tooling profile itself. Its backend is selected from the
         # effective compute mode. If that resident is unavailable it follows the
-        # tooling fallback policy: CloudBlue Terra and then e-dani Terra.
+        # tooling fallback policy: CloudBlue Luna and then e-dani Luna.
         "OFF": {"model": "tooling", "fallbacks": ()},
         "LOW": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "HIGH": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
@@ -1287,11 +1287,11 @@ data:
     # del proxy (proxy_server.py:8691 vs route_request en :8698).
     # `tooling` representa el perfil local, no un checkpoint: backend-sync lo
     # registra sobre DeepSeek V4 en `llm-tp` y sobre Qwen3.6 27B en `creative`.
-    # Desde el 15-08-2026 tiene salida explicita a las dos cuentas Terra. Este
+    # Desde el 15-08-2026 tiene salida explicita a las dos cuentas Luna. Este
     # mismo orden cubre el alias DESREGISTRADO; router_settings cubre el alias aun
     # registrado cuyo deployment ya no esta sano.
     CAPABILITY_CHAINS = {
-        "tooling": {"model": "tooling", "fallbacks": TOOLING_TERRA_FALLBACKS},
+        "tooling": {"model": "tooling", "fallbacks": TOOLING_LUNA_FALLBACKS},
         # Los perfiles con razonamiento conservan la red independiente anterior.
         "agent": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "high": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
@@ -2500,7 +2500,7 @@ data:
 
     def _is_local_vllm_request(model, proxy_model, api_base):
         # The hook may have rewritten an originally local `tooling` request to a
-        # hosted Terra fallback. The resolved model wins over proxy_model here;
+        # hosted Luna fallback. The resolved model wins over proxy_model here;
         # otherwise compute-mode admission would turn that valid fallback back
         # into a 503 merely because the original body still says `tooling`.
         if str(model or "").startswith(HOSTED_MODEL_PREFIXES):
@@ -4173,7 +4173,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-969cbc9ea410
+        config.k8s.e-dani.com/revision: config-cadfd6619bcc
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
