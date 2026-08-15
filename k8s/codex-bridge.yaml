@@ -1328,6 +1328,15 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            # Mismo motivo que en `codex-bridge-edani`, donde esta la medicion
+            # entera: es el MISMO bridge.py y el mismo ThreadingHTTPServer sin
+            # tope de hilos. Aqui todavia no ha reventado solo porque la cuenta
+            # cloudblue esta con la cuota agotada y contesta 429 sin procesar
+            # cuerpo. Cuando vuelva la cuota -- o cuando el fallback de
+            # `cloudblue/* -> e-dani/*` deje de hacer falta -- este empieza a
+            # trabajar y hace exactamente lo mismo. Ponerlo ahora es gratis.
+            - { name: MALLOC_ARENA_MAX, value: "2" }
+            - { name: MALLOC_TRIM_THRESHOLD_, value: "131072" }
           volumeMounts:
             - { name: code, mountPath: /code, readOnly: true }
             - { name: auth, mountPath: /auth, readOnly: true }
@@ -1523,6 +1532,44 @@ spec:
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            # Arenas de glibc (2026-08-15). Este puente moria por OOM cada 1-2 h
+            # contra el limite de 1Gi -- 5 reinicios en 7 h -- y NO era una fuga
+            # de objetos de Python: los unicos globales del bridge son _tokens,
+            # _quota, _earliest_refresh y _last_emergency_at, y ninguno guarda
+            # peticiones.
+            #
+            # Lo que hay es fragmentacion de malloc. En /proc/1/smaps una arena
+            # de glibc se ve como DOS regiones adyacentes -- la parte
+            # comprometida `rw-p` y el resto `---p` -- que suman exactamente
+            # 64MB (HEAP_MAX_SIZE). Contando parejas en un pod vivo:
+            #     41 arenas, 636MB usados de 645MB de RSS anonima total.
+            # O sea el 98,6% de la memoria del proceso metida en arenas.
+            #
+            # El puente es un ThreadingHTTPServer SIN tope de hilos (se han
+            # contado entre 4 y 35 vivos a la vez, y HTTP/1.1 los mantiene con
+            # keep-alive). glibc le da una arena propia a cada hilo, cada arena
+            # crece hasta el pico de lo que ese hilo llego a pedir, y las arenas
+            # no-principales no se devuelven al SO. Los hilos mueren; las arenas
+            # no. Con nproc=8 el techo por defecto es 8*nproc = 64 arenas, o sea
+            # 4GB de margen para reventar un limite de 1Gi.
+            #
+            # COMO SE DESCARTO que fuera una fuga de Python, por si vuelve:
+            #   - La memoria sube con el pod OCIOSO: a las 01:54 habia 4 hilos
+            #     (nada en vuelo) y paso de 503 a 548Mi igual.
+            #   - Sube proporcional a los bytes recibidos: 0,68-0,75 Mi por MB.
+            #   - El numero de arenas sube monotono (34 -> 37 -> 40 -> 41)
+            #     mientras los hilos vivos oscilan (13 -> 35 -> 26): siguen al
+            #     churn ACUMULADO de hilos, no a los que hay.
+            #   - Un bajon de 775 a 142Mi en kubectl top NO era memoria
+            #     liberada, era el OOMKill numero 5. Mirar restartCount antes de
+            #     concluir que el proceso libera.
+            #
+            # El gemelo `codex-bridge` no reventaba porque su cuenta tiene la
+            # cuota agotada: contesta 429 sin procesar cuerpo (559MB recibidos
+            # en 8,5 h, contra 5,3GB en 53 min aqui). No es que este sano, es
+            # que no trabaja -- por eso lleva las mismas dos variables.
+            - { name: MALLOC_ARENA_MAX, value: "2" }
+            - { name: MALLOC_TRIM_THRESHOLD_, value: "131072" }
           volumeMounts:
             - { name: code, mountPath: /code, readOnly: true }
             - { name: auth, mountPath: /auth, readOnly: true }
