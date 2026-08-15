@@ -55,7 +55,7 @@ ns = {"os": os, "json": json, "time": time, "threading": threading,
 exec(compile(BLOCK, "dial", "exec"), ns)
 
 DS = "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/admin/refusal_lambda"
-QW = "http://vllm-qwen36-27b-uncensored.llm.svc.cluster.local:8000/admin/refusal_lambda"
+QW = "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/admin/refusal_lambda"
 
 
 def run(coro):
@@ -76,7 +76,7 @@ class DialTest(unittest.TestCase):
         ns["_alias_runtime_cache"].update({"ts": 0.0, "map": {}})
         router.model_list = [
             {"model_name": "tooling", "litellm_params": {
-                "api_base": "http://vllm-qwen36-27b-uncensored.llm.svc.cluster.local:8000/v1"}},
+                "api_base": "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/v1"}},
             {"model_name": "max", "litellm_params": {
                 "api_base": "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1"}},
             {"model_name": "cloudblue/gpt", "litellm_params": {
@@ -159,7 +159,7 @@ class DialTest(unittest.TestCase):
             "deepseek-v4-flash-0731")
         self.assertEqual(
             ns["_refusal_fleet_name"](by["qwen38-27b-nvfp4"]),
-            "vllm-qwen36-27b-uncensored")
+            "vllm-qwen38-27b-uncensored")
 
     def test_estado_publicado_lleva_alias_on_lambda_y_per_rank(self):
         heads[QW] = {"lambda": 1.0, "consistent": True, "per_rank": [1.0]}
@@ -173,7 +173,7 @@ class DialTest(unittest.TestCase):
         self.assertEqual(st["on_lambda"], 1.0)
         self.assertEqual(st["per_rank"], [1.0])
         self.assertIn("tooling", st["aliases"])
-        self.assertEqual(st["fleet_name"], "vllm-qwen36-27b-uncensored")
+        self.assertEqual(st["fleet_name"], "vllm-qwen38-27b-uncensored")
 
     def test_head_caido_publica_sin_lectura_y_no_censurado(self):
         # No poder leer NO es "lambda=0": pintar censurado ahi seria afirmar algo

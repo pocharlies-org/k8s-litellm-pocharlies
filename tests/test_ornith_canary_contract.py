@@ -69,7 +69,7 @@ def test_los_alias_de_ornith_ya_no_los_declara_nadie():
 def test_los_alias_de_capacidad_siguen_teniendo_dueno():
     """La retirada no puede dejar `tooling` y compania sin backend declarado."""
     texto = MANIFEST.read_text()
-    assert "TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES" in texto
+    assert "TOOLING_RESIDENT_ALIASES = TOOLING_COMPAT_ALIASES" in texto
     backends = _bloque_backends(texto)
     assert backends.count('"aliases": TOOLING_RESIDENT_ALIASES') == 1, (
         "los alias de capacidad tienen que tener exactamente UN dueño declarado"

@@ -332,7 +332,7 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
         d["data"]["sync.py"] for d in docs
         if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-dgx-backend-sync"
     )
-    for var in ("DEEPSEEK_V4_FLASH_DIRECT_ALIASES", "QWEN36_27B_UNCENSORED_ALIASES"):
+    for var in ("DEEPSEEK_V4_FLASH_DIRECT_ALIASES", "QWEN38_27B_ALIASES"):
         bloque = re.search(var + r" = \(([^)]*)\)", sync_source)
         assert bloque, f"el sync ya no define {var}"
         sync_managed |= set(re.findall(r'"([^"]+)"', bloque.group(1)))

@@ -14,20 +14,24 @@ def _sync_block(text, start, end):
 def test_uncensored_is_the_creative_backend_owning_tooling_and_dense_aliases():
     """Since the censored 27B F2 deployments were deleted (2026-07-26) the
     uncensored 27B is the cluster's ONLY dense model, so it owns every
-    dense-shaped alias -- including `taxonomy`, which used to be registered by
+    sus DOS alias: `tooling` (capacidad) y `qwen38-27b` (modelo concreto). Los
+    cuatro dense-shaped (`dense`, `dense-reasoning`, `dense-uncensored`,
+    `taxonomy`) se retiraron el 15-08 tras migrar sus consumidores. Antes:
     the deleted deployments and survived only because the hook rewrote it."""
     text = MANIFEST.read_text()
 
-    assert "QWEN36_27B_UNCENSORED_ALIASES = (" in text
-    aliases = _sync_block(text, "QWEN36_27B_UNCENSORED_ALIASES = (", "QWEN36_REPEAT_GUARD_PARAMS")
-    for name in ('"tooling"', '"dense-uncensored"', '"dense"', '"dense-reasoning"', '"taxonomy"'):
+    assert "QWEN38_27B_ALIASES = (" in text
+    aliases = _sync_block(text, "QWEN38_27B_ALIASES = (", "QWEN38_REPEAT_GUARD_PARAMS")
+    # UN SOLO alias (15-08): `tooling`. Los cuatro dense-shaped se retiraron y se
+    # descarto registrar tambien el nombre del modelo.
+    for name in ('"tooling"',):
         assert name in aliases, f"{name} debe registrarlo el uncensored"
 
-    assert text.count('"aliases": QWEN36_27B_UNCENSORED_ALIASES') == 1
-    assert '"id_prefix": "dgx2-qwen36-27b-uncensored-nvfp4"' in text
+    assert text.count('"aliases": QWEN38_27B_ALIASES') == 1
+    assert '"id_prefix": "qwen38-27b"' in text
     assert '"backend": "dgx1"' in _sync_block(
         text,
-        '"name": "qwen36-27b-uncensored-dgx2"',
+        '"name": "qwen38-27b"',
         '"name": "deepseek-v4-flash-tp2"',
     )
 
@@ -38,13 +42,13 @@ def test_uncensored_is_the_creative_backend_owning_tooling_and_dense_aliases():
 
 
 def test_dense_uncensored_is_never_auto_routed():
-    """El nombre explicito `dense-uncensored` no lo reescribe el router: una
+    """El nombre explicito `qwen38-27b` no lo reescribe el router: una
     llamada directa debe fallar si DGX2 esta caido, no responder desde Ornith."""
     text = MANIFEST.read_text()
     routed = _sync_block(text, "AUTO_ROUTED_MODELS = ", "# All four routes")
-    assert "dense-uncensored" not in routed
+    assert "qwen38-27b" not in routed
     route = _sync_block(text, "ROUTE = {", "# Deterministic hints")
-    assert "dense" not in route
+    assert "dense" not in route  # retirado 15-08
 
 
 def test_openclaw_team_permission_is_reconciled_without_removing_models():
@@ -52,11 +56,11 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert 'OPENCLAW_TEAM_ID, value: "openclaw"' in text
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
     # La lista crece (union aditiva), asi que se comprueba pertenencia y no el
-    # literal: lo que importa aqui es que `dense-uncensored` siga concedido.
+    # literal: lo que importa aqui es que `qwen38-27b` siga concedido.
     match = re.search(r'OPENCLAW_TEAM_REQUIRED_MODELS, value: "([^"]*)"', text)
     assert match, "el manifest ya no declara OPENCLAW_TEAM_REQUIRED_MODELS"
     required = {name.strip() for name in match.group(1).split(",") if name.strip()}
-    assert "dense-uncensored" in required
+    assert "qwen38-27b" in required
     # v024-f2-dgx1 fuera: su deployment se borro el 2026-07-26.
     assert "qwen36-27b-nvfp4-v024-f2-dgx1" not in required
     block = text[
@@ -101,7 +105,7 @@ def test_backends_cubren_las_formas_de_exclusion():
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
     assert backends.count('"name": "') == 3
     for name in (
-        "qwen36-27b-uncensored-dgx2",
+        "qwen38-27b",
         "deepseek-v4-flash-tp2",
         "qwen35-4b-int4",
     ):
@@ -120,10 +124,10 @@ def test_backends_cubren_las_formas_de_exclusion():
 
     # El backend conserva su identidad estable, pero Creative lo sirve en DGX1
     # con la ventana real de 64K en vez de heredar 256K.
-    dense = backends[backends.index('"name": "qwen36-27b-uncensored-dgx2"'):
+    dense = backends[backends.index('"name": "qwen38-27b"'):
                      backends.index('"name": "deepseek-v4-flash-tp2"')]
     assert '"backend": "dgx1"' in dense
-    assert '"max_input_tokens": 65536' in dense
+    assert '"max_input_tokens": 262144' in dense
     assert '"supports_function_calling": True' in dense
 
     # Ninguno de los id_prefix nuevos puede caer bajo un prefijo retirado, que
@@ -131,7 +135,7 @@ def test_backends_cubren_las_formas_de_exclusion():
     retired = _sync_block(text, "RETIRED_MANAGED_ID_PREFIXES = (", "TOKEN_PATH =")
     dead_prefixes = re.findall(r'"(dgx\d-[a-z0-9-]+-)"', retired)
     for prefix in ("dgx1-nvidia-qwen36-35b-nvfp4-", "ds4-flash-0731-tp2-",
-                   "dgx2-qwen36-27b-uncensored-nvfp4-"):
+                   "qwen38-27b-"):
         for dead in dead_prefixes:
             assert not prefix.startswith(dead), f"{prefix} seria purgado por {dead}"
     # Y el del coder retirado SI tiene que estar purgado, para que no le sobreviva
@@ -150,7 +154,7 @@ def test_shared_tooling_alias_is_guarded_against_double_registration():
     # DeepSeek TP=2 ocupa ambos Sparks en llm-tp; Qwen3.6 27B ocupa DGX1 en
     # creative. El controlador de perfil hace la exclusion fisica y el sync
     # expulsa cualquier registro saliente antes de dar de alta el entrante.
-    assert "TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES" in text
+    assert "TOOLING_RESIDENT_ALIASES = TOOLING_COMPAT_ALIASES" in text
     assert "ORNITH_ALIASES" not in _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS"), (
         "ORNITH_ALIASES volvio a BACKENDS: sus dos duenos estan retirados"
     )
@@ -158,17 +162,17 @@ def test_shared_tooling_alias_is_guarded_against_double_registration():
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
     comparten = [n for n, a in re.findall(r'"name":\s*"([a-z0-9-]+)".*?"aliases":\s*(\w+)',
                                           backends, re.S)
-                 if a in ("QWEN36_27B_UNCENSORED_ALIASES", "TOOLING_RESIDENT_ALIASES")]
+                 if a in ("QWEN38_27B_ALIASES", "TOOLING_RESIDENT_ALIASES")]
     assert sorted(comparten) == [
         "deepseek-v4-flash-tp2",
-        "qwen36-27b-uncensored-dgx2",
+        "qwen38-27b",
     ], comparten
 
-    dense = backends[backends.index('"name": "qwen36-27b-uncensored-dgx2"'):
+    dense = backends[backends.index('"name": "qwen38-27b"'):
                      backends.index('"name": "deepseek-v4-flash-tp2"')]
-    assert '"aliases": QWEN36_27B_UNCENSORED_ALIASES' in dense
+    assert '"aliases": QWEN38_27B_ALIASES' in dense
     aliases = _sync_block(
-        text, "QWEN36_27B_UNCENSORED_ALIASES = (", "QWEN36_REPEAT_GUARD_PARAMS"
+        text, "QWEN38_27B_ALIASES = (", "QWEN38_REPEAT_GUARD_PARAMS"
     )
     assert '"tooling"' in aliases
     # Y los alias del coder retirado no vuelven por la puerta de atras.

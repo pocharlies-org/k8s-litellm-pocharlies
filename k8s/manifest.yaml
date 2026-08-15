@@ -746,9 +746,9 @@ data:
             "label": "Qwen3.8-27B NVFP4 (dense)",
             # El Service publica 8000 aunque el contenedor sirva en 8888: la URL
             # es la del Service, no la del pod.
-            "admin_url": "http://vllm-qwen36-27b-uncensored.llm.svc.cluster.local:8000"
+            "admin_url": "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000"
                          "/admin/refusal_lambda",
-            "api_base_match": "vllm-qwen36-27b-uncensored",
+            "api_base_match": "vllm-qwen38-27b-uncensored",
             "on_lambda": 1.0,
         },
     ]
@@ -1014,8 +1014,8 @@ data:
     def _refusal_fleet_name(rt):
         """Nombre con el que el panel conoce a ese runtime en la flota.
 
-        Se DERIVA del host del admin_url (`vllm-qwen36-27b-uncensored.llm.svc...`
-        -> `vllm-qwen36-27b-uncensored`) en vez de repetirlo a mano: si alguien
+        Se DERIVA del host del admin_url (`vllm-qwen38-27b-uncensored.llm.svc...`
+        -> `vllm-qwen38-27b-uncensored`) en vez de repetirlo a mano: si alguien
         repunta un runtime a otro head, la chapa del panel se mueve con el. Es la
         regla que ya usaba el dashboard cuando el dial era de un solo modelo.
         """
@@ -1518,7 +1518,7 @@ data:
     #      intencion, y el que no llevaba sufijo era una trampa.
     #   2. Las mediciones no se hacen contra `tooling`, se hacen contra nombres de
     #      MODELO: `ornith-1.0`, `ornith-canary`, `qwen3-coder`, `qwen36-35b-nvfp4`,
-    #      `dense-uncensored`. Esos NO degradan y siguen dando 400 cuando su modelo
+    #      `qwen38-27b`. Esos NO degradan y siguen dando 400 cuando su modelo
     #      no esta, que es justo lo que protege las medidas. `tooling` es un nombre
     #      de CAPACIDAD, y una capacidad que devuelve 400 en vez de degradar no
     #      protege nada.
@@ -1800,7 +1800,9 @@ data:
     SWAPPABLE_ALIASES = frozenset({
         "tooling", "router", "auto", "litellmrouter",
         "agent", "high", "max",
-        "dense", "dense-reasoning", "dense-uncensored", "taxonomy",
+        # 2026-08-15: fuera `dense`, `dense-reasoning`, `dense-uncensored` y
+        # `taxonomy`. `qwen38-27b` NO entra aqui a proposito: es un nombre de
+        # MODELO, y esos se respetan tal cual igual que deepseek-v4-flash-0731.
     })
 
     # ── Nivel de pensamiento por ALIAS (2026-08-10) ─────────────────────────────
@@ -1945,7 +1947,7 @@ data:
         Truco de lectura: `ve is True` significa "lo declara y ve". None es "no se
         sabe", y no saber ya no protege nada -- ahora manda el desvio.
 
-        LA EXCEPCION: un nombre de MODELO (`ornith-1.0`, `dense-uncensored`,
+        LA EXCEPCION: un nombre de MODELO (`ornith-1.0`, `qwen38-27b`,
         `deepseek-v4-flash-0731`...) solo se desvia si SABEMOS que no ve
         (`ve is False`), porque ahi el desvio no puede estropear ninguna medida:
         la peticion iba a fallar seguro. Con None se respeta el nombre. Quien
@@ -2756,10 +2758,8 @@ data:
     # Every alias served by our own vLLM deployments. `local` and the v024-f2
     # names were dropped on 2026-07-27: their deployments were deleted on 07-26.
     LOCAL_VLLM_ALIASES = AUTO_ROUTED_MODELS | {
-        "dense",
-        "dense-reasoning",
-        "dense-uncensored",
-        "taxonomy",
+        # 2026-08-15: retirados dense/dense-reasoning/dense-uncensored/taxonomy.
+        # Queda un solo alias local para el 27B.
         "tooling",
         # Los cuatro perfiles de pensamiento: mismo backend residente, asi que la
         # telemetria de vLLM local tiene que contarlos igual.
@@ -2770,7 +2770,7 @@ data:
         "ornith-1.0",
         "ornith-canary",
         "deepseek-v4-flash-0731",
-        "qwen36-27b-uncensored-nvfp4",
+        "qwen38-27b",
     }
 
     HOSTED_MODEL_PREFIXES = ("cloudblue/", "e-dani/")
@@ -2817,10 +2817,6 @@ data:
         ): "vllm-122b",
         (
             "tooling",
-            "http://192.168.50.141:8200/v1",
-        ): "vllm-35b",
-        (
-            "dense-uncensored",
             "http://192.168.50.141:8200/v1",
         ): "vllm-35b",
         (
@@ -3518,7 +3514,7 @@ data:
     )
 
     # Los tres hermanos de `tooling` que solo cambian cuanto se piensa (2026-08-10).
-    # `tooling` ya vive en QWEN36_COMPAT_ALIASES y significa "sin pensar"; estos son
+    # `tooling` ya vive en TOOLING_COMPAT_ALIASES y significa "sin pensar"; estos son
     # low / high / max. Los sirve el MISMO backend -- no son modelos distintos, son
     # el mismo con otro chat template, y el nivel lo pone THINKING_TIERS en el hook.
     # Van en su propia tupla y no dentro de la de compat porque no son nombres
@@ -3528,7 +3524,7 @@ data:
         "high",
         "max",
     )
-    QWEN36_COMPAT_ALIASES = (
+    TOOLING_COMPAT_ALIASES = (
         "tooling",
         "router",
         "auto",
@@ -3569,7 +3565,7 @@ data:
     # `ornith-1.0` y `ornith-canary` desaparecen como alias servibles. Ya fallaban:
     # nadie los servia. Ver la ventana RHO en
     # analysis/deepseek-v4-flash-2xspark/rho-backend-sync/.
-    TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES + THINKING_TIER_ALIASES
+    TOOLING_RESIDENT_ALIASES = TOOLING_COMPAT_ALIASES + THINKING_TIER_ALIASES
     # Nombre directo y exclusivo de DeepSeek. A diferencia de los aliases de
     # capacidad anteriores, este NO se comparte con Ornith/NVIDIA Qwen: quien
     # selecciona un modelo concreto debe recibir ese modelo o un error visible.
@@ -3582,21 +3578,38 @@ data:
     # the censored 27B deployments (deleted 2026-07-26), so it survived only because
     # the strip-params hook rewrote it before routing. Registering it makes it a real
     # alias again.
-    # `dense-uncensored` is the explicit, un-fallbacked name: it is never rewritten
+    # `qwen38-27b` is the explicit, un-fallbacked name: it is never rewritten
     # by the hook, so a direct call fails hard if the Creative resident is down
     # instead of silently answering from another checkpoint.
-    QWEN36_27B_UNCENSORED_ALIASES = (
+    QWEN38_27B_ALIASES = (
         # In creative this is the tooling resident. DeepSeek owns the same alias
         # only in llm-tp; the profiles are physically exclusive on the Sparks and the
         # conflict guard below evicts any stale registration before adding one.
         "tooling",
-        "dense-uncensored",
-        "dense",
-        "dense-reasoning",
-        "taxonomy",
+        # 2026-08-15: RETIRADOS `dense`, `dense-reasoning`, `dense-uncensored` y
+        # `taxonomy`. Los cuatro apuntaban a ESTE MISMO backend con parametros
+        # identicos — comprobado en /model/info: mismo api_base, mismo model, mismo
+        # repetition_penalty. No eran modelos distintos, eran nombres de mas.
+        #
+        # Consumidores migrados ANTES de retirarlos, todos a `tooling`:
+        #   - skirmshop rag-app (LITELLM_MODEL, TAXONOMY_LLM_MODEL) y
+        #     cronjob-taxonomy-verify: k8s-skirmshopshopifyapp-pocharlies@875e1f9.
+        #   - openclaw-qwen36 / openclaw-synapse: los pines gestionados que
+        #     sobreviven en el PVC se reescriben a `tooling` via stableLocalRef
+        #     (k8s-openclaw-qwen36-pocharlies@4524667). Ahi tambien se anadio
+        #     `taxonomy` a managedModelIds, que faltaba: sin el, un pin en
+        #     `litellm/taxonomy` quedaba huerfano en vez de migrar.
+        # `dense` no tenia ningun consumidor identificado.
+        #
+        # UN SOLO alias (decision de Dani, 15-08): `tooling` y nada mas. Se
+        # descarto registrar tambien `qwen38-27b` como nombre explicito. Coste
+        # asumido: ya no queda ningun nombre un-fallbacked para este modelo, asi
+        # que una medicion contra `tooling` puede acabar contestada por el
+        # residente de OTRO perfil en vez de dar 400. Si algun dia hace falta
+        # medir de nuevo, se re-anade el nombre del modelo aqui.
     )
-    QWEN36_REPEAT_GUARD_PARAMS = {
-        "repetition_penalty": float(os.getenv("QWEN36_REPETITION_PENALTY", "1.08")),
+    QWEN38_REPEAT_GUARD_PARAMS = {
+        "repetition_penalty": float(os.getenv("QWEN38_REPETITION_PENALTY", "1.08")),
     }
     # Direct, text-only aliases for the small llama.cpp resident on the RTX.
     # They do not overlap with tooling/dense: asking for this checkpoint must
@@ -3617,7 +3630,7 @@ data:
     # guard evicts registrations from the outgoing Spark backend before registering
     # the incoming one, so `tooling` never becomes a load-balanced pool.
     #
-    # `qwen36-27b-uncensored-dgx2` remains the stable historical backend identity;
+    # `qwen38-27b` is the backend identity (era `qwen36-27b-uncensored-dgx2`);
     # the compatibility Service and IDs keep that name although Creative now pins
     # the workload on DGX1.
     # The Qwen3.6-35B (`vllm-35b-nvfp4*`), censored 27B F2 (`...-v024-f2-*`) and
@@ -3628,25 +3641,29 @@ data:
             # Stable backend identity for the cluster's only DENSE model. The
             # compatibility Service keeps its historical DGX2 name, but Creative
             # now serves the pinned uncensored 27B from DGX1 at 64K context.
-            "name": "qwen36-27b-uncensored-dgx2",
-            "label": "DGX2_QWEN36_27B_UNCENSORED",
+            "name": "qwen38-27b",
+            "label": "QWEN38_27B",
             "backend": "dgx1",
             "base_model": os.getenv(
-                "QWEN36_27B_UNCENSORED_MODEL",
-                "openai/qwen36-27b-uncensored-nvfp4",
+                "QWEN38_27B_MODEL",
+                "openai/qwen38-27b",
             ),
-            "aliases": QWEN36_27B_UNCENSORED_ALIASES,
+            "aliases": QWEN38_27B_ALIASES,
             "service": os.getenv(
-                "K8S_SERVICE_QWEN36_27B_UNCENSORED",
-                "vllm-qwen36-27b-uncensored",
+                "K8S_SERVICE_QWEN38_27B",
+                "vllm-qwen38-27b-uncensored",
             ),
             "api_base": os.getenv(
-                "QWEN36_27B_UNCENSORED_API_BASE",
-                "http://vllm-qwen36-27b-uncensored.llm.svc.cluster.local:8000/v1",
+                "QWEN38_27B_API_BASE",
+                "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/v1",
             ),
-            "id_prefix": "dgx2-qwen36-27b-uncensored-nvfp4",
+            "id_prefix": "qwen38-27b",
             "max_parallel_requests": 4,
-            "max_input_tokens": 65536,
+            # 65536 -> 262144 (15-08). El motor sirve 262144 desde
+            # k8s-ai-pocharlies@32e2b2f y esto se habia quedado atras: era LO QUE
+            # VEIAN LOS CLIENTES en /model/info, o sea que todo el estate creia
+            # que el modelo tenia 64K.
+            "max_input_tokens": 262144,
             # 16384 por consistencia con el resto del estate, que es una guia para
             # el cliente y no un limite del servidor: aqui la salida real la acota
             # max_model_len menos el prompt. El 32768 que heredaba antes no se
@@ -3807,6 +3824,12 @@ data:
         "dgx2-qwen36-35b-nvfp4-",
         "dgx1-qwen36-27b-dense-nvfp4-",
         "dgx2-qwen36-27b-dense-nvfp4-",
+        # 2026-08-15: el 27B uncensored pasa su id_prefix de
+        # `dgx2-qwen36-27b-uncensored-nvfp4` a `qwen38-27b`. Sin esta entrada sus
+        # 5 filas viejas (-tooling, -dense, -dense-reasoning, -dense-uncensored,
+        # -taxonomy) quedan huerfanas en el model_list: el ciclo solo reconoce como
+        # suyas las del prefijo ACTIVO, asi que nadie las retiraria.
+        "dgx2-qwen36-27b-uncensored-nvfp4-",
         # 2026-08-10: Qwen3-Coder retirado del cluster entero (deployment, pesos y
         # config). El prefijo se purga en cada ciclo para que no sobreviva ningun
         # registro suyo en el model_list.
@@ -4000,8 +4023,11 @@ data:
 
     def extra_litellm_params(backend: dict[str, Any], alias: str) -> dict[str, Any]:
         base_model = str(backend.get("base_model") or "")
-        if base_model.startswith("openai/qwen36-"):
-            return dict(QWEN36_REPEAT_GUARD_PARAMS)
+        # 15-08: era `openai/qwen36-`. Al renombrar el base_model a `openai/qwen38-27b`
+        # este startswith dejaba de casar y el repetition_penalty 1.08 se apagaba EN
+        # SILENCIO — Qwen documenta que sin ese guard degrada el tool-calling.
+        if base_model.startswith("openai/qwen38-"):
+            return dict(QWEN38_REPEAT_GUARD_PARAMS)
         return {}
 
 
@@ -4320,7 +4346,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-92d320eb533a
+        config.k8s.e-dani.com/revision: sync-35b3a44a4664
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -4342,8 +4368,10 @@ spec:
     # 2026-07-27; there is no scale-to-zero rollback path left.
             # DGX1 permanent floor plus the optional DGX2 dense F2 twin.
             # Isolated explicit alias: one DGX2 backend, no fallback.
-            - { name: K8S_SERVICE_QWEN36_27B_UNCENSORED, value: "vllm-qwen36-27b-uncensored" }
-            - { name: QWEN36_27B_UNCENSORED_MODEL, value: "openai/qwen36-27b-uncensored-nvfp4" }
+            # 15-08: estas dos PISAN los defaults de BACKENDS. Si se renombra alli
+            # y aqui no, el rename es un no-op silencioso.
+            - { name: K8S_SERVICE_QWEN38_27B, value: "vllm-qwen38-27b-uncensored" }
+            - { name: QWEN38_27B_MODEL, value: "openai/qwen38-27b" }
             - { name: SYNC_INTERVAL_SECONDS, value: "10" }
             - { name: READY_GRACE_SECONDS, value: "20" }
             # Durable least-privilege reconciliation for the existing OpenClaw
@@ -4357,6 +4385,7 @@ spec:
             # es aditivo, asi que esto solo ensancha.
             #
             # 2026-08-13: +dense, +dense-reasoning, +tooling, +deepseek-v4-flash-0731
+            # 2026-08-15: -dense, -dense-reasoning, -dense-uncensored (+qwen38-27b)
             # y los 19 IDs por cuenta del codex-bridge (peticion del owner:
             # OpenClaw tiene que
             # poder con gpt-5.*, DeepSeek V4 y dense). Dos avisos:
@@ -4371,7 +4400,7 @@ spec:
             # tocar desde aqui `openclaw-codex-app-server` ni
             # `openclaw-operator-readonly`: sus bootstraps comparan igualdad EXACTA
             # de la lista de modelos y ensancharlas rompe el sync.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,dense,dense-reasoning,dense-uncensored,tooling,router,agent,high,max,deepseek-v4-flash-0731,qwen35-4b,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,qwen38-27b,tooling,router,agent,high,max,deepseek-v4-flash-0731,qwen35-4b,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
@@ -4456,7 +4485,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-acb676889b93
+        config.k8s.e-dani.com/revision: config-46093e30aca8
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

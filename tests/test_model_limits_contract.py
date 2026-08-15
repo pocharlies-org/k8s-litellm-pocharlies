@@ -30,7 +30,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 # La ventana que sirve de verdad cada checkpoint. Si alguien cambia un
 # --max-model-len, este numero y el del sync tienen que moverse juntos.
-DGX2_UNCENSORED_27B = "qwen36-27b-uncensored-dgx2"
+DGX2_UNCENSORED_27B = "qwen38-27b"
 DEEPSEEK_V4_FLASH = "deepseek-v4-flash-tp2"
 QWEN35_4B = "qwen35-4b-int4"
 
@@ -53,12 +53,12 @@ def cms():
 def backends(cms):
     """BACKENDS del sync, evaluado de verdad (no por regex sobre el texto)."""
     tree = ast.parse(cms["sync"])
-    wanted = {"ORNITH_CANARY_ALIASES", "QWEN36_COMPAT_ALIASES", "ORNITH_ALIASES",
+    wanted = {"ORNITH_CANARY_ALIASES", "TOOLING_COMPAT_ALIASES", "ORNITH_ALIASES",
               "THINKING_TIER_ALIASES",
               "TOOLING_RESIDENT_ALIASES", "DEEPSEEK_V4_FLASH_DIRECT_ALIASES",
               "QWEN35_4B_ALIASES",
               "QWEN3CODER_ALIASES",
-              "QWEN36_27B_UNCENSORED_ALIASES", "QWEN36_REPEAT_GUARD_PARAMS",
+              "QWEN38_27B_ALIASES", "QWEN38_REPEAT_GUARD_PARAMS",
               "BACKENDS"}
     keep = [n for n in tree.body
             if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in wanted
@@ -115,17 +115,22 @@ def test_ningun_backend_hereda_sus_limites(cms, backends):
     assert "raise SystemExit" in cms["sync"]
 
 
-def test_el_27b_declara_su_ventana_mas_estrecha(backends):
+def test_el_27b_declara_la_ventana_que_sirve(backends):
     """El catalogo debe seguir publicando la ventana real del 27B.
 
-    El router automatico ya no lo usa ni depende de este limite.
+    2026-08-15: el 27B paso de 65536 a 262144 (k8s-ai-pocharlies@32e2b2f, que es
+    el nativo del checkpoint). Este numero se habia quedado atras y era LO QUE
+    VEIAN LOS CLIENTES en /model/info, o sea que todo el estate creia que el
+    modelo tenia 64K. El test deja de preguntar "cual es mas estrecho" —esa
+    pregunta perdio sentido cuando el 27B alcanzo al resto— y pasa a comprobar
+    lo unico que importaba de verdad: que el limite declarado sea el que sirve
+    el motor. Si alguien mueve --max-model-len, este numero se mueve con el.
     """
+    assert backends[DGX2_UNCENSORED_27B]["max_input_tokens"] == 262144
+
     estrechos = {n: b["max_input_tokens"] for n, b in backends.items()
                  if b["max_input_tokens"] < 262144}
-    assert estrechos == {
-        DGX2_UNCENSORED_27B: 65536,
-        QWEN35_4B: 32768,
-    }, estrechos
+    assert estrechos == {QWEN35_4B: 32768}, estrechos
 
 
 def test_deepseek_publica_la_ventana_operativa_de_384k(backends):

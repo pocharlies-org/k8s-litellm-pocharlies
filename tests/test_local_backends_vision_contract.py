@@ -21,12 +21,12 @@ False sea un fallo de CI y no un descubrimiento por sorpresa dentro de un mes.
 ALCANCE: este test ancla SOLO a DeepSeek.
 
 Los otros tres backends declarados (ornith-dgx1, nvidia-qwen36-dgx1,
-qwen36-27b-uncensored-dgx2) tambien tienen supports_vision=True, pero NO se fijan
+qwen38-27b) tambien tienen supports_vision=True, pero NO se fijan
 aqui, por dos razones comprobadas el 2026-08-13:
 
   - Los tres estan MUERTOS. `vllm-ornith-35b-nvfp4-mtp-dgx1` y
     `vllm-nvidia-qwen36-35b-dgx1` ni siquiera existen como Deployment (Ornith se
-    retiro el 10-08), y `vllm-qwen36-27b-uncensored` esta a 0 replicas.
+    retiro el 10-08), y `vllm-qwen38-27b-uncensored` esta a 0 replicas.
     Ninguno aparece registrado en LiteLLM: de los backends locales solo responde
     `deepseek-v4-flash-0731`, con sus 13 alias.
   - Sus valores no estan igual de justificados. El de NVIDIA lleva su razon en el
@@ -51,12 +51,12 @@ MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 # 2026-08-13: retirados `ornith-dgx1` y `nvidia-qwen36-dgx1`. Estaban a replicas 0
 # Y SIN PESOS EN DISCO (Ornith borrado el 10-08; la carpeta
 # nvidia-qwen36-35b-a3b-nvfp4 no existe en dgx1), o sea que no podian arrancar.
-# `qwen36-27b-uncensored-dgx2` se CONSERVA aunque su checkpoint tampoco este:
+# `qwen38-27b` se CONSERVA aunque su checkpoint tampoco este:
 # es el unico dueño declarado de dense/dense-reasoning/dense-uncensored/taxonomy,
 # y es preferible que la config diga "este backend deberia servir dense y esta
 # caido" a que esos nombres no tengan dueño en ningun sitio.
 BACKENDS_LOCALES = {
-    "qwen36-27b-uncensored-dgx2",
+    "qwen38-27b",
     "deepseek-v4-flash-tp2",
     "qwen35-4b-int4",
 }
