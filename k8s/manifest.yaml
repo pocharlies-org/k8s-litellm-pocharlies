@@ -709,8 +709,8 @@ data:
     #
     # El vLLM sigue siendo quien APLICA la proyeccion: es su competencia y no se
     # puede mover. Lo que vive AQUI es la CONFIGURACION — que runtimes tienen dial,
-    # en que URL admin se conmuta cada uno, y con que lambda se considera
-    # "encendido". LiteLLM es quien enruta los alias a esos heads y quien sella cada
+    # en que URL admin se ajusta cada uno, y cual es su lambda de referencia medida.
+    # LiteLLM es quien enruta los alias a esos heads y quien sella cada
     # peticion, asi que es el unico proceso donde ese mapa esta completo. El panel
     # DGX lo lee y lo escribe por /admin/refusal-state y /admin/refusal-dial; ya no
     # habla con los heads ni repite la lista por su cuenta.
@@ -1005,10 +1005,13 @@ data:
     # /internal/active-requests.
     REFUSAL_STATE_PATH = "/admin/refusal-state"
     REFUSAL_DIAL_PATH = "/admin/refusal-dial"
-    # Tope duro. Por encima de 1.5 se entra en el regimen del checkpoint horneado
-    # (lambda_eff 2,43), que SI degrada: acceptance 0,5128, por debajo del suelo de
-    # 0,55. Un panel con campo numerico no puede poder meter un 10.
-    REFUSAL_MAX_LAMBDA = float(os.environ.get("LITELLM_REFUSAL_MAX_LAMBDA", "2.0"))
+    # Rango experimental expuesto por el panel. 0 = checkpoint base; los valores
+    # de `on_lambda` siguen siendo las referencias medidas, no presets forzosos.
+    # Por encima de 1.5 DeepSeek entra en una zona no validada y puede degradar,
+    # pero 2.5 permite barrer alrededor del checkpoint horneado (~2.43) sin abrir
+    # el control hasta el limite interno mas amplio del runtime (4.0).
+    REFUSAL_MIN_LAMBDA = 0.0
+    REFUSAL_MAX_LAMBDA = float(os.environ.get("LITELLM_REFUSAL_MAX_LAMBDA", "2.5"))
 
 
     def _refusal_fleet_name(rt):
@@ -1056,6 +1059,7 @@ data:
             # Valor de encendido de ESTE runtime. No es global: DeepSeek necesita
             # 1.5 y Qwen3.8 se enciende con 1.0.
             "on_lambda": rt["on_lambda"],
+            "min_lambda": REFUSAL_MIN_LAMBDA,
             "max_lambda": REFUSAL_MAX_LAMBDA,
             # lo que de verdad se pregunta: ¿las peticiones llevaran sello?
             "stamping": lam is not None,
@@ -1074,6 +1078,27 @@ data:
             "ttl_s": REFUSAL_TTL_S,
             "source": "litellm-hook-cache",
         }
+
+
+    def _refusal_lambda_from_payload(payload, rt):
+        """Normaliza el dial numerico; `enabled` queda solo para rollouts mixtos."""
+        if payload.get("lambda") is not None:
+            raw = payload["lambda"]
+        elif "enabled" in payload:
+            # Compatibilidad de despliegue: una UI antigua puede convivir unos
+            # minutos con este backend nuevo. Los clientes nuevos nunca usan esto.
+            raw = rt["on_lambda"] if payload.get("enabled") else 0.0
+        else:
+            raise ValueError("falta `lambda` (numero)")
+        try:
+            lam = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("lambda no es un numero") from exc
+        # Esta forma tambien rechaza NaN: ambas comparaciones serian falsas.
+        if not (REFUSAL_MIN_LAMBDA <= lam <= REFUSAL_MAX_LAMBDA):
+            raise ValueError("lambda fuera de rango [{}, {}]".format(
+                REFUSAL_MIN_LAMBDA, REFUSAL_MAX_LAMBDA))
+        return lam
 
 
     def _register_refusal_routes():
@@ -1119,24 +1144,12 @@ data:
                         "error": "runtime desconocido: {!r}".format(key),
                         "known": sorted(REFUSAL_RUNTIMES_BY_KEY),
                     })
-                if payload.get("lambda") is not None:
-                    try:
-                        lam = float(payload["lambda"])
-                    except (TypeError, ValueError):
-                        raise _HTTPException(status_code=400, detail={
-                            "error": "lambda no es un numero"})
-                elif "enabled" in payload:
-                    # El panel manda un booleano y no necesita saber el numero: el
-                    # valor de encendido es configuracion de ESTE registro.
-                    lam = rt["on_lambda"] if payload.get("enabled") else 0.0
-                else:
+                try:
+                    lam = _refusal_lambda_from_payload(payload, rt)
+                except ValueError as exc:
                     raise _HTTPException(status_code=400, detail={
-                        "error": "falta `enabled` (bool) o `lambda` (numero)"})
-                if lam < 0 or lam > REFUSAL_MAX_LAMBDA:
-                    raise _HTTPException(status_code=400, detail={
-                        "error": "lambda fuera de rango [0, {}]".format(
-                            REFUSAL_MAX_LAMBDA),
-                        "requested": lam,
+                        "error": str(exc),
+                        "requested": payload.get("lambda"),
                     })
 
                 try:
@@ -4525,7 +4538,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-46093e30aca8
+        config.k8s.e-dani.com/revision: config-4407bdd708e9
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

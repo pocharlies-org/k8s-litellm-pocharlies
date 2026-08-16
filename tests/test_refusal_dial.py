@@ -88,6 +88,23 @@ class DialTest(unittest.TestCase):
         self.assertEqual(by["deepseek-v4-flash-0731"]["on_lambda"], 1.5)
         self.assertEqual(by["qwen38-27b-nvfp4"]["on_lambda"], 1.0)
 
+    def test_rango_experimental_llega_hasta_dos_y_medio(self):
+        self.assertEqual(ns["REFUSAL_MIN_LAMBDA"], 0.0)
+        self.assertEqual(ns["REFUSAL_MAX_LAMBDA"], 2.5)
+        rt = ns["REFUSAL_RUNTIMES_BY_KEY"]["deepseek-v4-flash-0731"]
+        self.assertEqual(ns["_refusal_lambda_from_payload"](
+            {"lambda": 2.5}, rt), 2.5)
+        for invalid in (-0.01, 2.5001, float("nan")):
+            with self.assertRaisesRegex(ValueError, "fuera de rango"):
+                ns["_refusal_lambda_from_payload"]({"lambda": invalid}, rt)
+
+    def test_enabled_solo_queda_como_compatibilidad_de_rollout(self):
+        rt = ns["REFUSAL_RUNTIMES_BY_KEY"]["deepseek-v4-flash-0731"]
+        self.assertEqual(ns["_refusal_lambda_from_payload"](
+            {"enabled": True}, rt), 1.5)
+        self.assertEqual(ns["_refusal_lambda_from_payload"](
+            {"enabled": False}, rt), 0.0)
+
     def test_cada_runtime_sella_SU_lambda_y_no_la_del_otro(self):
         heads[DS] = {"lambda": 1.5, "consistent": True, "per_rank": [1.5, 1.5]}
         heads[QW] = {"lambda": 0.0, "consistent": True, "per_rank": [0.0]}
@@ -171,6 +188,8 @@ class DialTest(unittest.TestCase):
         self.assertTrue(st["enabled"])
         self.assertTrue(st["stamping"])
         self.assertEqual(st["on_lambda"], 1.0)
+        self.assertEqual(st["min_lambda"], 0.0)
+        self.assertEqual(st["max_lambda"], 2.5)
         self.assertEqual(st["per_rank"], [1.0])
         self.assertIn("tooling", st["aliases"])
         self.assertEqual(st["fleet_name"], "vllm-qwen38-27b-uncensored")
