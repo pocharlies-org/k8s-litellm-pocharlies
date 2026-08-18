@@ -3584,7 +3584,38 @@ data:
     # selecciona un modelo concreto debe recibir ese modelo o un error visible.
     DEEPSEEK_V4_FLASH_DIRECT_ALIASES = (
         "deepseek-v4-flash-0731",
+        # Mismo backend, mismo head, misma GPU: lo unico que cambia es que este
+        # alias sella cada peticion con `cache_salt: refusal:1.5` (ver
+        # UNCENSORED_ON_LAMBDA). No es un segundo checkpoint ni un segundo pod.
+        "deepseek-v4-flash-0731-uncensored",
     )
+
+    # ── ALIAS `-uncensored`: lambda POR PETICION ────────────────────────────────
+    #
+    # El sufijo `-uncensored` sobre el nombre directo de un runtime le pone a esa
+    # peticion — y SOLO a esa — el lambda de encendido de su runtime, viajando en
+    # `cache_salt`. El dial global de /admin/refusal_lambda sigue mandando sobre
+    # quien NO trae sello, asi que los dos mecanismos conviven.
+    #
+    # EL VALOR NO ES GLOBAL, y por eso esto es un mapa y no un escalar: DeepSeek
+    # necesita 1.5 (a 1.0 todavia rechaza 5-7/10 — un alias a 1.0 diria
+    # "uncensored" y rechazaria la mitad de las veces) y Qwen3.8 se enciende con
+    # 1.0, que reproduce el perfil POR CAPA del checkpoint Ektome horneado. Mismo
+    # criterio que REFUSAL_RUNTIMES_DEFAULT, del que salen estos numeros.
+    #
+    # POR QUE QWEN NO TIENE ALIAS `-uncensored` (18-08). No es un olvido: su
+    # imagen (vllm-qwen38-rank1) tiene el modulo de proyeccion con
+    # `parse_request_lambda` y `set_per_token_lambda`, pero NO tiene productor —
+    # ni `sched/output.py` que lleve el lambda de la peticion, ni RefusalState en
+    # el runner. Es API muerta copiada de DeepSeek: un `cache_salt` ahi no haria
+    # absolutamente nada, y encima en silencio, que es exactamente el fallo que
+    # el arreglo del 18-08 elimino en DeepSeek. Qwen solo tiene el dial GLOBAL.
+    # Para darle alias por peticion hay que portarle rank1g y reconstruir su
+    # imagen; hasta entonces registrarlo seria mentir al que elige el alias.
+    UNCENSORED_SUFFIX = "-uncensored"
+    UNCENSORED_ON_LAMBDA = {
+        "openai/deepseek-v4-flash-0731": 1.5,
+    }
     # The uncensored 27B is the ONLY dense model in the cluster. Creative pins it
     # on DGX1, where it owns `tooling` as well as every dense-shaped name.
     # `taxonomy` was added here on 2026-07-27: it used to be registered solely by
@@ -4057,13 +4088,41 @@ data:
 
 
     def extra_litellm_params(backend: dict[str, Any], alias: str) -> dict[str, Any]:
+        # SE ACUMULA, no se devuelve al primer acierto. Antes el guard de Qwen
+        # hacia `return` y cortaba: el dia que Qwen tenga lambda por peticion, su
+        # alias `-uncensored` habria salido SIN sello y con el repeat guard puesto,
+        # sin un solo aviso. Los dos ajustes son ortogonales y deben poder convivir.
+        params: dict[str, Any] = {}
         base_model = str(backend.get("base_model") or "")
         # 15-08: era `openai/qwen36-`. Al renombrar el base_model a `openai/qwen38-27b`
         # este startswith dejaba de casar y el repetition_penalty 1.08 se apagaba EN
         # SILENCIO — Qwen documenta que sin ese guard degrada el tool-calling.
         if base_model.startswith("openai/qwen38-"):
-            return dict(QWEN38_REPEAT_GUARD_PARAMS)
-        return {}
+            params.update(QWEN38_REPEAT_GUARD_PARAMS)
+        if alias.endswith(UNCENSORED_SUFFIX):
+            lam = UNCENSORED_ON_LAMBDA.get(base_model)
+            if lam is None:
+                # Alias `-uncensored` sobre un backend sin lambda declarado. Se
+                # deja SIN sello a proposito: mejor un alias que se comporta como
+                # el normal y lo dice el log, que uno que promete y no cumple.
+                log.warning(
+                    "alias %s pide sello -uncensored pero %s no tiene lambda en "
+                    "UNCENSORED_ON_LAMBDA; se registra SIN cache_salt",
+                    alias, base_model,
+                )
+                return params
+            # `cache_salt` viaja en extra_body y NO lo toca nadie por el camino:
+            # no esta en ningun `drop` de FAMILY_SAMPLING (comprobado 18-08), asi
+            # que llega entero a vLLM. Alli lo parsea `parse_request_lambda` y el
+            # runner lo expande a lambda por token del rol que toque.
+            #
+            # COSTE REAL, para que no sorprenda: cache_salt entra en la clave de
+            # hash de bloque del prefix cache de vLLM, asi que este alias tiene su
+            # PROPIO espacio de cache KV. Es lo correcto — no quieres que una
+            # peticion sellada comparta bloques con una sin sellar — pero el hit
+            # rate del alias es independiente del alias normal.
+            params["extra_body"] = {"cache_salt": f"refusal:{lam}"}
+        return params
 
 
     def desired_deployments(backend: dict[str, Any]) -> list[dict[str, Any]]:
