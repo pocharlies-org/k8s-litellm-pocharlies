@@ -3603,18 +3603,24 @@ data:
     # 1.0, que reproduce el perfil POR CAPA del checkpoint Ektome horneado. Mismo
     # criterio que REFUSAL_RUNTIMES_DEFAULT, del que salen estos numeros.
     #
-    # POR QUE QWEN NO TIENE ALIAS `-uncensored` (18-08). No es un olvido: su
-    # imagen (vllm-qwen38-rank1) tiene el modulo de proyeccion con
-    # `parse_request_lambda` y `set_per_token_lambda`, pero NO tiene productor —
-    # ni `sched/output.py` que lleve el lambda de la peticion, ni RefusalState en
-    # el runner. Es API muerta copiada de DeepSeek: un `cache_salt` ahi no haria
-    # absolutamente nada, y encima en silencio, que es exactamente el fallo que
-    # el arreglo del 18-08 elimino en DeepSeek. Qwen solo tiene el dial GLOBAL.
-    # Para darle alias por peticion hay que portarle rank1g y reconstruir su
-    # imagen; hasta entonces registrarlo seria mentir al que elige el alias.
+    # QWEN ENTRA EL 18-08, con rank1g portado (k8s-ai-pocharlies@53a8459). Antes no
+    # estaba, y la razon merece quedar escrita porque es la trampa de todo esto: su
+    # imagen tenia `parse_request_lambda` y `set_per_token_lambda` en el modulo pero
+    # el productor ROTO, asi que un `cache_salt` no habria hecho nada Y EN SILENCIO.
+    # Un alias que promete y no cumple es peor que no tenerlo.
+    #
+    # El port de Qwen no es el mismo codigo que el de DeepSeek: su forward vive en
+    # region FULLGRAPH de Dynamo, asi que el buffer del rol se ata al modulo en la
+    # construccion en vez de leerse de un global. Medido: 0 recompilaciones.
+    #
+    # LO QUE EN QWEN SIGUE SIN CUBRIR: el drafter MTP se queda al lambda GLOBAL
+    # (tiene dos layouts de fila y adivinar seria reintroducir el fallo). Con
+    # muestreo por rechazo probabilistico eso cuesta ACCEPTANCE, no correccion: la
+    # respuesta que ve el cliente sigue siendo la del target sellado.
     UNCENSORED_SUFFIX = "-uncensored"
     UNCENSORED_ON_LAMBDA = {
         "openai/deepseek-v4-flash-0731": 1.5,
+        "openai/qwen38-27b": 1.0,
     }
     # The uncensored 27B is the ONLY dense model in the cluster. Creative pins it
     # on DGX1, where it owns `tooling` as well as every dense-shaped name.
@@ -3651,6 +3657,17 @@ data:
         # que una medicion contra `tooling` puede acabar contestada por el
         # residente de OTRO perfil en vez de dar 400. Si algun dia hace falta
         # medir de nuevo, se re-anade el nombre del modelo aqui.
+        #
+        # 18-08: entra `qwen38-27b-uncensored`. NO contradice lo de arriba — aquello
+        # descartaba re-anadir `qwen38-27b`, un segundo nombre para el MISMO
+        # comportamiento. Este no es un nombre de mas: es el unico que sella la
+        # peticion con `cache_salt: refusal:1.0` (ver UNCENSORED_ON_LAMBDA), o sea
+        # el unico que da un comportamiento que `tooling` no puede dar.
+        #
+        # Efecto colateral util: como nombre directo de ESTE backend, tampoco lo
+        # reescribe el hook, asi que sirve ademas como el nombre un-fallbacked que
+        # se echaba en falta para medir — con el sello puesto, eso si.
+        "qwen38-27b-uncensored",
     )
     QWEN38_REPEAT_GUARD_PARAMS = {
         "repetition_penalty": float(os.getenv("QWEN38_REPETITION_PENALTY", "1.08")),
@@ -4458,7 +4475,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-25e8d55c4e78
+        config.k8s.e-dani.com/revision: sync-5261136ad78e
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
