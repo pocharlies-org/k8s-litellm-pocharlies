@@ -243,8 +243,19 @@ def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
         "phase": "switching", "desired_mode": "creative", "effective_mode": "llm-tp"
     }
 
-    assert hook._tooling_target_for_compute_mode(ready_tp) == ("tooling", None)
-    assert hook._tooling_target_for_compute_mode(ready_creative) == ("tooling", None)
+    # 2026-08-18: el destino es el NOMBRE DIRECTO del residente, no el alias
+    # `tooling`. Antes los dos perfiles apuntaban a "tooling" porque el alias lo
+    # registraba en runtime el controlador litellm-dgx-backend-sync sobre el backend
+    # que estuviera arriba, asi que resolverlo era un no-op. Muerto el controlador,
+    # `tooling` es una entrada estatica al Service de pool y esta reescritura es la
+    # que lleva la peticion al nombre que si tiene la ventana real, el sampling por
+    # familia y (en Qwen) el repetition_penalty.
+    assert hook._tooling_target_for_compute_mode(ready_tp) == (
+        "deepseek-v4-flash-0731", None
+    )
+    assert hook._tooling_target_for_compute_mode(ready_creative) == (
+        "qwen38-27b", None
+    )
     assert hook._tooling_target_for_compute_mode(transition) == (
         None,
         "compute_mode_transition",
@@ -254,16 +265,16 @@ def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
         "e-dani/gpt-5.6-luna",
     )
 
-    local_live = lambda alias: alias == "tooling"
+    local_live = lambda alias: alias in {"deepseek-v4-flash-0731", "qwen38-27b"}
     assert hook._tooling_route_for_state(ready_tp, local_live) == (
-        "tooling", "primary", None
+        "deepseek-v4-flash-0731", "primary", None
     )
     assert hook._tooling_route_for_state(ready_creative, local_live) == (
-        "tooling", "primary", None
+        "qwen38-27b", "primary", None
     )
     # A stale local registration cannot win while the profile is switching.
     stale_local_and_luna = lambda alias: alias in {
-        "tooling", "cloudblue/gpt-5.6-luna"
+        "deepseek-v4-flash-0731", "qwen38-27b", "cloudblue/gpt-5.6-luna"
     }
     assert hook._tooling_route_for_state(transition, stale_local_and_luna) == (
         "cloudblue/gpt-5.6-luna", "degraded", "compute_mode_transition"

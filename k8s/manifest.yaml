@@ -262,6 +262,194 @@ data:
     - model_name: codex-auto-review
       litellm_params: { model: openai/codex-auto-review, api_base: "http://codex-bridge.litellm.svc.cluster.local:8080/v1", api_key: not-used }
       model_info: { mode: chat, supports_vision: true, max_input_tokens: 272000 }
+    # ── RESIDENTES LOCALES: ESTATICOS DESDE 2026-08-18 ──────────────────────────
+    #
+    # Hasta hoy estos alias NO estaban aqui: los registraba en runtime el
+    # controlador `litellm-dgx-backend-sync` por HTTP contra /model/new. Ese
+    # controlador es el que producia el desmadre de nombres, y por tres motivos
+    # que se combinan:
+    #   - /model/new es create-only (ver managed_model_contract),
+    #   - store_model_in_db: true guardaba lo registrado en postgres,
+    #   - /model/delete borraba el alias en cuanto el Service pasaba a NotReady.
+    # Resultado medido: alias que aparecian y desaparecian solos (18-08 11:43
+    # desregistro los nueve de DeepSeek, 12:37 los volvio a crear), CINCO
+    # workarounds en este mismo fichero, y cuatro listas de alias que no
+    # coincidian entre si (panel, OpenClaw, opencode y el allowlist del equipo).
+    #
+    # Ahora hay UNA fuente de la verdad: este YAML. Y "quien esta arriba" lo
+    # contesta Kubernetes por el Service de pool `tooling` (k8s-ai-pocharlies,
+    # selector llm.dgx-infra/pool=tooling-resident), que es su competencia — no
+    # la de un controlador que escribe en una base de datos.
+    #
+    # DOS CLASES DE NOMBRE, y la diferencia importa:
+    #
+    #  1. NOMBRE DIRECTO (deepseek-v4-flash-0731, qwen38-27b, qwen35-4b y sus
+    #     `-uncensored`): apunta al Service PROPIO del backend. Si ese backend no
+    #     esta, el alias da 400 «Invalid model name» — visible y correcto: quien
+    #     nombra un modelo concreto debe recibir ese modelo o un error, nunca otro.
+    #
+    #  2. NOMBRE DE CAPACIDAD (tooling, router, auto, litellmrouter, agent, high,
+    #     max): apunta al Service de POOL. El hook los reescribe por peticion al
+    #     nombre directo del residente vivo (_resolve_tooling_profile), que es lo
+    #     que mantiene correctos el sampling por familia (FAMILY_SAMPLING), el
+    #     sello de lambda y la ventana real. La entrada al pool es la red de
+    #     seguridad: si el hook se desactivara, el alias sigue siendo servible
+    #     porque los DOS backends declaran `tooling` como segundo
+    #     --served-model-name. Lo unico que se perderia en ese camino es el
+    #     repetition_penalty de Qwen, que va en las entradas directas.
+    #
+    # NO SE DECLARA DOS VECES `tooling` (una por backend) a proposito. Medido el
+    # 18-08 con dos deployments bajo un alias, uno con api_base muerto: 11 de 12
+    # peticiones OK y UNA 500. Con routing_strategy simple-shuffle, allowed_fails
+    # 3 y cooldown_time 120 el muerto se come peticiones hasta acumular 3 fallos y
+    # vuelve a salir cada 2 minutos a fallar otras tres. El Service de pool no
+    # tiene ese agujero: el backend caido no esta en los EndpointSlice.
+    #
+    # La ventana de los alias de capacidad es 262144 (la del residente MENOR), no
+    # 393216: es el suelo de los dos, y el techo de contexto que se pidio. Un
+    # cliente que declare 384k y aterrice en qwen38 se pasaria de ventana; al
+    # contrario solo desaprovecha.
+    - model_name: deepseek-v4-flash-0731
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 6
+      model_info:
+        mode: chat
+        backend: dgx1+dgx2
+        max_input_tokens: 393216
+        max_output_tokens: 16384
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        supported_reasoning_efforts: [none, low, high, max]
+    # Mismo head, misma GPU, mismo checkpoint. Lo unico que cambia es que este
+    # alias sella cada peticion con `cache_salt: refusal:1.5`, que vLLM expande a
+    # lambda por token. COSTE: cache_salt entra en la clave de bloque del prefix
+    # cache, asi que este alias tiene su propio espacio de KV.
+    - model_name: deepseek-v4-flash-0731-uncensored
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 6
+        extra_body: { cache_salt: "refusal:1.5" }
+      model_info:
+        mode: chat
+        backend: dgx1+dgx2
+        max_input_tokens: 393216
+        max_output_tokens: 16384
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        supported_reasoning_efforts: [none, low, high, max]
+    # NUEVO como nombre directo. El controlador solo registraba `tooling` y
+    # `qwen38-27b-uncensored` sobre este backend, asi que el residente de
+    # `creative` no tenia nombre propio servible. Ahora lo tiene, y es el destino
+    # al que el hook reescribe `tooling` cuando el perfil vivo es `creative`.
+    #
+    # repetition_penalty 1.08 va en litellm_params porque Qwen documenta que sin
+    # ese guard degrada el tool-calling. Lo ponia extra_litellm_params del
+    # controlador con un startswith("openai/qwen38-") que ya se apago en silencio
+    # una vez (15-08) al renombrar el base_model. Escrito aqui no puede apagarse.
+    - model_name: qwen38-27b
+      litellm_params:
+        model: openai/qwen38-27b
+        api_base: http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
+        repetition_penalty: 1.08
+      model_info:
+        mode: chat
+        backend: dgx1
+        max_input_tokens: 262144
+        max_output_tokens: 16384
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        supported_reasoning_efforts: [none, low, medium, high, max]
+    - model_name: qwen38-27b-uncensored
+      litellm_params:
+        model: openai/qwen38-27b
+        api_base: http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
+        repetition_penalty: 1.08
+        extra_body: { cache_salt: "refusal:1.0" }
+      model_info:
+        mode: chat
+        backend: dgx1
+        max_input_tokens: 262144
+        max_output_tokens: 16384
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        supported_reasoning_efforts: [none, low, medium, high, max]
+    # Independiente del perfil: vive en la RTX del x86, no en los Sparks, asi que
+    # esta arriba en los dos modos. Los dos nombres son el mismo backend.
+    - model_name: qwen35-4b
+      litellm_params: &qwen35_4b_params
+        model: openai/qwen3.5-4b
+        api_base: http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 1
+      model_info: &qwen35_4b_info
+        mode: chat
+        backend: rtx
+        max_input_tokens: 32768
+        max_output_tokens: 8192
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        supported_reasoning_efforts: [none, low, medium, high, max]
+    - model_name: qwen3.5-4b
+      litellm_params: *qwen35_4b_params
+      model_info: *qwen35_4b_info
+    # ── ALIAS DE CAPACIDAD: al Service de POOL ───────────────────────────────────
+    # `tooling` significa «el residente del perfil vivo, sin pensar»; agent/high/
+    # max son el MISMO backend con otro nivel de pensamiento (lo pone
+    # THINKING_TIERS en el hook, no un modelo distinto); router/auto/litellmrouter
+    # eligen uno de los cuatro por forma de la peticion (AUTO_ROUTED_MODELS).
+    - model_name: tooling
+      litellm_params: &tooling_pool_params
+        model: openai/tooling
+        api_base: http://tooling.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 4
+      model_info: &tooling_pool_info
+        mode: chat
+        backend: profile-resident
+        max_input_tokens: 262144
+        max_output_tokens: 16384
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        supported_reasoning_efforts: [none, low, high, max]
+    - model_name: router
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    - model_name: auto
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    - model_name: litellmrouter
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    - model_name: agent
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    - model_name: high
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    - model_name: max
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -314,7 +502,23 @@ data:
     general_settings:
       master_key: os.environ/LITELLM_MASTER_KEY
       database_url: os.environ/DATABASE_URL
-      store_model_in_db: true
+      # 2026-08-18: a false. Esto estaba a true por UNA razon — que el controlador
+      # `litellm-dgx-backend-sync` pudiera escribir modelos por /model/new y que las
+      # 4 replicas compartieran ese catalogo. Muerto el controlador, nadie escribe
+      # modelos, y el catalogo compartido lo da el ConfigMap: todas las replicas leen
+      # el MISMO fichero.
+      #
+      # Lo que se gana, y es el motivo de fondo: un alias solo puede existir en git.
+      # No hay que purgar las filas viejas de la DB — con esto dejan de cargarse, se
+      # quedan inertes. Y LiteLLM arranca y enruta SIN postgres (que ya se cayo 9h el
+      # 20-07 y se llevo la inferencia por delante); antes eso solo lo mitigaba
+      # allow_requests_on_db_unavailable, mas abajo.
+      #
+      # OJO: esto es SOLO modelos. Keys, equipos, presupuesto y spend siguen en
+      # postgres, y database_url se queda. Añadir un modelo pasa a ser un commit:
+      # POST /models del panel y el boton «Add deployment» dejan de tener sentido y
+      # se retiran en dgx-infra.
+      store_model_in_db: false
       # 2026-07-21: prompts OFF in SpendLogs — full prompt/response duplication of
       # what Langfuse already stores had grown the table to 21 GB (~38 KB/row) and
       # made retention DELETEs time out. SpendLogs is accounting only.
@@ -514,14 +718,31 @@ data:
             return False, "compute_mode_inconsistent"
         return True, None
 
+    # 2026-08-18: los dos valores eran "tooling" porque el alias `tooling` lo
+    # REGISTRABA en runtime el controlador sobre el residente que estuviera arriba,
+    # asi que resolverlo era un no-op. Muerto el controlador, `tooling` es una
+    # entrada estatica al Service de pool y esta reescritura es la que hace el
+    # trabajo: manda la peticion al NOMBRE DIRECTO del residente vivo.
+    #
+    # Por que importa reescribir y no dejar que vaya al pool: el nombre directo es
+    # el que lleva la metadata real del backend (ventana 393216 vs 262144), el
+    # sampling correcto por familia (_family_of_alias lee litellm_params.model) y,
+    # en Qwen, el repetition_penalty 1.08. Una entrada al pool no puede llevar eso
+    # porque no sabe quien va a contestar.
     TOOLING_MODE_TARGETS = {
-        "llm-tp": "tooling",
-        "creative": "tooling",
+        "llm-tp": "deepseek-v4-flash-0731",
+        "creative": "qwen38-27b",
     }
     TOOLING_LUNA_FALLBACKS = (
         "cloudblue/gpt-5.6-luna",
         "e-dani/gpt-5.6-luna",
     )
+    # Alias que significan «el residente del perfil vivo» y por eso se reescriben al
+    # nombre directo antes de enrutar. `tooling` = sin pensar; agent/high/max = el
+    # MISMO backend con otro nivel de pensamiento. router/auto/litellmrouter NO estan
+    # aqui: esos eligen primero uno de estos cuatro (AUTO_ROUTED_MODELS) y la
+    # reescritura ocurre despues, sobre el elegido.
+    TOOLING_PROFILE_ALIASES = frozenset({"tooling", "agent", "high", "max"})
 
     def _tooling_target_for_compute_mode(state):
         allowed, reason = _compute_mode_allows_local(state)
@@ -2440,7 +2661,21 @@ data:
             )
             if cap_alias is not None:
                 cap_entry = CAPABILITY_CHAINS[cap_alias]
-                if cap_alias == "tooling":
+                # 2026-08-18: los CUATRO alias de capacidad se resuelven igual, no
+                # solo `tooling`. Antes agent/high/max iban por _walk_chain porque
+                # el controlador los registraba sobre el residente vivo; ahora son
+                # entradas estaticas al Service de pool, asi que _walk_chain los
+                # encontraria «primary» y no reescribiria nada — la peticion saldria
+                # al pool sin la metadata ni el sampling del backend real.
+                #
+                # Son el MISMO backend por diseño (lo dice TOOLING_RESIDENT_ALIASES:
+                # no son modelos distintos, es el mismo con otro nivel de
+                # pensamiento). El nivel lo sigue poniendo THINKING_TIERS a partir
+                # del alias PEDIDO (`thinking_alias`), que no se toca aqui.
+                #
+                # Efecto lateral querido: agent/high/max heredan la red de las DOS
+                # cuentas Luna (TOOLING_LUNA_FALLBACKS) en vez de solo cloudblue.
+                if cap_alias in TOOLING_PROFILE_ALIASES:
                     cap_resolved, cap_state = await _resolve_tooling_profile()
                 else:
                     cap_resolved, cap_state = _walk_chain(cap_entry)
@@ -2476,7 +2711,11 @@ data:
                 if marker_present:
                     _strip_think_from_last_user(data)
                 target = ROUTE[category]
-                if target["model"] == "tooling":
+                # Mismo motivo que arriba: los cuatro destinos de ROUTE (tooling,
+                # agent, high, max) son el residente del perfil vivo, asi que los
+                # cuatro se resuelven al nombre directo. El nivel de pensamiento
+                # viaja aparte en _router_thinking_alias.
+                if target["model"] in TOOLING_PROFILE_ALIASES:
                     resolved_model, route_state = await _resolve_tooling_profile()
                 else:
                     resolved_model, route_state = _degrade(category)
@@ -4446,7 +4685,31 @@ metadata:
   name: litellm-dgx-backend-sync
   namespace: litellm
 spec:
-  replicas: 1
+  # ── RETIRADO 2026-08-18 ─────────────────────────────────────────────────────
+  #
+  # A 0 replicas, no borrado del fichero: esta Application lleva `prune: false`,
+  # asi que quitarlo de git lo dejaria vivo en el cluster para siempre. `replicas:
+  # 0` SI lo aplica selfHeal. El codigo se conserva a la vista porque documenta el
+  # mecanismo que se sustituye y como se medio su dano.
+  #
+  # QUE HACIA Y POR QUE SOBRA: registraba en runtime, por HTTP contra /model/new,
+  # los alias del residente vivo, y los borraba con /model/delete en cuanto el
+  # Service pasaba a NotReady. Con /model/new create-only + store_model_in_db:
+  # true, eso producia alias que aparecian y desaparecian solos y sobrevivian en
+  # postgres a su propio autor. Medido en sus logs del 18-08: 11:43 desregistro los
+  # nueve alias de DeepSeek uno a uno, 12:37 los volvio a crear.
+  #
+  # Ahora los alias son estaticos en el model_list de arriba y «quien esta arriba»
+  # lo contesta el Service de pool `tooling` de Kubernetes, que es su competencia.
+  #
+  # LO QUE MUERE CON EL, a proposito: reconciliaba cada 300s el allowlist del
+  # equipo/key de OpenClaw ENSANCHANDOLO con OPENCLAW_TEAM_REQUIRED_MODELS. Eso
+  # habia acumulado 48 nombres, ~12 de ellos de modelos que ya no existen, y a la
+  # vez dejaba fuera los alias nuevos (`deepseek-v4-flash-0731-uncensored` daba 403
+  # el 18-08). El allowlist pasa a estar VACIO = todos: probado el 18-08 en las 4
+  # replicas (403 antes, 200 despues). Autorizar deja de ser una lista y pasa a ser
+  # «lo que declara este YAML».
+  replicas: 0
   selector:
     matchLabels:
       app: litellm-dgx-backend-sync
@@ -4614,7 +4877,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-4407bdd708e9
+        config.k8s.e-dani.com/revision: config-df87cbb2c766
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
