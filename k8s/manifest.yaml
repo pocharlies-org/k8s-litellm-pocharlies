@@ -4458,7 +4458,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-5106534532f3
+        config.k8s.e-dani.com/revision: sync-25e8d55c4e78
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
