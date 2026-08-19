@@ -59,6 +59,10 @@ def backends(cms):
               "QWEN35_4B_ALIASES",
               "QWEN3CODER_ALIASES",
               "QWEN38_27B_ALIASES", "QWEN38_REPEAT_GUARD_PARAMS",
+              # 19-08-2026: el alias de capacidad abliterado. Lo comparten los DOS
+              # residentes, asi que sin el aqui BACKENDS no evalua y los cinco
+              # tests de este modulo dan NameError en el setup.
+              "UNCENSORED_RESIDENT_ALIASES",
               "BACKENDS"}
     keep = [n for n in tree.body
             if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in wanted

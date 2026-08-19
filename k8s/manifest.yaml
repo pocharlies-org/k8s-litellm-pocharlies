@@ -3818,6 +3818,38 @@ data:
     # nadie los servia. Ver la ventana RHO en
     # analysis/deepseek-v4-flash-2xspark/rho-backend-sync/.
     TOOLING_RESIDENT_ALIASES = TOOLING_COMPAT_ALIASES + THINKING_TIER_ALIASES
+    # ── `tooling-uncensored`: el residente del perfil, ABLIABLADO ───────────────
+    #
+    # POR QUE HACE FALTA UN NOMBRE DE CAPACIDAD Y NO BASTAN LOS DE MODELO.
+    # `deepseek-v4-flash-0731-uncensored` y `qwen38-27b-uncensored` son nombres de
+    # MODELO: cada uno solo existe en SU perfil de computo, y los dos perfiles son
+    # fisicamente exclusivos en los Sparks. Un consumidor que pinche uno de los dos
+    # funciona la mitad del tiempo y da 500 la otra mitad. Medido (18-08, perfil
+    # llm-tp): `deepseek-v4-flash-0731-uncensored` -> 200, `qwen38-27b-uncensored`
+    # -> 500 "Connection error. No fallback model group". Ese 500 es CORRECTO para
+    # medir —falla fuerte en vez de contestar desde otro checkpoint— y es
+    # inservible como destino de un pin persistido.
+    #
+    # `tooling` resolvio ese problema para el caso censurado: es un nombre de
+    # CAPACIDAD que registra el residente de cada perfil, asi que sigue al perfil
+    # solo y el conflict guard evicciona la registracion rancia del otro. Este es
+    # el mismo patron para el caso ablado, y por eso lo registran LOS DOS backends.
+    #
+    # EL NOMBRE TERMINA EN `-uncensored` A PROPOSITO. El sello lo pone
+    # `extra_litellm_params` por SUFIJO (UNCENSORED_SUFFIX). Un nombre como
+    # `uncensored` a secas NO acaba en `-uncensored`, asi que no se sellaria y el
+    # alias serviria el modelo censurado en silencio — el fallo nº1 de esta
+    # familia. Lo cubre tests/test_uncensored_alias_contract.py.
+    #
+    # Cada backend sella con SU lambda medida porque UNCENSORED_ON_LAMBDA va por
+    # `base_model`: 1.5 en DeepSeek, 1.0 en Qwen3.8. No hay una lambda comun ni
+    # hace falta que la haya.
+    #
+    # SIN FALLBACK, y eso no es un olvido. `tooling` cae a
+    # `cloudblue/gpt-5.6-luna` cuando no hay residente. Un fallback asi aqui
+    # significaria que una peticion pedida ABLADA la contesta un modelo de la nube
+    # CON sus barreras puestas, HTTP 200 y sin aviso. Preferimos el 500.
+    UNCENSORED_RESIDENT_ALIASES = ("tooling-uncensored",)
     # Nombre directo y exclusivo de DeepSeek. A diferencia de los aliases de
     # capacidad anteriores, este NO se comparte con Ornith/NVIDIA Qwen: quien
     # selecciona un modelo concreto debe recibir ese modelo o un error visible.
@@ -3948,7 +3980,7 @@ data:
                 "QWEN38_27B_MODEL",
                 "openai/qwen38-27b",
             ),
-            "aliases": QWEN38_27B_ALIASES,
+            "aliases": QWEN38_27B_ALIASES + UNCENSORED_RESIDENT_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_QWEN38_27B",
                 "vllm-qwen38-27b-uncensored",
@@ -4015,7 +4047,7 @@ data:
                 "DS4_FLASH_MODEL",
                 "openai/deepseek-v4-flash-0731",
             ),
-            "aliases": TOOLING_RESIDENT_ALIASES + DEEPSEEK_V4_FLASH_DIRECT_ALIASES,
+            "aliases": TOOLING_RESIDENT_ALIASES + DEEPSEEK_V4_FLASH_DIRECT_ALIASES + UNCENSORED_RESIDENT_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_DS4_FLASH",
                 "deepseek-v4-flash-0731",
@@ -4738,7 +4770,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-5261136ad78e
+        config.k8s.e-dani.com/revision: sync-b9835588dfb2
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false

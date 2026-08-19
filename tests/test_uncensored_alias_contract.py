@@ -35,6 +35,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 _WANTED = {
     "UNCENSORED_SUFFIX",
     "UNCENSORED_ON_LAMBDA",
+    "UNCENSORED_RESIDENT_ALIASES",
     "QWEN38_REPEAT_GUARD_PARAMS",
     "QWEN38_27B_ALIASES",
     "DEEPSEEK_V4_FLASH_DIRECT_ALIASES",
@@ -116,6 +117,63 @@ def test_only_the_uncensored_alias_carries_the_per_request_salt():
         "openai/deepseek-v4-flash-0731": 1.5,
         "openai/qwen38-27b": 1.0,
     }
+
+
+def test_the_capability_alias_seals_with_EACH_residents_own_lambda():
+    """`tooling-uncensored` es el equivalente abliterado de `tooling`: un solo
+    nombre, lo registran los DOS residentes, y cada uno sella con SU lambda
+    medida. Es el unico nombre pineable desde OpenClaw que sobrevive al cambio de
+    perfil; los dos nombres de MODELO estan muertos la mitad del tiempo (medido
+    19-08 con la key del gateway: el de Qwen da 500 en llm-tp, sin fallback y a
+    proposito).
+    """
+    ns = _load_sync_namespace()
+    extra = ns["extra_litellm_params"]
+
+    assert ns["UNCENSORED_RESIDENT_ALIASES"] == ("tooling-uncensored",)
+    assert extra(DEEPSEEK, "tooling-uncensored") == {
+        "extra_body": {"cache_salt": "refusal:1.5"}
+    }
+    # En Qwen, sello Y guard de repeticion: los dos ajustes son ortogonales.
+    assert extra(QWEN38, "tooling-uncensored") == {
+        "repetition_penalty": 1.08,
+        "extra_body": {"cache_salt": "refusal:1.0"},
+    }
+
+
+def test_the_capability_alias_MUST_end_in_the_suffix_or_it_seals_nothing():
+    """La trampa que decidio el nombre.
+
+    El sello se aplica por `alias.endswith(UNCENSORED_SUFFIX)`. Un nombre de
+    capacidad llamado solo `uncensored` NO casaria: se registraria SIN
+    `cache_salt` y serviria el modelo censurado anunciandose como sin censura.
+    Por eso es `tooling-uncensored` y no `uncensored`.
+    """
+    ns = _load_sync_namespace()
+    assert ns["extra_litellm_params"](DEEPSEEK, "uncensored") == {}
+    for alias in ns["UNCENSORED_RESIDENT_ALIASES"]:
+        assert alias.endswith(ns["UNCENSORED_SUFFIX"]), alias
+
+
+def test_both_residents_register_the_capability_alias():
+    """Si solo lo registrara uno seria un nombre de modelo disfrazado: moriria al
+    cambiar de perfil, que es justo lo que viene a resolver."""
+    text = MANIFEST.read_text()
+    backends = text[text.index("BACKENDS = ("):text.index("RETIRED_MANAGED_IDS")]
+    assert backends.count("UNCENSORED_RESIDENT_ALIASES") == 2
+
+
+def test_no_uncensored_alias_has_a_cloud_fallback():
+    """Un fallback aqui contestaria una peticion abliterada desde un modelo de
+    nube CENSURADO, con HTTP 200 y sin un aviso. `tooling` y
+    `deepseek-v4-flash-0731` si caen a Luna; estos tres no pueden."""
+    text = MANIFEST.read_text()
+    for alias in (
+        "tooling-uncensored",
+        "deepseek-v4-flash-0731-uncensored",
+        "qwen38-27b-uncensored",
+    ):
+        assert f"- {alias}: [" not in text, alias
 
 
 def test_a_runtime_without_a_measured_lambda_is_never_sealed():
