@@ -1,219 +1,181 @@
-"""Los alias `-uncensored` sellan cada peticion con su lambda, y solo ellos.
+"""Contrato de los alias abliterados, contra el mecanismo QUE CORRE.
 
-POR QUE NO BASTA UN ASSERT DE TEXTO. Los demas contract tests de este repo
-comprueban que ciertas cadenas estan en el manifiesto. Aqui eso no vale: el fallo
-que este test existe para cazar no es un nombre que falte, es un `return`
-temprano. `extra_litellm_params` tenia el guard de repeticion de Qwen ANTES del
-sello, asi que el dia que Qwen tuviera lambda por peticion su alias habria salido
-con el guard puesto y SIN sello, sin un solo aviso — igual de silencioso que el
-bug del propio lambda por peticion. Un assert de texto pasa igual.
+POR QUE SE REESCRIBIO ESTE FICHERO (19-08-2026). La version anterior extraia
+`extra_litellm_params` del ConfigMap de `litellm-dgx-backend-sync` y la ejecutaba.
+Ese controlador esta a **0 replicas declaradas en git** desde be9e2b1: los alias
+ya no se registran por HTTP contra /model/new, se declaran en el `model_list`
+estatico con `store_model_in_db: false`. O sea que el test pasaba en verde
+validando codigo que nada ejecuta, y el mismo error se repitio al anadir el alias
+de capacidad: el cambio fue a `sync.py` y no habria registrado nada.
 
-Asi que este test EXTRAE la funcion del ConfigMap y la EJECUTA. Si alguien vuelve
-a poner un `return` donde habia un `params.update(...)`, el caso 4 falla.
+Asi que aqui NO se toca el sync. Se comprueban las dos piezas vivas:
 
-CONTRA QUE SE PROTEGE, en una linea cada uno:
-  1. que el alias normal empiece a sellar (seria censura retirada por accidente)
-  2. que el alias -uncensored deje de sellar (seria un alias que MIENTE: dice
-     uncensored y sirve el modelo censurado — el fallo nº1 de esta familia)
-  3. que un alias de capacidad (`tooling`, `agent`, `high`) herede el sello
-  4. que el sello y el guard de familia se excluyan entre si
-  5. que el lambda de un modelo se aplique al otro. NO son intercambiables:
-     medido, DeepSeek necesita 1.5 (a 1.0 aun rechaza 5-7/10) y Qwen3.8 se
-     enciende con 1.0 (a 1.5 pierde 26,8 puntos de MMLU-Pro, p=0,0000).
+  1. el `model_list` estatico — donde vive el sello `cache_salt` de cada backend
+  2. el hook `litellm_strip_params.py` — quien reescribe el alias de CAPACIDAD al
+     nombre directo del residente vivo
+
+Las dos lambdas son medidas y NO intercambiables: DeepSeek 1.5 (a 1.0 aun rechaza
+5-7/10), Qwen3.8 1.0 (a 1.5 pierde 26,8 puntos de MMLU-Pro, p=0,0000).
 """
 import ast
-import logging
-import os
-import textwrap
+import types
 from pathlib import Path
 
+import pytest
 import yaml
+
 
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
-# Nombres que hay que sacar del ConfigMap para poder ejecutar la funcion suelta.
-_WANTED = {
-    "UNCENSORED_SUFFIX",
-    "UNCENSORED_ON_LAMBDA",
-    "UNCENSORED_RESIDENT_ALIASES",
-    "QWEN38_REPEAT_GUARD_PARAMS",
-    "QWEN38_27B_ALIASES",
-    "DEEPSEEK_V4_FLASH_DIRECT_ALIASES",
+CAPABILITY = "tooling-uncensored"
+MODEL_SCOPED_LAMBDA = {
+    "deepseek-v4-flash-0731-uncensored": "refusal:1.5",
+    "qwen38-27b-uncensored": "refusal:1.0",
 }
 
-DEEPSEEK = {"base_model": "openai/deepseek-v4-flash-0731"}
-QWEN38 = {"base_model": "openai/qwen38-27b"}
+WANT_FN = {"_compute_mode_allows_local", "_tooling_uncensored_target"}
+WANT_CONST = {"TOOLING_UNCENSORED_MODE_TARGETS", "TOOLING_UNCENSORED_ALIASES",
+              "TOOLING_MODE_TARGETS", "TOOLING_PROFILE_ALIASES"}
 
 
-def _load_sync_namespace():
-    """Compila SOLO las constantes y `extra_litellm_params` del sync.py embebido.
+def _docs():
+    return [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
 
-    No se importa el modulo entero a proposito: arranca hilos, habla con la API de
-    Kubernetes y con LiteLLM. Lo que se quiere probar es una funcion pura.
-    """
-    docs = list(yaml.safe_load_all(MANIFEST.read_text()))
-    src = textwrap.dedent(
-        next(
-            value
-            for doc in docs
-            if doc and doc.get("kind") == "ConfigMap"
-            for key, value in (doc.get("data") or {}).items()
-            if key == "sync.py"
-        )
+
+@pytest.fixture(scope="module")
+def model_list():
+    for doc in _docs():
+        data = doc.get("data") or {}
+        if doc.get("kind") == "ConfigMap" and "config.yaml" in data:
+            cfg = yaml.safe_load(data["config.yaml"])
+            return {m["model_name"]: m for m in cfg["model_list"]}
+    raise AssertionError("no encuentro el config.yaml de LiteLLM")
+
+
+@pytest.fixture(scope="module")
+def hook():
+    """El hook REAL, solo sus funciones puras. Sin importar litellm."""
+    src = next(
+        d["data"]["litellm_strip_params.py"]
+        for d in _docs()
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
     )
     tree = ast.parse(src)
-    picked, fn = [], None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id in _WANTED for t in node.targets
-        ):
-            picked.append(node)
-        if isinstance(node, ast.FunctionDef) and node.name == "extra_litellm_params":
-            fn = node
-    assert fn is not None, "extra_litellm_params desaparecio del sync.py"
-    missing = _WANTED - {
-        t.id for n in picked for t in n.targets if isinstance(t, ast.Name)
-    }
-    assert not missing, f"faltan constantes en el sync.py: {sorted(missing)}"
-
-    module = ast.Module(body=picked + [fn], type_ignores=[])
-    ast.fix_missing_locations(module)
-    namespace = {
-        "Any": object,
-        "log": logging.getLogger("test_uncensored_alias"),
-        "os": os,
-        # Los alias de capacidad se construyen a partir de estas tuplas en el
-        # sync real; aqui basta con que existan para que el modulo compile.
-        "TOOLING_COMPAT_ALIASES": (),
-        "THINKING_TIER_ALIASES": (),
-    }
-    exec(compile(module, "<sync.py>", "exec"), namespace)  # noqa: S102
-    return namespace
+    keep = [
+        n for n in tree.body
+        if (isinstance(n, ast.FunctionDef) and n.name in WANT_FN)
+        or (isinstance(n, ast.Assign)
+            and any(getattr(t, "id", "") in WANT_CONST for t in n.targets))
+    ]
+    missing = WANT_FN - {n.name for n in keep if isinstance(n, ast.FunctionDef)}
+    assert not missing, f"el hook ya no define: {sorted(missing)}"
+    mod = types.ModuleType("hookpure")
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "<hook>", "exec"), mod.__dict__)  # noqa: S102
+    return mod
 
 
-def test_only_the_uncensored_alias_carries_the_per_request_salt():
-    ns = _load_sync_namespace()
-    extra = ns["extra_litellm_params"]
+# ── 1. el model_list estatico: donde vive el sello ──────────────────────────────
 
-    # 1 — el nombre directo no sella. Es el modelo tal cual.
-    assert extra(DEEPSEEK, "deepseek-v4-flash-0731") == {}
-
-    # 2 — el alias -uncensored sella con SU lambda.
-    assert extra(DEEPSEEK, "deepseek-v4-flash-0731-uncensored") == {
-        "extra_body": {"cache_salt": "refusal:1.5"}
-    }
-
-    # 3 — un alias de capacidad enruta al mismo backend y NO hereda el sello.
-    assert extra(QWEN38, "tooling") == {"repetition_penalty": 1.08}
-
-    # 4 — EL CASO DEL `return` TEMPRANO: guard de familia Y sello, no uno u otro.
-    assert extra(QWEN38, "qwen38-27b-uncensored") == {
-        "repetition_penalty": 1.08,
-        "extra_body": {"cache_salt": "refusal:1.0"}
-    }
-
-    # 5 — los lambdas no se cruzan entre modelos.
-    assert ns["UNCENSORED_ON_LAMBDA"] == {
-        "openai/deepseek-v4-flash-0731": 1.5,
-        "openai/qwen38-27b": 1.0,
-    }
+def test_each_model_scoped_alias_carries_ITS_OWN_measured_lambda(model_list):
+    for name, salt in MODEL_SCOPED_LAMBDA.items():
+        entry = model_list[name]
+        assert entry["litellm_params"]["extra_body"] == {"cache_salt": salt}, name
 
 
-def test_the_capability_alias_seals_with_EACH_residents_own_lambda():
-    """`tooling-uncensored` es el equivalente abliterado de `tooling`: un solo
-    nombre, lo registran los DOS residentes, y cada uno sella con SU lambda
-    medida. Es el unico nombre pineable desde OpenClaw que sobrevive al cambio de
-    perfil; los dos nombres de MODELO estan muertos la mitad del tiempo (medido
-    19-08 con la key del gateway: el de Qwen da 500 en llm-tp, sin fallback y a
-    proposito).
+def test_the_capability_alias_carries_NO_salt_of_its_own(model_list):
+    """Y no es un olvido.
+
+    `tooling-uncensored` apunta al Service de pool, que no sabe quien contesta.
+    Un `cache_salt` fijo aqui seria el valor equivocado para uno de los dos
+    residentes SIEMPRE: 1.0 deja a DeepSeek rechazando, 1.5 le cuesta a Qwen 26,8
+    puntos de MMLU-Pro. El sello viaja en la entrada del nombre directo al que el
+    hook reescribe, que es la unica que sabe de que backend habla.
     """
-    ns = _load_sync_namespace()
-    extra = ns["extra_litellm_params"]
-
-    assert ns["UNCENSORED_RESIDENT_ALIASES"] == ("tooling-uncensored",)
-    assert extra(DEEPSEEK, "tooling-uncensored") == {
-        "extra_body": {"cache_salt": "refusal:1.5"}
-    }
-    # En Qwen, sello Y guard de repeticion: los dos ajustes son ortogonales.
-    assert extra(QWEN38, "tooling-uncensored") == {
-        "repetition_penalty": 1.08,
-        "extra_body": {"cache_salt": "refusal:1.0"},
-    }
+    entry = model_list[CAPABILITY]
+    assert "extra_body" not in entry["litellm_params"], entry["litellm_params"]
 
 
-def test_the_capability_alias_MUST_end_in_the_suffix_or_it_seals_nothing():
-    """La trampa que decidio el nombre.
-
-    El sello se aplica por `alias.endswith(UNCENSORED_SUFFIX)`. Un nombre de
-    capacidad llamado solo `uncensored` NO casaria: se registraria SIN
-    `cache_salt` y serviria el modelo censurado anunciandose como sin censura.
-    Por eso es `tooling-uncensored` y no `uncensored`.
-    """
-    ns = _load_sync_namespace()
-    assert ns["extra_litellm_params"](DEEPSEEK, "uncensored") == {}
-    for alias in ns["UNCENSORED_RESIDENT_ALIASES"]:
-        assert alias.endswith(ns["UNCENSORED_SUFFIX"]), alias
+def test_the_censored_twin_never_gained_a_salt(model_list):
+    """`tooling` es el residente CON censura y tiene que seguir siendolo."""
+    assert "extra_body" not in model_list["tooling"]["litellm_params"]
 
 
-def test_both_residents_register_the_capability_alias():
-    """Si solo lo registrara uno seria un nombre de modelo disfrazado: moriria al
-    cambiar de perfil, que es justo lo que viene a resolver."""
-    text = MANIFEST.read_text()
-    backends = text[text.index("BACKENDS = ("):text.index("RETIRED_MANAGED_IDS")]
-    assert backends.count("UNCENSORED_RESIDENT_ALIASES") == 2
-
-
-def test_no_uncensored_alias_has_a_cloud_fallback():
+def test_no_uncensored_alias_has_a_fallback_to_the_cloud():
     """Un fallback aqui contestaria una peticion abliterada desde un modelo de
-    nube CENSURADO, con HTTP 200 y sin un aviso. `tooling` y
-    `deepseek-v4-flash-0731` si caen a Luna; estos tres no pueden."""
+    nube CON sus barreras puestas, HTTP 200 y sin un aviso."""
     text = MANIFEST.read_text()
-    for alias in (
-        "tooling-uncensored",
-        "deepseek-v4-flash-0731-uncensored",
-        "qwen38-27b-uncensored",
-    ):
+    for alias in (CAPABILITY, *MODEL_SCOPED_LAMBDA):
         assert f"- {alias}: [" not in text, alias
 
 
-def test_a_runtime_without_a_measured_lambda_is_never_sealed():
-    """Fail-safe: el sufijo NO basta, hace falta una lambda MEDIDA en el mapa.
+# ── 2. el hook: quien reescribe la capacidad al residente vivo ──────────────────
 
-    Es la unica proteccion contra que un runtime nuevo estrene alias
-    `-uncensored` con una lambda inventada. Servir el modelo normal se nota al
-    medirlo; servir una lambda que nadie caracterizo se sirve callado. Este es
-    el caso de Qwen entre el 18 y el 19 de agosto: el alias existia en el codigo
-    y el mapa decidia si sellaba o no.
-    """
-    ns = _load_sync_namespace()
-    sin_medir = {"base_model": "openai/runtime-sin-caracterizar"}
+def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
+    """Al abliterado del perfil, no al residente normal: si resolviera a
+    `deepseek-v4-flash-0731` se perderia el sello y serviria censurado."""
+    assert hook.TOOLING_UNCENSORED_ALIASES == frozenset({CAPABILITY})
+    for mode, want in (("llm-tp", "deepseek-v4-flash-0731-uncensored"),
+                       ("creative", "qwen38-27b-uncensored")):
+        target, reason = hook._tooling_uncensored_target(
+            {"effective_mode": mode, "desired_mode": mode, "phase": "ready"}
+        )
+        assert (target, reason) == (want, None), (mode, target, reason)
+    # Y cada destino es una entrada con sello propio, no un nombre inventado.
+    assert set(hook.TOOLING_UNCENSORED_MODE_TARGETS.values()) == set(MODEL_SCOPED_LAMBDA)
 
-    assert ns["extra_litellm_params"](sin_medir, "runtime-sin-caracterizar") == {}
-    assert (
-        ns["extra_litellm_params"](sin_medir, "runtime-sin-caracterizar-uncensored")
-        == {}
+
+def test_the_two_target_maps_stay_disjoint(hook):
+    """El mapa censurado y el abliterado no pueden compartir destino: seria
+    servir uno como el otro."""
+    assert not (set(hook.TOOLING_MODE_TARGETS.values())
+                & set(hook.TOOLING_UNCENSORED_MODE_TARGETS.values()))
+    assert not (hook.TOOLING_PROFILE_ALIASES & hook.TOOLING_UNCENSORED_ALIASES)
+
+
+def test_the_uncensored_resolver_has_no_luna_net_at_all():
+    """`_resolve_tooling_profile` degrada a las dos cuentas Luna. El resolver
+    abliterado NO puede: Luna es un modelo de nube con sus barreras puestas.
+    Prefiere 503. Se comprueba sobre el texto de la funcion porque la rama que
+    importa es la que NO existe."""
+    src = next(
+        d["data"]["litellm_strip_params.py"]
+        for d in _docs()
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
     )
-
-
-def test_the_uncensored_aliases_are_actually_registered():
-    """Un sello que nadie puede pedir no sirve de nada: el alias tiene que estar
-    en la lista que el reconciler manda a `/model/new`."""
-    ns = _load_sync_namespace()
-    suffix = ns["UNCENSORED_SUFFIX"]
-
-    assert suffix == "-uncensored"
-    assert "deepseek-v4-flash-0731-uncensored" in ns["DEEPSEEK_V4_FLASH_DIRECT_ALIASES"]
-    assert "qwen38-27b-uncensored" in ns["QWEN38_27B_ALIASES"]
-
-    # `tooling` sigue siendo el alias de capacidad de Qwen y no se ha renombrado.
-    assert "tooling" in ns["QWEN38_27B_ALIASES"]
+    body = src[src.index("async def _resolve_tooling_uncensored"):]
+    body = body[: body.index("\n    def ") if "\n    def " in body else len(body)]
+    assert "TOOLING_LUNA_FALLBACKS" not in body
+    assert "503" in body
 
 
 def test_cache_salt_is_not_stripped_by_the_family_sampling_hook():
     """FAMILY_SAMPLING borra claves de sampling por familia. Si `cache_salt`
-    entrara en un `drop`, el alias moriria en silencio en el hook en vez de en el
-    registro, que es mucho mas dificil de ver."""
+    entrara en un `drop`, el alias moriria en el hook en vez de en el registro,
+    que es mucho mas dificil de ver."""
     text = MANIFEST.read_text()
     families = text[text.index("FAMILY_SAMPLING = {"):]
     families = families[: families.index("\n    }\n") + 7]
     assert "cache_salt" not in families
+
+
+# ── 3. el guard que se me escapo ────────────────────────────────────────────────
+
+def test_the_retired_sync_controller_stays_at_zero_replicas():
+    """Este test existe porque el alias de capacidad se anadio primero a `sync.py`
+    y no habria registrado NADA.
+
+    `litellm-dgx-backend-sync` se conservo a 0 replicas en be9e2b1 (la Application
+    lleva prune: false), asi que su `sync.py` sigue en el repo, se sigue leyendo
+    como si fuera el sitio donde viven los alias, y no ejecuta una linea. Si algun
+    dia vuelve a 1, este test se pone rojo y toca decidir a proposito quien es la
+    fuente de la verdad — no descubrirlo por un alias que no aparece.
+    """
+    for doc in _docs():
+        if (doc.get("kind") == "Deployment"
+                and doc["metadata"]["name"] == "litellm-dgx-backend-sync"):
+            assert doc["spec"].get("replicas") == 0, (
+                "el controlador de alias volvio a estar arriba: hay dos fuentes de "
+                "verdad para el model_list"
+            )
+            return
+    raise AssertionError("ya no existe el Deployment litellm-dgx-backend-sync")

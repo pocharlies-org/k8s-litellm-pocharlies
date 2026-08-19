@@ -450,6 +450,32 @@ data:
     - model_name: max
       litellm_params: *tooling_pool_params
       model_info: *tooling_pool_info
+    # ── `tooling-uncensored`: el residente del perfil, abliterado ───────────────
+    #
+    # POR QUE HACE FALTA UN NOMBRE DE CAPACIDAD. `deepseek-v4-flash-0731-uncensored`
+    # y `qwen38-27b-uncensored` son nombres de MODELO, y los dos perfiles son
+    # fisicamente exclusivos en los Sparks: cada uno esta muerto la mitad del
+    # tiempo. Medido 19-08 con la key del gateway de OpenClaw, perfil llm-tp:
+    # el de DeepSeek da 200, el de Qwen da 500. Correcto para MEDIR (falla fuerte
+    # en vez de contestar desde otro checkpoint) e inservible para PINEAR: un
+    # agente de OpenClaw clavado a uno de los dos se rompe al cambiar el perfil.
+    #
+    # ESTA ENTRADA NO SE SIRVE NUNCA TAL CUAL. Igual que `tooling` y los otros
+    # cinco de arriba, el hook la reescribe al nombre DIRECTO del residente vivo
+    # antes de enrutar (TOOLING_UNCENSORED_MODE_TARGETS). Existe para que el alias
+    # sea un modelo conocido por el router y aparezca en /v1/models; el
+    # `api_base` al Service de pool es la red de seguridad si la reescritura no
+    # ocurriera.
+    #
+    # SIN `extra_body` A PROPOSITO, y esto es lo unico delicado: la lambda NO es la
+    # misma en los dos residentes (1.5 DeepSeek / 1.0 Qwen3.8, medidas y no
+    # intercambiables — a 1.0 DeepSeek aun rechaza 5-7/10; a 1.5 Qwen pierde 26,8
+    # puntos de MMLU-Pro). Un `cache_salt` fijo aqui seria el valor equivocado
+    # para uno de los dos SIEMPRE. El sello viaja en la entrada del nombre directo
+    # al que reescribe el hook, que es la unica que sabe de que backend habla.
+    - model_name: tooling-uncensored
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -744,6 +770,26 @@ data:
     # reescritura ocurre despues, sobre el elegido.
     TOOLING_PROFILE_ALIASES = frozenset({"tooling", "agent", "high", "max"})
 
+    # `tooling-uncensored` significa lo mismo que `tooling` —el residente del perfil
+    # vivo— pero con la proyeccion rank-1 encendida. Se resuelve al nombre DIRECTO
+    # abliterado, no al del residente normal, porque el sello (`cache_salt`) vive en
+    # la entrada del nombre directo y la lambda NO es la misma en los dos:
+    # 1.5 DeepSeek / 1.0 Qwen3.8, medidas y no intercambiables.
+    TOOLING_UNCENSORED_MODE_TARGETS = {
+        "llm-tp": "deepseek-v4-flash-0731-uncensored",
+        "creative": "qwen38-27b-uncensored",
+    }
+    TOOLING_UNCENSORED_ALIASES = frozenset({"tooling-uncensored"})
+
+    def _tooling_uncensored_target(state):
+        allowed, reason = _compute_mode_allows_local(state)
+        if not allowed:
+            return None, reason
+        target = TOOLING_UNCENSORED_MODE_TARGETS.get(state.get("effective_mode"))
+        if not target:
+            return None, "compute_mode_invalid"
+        return target, None
+
     def _tooling_target_for_compute_mode(state):
         allowed, reason = _compute_mode_allows_local(state)
         if not allowed:
@@ -834,6 +880,34 @@ data:
                 "blocked": reason,
                 "target": _tooling_target_for_compute_mode(state)[0],
                 "fallbacks": list(TOOLING_LUNA_FALLBACKS),
+                "desired_mode": (state or {}).get("desired_mode"),
+                "effective_mode": (state or {}).get("effective_mode"),
+                "phase": (state or {}).get("phase"),
+            },
+        )
+
+    async def _resolve_tooling_uncensored():
+        """Resolve `tooling-uncensored` to the live resident's abliterated name.
+
+        DELIBERATELY WITHOUT THE LUNA NET that `_resolve_tooling_profile` has. Luna
+        is a cloud model WITH its guardrails on: degrading here would answer a
+        request that explicitly asked for no refusal from a censored model, HTTP 200
+        and no warning. The whole point of this alias is the seal, and a fallback
+        that cannot carry it must not be reached. A 503 is the correct answer.
+        """
+        state = await _compute_mode_state()
+        target, reason = _tooling_uncensored_target(state)
+        if target and _alias_has_deployments(target):
+            return target, "primary"
+        raise HTTPException(
+            status_code=503,
+            headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)},
+            detail={
+                "error": "tooling-uncensored profile target is unavailable",
+                "blocked": reason or "compute_profile_target_unavailable",
+                "target": target,
+                # Sin fallbacks a proposito: ver el docstring.
+                "fallbacks": [],
                 "desired_mode": (state or {}).get("desired_mode"),
                 "effective_mode": (state or {}).get("effective_mode"),
                 "phase": (state or {}).get("phase"),
@@ -2675,7 +2749,12 @@ data:
                 #
                 # Efecto lateral querido: agent/high/max heredan la red de las DOS
                 # cuentas Luna (TOOLING_LUNA_FALLBACKS) en vez de solo cloudblue.
-                if cap_alias in TOOLING_PROFILE_ALIASES:
+                if cap_alias in TOOLING_UNCENSORED_ALIASES:
+                    # Mismo mecanismo que los cuatro de abajo, otro destino y sin
+                    # red a Luna: degradar a la nube devolveria un modelo censurado
+                    # a quien pidio explicitamente que no lo estuviera.
+                    cap_resolved, cap_state = await _resolve_tooling_uncensored()
+                elif cap_alias in TOOLING_PROFILE_ALIASES:
                     cap_resolved, cap_state = await _resolve_tooling_profile()
                 else:
                     cap_resolved, cap_state = _walk_chain(cap_entry)
@@ -3818,38 +3897,6 @@ data:
     # nadie los servia. Ver la ventana RHO en
     # analysis/deepseek-v4-flash-2xspark/rho-backend-sync/.
     TOOLING_RESIDENT_ALIASES = TOOLING_COMPAT_ALIASES + THINKING_TIER_ALIASES
-    # ── `tooling-uncensored`: el residente del perfil, ABLIABLADO ───────────────
-    #
-    # POR QUE HACE FALTA UN NOMBRE DE CAPACIDAD Y NO BASTAN LOS DE MODELO.
-    # `deepseek-v4-flash-0731-uncensored` y `qwen38-27b-uncensored` son nombres de
-    # MODELO: cada uno solo existe en SU perfil de computo, y los dos perfiles son
-    # fisicamente exclusivos en los Sparks. Un consumidor que pinche uno de los dos
-    # funciona la mitad del tiempo y da 500 la otra mitad. Medido (18-08, perfil
-    # llm-tp): `deepseek-v4-flash-0731-uncensored` -> 200, `qwen38-27b-uncensored`
-    # -> 500 "Connection error. No fallback model group". Ese 500 es CORRECTO para
-    # medir —falla fuerte en vez de contestar desde otro checkpoint— y es
-    # inservible como destino de un pin persistido.
-    #
-    # `tooling` resolvio ese problema para el caso censurado: es un nombre de
-    # CAPACIDAD que registra el residente de cada perfil, asi que sigue al perfil
-    # solo y el conflict guard evicciona la registracion rancia del otro. Este es
-    # el mismo patron para el caso ablado, y por eso lo registran LOS DOS backends.
-    #
-    # EL NOMBRE TERMINA EN `-uncensored` A PROPOSITO. El sello lo pone
-    # `extra_litellm_params` por SUFIJO (UNCENSORED_SUFFIX). Un nombre como
-    # `uncensored` a secas NO acaba en `-uncensored`, asi que no se sellaria y el
-    # alias serviria el modelo censurado en silencio — el fallo nº1 de esta
-    # familia. Lo cubre tests/test_uncensored_alias_contract.py.
-    #
-    # Cada backend sella con SU lambda medida porque UNCENSORED_ON_LAMBDA va por
-    # `base_model`: 1.5 en DeepSeek, 1.0 en Qwen3.8. No hay una lambda comun ni
-    # hace falta que la haya.
-    #
-    # SIN FALLBACK, y eso no es un olvido. `tooling` cae a
-    # `cloudblue/gpt-5.6-luna` cuando no hay residente. Un fallback asi aqui
-    # significaria que una peticion pedida ABLADA la contesta un modelo de la nube
-    # CON sus barreras puestas, HTTP 200 y sin aviso. Preferimos el 500.
-    UNCENSORED_RESIDENT_ALIASES = ("tooling-uncensored",)
     # Nombre directo y exclusivo de DeepSeek. A diferencia de los aliases de
     # capacidad anteriores, este NO se comparte con Ornith/NVIDIA Qwen: quien
     # selecciona un modelo concreto debe recibir ese modelo o un error visible.
@@ -3980,7 +4027,7 @@ data:
                 "QWEN38_27B_MODEL",
                 "openai/qwen38-27b",
             ),
-            "aliases": QWEN38_27B_ALIASES + UNCENSORED_RESIDENT_ALIASES,
+            "aliases": QWEN38_27B_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_QWEN38_27B",
                 "vllm-qwen38-27b-uncensored",
@@ -4047,7 +4094,7 @@ data:
                 "DS4_FLASH_MODEL",
                 "openai/deepseek-v4-flash-0731",
             ),
-            "aliases": TOOLING_RESIDENT_ALIASES + DEEPSEEK_V4_FLASH_DIRECT_ALIASES + UNCENSORED_RESIDENT_ALIASES,
+            "aliases": TOOLING_RESIDENT_ALIASES + DEEPSEEK_V4_FLASH_DIRECT_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_DS4_FLASH",
                 "deepseek-v4-flash-0731",
@@ -4770,7 +4817,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-b9835588dfb2
+        config.k8s.e-dani.com/revision: sync-5261136ad78e
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -4909,7 +4956,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-df87cbb2c766
+        config.k8s.e-dani.com/revision: config-21c06df04d0b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
