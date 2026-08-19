@@ -118,6 +118,25 @@ def test_only_the_uncensored_alias_carries_the_per_request_salt():
     }
 
 
+def test_a_runtime_without_a_measured_lambda_is_never_sealed():
+    """Fail-safe: el sufijo NO basta, hace falta una lambda MEDIDA en el mapa.
+
+    Es la unica proteccion contra que un runtime nuevo estrene alias
+    `-uncensored` con una lambda inventada. Servir el modelo normal se nota al
+    medirlo; servir una lambda que nadie caracterizo se sirve callado. Este es
+    el caso de Qwen entre el 18 y el 19 de agosto: el alias existia en el codigo
+    y el mapa decidia si sellaba o no.
+    """
+    ns = _load_sync_namespace()
+    sin_medir = {"base_model": "openai/runtime-sin-caracterizar"}
+
+    assert ns["extra_litellm_params"](sin_medir, "runtime-sin-caracterizar") == {}
+    assert (
+        ns["extra_litellm_params"](sin_medir, "runtime-sin-caracterizar-uncensored")
+        == {}
+    )
+
+
 def test_the_uncensored_aliases_are_actually_registered():
     """Un sello que nadie puede pedir no sirve de nada: el alias tiene que estar
     en la lista que el reconciler manda a `/model/new`."""
