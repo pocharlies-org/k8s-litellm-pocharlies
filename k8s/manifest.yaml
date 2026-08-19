@@ -64,6 +64,17 @@ data:
       model_info:
         mode: embedding
         max_tokens: 8192
+        # 2026-08-19: gemelo EXACTO de `bge-m3` (mismo model + mismo api_base).
+        # El bucle de background health checks deduplica por `model_info.id`
+        # (health_check.py::filter_deployments_by_id), que es unico POR
+        # DEPLOYMENT, no por api_base -- asi que los dos alias se sondean por
+        # separado y cada sondeo es inferencia real contra el MISMO pool.
+        # Medido en SpendLogs (30 h): `litellm-internal-health-check` = 2670
+        # llamadas a bge-m3, ~2136/dia, y NINGUN otro consumidor con exito.
+        # Cuadra con 4 replicas x 2 alias x 288 ciclos/dia = 2304.
+        # Se calla el gemelo, no el original: la cobertura no baja (mismo
+        # api_base) y `bge-m3` sigue sondeandose de verdad.
+        disable_background_health_check: true
     - model_name: bge-reranker
       litellm_params:
         model: infinity/bge-reranker
@@ -80,6 +91,10 @@ data:
       model_info:
         mode: rerank
         max_tokens: 8192
+        # 2026-08-19: mismo caso que `bge-m3-embedding` -- gemelo exacto de
+        # `bge-reranker`. Medido: 2626 llamadas en 30 h (~2101/dia), todas del
+        # health check interno. `bge-reranker` conserva su sondeo.
+        disable_background_health_check: true
     # ── Audio: Whisper STT + OmniVoice TTS (OSS passthrough; for CloudBlue & clients) ──
     # One LiteLLM key now covers chat + embeddings + STT + TTS. Backends are ClusterIP-only;
     # LiteLLM stays the single public, key-authed, budgeted front door (no separate exposure).
@@ -560,6 +575,30 @@ data:
       database_connection_pool_limit: 25
       database_connection_timeout: 60
       background_health_checks: true
+      # 2026-08-19: el intervalo estaba IMPLICITO en el default de upstream
+      # (DEFAULT_HEALTH_CHECK_INTERVAL = 300 s, litellm/constants.py) y el bucle
+      # es por REPLICA: 4 replicas x 288 ciclos/dia x cada deployment. Con los
+      # alias gemelos ya callados arriba, los dos pools bge quedaban aun en
+      # ~4200 filas/dia de SpendLogs generadas por `litellm-internal-health-check`
+      # -- sobre una tabla que ya llego a 21 GB y cuyos DELETE de retencion
+      # expiraban (ver store_prompts_in_spend_logs, arriba). El coste de GPU es
+      # calderilla (8010 prompt tokens en 30 h, 3 por llamada: el prompt es
+      # "test from litellm"); lo que se compra aqui son filas y ruido de panel.
+      # 900 s mantiene deteccion de un pool caido en <=15 min, que es de sobra
+      # para un backend con `for: 5m` en Prometheus.
+      #
+      # NO se pone `health_check_skip_disabled_background_models`: se quiere que
+      # un `GET /health` a mano SIGA sondeando los gemelos cuando un operador lo
+      # pide expresamente. Solo se calla el bucle de fondo.
+      #
+      # `use_shared_health_check: true` es lo que upstream recomienda para el
+      # factor x4 de replicas (un pod coge un lock en Redis y los demas leen
+      # cache), pero EXIGE Redis y aqui no hay ninguno declarado -- no hay
+      # `cache_params` en litellm_settings. Queda como la via para bajar de 384
+      # a 96 llamadas/dia el dia que haya Redis; no se activa a ciegas porque
+      # sin Redis el codigo cae a checks locales y el cambio seria un no-op
+      # silencioso.
+      health_check_interval: 900
       enable_passthrough_logging: false
       maximum_spend_logs_retention_period: 30d
       maximum_spend_logs_retention_interval: 1d
