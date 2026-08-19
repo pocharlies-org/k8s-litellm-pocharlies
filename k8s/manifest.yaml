@@ -469,11 +469,23 @@ data:
     #
     # POR QUE HACE FALTA UN NOMBRE DE CAPACIDAD. `deepseek-v4-flash-0731-uncensored`
     # y `qwen38-27b-uncensored` son nombres de MODELO, y los dos perfiles son
-    # fisicamente exclusivos en los Sparks: cada uno esta muerto la mitad del
-    # tiempo. Medido 19-08 con la key del gateway de OpenClaw, perfil llm-tp:
-    # el de DeepSeek da 200, el de Qwen da 500. Correcto para MEDIR (falla fuerte
-    # en vez de contestar desde otro checkpoint) e inservible para PINEAR: un
-    # agente de OpenClaw clavado a uno de los dos se rompe al cambiar el perfil.
+    # fisicamente exclusivos en los Sparks, asi que uno de los dos backends esta
+    # siempre a 0 replicas.
+    #
+    # CORRECCION 19-08 (auditoria): antes aqui decia que cada nombre "esta muerto la
+    # mitad del tiempo". Es FALSO y ademas oculta el modo de fallo. Con
+    # `store_model_in_db: false` el alias se declara en git, asi que **sigue
+    # registrado y publicado en /v1/models aunque su backend no exista**: no esta
+    # muerto, esta registrado y roto. Medido con la key del gateway de OpenClaw,
+    # perfil llm-tp y Qwen a 0/0 replicas:
+    #
+    #   deepseek-v4-flash-0731-uncensored -> 200
+    #   qwen38-27b-uncensored             -> HTTP 500 ... Connection error.
+    #                                        No fallback model group found
+    #
+    # Correcto para MEDIR (falla fuerte en vez de contestar desde otro checkpoint) e
+    # inservible para PINEAR: un agente de OpenClaw clavado a uno de los dos recibe
+    # un 500 al cambiar el perfil, no un error que sepa reintentar.
     #
     # ESTA ENTRADA NO SE SIRVE NUNCA TAL CUAL. Igual que `tooling` y los otros
     # cinco de arriba, el hook la reescribe al nombre DIRECTO del residente vivo
@@ -820,6 +832,53 @@ data:
     }
     TOOLING_UNCENSORED_ALIASES = frozenset({"tooling-uncensored"})
 
+    # ── Quien puede pedir la ruta abliterada (19-08, tras auditoria) ─────────────
+    #
+    # EL PROBLEMA QUE CIERRA. Hasta hoy cualquier key del proxy podia pedir un alias
+    # `-uncensored`, porque la key del gateway de OpenClaw tiene `models: []` (sin
+    # restriccion) y el equipo `openclaw` tambien. Lo unico que mantenia censurado el
+    # trafico normal era que nadie pedia el alias por su nombre: una CONVENCION, no
+    # un control. La model card publicada de este proyecto pide justo lo contrario:
+    # "λ>0 should not share credentials with write-capable tools".
+    #
+    # Esto no arregla del todo esa recomendacion —la key sigue siendo la del agente
+    # con escritura— pero convierte "cualquiera" en "los que estan escritos en git",
+    # que es auditable y revocable con un commit. El paso que falta es una key
+    # dedicada, y ese es del owner: en cuanto exista, se quita de aqui la del
+    # gateway y se pone la nueva.
+    #
+    # `master` entra porque es la key con la que se mide desde dentro del cluster.
+    # Vacio = sin restriccion, y es DELIBERADO que el default NO sea vacio.
+    UNCENSORED_ALLOWED_KEY_ALIASES = frozenset(
+        alias.strip()
+        for alias in os.environ.get(
+            "LITELLM_UNCENSORED_ALLOWED_KEYS",
+            "openclaw-qwen36-prod,master",
+        ).split(",")
+        if alias.strip()
+    )
+
+    # Todo alias que sirva la ruta abliterada, no solo el de capacidad: el control
+    # tiene que cubrir tambien los nombres directos, o se rodea pidiendo el directo.
+    UNCENSORED_GATED_ALIASES = TOOLING_UNCENSORED_ALIASES | frozenset(
+        TOOLING_UNCENSORED_MODE_TARGETS.values()
+    )
+
+    def _uncensored_access_denied(requested, key_label):
+        """(bool, detalle) si esta key NO puede pedir la ruta abliterada."""
+        if requested not in UNCENSORED_GATED_ALIASES:
+            return False, None
+        if not UNCENSORED_ALLOWED_KEY_ALIASES:
+            return False, None
+        if key_label in UNCENSORED_ALLOWED_KEY_ALIASES:
+            return False, None
+        return True, {
+            "error": "this key may not request the abliterated route",
+            "requested": requested,
+            "key": key_label,
+            "allowed": sorted(UNCENSORED_ALLOWED_KEY_ALIASES),
+        }
+
     def _tooling_uncensored_target(state):
         allowed, reason = _compute_mode_allows_local(state)
         if not allowed:
@@ -925,6 +984,69 @@ data:
             },
         )
 
+    # Health de los backends abliterados, en cache y FAIL-CLOSED.
+    #
+    # POR QUE NO VALE `_alias_has_deployments`: pregunta por el REGISTRO en el router
+    # y falla abierto. Con `store_model_in_db: false` el registro viene de git, asi
+    # que un alias declarado responde "si" incluso con su Deployment a 0 replicas.
+    # Para `tooling` eso da igual -- tiene `fallbacks` a Luna a nivel de router, que
+    # atrapan el error. La ruta abliterada NO tiene esa red a proposito, asi que su
+    # unica alternativa a un health real es un 500.
+    #
+    # FAIL-CLOSED, al contrario que todo lo demas de este hook: si no se puede
+    # confirmar que el backend abliterado esta arriba, se responde 503 con
+    # `Retry-After`. Un 503 es reintentable y dice la verdad; un 500 no, y contestar
+    # desde otro sitio seria servir censurado a quien pidio lo contrario.
+    ABLITERATED_HEALTH_URLS = {
+        "deepseek-v4-flash-0731-uncensored":
+            "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/health",
+        "qwen38-27b-uncensored":
+            "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/health",
+    }
+    ABLITERATED_HEALTH_TIMEOUT_SECONDS = float(
+        os.environ.get("LITELLM_ABLITERATED_HEALTH_TIMEOUT_SECONDS", "2.0")
+    )
+    # TTL corto: la ventana de un cambio de perfil se mide en minutos, y una entrada
+    # rancia aqui significa 500 en vez de 503 durante ese hueco.
+    ABLITERATED_HEALTH_CACHE_SECONDS = float(
+        os.environ.get("LITELLM_ABLITERATED_HEALTH_CACHE_SECONDS", "10.0")
+    )
+    _abliterated_health_cache: dict[str, tuple[float, bool]] = {}
+    _abliterated_health_lock = asyncio.Lock()
+
+    async def _abliterated_target_ready(target):
+        """(ready, reason) del backend abliterado `target`. Cacheado, fail-closed."""
+        url = ABLITERATED_HEALTH_URLS.get(target)
+        if not url:
+            # Un destino nuevo sin URL de health declarada NO se sirve a ciegas: es
+            # justo el descuido que este bloque existe para cazar.
+            return False, "abliterated_health_url_missing"
+
+        now = time.monotonic()
+        cached = _abliterated_health_cache.get(target)
+        if cached and now < cached[0]:
+            return cached[1], None if cached[1] else "abliterated_backend_not_ready"
+
+        async with _abliterated_health_lock:
+            cached = _abliterated_health_cache.get(target)
+            now = time.monotonic()
+            if cached and now < cached[0]:
+                return cached[1], None if cached[1] else "abliterated_backend_not_ready"
+            ready = False
+            try:
+                async with httpx.AsyncClient(
+                    timeout=ABLITERATED_HEALTH_TIMEOUT_SECONDS
+                ) as client:
+                    response = await client.get(url)
+                ready = response.status_code < 400
+            except Exception as exc:
+                log.warning("abliterated health probe failed for %s: %s", target, exc)
+            _abliterated_health_cache[target] = (
+                now + ABLITERATED_HEALTH_CACHE_SECONDS,
+                ready,
+            )
+            return ready, None if ready else "abliterated_backend_not_ready"
+
     async def _resolve_tooling_uncensored():
         """Resolve `tooling-uncensored` to the live resident's abliterated name.
 
@@ -936,8 +1058,18 @@ data:
         """
         state = await _compute_mode_state()
         target, reason = _tooling_uncensored_target(state)
-        if target and _alias_has_deployments(target):
-            return target, "primary"
+        if target:
+            # NO se usa `_alias_has_deployments` aqui, y es el arreglo del 19-08.
+            # Esa funcion pregunta si el alias esta REGISTRADO en el router y ademas
+            # falla ABIERTO. Con `store_model_in_db: false` el registro sale de git,
+            # asi que un alias declarado esta siempre registrado -- tambien cuando su
+            # backend esta a 0 replicas. Resultado medido: la rama del 503 no se
+            # alcanzaba nunca y la peticion salia a un Service que rechaza conexiones,
+            # devolviendo **HTTP 500** en vez del 503 con Retry-After que este
+            # docstring prometia. Aqui hace falta SALUD, no registro.
+            ready, reason = await _abliterated_target_ready(target)
+            if ready:
+                return target, "primary"
         raise HTTPException(
             status_code=503,
             headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)},
@@ -2757,6 +2889,21 @@ data:
                 data.pop(p, None)
 
             requested_model = data.get("model", "")
+
+            # Gate de la ruta ABLITERADA, lo primero de todo y a proposito: antes de
+            # sanear sampling, de reescribir alias y de cualquier llamada al backend.
+            # Si esta key no puede pedirla, no se toca nada mas y se devuelve 403.
+            # Cubre el alias de capacidad Y los dos nombres directos: si solo cubriera
+            # el primero, se rodearia pidiendo el directo.
+            _denied, _detail = _uncensored_access_denied(
+                requested_model, _resolve_key_label(user_api_key_dict)
+            )
+            if _denied:
+                router_log.warning(
+                    "uncensored: key %r pidio %r y no esta en la lista",
+                    _detail["key"], _detail["requested"])
+                raise HTTPException(status_code=403, detail=_detail)
+
             # AQUI ARRIBA a proposito, no dentro de `if is_router_request`: los
             # valores invalidos de sampling los rechaza el backend para CUALQUIER
             # alias. La primera version de esto se colgo del bloque del router y
@@ -5047,7 +5194,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f07f4597ad53
+        config.k8s.e-dani.com/revision: config-6b672a551b70
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

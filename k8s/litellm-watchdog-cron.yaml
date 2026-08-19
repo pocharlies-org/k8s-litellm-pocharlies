@@ -204,15 +204,58 @@ spec:
                       except Exception as exc:
                           fallos.append("inferencia: %s" % str(exc)[:110])
 
+                  # 3. El DIAL GLOBAL de abliteracion. Anadido 19-08 tras una auditoria.
+                  #
+                  # POR QUE ESTA AQUI Y NO EN UNA NETPOL. `/admin/refusal_lambda` cambia
+                  # el comportamiento del modelo en caliente, NO tiene autenticacion, y
+                  # las NetworkPolicies de este cluster NO se aplican: se comprobo el
+                  # 19-08 contra cuatro namespaces con `default-deny-ingress` y los
+                  # cuatro conectaban. O sea que cualquier pod puede moverlo y no hay
+                  # nada que lo impida. Si no se puede PREVENIR, al menos se DETECTA.
+                  #
+                  # Paso de verdad: el dial quedo en 2.5 durante horas afectando a TODO
+                  # el trafico. Lo unico que lo devolvio a 0 fue un reinicio del pod
+                  # (VLLM_REFUSAL_LAMBDA_INIT=0.0), o sea suerte estructural.
+                  #
+                  # Un head que NO contesta aqui NO es un fallo: los dos perfiles de
+                  # computo son exclusivos, asi que uno de los dos backends esta siempre
+                  # a 0 replicas. Solo se reporta un lambda LEIDO y distinto de 0.
+                  DIALES = {
+                      "deepseek-v4-flash-0731":
+                          "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000",
+                      "qwen38-27b":
+                          "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000",
+                  }
+                  dial_alto = []
+                  dial_leido = {}
+                  for nombre, base in DIALES.items():
+                      try:
+                          r = urllib.request.Request(base + "/admin/refusal_lambda")
+                          with urllib.request.urlopen(r, timeout=8) as resp:
+                              lam = json.loads(resp.read()).get("lambda")
+                      except Exception:
+                          continue          # residente del otro perfil: normal
+                      if lam is None:
+                          continue
+                      dial_leido[nombre] = lam
+                      if abs(float(lam)) > 1e-9:
+                          dial_alto.append("%s sirve con lambda=%s (abliteracion GLOBAL "
+                                           "activa para todo el trafico)" % (nombre, lam))
+
                   # --- clase del incidente -------------------------------------------
                   # "cuota" no es "caido": el cluster esta bien y no hay nada que tocar,
                   # solo esperar. Mezclarlos fue el error del aviso del 15-08.
-                  if not fallos:
-                      clase = "ok"
-                  elif vuelve or any("cuota del plan" in f for f in fallos):
-                      clase = "cuota"
+                  #
+                  # "abliterado" tampoco es "caido": sirve perfectamente, y eso es justo
+                  # el problema — no se nota. Va DESPUES de caido/cuota porque si no
+                  # sirve, el dial es lo de menos.
+                  if fallos:
+                      clase = ("cuota" if (vuelve or any("cuota del plan" in f for f in fallos))
+                               else "caido")
+                  elif dial_alto:
+                      clase = "abliterado"
                   else:
-                      clase = "caido"
+                      clase = "ok"
 
                   ahora = int(time.time())
                   antes = lee_estado()
@@ -222,21 +265,28 @@ spec:
                   print("[litellm-watchdog]", json.dumps(
                       {"clase": clase, "antes": clase_antes, "modelos": modelos,
                        "latencia_ms": round(latencia or 0), "fallos": fallos,
-                       "vuelve": vuelve}))
+                       "vuelve": vuelve, "dial": dial_leido}))
 
                   # Se avisa al CAMBIAR de clase. Si sigue caido, se insiste cada hora
                   # (no cada 10 min: 6 mensajes/hora de lo mismo se ignoran solos). Si
                   # es cuota, ni se insiste — ya sabes la hora a la que vuelve.
                   RECORDAR = 3600
                   if clase == clase_antes:
-                      avisar = clase == "caido" and (ahora - ultimo) >= RECORDAR
+                      # `abliterado` insiste como `caido`: el fallo de este aviso es
+                      # precisamente que pasen horas sin que nadie se entere, y a
+                      # diferencia de la cuota aqui no hay una hora de reset que
+                      # esperar — hay algo que alguien tiene que devolver a 0.
+                      avisar = clase in ("caido", "abliterado") and (ahora - ultimo) >= RECORDAR
                   else:
-                      avisar = clase != "ok" or clase_antes in ("caido", "cuota")
+                      avisar = clase != "ok" or clase_antes in ("caido", "cuota", "abliterado")
 
                   # Solo "caido" hace fallar el Job. Con la cuota agotada el Job
                   # correría a rojo cada 10 min durante dias y dejaria la Application
                   # de Argo en Degraded — justo mientras el aviso dice que el cluster
                   # esta bien, y tapando un Degraded de verdad. El aviso es la señal.
+                  # `abliterado` NO hace fallar el Job: LiteLLM sirve, y dejar la
+                  # Application en Degraded cada 10 min taparia un Degraded de verdad.
+                  # Mismo razonamiento que con la cuota. El aviso es la señal.
                   SALIDA = 1 if clase == "caido" else 0
                   desde = antes.get("desde", ahora) if clase == clase_antes else ahora
 
@@ -272,6 +322,24 @@ spec:
                                 "· vuelve: <b>%s</b>" % cuando]
                       quehacer = ("Nada en el cluster. No hay fallback local desde el\n"
                                   "10-08, asi que ningun alias contesta hasta el reset.")
+                  elif clase == "abliterado":
+                      titulo = "\U0001F7E1 <b>LiteLLM SIN CENSURA (dial global)</b>"
+                      intro = ("Sirve bien, y por eso no se nota: el dial de abliteracion "
+                               "esta activo para TODO el trafico, no solo para los alias "
+                               "-uncensored.")
+                      cuerpo = ["· " + d for d in dial_alto] + [
+                          "· %d modelos · inferencia en %d ms" % (
+                              modelos or 0, round(latencia or 0))]
+                      quehacer = ("Devuelvelo a 0 si no lo pusiste tu:\n"
+                                  "<code>POST /admin/refusal_lambda {\"lambda\": 0}</code>\n"
+                                  "contra el head del residente vivo.\n"
+                                  "Un reinicio del pod tambien lo devuelve a 0\n"
+                                  "(VLLM_REFUSAL_LAMBDA_INIT=0.0), pero eso es suerte,\n"
+                                  "no un control.\n"
+                                  "Para pedir SIN censura por peticion existe el alias\n"
+                                  "<code>tooling-uncensored</code>, que no toca a nadie mas.\n"
+                                  "OJO con lambda>1: no libera mas, EMPUJA el estado\n"
+                                  "fuera de donde el modelo aprendio.")
                   else:
                       titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
                       intro = "Vuelve a servir."

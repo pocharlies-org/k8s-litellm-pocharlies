@@ -35,6 +35,7 @@ MODEL_SCOPED_LAMBDA = {
 
 WANT_FN = {"_compute_mode_allows_local", "_tooling_uncensored_target"}
 WANT_CONST = {"TOOLING_UNCENSORED_MODE_TARGETS", "TOOLING_UNCENSORED_ALIASES",
+              "ABLITERATED_HEALTH_URLS",
               "CAPABILITY_CHAINS", "TOOLING_LUNA_FALLBACKS",
               "TOOLING_MODE_TARGETS", "TOOLING_PROFILE_ALIASES",
               "CAPABILITY_CHAINS", "TOOLING_LUNA_FALLBACKS"}
@@ -152,20 +153,98 @@ def test_the_two_target_maps_stay_disjoint(hook):
     assert not (hook.TOOLING_PROFILE_ALIASES & hook.TOOLING_UNCENSORED_ALIASES)
 
 
+def _hook_source():
+    return next(
+        d["data"]["litellm_strip_params.py"]
+        for d in _docs()
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
+    )
+
+
+def _function_body(src, name):
+    """Texto de UNA funcion del hook. Para asertar sobre la rama que NO existe."""
+    start = src.index(name)
+    body = src[start:]
+    cut = min(
+        (body.index(m) for m in ("\n    def ", "\n    async def ", "\n    # ──")
+         if m in body[1:]),
+        default=len(body),
+    )
+    return body[:cut]
+
+
+def _code_only(text):
+    """Igual que arriba pero SIN comentarios ni docstrings.
+
+    Hace falta porque estas funciones explican en prosa justo lo que NO deben
+    hacer ("no se usa `_alias_has_deployments` aqui, y es el arreglo del 19-08"),
+    y un assert sobre el texto crudo se dispararia con la explicacion. Un test que
+    falla por un comentario no mide nada.
+    """
+    out, in_doc = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('"""') or stripped.startswith("'''"):
+            # docstring de una linea vs bloque
+            if not (len(stripped) > 5 and stripped.endswith(stripped[:3])):
+                in_doc = not in_doc
+            continue
+        if in_doc or stripped.startswith("#"):
+            continue
+        out.append(line.split("  #")[0])
+    return "\n".join(out)
+
+
 def test_the_uncensored_resolver_has_no_luna_net_at_all():
     """`_resolve_tooling_profile` degrada a las dos cuentas Luna. El resolver
     abliterado NO puede: Luna es un modelo de nube con sus barreras puestas.
     Prefiere 503. Se comprueba sobre el texto de la funcion porque la rama que
     importa es la que NO existe."""
-    src = next(
-        d["data"]["litellm_strip_params.py"]
-        for d in _docs()
-        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
-    )
-    body = src[src.index("async def _resolve_tooling_uncensored"):]
-    body = body[: body.index("\n    def ") if "\n    def " in body else len(body)]
+    body = _code_only(_function_body(_hook_source(), "async def _resolve_tooling_uncensored"))
     assert "TOOLING_LUNA_FALLBACKS" not in body
     assert "503" in body
+
+
+def test_liveness_is_by_HEALTH_not_by_registration(hook):
+    """El cuarto no-op, el unico que la auditoria del 19-08 encontro sin cobertura.
+
+    `_alias_has_deployments` pregunta si el alias esta REGISTRADO en el router y
+    falla ABIERTO. Con `store_model_in_db: false` el registro sale de git, asi que
+    un alias declarado responde "si" aunque su Deployment este a 0 replicas.
+    Medido: `qwen38-27b-uncensored` seguia publicado en /v1/models con backend 0/0 y
+    devolvia **HTTP 500** (`Connection error. No fallback model group`), no el 503
+    con Retry-After que el docstring prometia: la rama del 503 era inalcanzable.
+
+    Para `tooling` no importa -- tiene `fallbacks` a Luna a nivel de router que
+    atrapan el error. La ruta abliterada no tiene esa red a proposito, asi que su
+    unica alternativa a un 500 es preguntar por SALUD.
+    """
+    body = _code_only(_function_body(_hook_source(), "async def _resolve_tooling_uncensored"))
+
+    assert "_alias_has_deployments" not in body, (
+        "el resolver abliterado volvio a fiarse del REGISTRO; con model_list "
+        "estatico eso es siempre True y la rama del 503 queda inalcanzable")
+    assert "_abliterated_target_ready" in body
+
+    # Todo destino del mapa necesita URL de health, o no se puede decir nada de el.
+    assert set(hook.TOOLING_UNCENSORED_MODE_TARGETS.values()) <= set(
+        hook.ABLITERATED_HEALTH_URLS), (
+        "hay un destino abliterado sin URL de health declarada: se serviria a ciegas")
+
+
+def test_the_health_probe_fails_CLOSED():
+    """Al contrario que el resto del hook, que falla abierto a proposito.
+
+    Si no se puede confirmar que el backend abliterado esta arriba: 503. Un 503 es
+    reintentable y dice la verdad; un 500 no, y degradar a otro sitio seria servir
+    censurado a quien pidio lo contrario. Un destino sin URL declarada tambien
+    cuenta como "no listo", que es lo que caza el descuido de manana.
+    """
+    body = _code_only(_function_body(_hook_source(), "async def _abliterated_target_ready"))
+    assert "abliterated_health_url_missing" in body
+    assert "ready = False" in body
+    assert "return True" not in body, (
+        "un `return True` suelto en el probe lo convierte en fail-open")
 
 
 def test_cache_salt_is_not_stripped_by_the_family_sampling_hook():

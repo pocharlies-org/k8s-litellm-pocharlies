@@ -91,14 +91,29 @@ def test_the_skew_arithmetic_still_holds_for_the_declared_replicas(deploy):
 
 
 def test_replicas_keep_HA_without_over_provisioning(deploy):
-    """2 es la decision del owner (19-08): 4 era sobre-arquitectura.
+    """Rango, no numero exacto — corregido tras la auditoria del 19-08.
 
-    Medido con las 4 arriba: 5-6m de CPU real por pod contra 300m reservados, y
-    concurrencia solapada media 6,68. 1 replica seria punto unico de fallo con cola
-    para el proxy de todo el trafico LLM; 3 o mas vuelven a pelearse por el hueco de
-    CPU del pool ks5 durante el surge.
+    Antes esto era `== 2` y hacia INALCANZABLE el test de aritmetica del skew: al
+    subir replicas fallaba este primero, asi que el otro no podia fallar nunca por
+    esa via y era ceremonia. Ahora expresa la propiedad que de verdad importa y
+    deja que el del skew haga su trabajo.
+
+    Por que 2 y no 1: es el proxy de TODO el trafico LLM, y 1 replica es punto
+    unico de fallo con cola. Por que no mas de 4: mas alla de los 4 dominios del
+    nodeAffinity el reparto deja de ser satisfacible y `ScheduleAnyway` degrada en
+    silencio a "donde quepa". El 2 concreto es decision del owner (19-08, "4 era
+    sobre-arquitectura") con el dato de 5-6m de CPU real por pod contra 300m
+    reservados y concurrencia solapada media 6,68.
     """
-    assert deploy["spec"]["replicas"] == 2
+    replicas = deploy["spec"]["replicas"]
+    domains = len(
+        deploy["spec"]["template"]["spec"]["affinity"]["nodeAffinity"]
+        ["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"][0]
+        ["matchExpressions"][0]["values"]
+    )
+    assert 2 <= replicas <= domains, (
+        f"{replicas} replicas: por debajo de 2 no hay HA, por encima de {domains} "
+        f"el reparto por nodo deja de ser satisfacible")
 
 
 def test_the_PDB_cannot_block_a_node_drain(deploy):
