@@ -35,7 +35,9 @@ MODEL_SCOPED_LAMBDA = {
 
 WANT_FN = {"_compute_mode_allows_local", "_tooling_uncensored_target"}
 WANT_CONST = {"TOOLING_UNCENSORED_MODE_TARGETS", "TOOLING_UNCENSORED_ALIASES",
-              "TOOLING_MODE_TARGETS", "TOOLING_PROFILE_ALIASES"}
+              "CAPABILITY_CHAINS", "TOOLING_LUNA_FALLBACKS",
+              "TOOLING_MODE_TARGETS", "TOOLING_PROFILE_ALIASES",
+              "CAPABILITY_CHAINS", "TOOLING_LUNA_FALLBACKS"}
 
 
 def _docs():
@@ -122,6 +124,24 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
         assert (target, reason) == (want, None), (mode, target, reason)
     # Y cada destino es una entrada con sello propio, no un nombre inventado.
     assert set(hook.TOOLING_UNCENSORED_MODE_TARGETS.values()) == set(MODEL_SCOPED_LAMBDA)
+
+
+def test_the_capability_alias_is_in_CAPABILITY_CHAINS_or_the_rewrite_never_runs(hook):
+    """El fallo que costo tres intentos, y el unico que se caza midiendo.
+
+    `cap_alias` solo se fija si el modelo pedido es una clave de
+    CAPABILITY_CHAINS. Con el alias declarado en `model_list` y en
+    TOOLING_UNCENSORED_ALIASES pero fuera de ese dict, la rama de reescritura
+    queda MUERTA: la peticion sale al Service de pool sin `cache_salt`, devuelve
+    200 y sirve el residente CENSURADO bajo un nombre que dice lo contrario.
+    Medido: 3/3 rechazos identicos a `tooling`.
+
+    Y sus fallbacks tienen que estar VACIOS: las cuentas Luna no pueden llevar el
+    sello, asi que no puede haber cadena que recorrer.
+    """
+    for alias in hook.TOOLING_UNCENSORED_ALIASES:
+        assert alias in hook.CAPABILITY_CHAINS, alias
+        assert hook.CAPABILITY_CHAINS[alias]["fallbacks"] == (), alias
 
 
 def test_the_two_target_maps_stay_disjoint(hook):

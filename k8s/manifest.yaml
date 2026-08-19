@@ -1865,6 +1865,17 @@ data:
         "agent": {"model": "agent", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "high": {"model": "high", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
         "max": {"model": "max", "fallbacks": ("cloudblue/gpt-5.6-luna",)},
+        # 19-08-2026: SIN esta entrada la reescritura de `tooling-uncensored` no
+        # ocurre NUNCA. `cap_alias` solo se fija si el modelo pedido esta en este
+        # dict, asi que la rama de TOOLING_UNCENSORED_ALIASES quedaba muerta y la
+        # peticion salia al Service de pool SIN el `cache_salt`: servia el residente
+        # CENSURADO bajo un nombre que dice lo contrario. Cazado MIDIENDO el
+        # comportamiento (3/3 rechazos identicos a `tooling`), no leyendo el codigo.
+        #
+        # `fallbacks` VACIO, no las cuentas Luna: son un modelo de nube con sus
+        # barreras puestas y no pueden llevar el sello. La resolucion real la hace
+        # _resolve_tooling_uncensored, que da 503 antes que degradar.
+        "tooling-uncensored": {"model": "tooling-uncensored", "fallbacks": ()},
     }
     # ── Desvio de VISION (2026-08-11) ───────────────────────────────────────────
     #
@@ -2138,6 +2149,13 @@ data:
         "agent": "low",
         "high": "high",
         "max": "max",
+        # `tooling-uncensored` NO entra aqui, y se intento: esta tabla son los
+        # CUATRO tiers de pensamiento que el router puede elegir (lo comprueban
+        # ROUTE == THINKING_TIERS y SWAPPABLE_ALIASES). La ablacion no es un nivel de
+        # pensamiento, asi que meterlo convertia un alias abliterado en un destino
+        # del clasificador del router — cualquier peticion podria acabar sin censura
+        # sin haberla pedido. Es capability chain sin ser tier, y esa es justo la
+        # diferencia que el test de invariantes ahora declara.
     }
     # `/effort` de OpenClaw, que viaja como `reasoning_effort` de primer nivel.
     #
@@ -4956,7 +4974,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-21c06df04d0b
+        config.k8s.e-dani.com/revision: config-3179d1a596ff
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

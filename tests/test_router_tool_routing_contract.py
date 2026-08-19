@@ -196,7 +196,14 @@ def test_solo_tooling_degrada_y_los_nombres_de_modelo_no(hook):
     # CAPACIDAD -- no dicen QUE modelo, dicen cuanto piensa el residente -- y los
     # registra y borra el mismo sync que a `tooling`, asi que comparten su modo de
     # fallo: sin cadena, un residente caido sale como 400 en vez de degradar.
-    assert set(hook.CAPABILITY_CHAINS) == {"tooling", "agent", "high", "max"}, (
+    # 19-08-2026: entra `tooling-uncensored`, y NO relaja lo de arriba. Sigue siendo
+    # un nombre de CAPACIDAD -- «el residente del perfil vivo, abliterado» -- no un
+    # checkpoint. Esta aqui porque `cap_alias` solo se fija sobre claves de este
+    # dict: fuera de el la reescritura no ocurre y la peticion sale al Service de
+    # pool sin sello, o sea sirve el residente CENSURADO. Su cadena va VACIA (lo
+    # comprueba test_uncensored_alias_contract.py), asi que no degrada a Luna: 503.
+    assert set(hook.CAPABILITY_CHAINS) == {
+        "tooling", "agent", "high", "max", "tooling-uncensored"}, (
         "solo los nombres de capacidad degradan; anadir un nombre de modelo aqui "
         "falsearia las mediciones hechas contra el")
     # Cada uno es cabeza de su propia cadena: el tier se calcula sobre el alias que
@@ -206,7 +213,14 @@ def test_solo_tooling_degrada_y_los_nombres_de_modelo_no(hook):
         assert hook.CAPABILITY_CHAINS[cap]["model"] == cap
     # Y los cuatro tienen que estar en la tabla de tiers, o el nombre no significa
     # nada: seria un alias mas apuntando al mismo sitio.
-    assert set(hook.CAPABILITY_CHAINS) == set(hook.THINKING_TIERS)
+    # 19-08-2026: ya no son el MISMO conjunto, y la diferencia es exactamente una.
+    # Todo tier de pensamiento tiene que tener cadena; `tooling-uncensored` tiene
+    # cadena y NO es un tier -- la ablacion no es un nivel de pensamiento. Meterlo en
+    # THINKING_TIERS lo habria convertido en destino del clasificador del router, o
+    # sea una peticion cualquiera podria salir sin censura sin haberla pedido.
+    assert set(hook.THINKING_TIERS) <= set(hook.CAPABILITY_CHAINS)
+    assert set(hook.CAPABILITY_CHAINS) - set(hook.THINKING_TIERS) == {
+        "tooling-uncensored"}
     # Disjunto de los auto-enrutados: si un nombre cayera en los dos, la rama de
     # capacidad correria primero y la clasificacion por forma de peticion no se
     # aplicaria nunca.
