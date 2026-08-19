@@ -339,7 +339,23 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        supported_reasoning_efforts: [none, low, high, max]
+        # 2026-08-19: FUERA `low` (y `medium` donde estaba). Solo se declara lo que
+        # el hook HONRA, que es la misma regla por la que `ultra` nunca se declaro.
+        #
+        # `low` era inerte y ademas daninno. CLIENT_EFFORT_TIERS no lo traduce a
+        # proposito -- un `low` de un cliente agente significa "no he tocado nada",
+        # no "quiero low" -- asi que un effort low se descarta y decide el tier del
+        # alias. Anunciarlo hacia que OpenClaw se quedara con `low` como nivel de
+        # sesion (thinkingDefault=low) y creyera estar pensando mientras `tooling`
+        # entraba en thinking_mode "chat": sin canal `<think>`, DeepSeek deliberaba
+        # en el canal VISIBLE y el monologo salia como respuesta. Medido en las
+        # sesiones vivas: 56 fugas en 421 mensajes de `tooling`, cero tags y cero
+        # bloques de thinking, mientras gpt-5.6 (Responses API) daba 0 en 1125.
+        #
+        # Con la lista honesta, OpenClaw no puede almacenar un nivel que el modelo
+        # no declara: lo recorta al mas cercano y el effort que llega ya es
+        # DELIBERADO, asi que el razonamiento vuelve a `reasoning_content`.
+        supported_reasoning_efforts: [none, high, max]
     # Mismo head, misma GPU, mismo checkpoint. Lo unico que cambia es que este
     # alias sella cada peticion con `cache_salt: refusal:1.5`, que vLLM expande a
     # lambda por token. COSTE: cache_salt entra en la clave de bloque del prefix
@@ -360,7 +376,8 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        supported_reasoning_efforts: [none, low, high, max]
+        # Mismo checkpoint que el alias de arriba: mismos tiers honrados.
+        supported_reasoning_efforts: [none, high, max]
     # NUEVO como nombre directo. El controlador solo registraba `tooling` y
     # `qwen38-27b-uncensored` sobre este backend, asi que el residente de
     # `creative` no tenia nombre propio servible. Ahora lo tiene, y es el destino
@@ -386,7 +403,10 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        supported_reasoning_efforts: [none, low, medium, high, max]
+        # `low` y `medium` fuera por lo mismo que en DeepSeek, y aqui ya estaba
+        # MEDIDO en el comentario del BACKENDS: none/low/medium -> reasoning_content
+        # 0 chars; solo high y max piensan de verdad. Se declaraban igualmente.
+        supported_reasoning_efforts: [none, high, max]
     - model_name: qwen38-27b-uncensored
       litellm_params:
         model: openai/qwen38-27b
@@ -404,7 +424,8 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        supported_reasoning_efforts: [none, low, medium, high, max]
+        # Mismo backend que el alias de arriba: mismos tiers honrados.
+        supported_reasoning_efforts: [none, high, max]
     # Independiente del perfil: vive en la RTX del x86, no en los Sparks, asi que
     # esta arriba en los dos modos. Los dos nombres son el mismo backend.
     - model_name: qwen35-4b
@@ -422,7 +443,8 @@ data:
         supports_function_calling: true
         supports_vision: false
         supports_reasoning: true
-        supported_reasoning_efforts: [none, low, medium, high, max]
+        # Igual que los otros locales: none/low/medium daban reasoning_content 0.
+        supported_reasoning_efforts: [none, high, max]
     - model_name: qwen3.5-4b
       litellm_params: *qwen35_4b_params
       model_info: *qwen35_4b_info
@@ -446,7 +468,13 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        supported_reasoning_efforts: [none, low, high, max]
+        # ESTA es la lista que lee OpenClaw para pintar el menu de `/effort` del
+        # residente (plugin litellm-thinking-profile, derivado de /model/info).
+        # Sin `low` el cliente ya no puede quedarse en el nivel que el servidor
+        # descarta: cualquier nivel guardado que no este aqui se recorta al mas
+        # cercano y el effort que llega es DELIBERADO. Ver el alias directo de
+        # DeepSeek para el fallo que arregla.
+        supported_reasoning_efforts: [none, high, max]
     - model_name: router
       litellm_params: *tooling_pool_params
       model_info: *tooling_pool_info
@@ -4263,6 +4291,13 @@ data:
             # `ultra` NO se declara: el motor lo acepta pero no lo distingue de
             # `none`, y anunciarlo seria volver a mentir en el catalogo.
             #
+            # 2026-08-19: `low` y `medium` se van por ESE MISMO motivo, que ya
+            # estaba medido tres lineas mas arriba y se declaraba igual. Aparte de
+            # mentir, `low` hacia dano: OpenClaw se quedaba con el como nivel de
+            # sesion y creia estar pensando mientras el hook lo descartaba (no esta
+            # en CLIENT_EFFORT_TIERS: un `low` de cliente agente es ambiente, no
+            # una orden) y el alias entraba sin canal de razonamiento.
+            #
             # Esto estaba SIN DECLARAR, o sea que el catalogo decia
             # supports_reasoning=False mientras el modelo si razonaba. Los clientes
             # que leen /model/info para saber si pueden pedir razonamiento —el
@@ -4273,7 +4308,7 @@ data:
             # de contestar. Con max_tokens corto sale `finish_reason: length` y
             # content VACIO. Medido: 700 tokens no bastan, 4000 si.
             "supports_reasoning": True,
-            "supported_reasoning_efforts": ("none", "low", "medium", "high", "max"),
+            "supported_reasoning_efforts": ("none", "high", "max"),
         },
         {
             # DeepSeek-V4-Flash-0731 (284B MoE / 13B activos) en TP=2 REPARTIDO
@@ -4323,8 +4358,13 @@ data:
             # the exact client-facing tiers so they render as variants of this
             # model instead of forcing users to pick the compatibility aliases
             # agent/high/max as if they were separate checkpoints.
+            #
+            # 2026-08-19: `low` fuera. Solo se declara lo que el hook HONRA, y
+            # `low` no esta en CLIENT_EFFORT_TIERS a proposito. Declararlo dejaba a
+            # OpenClaw parado en un nivel inerte y a DeepSeek deliberando en el
+            # canal visible: 56 fugas en 421 mensajes de `tooling`.
             "supports_reasoning": True,
-            "supported_reasoning_efforts": ("none", "low", "high", "max"),
+            "supported_reasoning_efforts": ("none", "high", "max"),
             # 2026-08-13: YA VE. El servidor no sirve DeepseekV4ForCausalLM sino
             # DeepseekV4VisionForCausalLM (plugin FlyCockpit dsv4_vision_vllm:
             # tower DeepEncoderV2 congelado + adapter BF16, imagen
@@ -4374,8 +4414,11 @@ data:
             # En un modelo de 4B el pensamiento se come casi todo el presupuesto:
             # con high/max el `content` baja a ~15 chars y hace falta max_tokens
             # holgado o sale `length` sin respuesta.
+            #
+            # 2026-08-19: por eso `low` y `medium` ya no se declaran — dan 0 chars
+            # y el hook los descarta de todas formas.
             "supports_reasoning": True,
-            "supported_reasoning_efforts": ("none", "low", "medium", "high", "max"),
+            "supported_reasoning_efforts": ("none", "high", "max"),
             "supports_vision": False,
         },
     )
@@ -5021,7 +5064,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-5261136ad78e
+        config.k8s.e-dani.com/revision: sync-beef23691d3c
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -5194,7 +5237,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6b672a551b70
+        config.k8s.e-dani.com/revision: config-fe579b4e4db2
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
