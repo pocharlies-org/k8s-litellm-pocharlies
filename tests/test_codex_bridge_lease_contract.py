@@ -162,13 +162,13 @@ def test_el_refresh_de_emergencia_esta_gateado_por_el_lease_en_el_codigo():
 def test_deployments_replicas_antiafinidad_y_leases_por_cuenta():
     docs = _docs()
     esperado = {
-        "codex-bridge": ("codex-bridge-refresh", "codex-bridge-auth"),
-        "codex-bridge-edani": ("codex-bridge-edani-refresh", "codex-bridge-edani-auth"),
+        "codex-bridge": (2, "codex-bridge-refresh", "codex-bridge-auth"),
+        "codex-bridge-edani": (0, "codex-bridge-edani-refresh", "codex-bridge-edani-auth"),
     }
-    for nombre, (lease, secreto) in esperado.items():
+    for nombre, (replicas, lease, secreto) in esperado.items():
         dep = next(d for d in docs if d.get("kind") == "Deployment"
                    and d["metadata"]["name"] == nombre)
-        assert dep["spec"]["replicas"] == 2, nombre
+        assert dep["spec"]["replicas"] == replicas, nombre
         tpl = dep["spec"]["template"]["spec"]
         anti = tpl["affinity"]["podAntiAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
         assert anti[0]["topologyKey"] == "kubernetes.io/hostname", nombre

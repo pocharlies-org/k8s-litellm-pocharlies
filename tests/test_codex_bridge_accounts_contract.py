@@ -1,9 +1,7 @@
 """Contrato del catalogo ChatGPT/Codex publicado por cuenta en LiteLLM.
 
-Cada ID publico se compone como ``cuenta/slug``. El prefijo selecciona de forma
-inequivoca el bridge, mientras OpenAI recibe siempre el slug real sin prefijo.
-La cuenta e-dani publica además ``slug-edani`` como alias aditivo para clientes
-como Codex Desktop que colapsan variantes con prefijo de cuenta.
+Cada ID publicado se compone como ``cloudblue/slug``. El bridge e-dani
+desactivado no debe dejar declaraciones muertas ``e-dani/*`` ni ``*-edani``.
 """
 
 import ast
@@ -57,11 +55,6 @@ ACCOUNT_CATALOG = {
 # puente directamente: 200 en 1 s. Los alias si pueden funcionar.
 PUBLISHED_MODELS = {
     "cloudblue": ACCOUNT_CATALOG["cloudblue"] - {"gpt-5.6-sol-wm"},
-    "e-dani": ACCOUNT_CATALOG["e-dani"] - {"gpt-5.6-sol-wm"},
-}
-
-LEGACY_PERSONAL_ALIASES = {
-    f"{model}-edani": model for model in PUBLISHED_MODELS["e-dani"]
 }
 
 REASONING_EFFORTS = {
@@ -86,7 +79,7 @@ def _resource(documents, kind, name):
     return matches[0]
 
 
-def test_accounts_publish_prefixed_ids_and_desktop_personal_aliases():
+def test_only_enabled_account_models_are_published():
     documents = _documents(MANIFEST)
     config_map = _resource(documents, "ConfigMap", "litellm-config")
     config = yaml.safe_load(config_map["data"]["config.yaml"])
@@ -94,7 +87,6 @@ def test_accounts_publish_prefixed_ids_and_desktop_personal_aliases():
 
     services = {
         "cloudblue": "http://codex-bridge.litellm.svc.cluster.local:8080/v1",
-        "e-dani": "http://codex-bridge-edani.litellm.svc.cluster.local:8080/v1",
     }
     expected = {
         account: {
@@ -117,23 +109,15 @@ def test_accounts_publish_prefixed_ids_and_desktop_personal_aliases():
     }
     assert public_names == set().union(*[set(account) for account in expected.values()])
 
-    for alias, upstream in LEGACY_PERSONAL_ALIASES.items():
-        assert alias in models
-        params = models[alias]["litellm_params"]
-        assert params["model"] == f"openai/{upstream}"
-        assert params["api_base"] == services["e-dani"]
-
-    assert {
-        name for name in models if name.endswith("-edani")
-    } == set(LEGACY_PERSONAL_ALIASES)
+    assert not {name for name in models if name.startswith("e-dani/")}
+    assert not {name for name in models if name.endswith("-edani")}
 
 
 def test_desktop_cloudblue_aliases_keep_the_prefixed_fallback_network():
     """LiteLLM keys fallbacks by exact model_group, not by equivalent deployment.
 
     Codex Desktop sends the bare model id. If only the ``cloudblue/<id>`` source
-    is listed, a CloudBlue 429 ends in ``No fallback model group found`` instead
-    of moving to the independent e-dani account.
+    is registered, the bare alias still needs an explicit edge to that deployment.
     """
     documents = _documents(MANIFEST)
     config_map = _resource(documents, "ConfigMap", "litellm-config")
@@ -146,15 +130,14 @@ def test_desktop_cloudblue_aliases_keep_the_prefixed_fallback_network():
     }
 
     for model in PUBLISHED_MODELS["cloudblue"]:
-        assert fallbacks[model] == fallbacks[f"cloudblue/{model}"]
+        assert fallbacks[model] == [f"cloudblue/{model}"]
+        assert f"cloudblue/{model}" not in fallbacks
 
 
-def test_personal_bridge_is_enabled_with_its_own_secret():
+def test_personal_bridge_remains_disabled_with_its_own_secret():
     documents = _documents(BRIDGES)
     deployment = _resource(documents, "Deployment", "codex-bridge-edani")
-    # Master/replica desde 2026-08-14: dos pods sirven; el refresh es exclusivo
-    # via Lease (ver test_codex_bridge_lease_contract).
-    assert deployment["spec"]["replicas"] == 2
+    assert deployment["spec"]["replicas"] == 0
 
     pod_spec = deployment["spec"]["template"]["spec"]
     auth_volume = next(volume for volume in pod_spec["volumes"] if volume["name"] == "auth")
@@ -173,12 +156,7 @@ def test_gpt_56_models_publish_their_real_reasoning_efforts():
     models = {model["model_name"]: model for model in config["model_list"]}
 
     for slug, efforts in REASONING_EFFORTS.items():
-        names = (
-            f"cloudblue/{slug}",
-            f"e-dani/{slug}",
-            f"{slug}-edani",
-            slug,
-        )
+        names = (f"cloudblue/{slug}", slug)
         for name in names:
             info = models[name]["model_info"]
             assert info["supports_reasoning"] is True

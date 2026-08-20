@@ -242,9 +242,6 @@ def test_tooling_usa_luna_si_el_alias_local_no_esta_registrado(hook):
     assert hook._walk_chain(
         entry, alias_live=lambda a: a == "cloudblue/gpt-5.6-luna"
     ) == ("cloudblue/gpt-5.6-luna", "degraded")
-    assert hook._walk_chain(
-        entry, alias_live=lambda a: a == "e-dani/gpt-5.6-luna"
-    ) == ("e-dani/gpt-5.6-luna", "degraded")
     assert hook._walk_chain(entry, alias_live=lambda a: False) == ("tooling", "dry")
 
 
@@ -274,10 +271,7 @@ def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
         None,
         "compute_mode_transition",
     )
-    assert hook.TOOLING_LUNA_FALLBACKS == (
-        "cloudblue/gpt-5.6-luna",
-        "e-dani/gpt-5.6-luna",
-    )
+    assert hook.TOOLING_LUNA_FALLBACKS == ("cloudblue/gpt-5.6-luna",)
 
     local_live = lambda alias: alias in {"deepseek-v4-flash-0731", "qwen38-27b"}
     assert hook._tooling_route_for_state(ready_tp, local_live) == (
@@ -293,9 +287,8 @@ def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
     assert hook._tooling_route_for_state(transition, stale_local_and_luna) == (
         "cloudblue/gpt-5.6-luna", "degraded", "compute_mode_transition"
     )
-    only_edani = lambda alias: alias == "e-dani/gpt-5.6-luna"
-    assert hook._tooling_route_for_state(ready_creative, only_edani) == (
-        "e-dani/gpt-5.6-luna", "degraded", "compute_profile_target_unavailable"
+    assert hook._tooling_route_for_state(ready_creative, lambda alias: False) == (
+        None, "dry", "compute_profile_target_unavailable"
     )
 
 
@@ -335,10 +328,9 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
         for src, dsts in entry.items():
             graph.setdefault(src, []).extend(dsts or [])
 
-    # Alias registrado pero residente no sano: Luna CloudBlue es la primera red;
-    # si esa cuenta falla, su propia arista continua a la cuenta e-dani.
+    # Alias registrado pero residente no sano: Luna CloudBlue es la única red.
     assert graph.get("tooling") == ["cloudblue/gpt-5.6-luna"]
-    assert graph.get("cloudblue/gpt-5.6-luna") == ["e-dani/gpt-5.6-luna"]
+    assert graph.get("cloudblue/gpt-5.6-luna") is None
 
     # Los tres perfiles con razonamiento conservan la red local por cooldown.
     destinos = {p_: graph.get(p_) for p_ in ("agent", "high", "max")}

@@ -117,9 +117,6 @@ def test_hosted_tooling_fallback_bypasses_local_admission():
     assert not mod._is_local_vllm_request(
         "cloudblue/gpt-5.6-luna", "tooling", ""
     )
-    assert not mod._is_local_vllm_request(
-        "e-dani/gpt-5.6-luna", "tooling", ""
-    )
 
 
 def test_gate_has_an_env_kill_switch():

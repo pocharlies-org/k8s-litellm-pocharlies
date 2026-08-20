@@ -89,7 +89,6 @@ def test_aurora_uses_the_healthy_local_resident(hook):
     live = lambda alias: alias in {
         "deepseek-v4-flash-0731",
         "cloudblue/gpt-5.6-luna",
-        "e-dani/gpt-5.6-luna",
     }
 
     assert disabled is True
@@ -195,4 +194,4 @@ def test_global_tooling_fallback_remains_for_every_other_key():
     }
 
     assert graph["tooling"] == ["cloudblue/gpt-5.6-luna"]
-    assert graph["cloudblue/gpt-5.6-luna"] == ["e-dani/gpt-5.6-luna"]
+    assert "cloudblue/gpt-5.6-luna" not in graph
