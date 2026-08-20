@@ -1,0 +1,192 @@
+---
+# Experimental Claude Pro/Max subscription bridge.
+#
+# This is intentionally isolated from opencode-web and from its account homes.
+# Anthropic's Agent SDK policy requires prior approval before third parties offer
+# claude.ai login/rate limits; keep these models under the claude-test/* namespace,
+# out of all automatic fallbacks, until that approval is recorded.
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: claude-bridge-api
+  namespace: litellm
+spec:
+  length: 48
+  digits: 8
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+  encoding: base64url
+  secretKeys: [api-key]
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: claude-bridge-api
+  namespace: litellm
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: claude-bridge-api
+    creationPolicy: Owner
+    template:
+      type: Opaque
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: claude-bridge-api
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claude-bridge-personal
+  namespace: litellm
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claude-bridge-tercera
+  namespace: litellm
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: { storage: 1Gi }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claude-bridge-works-shared
+  namespace: litellm
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: { storage: 1Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-subscription-bridge
+  namespace: litellm
+spec:
+  # One process owns each rotating Claude credential chain. Do not scale this
+  # deployment without first splitting accounts into one Deployment/PVC each.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: claude-subscription-bridge }
+  template:
+    metadata:
+      labels: { app: claude-subscription-bridge }
+    spec:
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bridge
+          image: ghcr.io/pocharlies-org/claude-subscription-bridge:sha-e3bdf047e135
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: HOME, value: /tmp/home }
+            - { name: CLAUDE_BRIDGE_CWD, value: /workspace }
+            - { name: CLAUDE_BRIDGE_MAX_INFLIGHT, value: "1" }
+            - { name: CLAUDE_BRIDGE_TIMEOUT_MS, value: "600000" }
+            - name: CLAUDE_BRIDGE_ACCOUNTS
+              value: >-
+                [{"id":"personal","configDir":"/accounts/personal"},{"id":"tercera","configDir":"/accounts/tercera"},{"id":"works-shared","configDir":"/accounts/works-shared"}]
+            - name: CLAUDE_BRIDGE_API_KEY
+              valueFrom:
+                secretKeyRef: { name: claude-bridge-api, key: api-key }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+            failureThreshold: 3
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 2Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: personal, mountPath: /accounts/personal }
+            - { name: tercera, mountPath: /accounts/tercera }
+            - { name: works-shared, mountPath: /accounts/works-shared }
+            - { name: workspace, mountPath: /workspace, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: personal
+          persistentVolumeClaim: { claimName: claude-bridge-personal }
+        - name: tercera
+          persistentVolumeClaim: { claimName: claude-bridge-tercera }
+        - name: works-shared
+          persistentVolumeClaim: { claimName: claude-bridge-works-shared }
+        - name: workspace
+          emptyDir: { sizeLimit: 16Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claude-subscription-bridge
+  namespace: litellm
+spec:
+  selector: { app: claude-subscription-bridge }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+# The bearer token is still mandatory. This policy is a second boundary so no
+# other namespace or same-namespace workload can probe subscription quota.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: claude-subscription-bridge
+  namespace: litellm
+spec:
+  podSelector:
+    matchLabels: { app: claude-subscription-bridge }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: litellm }
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0 }
+      ports:
+        - { protocol: TCP, port: 443 }

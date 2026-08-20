@@ -126,6 +126,37 @@ data:
         api_key: not-used
       model_info:
         mode: audio_speech
+    # ── Claude subscription bridge: explicit experimental canary ─────────────
+    # Anthropic approval is still a release gate. These names are deliberately
+    # opt-in, account-scoped and absent from every router fallback. Background
+    # health checks are disabled because each check spends subscription quota.
+    - model_name: claude-test/personal/opus
+      litellm_params: { model: openai/opus@personal, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 1000000, disable_background_health_check: true }
+    - model_name: claude-test/personal/sonnet
+      litellm_params: { model: openai/sonnet@personal, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 1000000, disable_background_health_check: true }
+    - model_name: claude-test/personal/haiku
+      litellm_params: { model: openai/haiku@personal, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 200000, disable_background_health_check: true }
+    - model_name: claude-test/tercera/opus
+      litellm_params: { model: openai/opus@tercera, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 1000000, disable_background_health_check: true }
+    - model_name: claude-test/tercera/sonnet
+      litellm_params: { model: openai/sonnet@tercera, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 1000000, disable_background_health_check: true }
+    - model_name: claude-test/tercera/haiku
+      litellm_params: { model: openai/haiku@tercera, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 200000, disable_background_health_check: true }
+    - model_name: claude-test/works-shared/opus
+      litellm_params: { model: openai/opus@works-shared, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 1000000, disable_background_health_check: true }
+    - model_name: claude-test/works-shared/sonnet
+      litellm_params: { model: openai/sonnet@works-shared, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 1000000, disable_background_health_check: true }
+    - model_name: claude-test/works-shared/haiku
+      litellm_params: { model: openai/haiku@works-shared, api_base: "http://claude-subscription-bridge.litellm.svc.cluster.local:8080/v1", api_key: os.environ/CLAUDE_BRIDGE_API_KEY }
+      model_info: { mode: chat, supports_reasoning: true, supports_function_calling: false, supported_reasoning_efforts: [low, medium, high, xhigh, max], max_input_tokens: 200000, disable_background_health_check: true }
     # ── Catálogo ChatGPT/Codex por cuenta ────────────────────────────────────
     # El ID público une cuenta y slug real: `cloudblue/<slug>`. OpenAI recibe
     # únicamente el slug real de `litellm_params.model`.
@@ -5268,7 +5299,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-051b1514a86f
+        config.k8s.e-dani.com/revision: config-72d5180dcea3
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -5341,6 +5372,8 @@ spec:
             - { name: COMPUTE_MODE_RETRY_AFTER_SECONDS, value: "5" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
+            - name: CLAUDE_BRIDGE_API_KEY
+              valueFrom: { secretKeyRef: { name: claude-bridge-api, key: api-key } }
             # Langfuse native callback (LLM tracing). Points at the in-cluster web
             # service directly (bypasses the SSO edge). Keys from litellm-secrets ESO.
             - name: LANGFUSE_PUBLIC_KEY
