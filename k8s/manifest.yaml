@@ -5447,6 +5447,20 @@ metadata:
 spec:
   entryPoints: [websecure]
   routes:
+    # Split-horizon for the PUBLIC hostname. AdGuard rewrites litellm.e-dani.com
+    # to the traefik-lan VIP (192.168.50.240), so opencode/Codex reach the proxy
+    # over LAN/Tailscale instead of Cloudflare. Reason it matters: Cloudflare cuts
+    # the origin response at ~100s, and a large-context request needs 70s..>120s
+    # to first byte, so it died mid-stream as "Connection reset by server" while
+    # LiteLLM was still honouring its own (correct) 600s timeout.
+    # ClientIP gate = LAN + Tailscale CGNAT + pod/service CIDRs, same shape as the
+    # dgx/s3 split-horizon routes in k8s-infra-pocharlies/networking/traefik-lan.
+    - match: Host(`litellm.e-dani.com`) && (ClientIP(`192.168.50.0/24`) || ClientIP(`100.64.0.0/10`) || ClientIP(`10.42.0.0/16`) || ClientIP(`10.43.0.0/16`))
+      kind: Rule
+      priority: 300
+      services:
+        - name: litellm
+          port: 4000
     - match: Host(`litellm.lan.e-dani.com`)
       kind: Rule
       services:
