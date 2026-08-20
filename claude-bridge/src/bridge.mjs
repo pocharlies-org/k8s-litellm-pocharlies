@@ -260,13 +260,22 @@ async function streamCompletion(res, stream, model, timeoutMs) {
   res.write(`data: ${JSON.stringify(chunk(id, created, model, { role: "assistant" }, null))}\n\n`);
   const iterator = stream[Symbol.asyncIterator]();
   try {
-    while (true) {
-      const { value: event, done } = await nextWithTimeout(iterator, timeoutMs);
-      if (done) break;
-      const delta = textDelta(event, true);
-      if (delta) res.write(`data: ${JSON.stringify(chunk(id, created, model, { content: delta }, null))}\n\n`);
+    try {
+      while (true) {
+        const { value: event, done } = await nextWithTimeout(iterator, timeoutMs);
+        if (done) break;
+        const delta = textDelta(event, true);
+        if (delta) res.write(`data: ${JSON.stringify(chunk(id, created, model, { content: delta }, null))}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify(chunk(id, created, model, {}, "stop"))}\n\n`);
+    } catch (error) {
+      // HTTP status cannot change once SSE has started. Emit the standard OpenAI
+      // error envelope so LiteLLM can surface the failed turn instead of treating
+      // a silently truncated stream as a successful completion.
+      const status = Number(error?.statusCode) || classifyError(error);
+      const code = error?.code || (status === 429 ? "rate_limit_error" : "bridge_error");
+      res.write(`data: ${JSON.stringify(errorPayload(status, errorMessage(error), code))}\n\n`);
     }
-    res.write(`data: ${JSON.stringify(chunk(id, created, model, {}, "stop"))}\n\n`);
     res.end("data: [DONE]\n\n");
   } finally {
     await iterator.return?.();
@@ -336,7 +345,11 @@ function json(res, status, body) {
 }
 
 function jsonError(res, status, message, code) {
-  return json(res, status, { error: { message, type: status === 401 ? "authentication_error" : "invalid_request_error", code } });
+  return json(res, status, errorPayload(status, message, code));
+}
+
+function errorPayload(status, message, code) {
+  return { error: { message, type: status === 401 ? "authentication_error" : "invalid_request_error", code } };
 }
 
 export async function start(env = process.env) {

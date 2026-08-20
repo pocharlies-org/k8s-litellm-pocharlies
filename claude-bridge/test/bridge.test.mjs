@@ -122,3 +122,23 @@ test("non-stream and stream responses use the OpenAI chat protocol", async () =>
     assert.match(text, /data: \[DONE\]/);
   });
 });
+
+test("streaming failures end with an OpenAI error envelope instead of silent truncation", async () => {
+  const query = async function* () {
+    yield { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "partial" } } };
+    throw Object.assign(new Error("Claude turn timed out"), { statusCode: 504, code: "upstream_timeout" });
+  };
+  await withServer(query, async (base) => {
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${API_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "opus@personal", messages: [{ role: "user", content: "hello" }], stream: true }),
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.match(text, /partial/);
+    assert.match(text, /"code":"upstream_timeout"/);
+    assert.match(text, /data: \[DONE\]/);
+    assert.doesNotMatch(text, /"finish_reason":"stop"/);
+  });
+});
