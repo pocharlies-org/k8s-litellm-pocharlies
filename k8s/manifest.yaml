@@ -979,20 +979,21 @@ data:
             return None, "compute_mode_invalid"
         return target, None
 
-    def _tooling_route_for_state(state, alias_live):
+    def _tooling_route_for_state(state, alias_live, disable_fallbacks=False):
         """Choose the profile resident, then the two independent Luna accounts.
 
         The local head is considered only while the global profile is coherent and
         Ready. During a transition a stale ``tooling`` registration must not win:
-        the request goes straight to Luna instead of hitting the outgoing resident
-        or being rejected by local compute-mode admission.
+        an ordinary request goes straight to Luna instead of hitting the outgoing
+        resident. Keys with ``disable_fallbacks`` fail closed before that cloud hop.
         """
         target, reason = _tooling_target_for_compute_mode(state)
         if target and alias_live(target):
             return target, "primary", reason
-        for fallback in TOOLING_LUNA_FALLBACKS:
-            if alias_live(fallback):
-                return fallback, "degraded", reason or "compute_profile_target_unavailable"
+        if not disable_fallbacks:
+            for fallback in TOOLING_LUNA_FALLBACKS:
+                if alias_live(fallback):
+                    return fallback, "degraded", reason or "compute_profile_target_unavailable"
         return None, "dry", reason or "compute_profile_target_unavailable"
 
     async def _compute_mode_state():
@@ -1036,18 +1037,18 @@ data:
             },
         )
 
-    async def _resolve_tooling_profile():
+    async def _resolve_tooling_profile(disable_fallbacks=False):
         """Resolve tooling to the active resident, then to GPT-5.6 Luna.
 
         Both compute profiles dynamically register ``tooling`` on their own local
         resident. If the profile is transitioning, its target is missing, or its
-        alias was deleted by backend-sync, use CloudBlue Luna and then e-dani Luna.
-        A 503 remains only when neither the local target nor either Luna account is
-        registered.
+        alias was deleted by backend-sync, ordinary keys use CloudBlue Luna and then
+        e-dani Luna. A key with fallbacks disabled receives 503 as soon as the local
+        target is unavailable.
         """
         state = await _compute_mode_state()
         resolved, route_state, reason = _tooling_route_for_state(
-            state, _alias_has_deployments
+            state, _alias_has_deployments, disable_fallbacks=disable_fallbacks
         )
         if resolved:
             return resolved, route_state
@@ -1058,7 +1059,8 @@ data:
                 "error": "tooling profile target is unavailable",
                 "blocked": reason,
                 "target": _tooling_target_for_compute_mode(state)[0],
-                "fallbacks": list(TOOLING_LUNA_FALLBACKS),
+                "fallbacks": [] if disable_fallbacks else list(TOOLING_LUNA_FALLBACKS),
+                "fallbacks_disabled": disable_fallbacks,
                 "desired_mode": (state or {}).get("desired_mode"),
                 "effective_mode": (state or {}).get("effective_mode"),
                 "phase": (state or {}).get("phase"),
@@ -2006,6 +2008,25 @@ data:
             if value and str(value).startswith("litellm_proxy_master"):
                 return "master"
         return "unknown"
+
+    # Aurora is intentionally local-only. Its incident loop is expendable when the
+    # resident is unavailable and must not consume either ChatGPT account as a
+    # transparent replacement. This has to cover BOTH fallback layers:
+    #
+    #   * the hook's own alias-missing path (handled by the boolean returned here);
+    #   * LiteLLM Router's registered-but-unhealthy path (handled by the top-level
+    #     ``disable_fallbacks`` request kwarg).
+    #
+    # LiteLLM v1.96.0 pops that kwarg in Router.async_function_with_fallbacks and
+    # re-raises the original error when it is true. It is deliberately overwritten,
+    # not setdefault: this policy cannot be undone by a client body containing false.
+    NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca"})
+
+    def _apply_key_fallback_policy(data, user_api_key_dict):
+        """Stamp the Router kill switch and return the effective per-request policy."""
+        if _resolve_key_label(user_api_key_dict) in NO_FALLBACK_KEY_ALIASES:
+            data["disable_fallbacks"] = True
+        return data.get("disable_fallbacks") is True
 
     # ── Routing policy (2026-08-13, Daniel) ──────────────────────────────────────
     # `router` does NOT choose a model family. It chooses how much the current
@@ -2985,6 +3006,12 @@ data:
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
 
+            # Antes de resolver el alias: si el residente ha desaparecido, esta
+            # misma politica impide que el hook lo reescriba a Luna. La marca queda
+            # en ``data`` para que el Router cubra tambien el caso distinto en que
+            # el alias existe pero todos sus deployments estan unhealthy/cooldown.
+            fallbacks_disabled = _apply_key_fallback_policy(data, user_api_key_dict)
+
             # AQUI ARRIBA a proposito, no dentro de `if is_router_request`: los
             # valores invalidos de sampling los rechaza el backend para CUALQUIER
             # alias. La primera version de esto se colgo del bloque del router y
@@ -3040,7 +3067,9 @@ data:
                     # a quien pidio explicitamente que no lo estuviera.
                     cap_resolved, cap_state = await _resolve_tooling_uncensored()
                 elif cap_alias in TOOLING_PROFILE_ALIASES:
-                    cap_resolved, cap_state = await _resolve_tooling_profile()
+                    cap_resolved, cap_state = await _resolve_tooling_profile(
+                        disable_fallbacks=fallbacks_disabled
+                    )
                 else:
                     cap_resolved, cap_state = _walk_chain(cap_entry)
                 if cap_state == "degraded":
@@ -3080,7 +3109,9 @@ data:
                 # cuatro se resuelven al nombre directo. El nivel de pensamiento
                 # viaja aparte en _router_thinking_alias.
                 if target["model"] in TOOLING_PROFILE_ALIASES:
-                    resolved_model, route_state = await _resolve_tooling_profile()
+                    resolved_model, route_state = await _resolve_tooling_profile(
+                        disable_fallbacks=fallbacks_disabled
+                    )
                 else:
                     resolved_model, route_state = _degrade(category)
                 if route_state == "degraded":
@@ -5350,7 +5381,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f2a345949b59
+        config.k8s.e-dani.com/revision: config-7928535efc67
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
