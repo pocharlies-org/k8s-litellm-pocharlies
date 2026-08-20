@@ -4081,6 +4081,15 @@ data:
         for model in os.getenv("OPENCLAW_TEAM_REQUIRED_MODELS", "").split(",")
         if model.strip()
     )
+    # Key del bot sauvage-shield: su allowlist NO vive en ningun equipo, se
+    # declara aqui (GitOps) y el reconciler la re-aplica cada ciclo. Aditivo,
+    # como el de OpenClaw: nunca quita modelos.
+    SAUVAGE_KEY_ALIAS = os.getenv("SAUVAGE_KEY_ALIAS", "").strip()
+    SAUVAGE_KEY_REQUIRED_MODELS = tuple(
+        model.strip()
+        for model in os.getenv("SAUVAGE_KEY_REQUIRED_MODELS", "").split(",")
+        if model.strip()
+    )
 
     # Los tres hermanos de `tooling` que solo cambian cuanto se piensa (2026-08-10).
     # `tooling` ya vive en TOOLING_COMPAT_ALIASES y significa "sin pensar"; estos son
@@ -4640,35 +4649,80 @@ data:
             )
 
         # LiteLLM evaluates a virtual key's own allowlist before its team
-        # allowlist. Reconcile only the named OpenClaw production key, never
-        # every key belonging to the team.
-        if not OPENCLAW_KEY_ALIAS:
+        # allowlist, so a key can 403 even when its team is authorized.
+        # Reconcile only the named keys, never every key of the team.
+        team_keys = data.get("keys", []) if isinstance(data, dict) else []
+        if OPENCLAW_KEY_ALIAS:
+            _reconcile_key_models(
+                OPENCLAW_KEY_ALIAS,
+                OPENCLAW_TEAM_REQUIRED_MODELS,
+                team_keys=team_keys,
+            )
+        if SAUVAGE_KEY_ALIAS and SAUVAGE_KEY_REQUIRED_MODELS:
+            _reconcile_key_models(
+                SAUVAGE_KEY_ALIAS,
+                SAUVAGE_KEY_REQUIRED_MODELS,
+                team_keys=team_keys,
+            )
+
+
+    def _reconcile_key_models(
+        key_alias: str,
+        required_models: tuple[str, ...],
+        team_keys: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Additively union required_models onto one named key's own allowlist.
+
+        The key is resolved from the latest /team/info payload when it is a
+        member of that team; otherwise it is looked up by alias via /key/list,
+        so a key outside the reconciled team (like sauvage-shield) is covered
+        too. Only WIDENS: never creates keys and never removes models.
+        """
+        if not key_alias or not required_models:
             return
-        for key in data.get("keys", []) if isinstance(data, dict) else []:
-            if key.get("key_alias") != OPENCLAW_KEY_ALIAS:
-                continue
-            key_token = str(key.get("token") or "")
-            if not key_token:
-                log.warning("OpenClaw key %s has no updatable token", OPENCLAW_KEY_ALIAS)
-                continue
-            key_current = [str(model) for model in (key.get("models") or [])]
-            key_desired = list(key_current)
-            for model in OPENCLAW_TEAM_REQUIRED_MODELS:
-                if model not in key_desired:
-                    key_desired.append(model)
-            if key_desired == key_current:
-                continue
-            _request_json(
-                "POST",
-                f"{LITELLM_BASE_URL}/key/update",
-                payload={"key": key_token, "models": key_desired},
+        key = None
+        for candidate in team_keys or []:
+            if isinstance(candidate, dict) and candidate.get("key_alias") == key_alias:
+                key = candidate
+                break
+        if key is None:
+            query = urllib.parse.urlencode(
+                {"key_alias": key_alias, "return_full_object": "true"}
+            )
+            listed = _request_json(
+                "GET",
+                f"{LITELLM_BASE_URL}/key/list?{query}",
                 headers=_litellm_headers(),
             )
-            log.info(
-                "updated OpenClaw key %s model access with required models: %s",
-                OPENCLAW_KEY_ALIAS,
-                ",".join(OPENCLAW_TEAM_REQUIRED_MODELS),
-            )
+            for candidate in (listed.get("keys") or []) if isinstance(listed, dict) else []:
+                if isinstance(candidate, dict) and candidate.get("key_alias") == key_alias:
+                    key = candidate
+                    break
+        if key is None:
+            log.warning("key %s not found in team payload nor /key/list", key_alias)
+            return
+        key_token = str(key.get("token") or "")
+        if not key_token:
+            log.warning("key %s has no updatable token", key_alias)
+            return
+        key_current = [str(model) for model in (key.get("models") or [])]
+        key_desired = list(key_current)
+        for model in required_models:
+            if model not in key_desired:
+                key_desired.append(model)
+        if key_desired == key_current:
+            return
+        _request_json(
+            "POST",
+            f"{LITELLM_BASE_URL}/key/update",
+            payload={"key": key_token, "models": key_desired},
+            headers=_litellm_headers(),
+        )
+        log.info(
+            "updated key %s model access with required models: %s",
+            key_alias,
+            ",".join(required_models),
+        )
 
 
     def managed_model_id(backend: dict[str, Any], alias: str) -> str:
@@ -5070,7 +5124,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-beef23691d3c
+        config.k8s.e-dani.com/revision: sync-08efc0abee81
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -5126,6 +5180,12 @@ spec:
             # de la lista de modelos y ensancharlas rompe el sync.
             - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,qwen38-27b,tooling,router,agent,high,max,deepseek-v4-flash-0731,qwen35-4b,cloudblue/gpt-5.6-sol,cloudblue/gpt-5.6-terra,cloudblue/gpt-5.6-luna,cloudblue/gpt-5.5,cloudblue/gpt-5.4,cloudblue/gpt-5.4-mini,cloudblue/gpt-5.3-codex-spark,cloudblue/codex-auto-review,e-dani/gpt-5.6-sol,e-dani/gpt-5.6-terra,e-dani/gpt-5.6-luna,e-dani/gpt-5.5,e-dani/gpt-5.4,e-dani/gpt-5.4-mini,e-dani/gpt-5.3-codex-spark,e-dani/codex-auto-review" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
+            # Key del bot sauvage-shield: su allowlist se declara AQUI (GitOps)
+            # y _reconcile_key_models la re-aplica cada ciclo. Fuera del equipo
+            # openclaw: se resuelve por /key/list en vez de por el payload del
+            # team. Aditivo, como el de OpenClaw: nunca quita modelos.
+            - { name: SAUVAGE_KEY_ALIAS, value: "sauvage-shield" }
+            - { name: SAUVAGE_KEY_REQUIRED_MODELS, value: "tooling,gpt-5.6-luna,qwen35-4b" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }

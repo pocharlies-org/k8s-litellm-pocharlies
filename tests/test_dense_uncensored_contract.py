@@ -55,6 +55,8 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     text = MANIFEST.read_text()
     assert 'OPENCLAW_TEAM_ID, value: "openclaw"' in text
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
+    assert 'SAUVAGE_KEY_ALIAS, value: "sauvage-shield"' in text
+    assert 'SAUVAGE_KEY_REQUIRED_MODELS, value: "tooling,gpt-5.6-luna,qwen35-4b"' in text
     # La lista crece (union aditiva), asi que se comprueba pertenencia y no el
     # literal: lo que importa aqui es que `qwen38-27b` siga concedido.
     match = re.search(r'OPENCLAW_TEAM_REQUIRED_MODELS, value: "([^"]*)"', text)
@@ -71,9 +73,10 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert 'f"{LITELLM_BASE_URL}/team/update"' in block
     assert 'desired = list(current)' in block
     assert 'payload={"team_id": OPENCLAW_TEAM_ID, "models": desired}' in block
-    assert 'if key.get("key_alias") != OPENCLAW_KEY_ALIAS:' in block
+    assert 'candidate.get("key_alias") == key_alias' in block
     assert 'f"{LITELLM_BASE_URL}/key/update"' in block
     assert 'payload={"key": key_token, "models": key_desired}' in block
+    assert 'SAUVAGE_KEY_ALIAS' in block
     assert "/team/new" not in block
 
 
