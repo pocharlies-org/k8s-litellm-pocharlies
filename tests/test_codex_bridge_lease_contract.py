@@ -45,28 +45,15 @@ def _docs():
 def bridge():
     cm = next(d for d in _docs()
               if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "codex-bridge-code")
-    tree = ast.parse(cm["data"]["bridge.py"])
-    keep = [n for n in tree.body
-            if isinstance(n, ast.FunctionDef) and n.name in WANT_FN
-            or isinstance(n, ast.Assign)]
-    found = {n.name for n in keep if isinstance(n, ast.FunctionDef)}
-    assert WANT_FN <= found, f"bridge.py ya no define: {sorted(WANT_FN - found)}"
     mod = types.ModuleType("bridgepure")
+    # Cargar el modulo entero es seguro: main() solo corre con __name__ ==
+    # "__main__". Antes se extraian todos los ast.Assign junto a unas funciones;
+    # eso convertia cualquier nuevo global con dependencias (como ADMISSION_GATE)
+    # en un NameError aunque bridge.py fuera perfectamente valido.
+    exec(compile(cm["data"]["bridge.py"], "<bridge>", "exec"), mod.__dict__)
+    found = {name for name in WANT_FN if callable(getattr(mod, name, None))}
+    assert WANT_FN <= found, f"bridge.py ya no define: {sorted(WANT_FN - found)}"
     mod.log = lambda msg: logging.getLogger("test.bridge").info(msg)
-    # imports que usan las funciones extraidas
-    import calendar as _calendar
-    import os as _os
-    import threading as _threading
-    import time as _time
-    mod.calendar = _calendar
-    mod.os = _os
-    mod.threading = _threading
-    mod.time = _time
-    mod.json = json
-    mod.base64 = base64
-    mod.urllib = __import__("urllib")
-    import urllib.request  # asegura el submodulo para el codigo extraido
-    exec(compile(ast.Module(body=keep, type_ignores=[]), "<bridge>", "exec"), mod.__dict__)
     return mod
 
 

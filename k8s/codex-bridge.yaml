@@ -192,6 +192,7 @@ data:
     import os
     import base64
     import calendar
+    from collections import deque
     import threading
     import time
     import urllib.error
@@ -221,6 +222,20 @@ data:
     POD_NAME = os.environ.get("POD_NAME", os.uname().nodename)
     LEASE_NAME = os.environ.get("LEASE_NAME", "codex-bridge-refresh")
     LEASE_TTL = int(os.environ.get("LEASE_TTL_SECONDS", "120"))
+    # Admission del tráfico de inferencia. El upstream de ChatGPT devuelve 429
+    # por ráfaga/concurrencia, no por la cuota semanal. Cada cuenta tiene dos
+    # pods, así que dos slots por pod dejan como máximo cuatro streams por
+    # cuenta y ocho peticiones pendientes entre los hilos de un pod. La cola es
+    # FIFO y acotada: una ráfaga no puede convertir el ThreadingHTTPServer en
+    # cientos de hilos retenidos durante el timeout de 600 s.
+    MAX_INFLIGHT = int(os.environ.get("MAX_INFLIGHT", "2"))
+    MAX_QUEUE = int(os.environ.get("MAX_QUEUE", "8"))
+    ADMISSION_TIMEOUT_SECONDS = float(
+        os.environ.get("ADMISSION_TIMEOUT_SECONDS", "600")
+    )
+    ADMISSION_RETRY_AFTER_SECONDS = int(
+        os.environ.get("ADMISSION_RETRY_AFTER_SECONDS", "5")
+    )
     API = "https://kubernetes.default.svc"
     SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 
@@ -228,6 +243,133 @@ data:
     _tokens = {}
     _earliest_refresh = 0
     _last_emergency_at = 0.0
+
+
+    class AdmissionBusy(Exception):
+        """La cola acotada esta llena; no se ha leido el body del cliente."""
+
+
+    class AdmissionTimeout(Exception):
+        """El cliente espero el maximo permitido sin slot libre."""
+
+
+    class _AdmissionLease:
+        def __init__(self, gate):
+            self._gate = gate
+            self._released = False
+
+        def release(self):
+            if self._released:
+                return
+            self._released = True
+            self._gate._release()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.release()
+
+
+    class AdmissionGate:
+        """Slots y espera FIFO para las dos rutas de inferencia del puente.
+
+        No es un limite de conexiones TCP: el servidor puede aceptar una
+        conexion antes de que el handler entre aqui. Si la cola esta llena se
+        responde 503 y se cierra esa conexion; dentro del gate siempre quedan
+        como maximo ``max_inflight + max_queue`` handlers esperando.
+        """
+
+        def __init__(self, max_inflight, max_queue, timeout_seconds):
+            if max_inflight < 1 or max_queue < 0 or timeout_seconds <= 0:
+                raise ValueError("admission limits must be positive")
+            self.max_inflight = max_inflight
+            self.max_queue = max_queue
+            self.timeout_seconds = timeout_seconds
+            self._condition = threading.Condition()
+            self._active = 0
+            self._waiters = deque()
+            self._blocked_until = 0.0
+
+        def _remove_waiter(self, token):
+            try:
+                self._waiters.remove(token)
+            except ValueError:
+                return
+            self._condition.notify_all()
+
+        def acquire(self, timeout=None):
+            timeout = self.timeout_seconds if timeout is None else timeout
+            deadline = time.monotonic() + timeout
+            token = object()
+            queued = False
+            with self._condition:
+                now = time.monotonic()
+                if (
+                    self._active < self.max_inflight
+                    and not self._waiters
+                    and now >= self._blocked_until
+                ):
+                    self._active += 1
+                    return _AdmissionLease(self)
+                if len(self._waiters) >= self.max_queue:
+                    raise AdmissionBusy()
+                self._waiters.append(token)
+                queued = True
+                try:
+                    while True:
+                        now = time.monotonic()
+                        remaining = deadline - now
+                        if remaining <= 0:
+                            raise AdmissionTimeout()
+                        if (
+                            self._waiters
+                            and self._waiters[0] is token
+                            and self._active < self.max_inflight
+                            and now >= self._blocked_until
+                        ):
+                            self._waiters.popleft()
+                            queued = False
+                            self._active += 1
+                            return _AdmissionLease(self)
+                        cooldown = max(0.0, self._blocked_until - now)
+                        self._condition.wait(min(remaining, cooldown) if cooldown else remaining)
+                except BaseException:
+                    if queued:
+                        self._remove_waiter(token)
+                    raise
+
+        def _release(self):
+            with self._condition:
+                if self._active <= 0:
+                    raise RuntimeError("admission lease released without an active slot")
+                self._active -= 1
+                self._condition.notify_all()
+
+        def block_for(self, seconds):
+            """Pausa nuevas admisiones tras un 429 sin cancelar las activas."""
+            if seconds <= 0:
+                return
+            with self._condition:
+                self._blocked_until = max(
+                    self._blocked_until, time.monotonic() + seconds
+                )
+                self._condition.notify_all()
+
+        @property
+        def active(self):
+            with self._condition:
+                return self._active
+
+        @property
+        def waiting(self):
+            with self._condition:
+                return len(self._waiters)
+
+
+    ADMISSION_GATE = AdmissionGate(
+        MAX_INFLIGHT, MAX_QUEUE, ADMISSION_TIMEOUT_SECONDS
+    )
 
 
     def log(msg):
@@ -816,6 +958,28 @@ data:
         return resp
 
 
+    def upstream_error_headers(exc):
+        """Propaga Retry-After y activa un cooldown local ante un 429.
+
+        Un 429 llega casi instantaneo. Sin la pausa, liberar el slot hace que
+        los ocho waiters golpeen el mismo limite uno detras de otro. El header
+        del upstream manda cuando es numerico; si no existe (caso observado en
+        ChatGPT), cinco segundos frenan la rafaga sin comerse el timeout de 600.
+        """
+        headers = getattr(exc, "headers", None)
+        raw = headers.get("Retry-After") if headers is not None else None
+        seconds = ADMISSION_RETRY_AFTER_SECONDS
+        if raw is not None:
+            try:
+                seconds = max(1, min(int(float(raw)), int(ADMISSION_TIMEOUT_SECONDS)))
+            except (TypeError, ValueError):
+                pass
+        if getattr(exc, "code", None) == 429:
+            ADMISSION_GATE.block_for(seconds)
+            return {"Retry-After": str(seconds)}
+        return {"Retry-After": str(raw)} if raw is not None else None
+
+
     def iter_events(stream):
         """Trocea el SSE del upstream en (evento, data) sin cargarlo entero."""
         buf = b""
@@ -874,23 +1038,42 @@ data:
         def log_message(self, fmt, *args):  # silencia el log por petición de stdlib
             pass
 
-        def _json(self, code, obj):
+        def _json(self, code, obj, extra_headers=None):
             body = json.dumps(obj).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (extra_headers or {}).items():
+                self.send_header(name, str(value))
             self.end_headers()
             self.wfile.write(body)
 
-        def _error(self, code, message):
+        def _error(self, code, message, extra_headers=None):
             log(f"error {code}: {message}")
             self._json(code, {"error": {"message": message, "type": "bridge_error",
-                                        "code": code}})
+                                        "code": code}}, extra_headers)
 
         def _authorized(self):
             if not BRIDGE_API_KEY:
                 return True
             return self.headers.get("Authorization", "") == "Bearer " + BRIDGE_API_KEY
+
+        def _acquire_admission(self):
+            try:
+                return ADMISSION_GATE.acquire()
+            except AdmissionBusy:
+                reason = "bridge ocupado: cola de admision llena"
+            except AdmissionTimeout:
+                reason = "bridge ocupado: timeout esperando un slot de admision"
+            # El body sigue sin leer. Cerrar la conexion evita que los bytes que
+            # ya envio el cliente se interpreten como la siguiente peticion de
+            # este HTTP/1.1 keep-alive.
+            self.close_connection = True
+            self._error(503, reason, {
+                "Retry-After": ADMISSION_RETRY_AFTER_SECONDS,
+                "Connection": "close",
+            })
+            return None
 
         def do_GET(self):
             if self.path == "/health":
@@ -920,6 +1103,13 @@ data:
                 return self._error(404, f"not found: {self.path}")
             if not self._authorized():
                 return self._error(401, "invalid bridge api key")
+            admission = self._acquire_admission()
+            if admission is None:
+                return
+            with admission:
+                return self._do_chat_completions_admitted()
+
+        def _do_chat_completions_admitted(self):
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 req = json.loads(self.rfile.read(length) or b"{}")
@@ -932,26 +1122,42 @@ data:
             try:
                 upstream = open_upstream(payload)
             except urllib.error.HTTPError as exc:
-                detail = exc.read()[:500].decode(errors="replace")
-                return self._error(exc.code, f"upstream: {detail}")
+                extra_headers = upstream_error_headers(exc)
+                try:
+                    detail = exc.read()[:500].decode(errors="replace")
+                finally:
+                    exc.close()
+                return self._error(exc.code, f"upstream: {detail}", extra_headers)
             except Exception as exc:
                 return self._error(502, f"upstream inalcanzable: {exc!r}")
 
-            created, rid = int(time.time()), "chatcmpl-" + uuid.uuid4().hex[:24]
-            if want_stream:
-                self._stream_out(upstream, rid, created, used_model)
-            else:
+            try:
+                created, rid = int(time.time()), "chatcmpl-" + uuid.uuid4().hex[:24]
+                if want_stream:
+                    return self._stream_out(upstream, rid, created, used_model)
                 text, calls, usage = collect(upstream)
                 message = {"role": "assistant", "content": text or None}
                 if calls:
                     message["tool_calls"] = calls
-                self._json(200, {
+                return self._json(200, {
                     "id": rid, "object": "chat.completion", "created": created,
                     "model": used_model,
                     "choices": [{"index": 0, "message": message,
                                  "finish_reason": "tool_calls" if calls else "stop"}],
                     "usage": usage_block(usage),
                 })
+            except (BrokenPipeError, ConnectionResetError):
+                log("cliente cerro /v1/chat/completions")
+            except Exception as exc:
+                if want_stream:
+                    # Ya se envio HTTP 200 + cabeceras SSE: una segunda respuesta
+                    # JSON corromperia el stream. Cerrar es el unico wire valido.
+                    self.close_connection = True
+                    log(f"stream upstream interrumpido tras abrir SSE: {exc!r}")
+                    return
+                return self._error(502, f"stream upstream interrumpido: {exc!r}")
+            finally:
+                upstream.close()
 
         def _stream_out(self, upstream, rid, created, used_model):
             self.send_response(200)
@@ -991,8 +1197,8 @@ data:
                 send(final)
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                log("cliente cerró el stream")
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError) as exc:
+                log(f"stream de chat interrumpido: {exc!r}")
 
         # ── /v1/responses ──────────────────────────────────────────────────────
         #
@@ -1012,6 +1218,13 @@ data:
         def _do_responses(self):
             if not self._authorized():
                 return self._error(401, "invalid bridge api key")
+            admission = self._acquire_admission()
+            if admission is None:
+                return
+            with admission:
+                return self._do_responses_admitted()
+
+        def _do_responses_admitted(self):
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 req = json.loads(self.rfile.read(length) or b"{}")
@@ -1023,32 +1236,49 @@ data:
             try:
                 upstream = open_upstream(payload)
             except urllib.error.HTTPError as exc:
-                detail = exc.read()[:500].decode(errors="replace")
-                return self._error(exc.code, f"upstream: {detail}")
+                extra_headers = upstream_error_headers(exc)
+                try:
+                    detail = exc.read()[:500].decode(errors="replace")
+                finally:
+                    exc.close()
+                return self._error(exc.code, f"upstream: {detail}", extra_headers)
             except Exception as exc:
                 return self._error(502, f"upstream inalcanzable: {exc!r}")
 
-            if want_stream:
-                return self._relay_sse(upstream)
-            # Cliente en modo no-stream: se agrega. El objeto final lo da el
-            # propio upstream en `response.completed`... pero VIENE CON
-            # `output: []` (verificado 2026-08-12): los items se emiten por
-            # `response.output_item.done` y el objeto final NO los repite. Sin
-            # recogerlos, un cliente no-stream recibe 200 con cero texto -- el
-            # peor fallo posible, porque parece que el modelo no dijo nada.
-            final, items = None, []
-            for event, data in iter_events(upstream):
-                if event == "response.output_item.done":
-                    item = data.get("item")
-                    if item:
-                        items.append(item)
-                elif event in ("response.completed", "response.incomplete", "response.failed"):
-                    final = data.get("response") or data
-            if final is None:
-                return self._error(502, "el upstream cerró sin response.completed")
-            if not final.get("output") and items:
-                final["output"] = items
-            return self._json(200, final)
+            try:
+                if want_stream:
+                    return self._relay_sse(upstream)
+                # Cliente en modo no-stream: se agrega. El objeto final lo da el
+                # propio upstream en `response.completed`... pero VIENE CON
+                # `output: []` (verificado 2026-08-12): los items se emiten por
+                # `response.output_item.done` y el objeto final NO los repite. Sin
+                # recogerlos, un cliente no-stream recibe 200 con cero texto -- el
+                # peor fallo posible, porque parece que el modelo no dijo nada.
+                final, items = None, []
+                for event, data in iter_events(upstream):
+                    if event == "response.output_item.done":
+                        item = data.get("item")
+                        if item:
+                            items.append(item)
+                    elif event in (
+                        "response.completed", "response.incomplete", "response.failed"
+                    ):
+                        final = data.get("response") or data
+                if final is None:
+                    return self._error(502, "el upstream cerro sin response.completed")
+                if not final.get("output") and items:
+                    final["output"] = items
+                return self._json(200, final)
+            except (BrokenPipeError, ConnectionResetError):
+                log("cliente cerro /v1/responses")
+            except Exception as exc:
+                if want_stream:
+                    self.close_connection = True
+                    log(f"stream responses interrumpido tras abrir SSE: {exc!r}")
+                    return
+                return self._error(502, f"stream upstream interrumpido: {exc!r}")
+            finally:
+                upstream.close()
 
         def _relay_sse(self, upstream):
             """Reenvia el SSE del upstream sin tocarlo, trozo a trozo."""
@@ -1063,8 +1293,8 @@ data:
                     if raw.endswith(b"\n\n") or raw == b"\n":
                         self.wfile.flush()
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                log("cliente cerró el stream de /v1/responses")
+            except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError) as exc:
+                log(f"stream de /v1/responses interrumpido: {exc!r}")
 
 
     def main():
@@ -1296,7 +1526,7 @@ spec:
       annotations:
         # El codigo del puente vive en un ConfigMap y se lee al arrancar: sin esto
         # un cambio en bridge.py se sincroniza y NO rota el pod.
-        config.k8s.e-dani.com/revision: bridge-e222a3c5eed4
+        config.k8s.e-dani.com/revision: bridge-7a828a27b1a5
     spec:
       serviceAccountName: codex-bridge
       enableServiceLinks: false
@@ -1324,17 +1554,18 @@ spec:
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-auth }
             - { name: LEASE_NAME, value: codex-bridge-refresh }
+            - { name: MAX_INFLIGHT, value: "2" }
+            - { name: MAX_QUEUE, value: "8" }
+            - { name: ADMISSION_TIMEOUT_SECONDS, value: "600" }
+            - { name: ADMISSION_RETRY_AFTER_SECONDS, value: "5" }
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: POD_NAMESPACE
               valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
             # Mismo motivo que en `codex-bridge-edani`, donde esta la medicion
-            # entera: es el MISMO bridge.py y el mismo ThreadingHTTPServer sin
-            # tope de hilos. Aqui todavia no ha reventado solo porque la cuenta
-            # cloudblue esta con la cuota agotada y contesta 429 sin procesar
-            # cuerpo. Cuando vuelva la cuota -- o cuando el fallback de
-            # `cloudblue/* -> e-dani/*` deje de hacer falta -- este empieza a
-            # trabajar y hace exactamente lo mismo. Ponerlo ahora es gratis.
+            # entera. El gate limita a 2 activos + 8 waiters, pero el servidor
+            # aun crea hilos efimeros para rechazar con 503 una rafaga que ya
+            # lleno la cola. Mantener dos arenas sigue acotando ese churn.
             - { name: MALLOC_ARENA_MAX, value: "2" }
             - { name: MALLOC_TRIM_THRESHOLD_, value: "131072" }
           volumeMounts:
@@ -1500,7 +1731,7 @@ spec:
       annotations:
         # Igual que el otro: el codigo se lee al arrancar, asi que un cambio en
         # bridge.py NO rota el pod sin tocar esto.
-        config.k8s.e-dani.com/revision: bridge-e222a3c5eed4
+        config.k8s.e-dani.com/revision: bridge-7a828a27b1a5
     spec:
       serviceAccountName: codex-bridge-edani
       enableServiceLinks: false
@@ -1528,6 +1759,10 @@ spec:
             - { name: UPSTREAM_MODEL, value: gpt-5.6-sol }
             - { name: SECRET_NAME, value: codex-bridge-edani-auth }
             - { name: LEASE_NAME, value: codex-bridge-edani-refresh }
+            - { name: MAX_INFLIGHT, value: "2" }
+            - { name: MAX_QUEUE, value: "8" }
+            - { name: ADMISSION_TIMEOUT_SECONDS, value: "600" }
+            - { name: ADMISSION_RETRY_AFTER_SECONDS, value: "5" }
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: POD_NAMESPACE
@@ -1545,11 +1780,12 @@ spec:
             #     41 arenas, 636MB usados de 645MB de RSS anonima total.
             # O sea el 98,6% de la memoria del proceso metida en arenas.
             #
-            # El puente es un ThreadingHTTPServer SIN tope de hilos (se han
-            # contado entre 4 y 35 vivos a la vez, y HTTP/1.1 los mantiene con
-            # keep-alive). glibc le da una arena propia a cada hilo. Con nproc=8
-            # el techo por defecto es 8*nproc = 64 arenas de 64MB, o sea 4GB de
-            # margen para reventar un limite de 1Gi.
+            # Antes del gate de admision del 2026-08-20, el puente era un
+            # ThreadingHTTPServer SIN tope (se contaron entre 4 y 35 hilos vivos,
+            # y HTTP/1.1 los mantenia con keep-alive). Ahora solo retiene 2
+            # activos + 8 waiters por pod; puede crear hilos efimeros para
+            # rechazar el exceso. glibc da una arena a cada hilo y, con nproc=8,
+            # el techo por defecto sigue siendo 8*nproc = 64 arenas de 64MB.
             #
             # PRECISION SOBRE EL MECANISMO (auditoria adversarial del 15-08, que
             # corrigio la primera version de este comentario). Es FALSO que "las
