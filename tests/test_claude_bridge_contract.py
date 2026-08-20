@@ -141,4 +141,5 @@ def test_image_workflow_uses_arc_and_publishes_only_immutable_tags():
     )
     assert 'tag="sha-${GITHUB_SHA::12}"' in commands
     assert ":latest" not in commands
-    assert '"visibility":"public"' in commands
+    assert "Verify unauthenticated cluster pulls" in str(job["steps"])
+    assert "repository%3Apocharlies-org%2Fclaude-subscription-bridge%3Apull" in commands

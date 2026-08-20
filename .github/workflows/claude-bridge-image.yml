@@ -53,14 +53,17 @@ jobs:
         run: |
           tag="sha-${GITHUB_SHA::12}"
           docker push "$IMAGE:$tag"
-      - name: Allow unauthenticated cluster pulls
+      - name: Verify unauthenticated cluster pulls
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_PATH: pocharlies-org/claude-subscription-bridge
         run: |
-          curl --fail --silent --show-error --request PATCH \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/claude-subscription-bridge" \
-            --data '{"visibility":"public"}'
+          tag="sha-${GITHUB_SHA::12}"
+          token="$(curl --fail --silent --show-error \
+            "https://ghcr.io/token?scope=repository%3Apocharlies-org%2Fclaude-subscription-bridge%3Apull" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+          test -n "$token"
+          curl --fail --silent --show-error --head \
+            --header "Authorization: Bearer $token" \
+            --header "Accept: application/vnd.oci.image.index.v1+json" \
+            "https://ghcr.io/v2/$IMAGE_PATH/manifests/$tag"
