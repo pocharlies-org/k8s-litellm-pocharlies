@@ -876,12 +876,18 @@ data:
     # gateway y se pone la nueva.
     #
     # `master` entra porque es la key con la que se mide desde dentro del cluster.
+    # `playground` entra (2026-08-20) porque es la key de prueba/sonda del playground
+    # del dashboard DGX: es de SOLO LECTURA (no una herramienta con escritura), y el
+    # owner quiere explicitamente que la superficie de prueba del playground pueda
+    # mandar peticiones a la ruta abliterada para comparar (A/B) censurado vs
+    # no-censurado. El paso de la key dedicada sigue siendo del owner: en cuanto
+    # exista, se quita de aqui la del gateway y se pone la nueva.
     # Vacio = sin restriccion, y es DELIBERADO que el default NO sea vacio.
     UNCENSORED_ALLOWED_KEY_ALIASES = frozenset(
         alias.strip()
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
-            "openclaw-qwen36-prod,master",
+            "openclaw-qwen36-prod,master,playground",
         ).split(",")
         if alias.strip()
     )
@@ -5237,7 +5243,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-fe579b4e4db2
+        config.k8s.e-dani.com/revision: config-a6e246871e52
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
