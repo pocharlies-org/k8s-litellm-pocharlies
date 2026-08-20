@@ -531,14 +531,13 @@ data:
       success_callback:
       - db
       - prometheus
-      - langfuse
       failure_callback:
       - prometheus
-      - langfuse
       service_callback:
       - prometheus_system
       callbacks:
       - litellm_strip_params.proxy_handler_instance
+      - langfuse_otel
       drop_params: true
       set_verbose: false
       require_auth_for_metrics_endpoint: false
@@ -5269,7 +5268,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e32711214426
+        config.k8s.e-dani.com/revision: config-051b1514a86f
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
