@@ -1,0 +1,53 @@
+name: Claude bridge image
+
+on:
+  pull_request:
+    paths:
+      - claude-bridge/**
+      - .github/workflows/claude-bridge-image.yml
+  push:
+    branches: ["**"]
+    paths:
+      - claude-bridge/**
+      - .github/workflows/claude-bridge-image.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: arc-k8s
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Require x86_64 runner
+        run: test "$(uname -m)" = "x86_64"
+      - name: Build immutable image
+        env:
+          IMAGE: ghcr.io/pocharlies-org/claude-subscription-bridge
+        run: |
+          tag="sha-${GITHUB_SHA::12}"
+          docker build --pull --tag "$IMAGE:$tag" claude-bridge
+      - name: Log in to GHCR
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish immutable image
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          IMAGE: ghcr.io/pocharlies-org/claude-subscription-bridge
+        run: |
+          tag="sha-${GITHUB_SHA::12}"
+          docker push "$IMAGE:$tag"
