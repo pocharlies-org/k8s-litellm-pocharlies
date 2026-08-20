@@ -28,6 +28,46 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         return matches[0]
 
+    def resources(self, kind):
+        return [
+            document
+            for document in yaml.safe_load_all(MANIFEST.read_text())
+            if document and document.get("kind") == kind
+        ]
+
+    def test_litellm_is_not_published_through_the_edge_or_cloudflare(self):
+        """The API hostname is reachable only through the LAN/Tailscale route."""
+        public = [
+            resource
+            for resource in self.resources("IngressRoute")
+            if resource.get("metadata", {}).get("name") == "litellm-public"
+        ]
+        self.assertEqual(public, [], "litellm-public would reintroduce Cloudflare")
+
+        lan = self.resource("IngressRoute", "litellm-lan")
+        matches = [route["match"] for route in lan["spec"]["routes"]]
+        internal = next(match for match in matches if "Host(`litellm.e-dani.com`)" in match)
+        self.assertIn("ClientIP(`192.168.50.0/24`)", internal)
+        self.assertIn("ClientIP(`100.64.0.0/10`)", internal)
+        self.assertNotIn("traefik-edge", lan["spec"].get("ingressClassName", ""))
+
+    def test_every_litellm_request_timeout_is_600_seconds(self):
+        config = self.resource("ConfigMap", "litellm-config")["data"]["config.yaml"]
+        parsed = yaml.safe_load(config)
+        self.assertEqual(parsed["litellm_settings"]["request_timeout"], 600)
+        self.assertEqual(parsed["router_settings"]["timeout"], 600)
+        model_list = parsed["model_list"]
+        self.assertGreater(len(model_list), 0)
+        explicit_timeouts = {
+            entry["litellm_params"]["timeout"]
+            for entry in model_list
+            if "timeout" in entry.get("litellm_params", {})
+        }
+        self.assertEqual(
+            explicit_timeouts,
+            {600},
+        )
+
     def test_litellm_uses_service_networking_without_a_host_port(self):
         deployment = self.resource("Deployment", "litellm")
         pod_template = deployment["spec"]["template"]
