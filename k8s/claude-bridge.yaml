@@ -99,7 +99,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: bridge
-          image: ghcr.io/pocharlies-org/claude-subscription-bridge:sha-1d587cbb9bed
+          image: ghcr.io/pocharlies-org/claude-subscription-bridge:sha-5af2a01dbd26
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
