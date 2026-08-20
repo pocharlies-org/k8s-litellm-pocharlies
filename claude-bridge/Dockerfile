@@ -1,8 +1,11 @@
-FROM node:22.18.0-bookworm-slim AS test
+FROM node:22.18.0-bookworm-slim AS dependencies
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --omit=dev
+
+FROM dependencies AS test
+
 COPY src ./src
 COPY test ./test
 RUN npm test && touch /tmp/claude-bridge-tests-passed
@@ -15,7 +18,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+COPY --from=dependencies /app/node_modules ./node_modules
 
 COPY src ./src
 COPY --from=test /tmp/claude-bridge-tests-passed /tmp/claude-bridge-tests-passed
