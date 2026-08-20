@@ -1723,7 +1723,8 @@ spec:
   # publicar este cambio. Un DEPLOYMENT por cuenta mantiene separados los
   # refresh tokens; desde 2026-08-14 cada cuenta corre master/replica: dos pods
   # sirven y refrescar exige el Lease `codex-bridge-edani-refresh`.
-  replicas: 2
+  # Temporalmente desactivado: la sesión OAuth de e-dani está invalidada.
+  replicas: 0
   selector: { matchLabels: { app: codex-bridge-edani } }
   template:
     metadata:
@@ -1893,6 +1894,7 @@ metadata:
   namespace: litellm
 spec:
   schedule: "47 */6 * * *"
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
