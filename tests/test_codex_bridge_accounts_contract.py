@@ -128,6 +128,27 @@ def test_accounts_publish_prefixed_ids_and_desktop_personal_aliases():
     } == set(LEGACY_PERSONAL_ALIASES)
 
 
+def test_desktop_cloudblue_aliases_keep_the_prefixed_fallback_network():
+    """LiteLLM keys fallbacks by exact model_group, not by equivalent deployment.
+
+    Codex Desktop sends the bare model id. If only the ``cloudblue/<id>`` source
+    is listed, a CloudBlue 429 ends in ``No fallback model group found`` instead
+    of moving to the independent e-dani account.
+    """
+    documents = _documents(MANIFEST)
+    config_map = _resource(documents, "ConfigMap", "litellm-config")
+    config = yaml.safe_load(config_map["data"]["config.yaml"])
+    entries = config["router_settings"]["fallbacks"]
+    fallbacks = {
+        source: destinations
+        for entry in entries
+        for source, destinations in entry.items()
+    }
+
+    for model in PUBLISHED_MODELS["cloudblue"]:
+        assert fallbacks[model] == fallbacks[f"cloudblue/{model}"]
+
+
 def test_personal_bridge_is_enabled_with_its_own_secret():
     documents = _documents(BRIDGES)
     deployment = _resource(documents, "Deployment", "codex-bridge-edani")

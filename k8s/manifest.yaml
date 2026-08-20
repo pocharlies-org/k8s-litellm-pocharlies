@@ -763,6 +763,21 @@ data:
       # su trafico pasa a consumir la cuenta personal (e-dani), que es la que usa
       # Codex. Es lo que se quiere —contestar en vez de fallar— pero si un dia
       # e-dani se queda sin cuota antes de tiempo, mirar aqui primero.
+      #
+      # Los alias desnudos de Codex Desktop son deployments distintos a ojos del
+      # Router aunque apunten al mismo bridge que `cloudblue/*`. Los fallbacks se
+      # buscan por model_group exacto y NO se heredan: el 20-08 un 429 de
+      # `gpt-5.6-sol` termino en `No fallback model group found` mientras la red
+      # equivalente de `cloudblue/gpt-5.6-sol` estaba declarada. Se replica la
+      # misma salida hacia la cuenta e-dani para todos los aliases Desktop.
+      - gpt-5.6-sol: ["e-dani/gpt-5.6-sol"]
+      - gpt-5.6-terra: ["e-dani/gpt-5.6-terra"]
+      - gpt-5.6-luna: ["e-dani/gpt-5.6-luna"]
+      - gpt-5.5: ["e-dani/gpt-5.5"]
+      - gpt-5.4: ["e-dani/gpt-5.4"]
+      - gpt-5.4-mini: ["e-dani/gpt-5.4-mini"]
+      - gpt-5.3-codex-spark: ["e-dani/gpt-5.3-codex-spark"]
+      - codex-auto-review: ["e-dani/codex-auto-review"]
       - cloudblue/gpt-5.6-sol: ["e-dani/gpt-5.6-sol"]
       - cloudblue/gpt-5.6-terra: ["e-dani/gpt-5.6-terra"]
       - cloudblue/gpt-5.6-luna: ["e-dani/gpt-5.6-luna"]
@@ -5335,7 +5350,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-05a2e953e649
+        config.k8s.e-dani.com/revision: config-f2a345949b59
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
