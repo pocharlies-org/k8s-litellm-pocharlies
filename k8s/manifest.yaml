@@ -324,13 +324,45 @@ data:
     # 393216: es el suelo de los dos, y el techo de contexto que se pidio. Un
     # cliente que declare 384k y aterrice en qwen38 se pasaria de ventana; al
     # contrario solo desaprovecha.
+    # 2026-08-20: max_parallel_requests 6 -> 32 en los dos alias directos de
+    # DeepSeek, y 4 -> 32 en el pool de capacidad de mas abajo. ESTE era el 429.
+    #
+    # max_parallel_requests NO ENCOLA. Cuando el contador en vuelo de la
+    # deployment pasa del tope, LiteLLM levanta RateLimitError (HTTP 429) en el
+    # acto. vLLM si encola: mas alla de MAX_NUM_SEQS las peticiones esperan en su
+    # waiting queue, no se rechazan. Poner el tope del proxy a la altura de los
+    # slots de EJECUCION del motor convertia "espera dos segundos" en "429 too
+    # many requests", y el cliente lo remata con "exceeded retry limit".
+    #
+    # Por que tumbaba a Codex Y a DeepSeek A LA VEZ: comparten la salida. Con
+    # num_retries 1 el unico reintento cae casi siempre por encima del mismo
+    # tope, y entonces dispara la red de fallbacks -- donde `tooling` y
+    # `deepseek-v4-flash-0731` caen LOS DOS a cloudblue/e-dani gpt-5.6-luna. Si
+    # el plan de ChatGPT esta gastado, eso devuelve OTRO 429
+    # (`usage_limit_reached`): las dos ramas mueren con el mismo codigo y parece
+    # culpa del upstream cuando el 429 lo genera ESTE fichero.
+    #
+    # La aritmetica, con numeros ya medidos en este repo (ver el comentario de
+    # `replicas` del Deployment: sweep-line sobre 89.672 peticiones de 48 h):
+    # concurrencia media 6,68 / p99 37 / pico 77. Con 2 replicas el p99 son ~19
+    # por proceso contra un tope de 4-6. Esto no recortaba picos raros: rechazaba
+    # trafico NORMAL, porque la media ya estaba por encima del tope de 4. Medido
+    # hoy en el proxy vivo: litellm_deployment_failure_responses_total 281 sobre
+    # 2.811, y litellm_deployment_successful_fallbacks_total = 2 -- la red no
+    # salvaba nada porque todos los caminos acaban en un tope o en una cuota
+    # agotada.
+    #
+    # 32 por proceso (64 entre las 2 replicas) cubre el p99 con margen y sigue
+    # acotando una fuga. Quien debe decidir la saturacion es el motor con su
+    # cola, el unico que sabe cuanta KV le queda; el proxy no tiene esa
+    # informacion y no deberia estar decidiendo con ella.
     - model_name: deepseek-v4-flash-0731
       litellm_params:
         model: openai/deepseek-v4-flash-0731
         api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 6
+        max_parallel_requests: 32
       model_info:
         mode: chat
         backend: dgx1+dgx2
@@ -366,7 +398,7 @@ data:
         api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 6
+        max_parallel_requests: 32
         extra_body: { cache_salt: "refusal:1.5" }
       model_info:
         mode: chat
@@ -459,7 +491,7 @@ data:
         api_base: http://tooling.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 4
+        max_parallel_requests: 32
       model_info: &tooling_pool_info
         mode: chat
         backend: profile-resident
@@ -5303,7 +5335,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a6e246871e52
+        config.k8s.e-dani.com/revision: config-05a2e953e649
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
