@@ -5174,12 +5174,20 @@ spec:
     spec:
       enableServiceLinks: false
       terminationGracePeriodSeconds: 720
-      # Sin node-pool: `ubuntu` (el x86 de la RTX) no lo tiene y queremos una
-      # replica alli. La lista es explicita -- sauvage tambien es amd64 y NO
-      # entra: sus 128G son de los 150 pods que ya corren alli.
-      # `ubuntu` lleva un taint BLANDO pool=dev:PreferNoSchedule: sin tolerarlo
-      # el scheduler lo deja siempre para el final y la 4a replica acaba doblada
-      # en un ks5, que es exactamente lo que paso en el primer rollout (2/1/1/0).
+      # 2026-08-21, decision del owner: TODO litellm corre EXCLUSIVAMENTE en
+      # `ubuntu` (el x86 de la RTX). La lista pasa de cuatro nodos a uno.
+      #
+      # LO QUE SE PIERDE, escrito para que nadie lo descubra en un incidente:
+      # con un solo nodo elegible las 2 replicas ya NO dan HA de nodo -- protegen
+      # de la caida de un pod, no de la del host. Si `ubuntu` cae, cae el proxy de
+      # TODO el trafico LLM. Y `ubuntu` deja de ser drenable sin corte: al
+      # cordonarlo el pod desalojado no tiene donde reprogramarse, se queda
+      # Pending, y el PDB (maxUnavailable 1) bloquea el desalojo del segundo. El
+      # drain se cuelga. Es inherente a fijar a un nodo, no un fallo de config.
+      #
+      # `ubuntu` lleva un taint BLANDO pool=dev:PreferNoSchedule. Se sigue
+      # tolerando: con un unico nodo elegible no puede bloquear, pero sin la
+      # toleracion el scheduler lo penaliza en la puntuacion sin necesidad.
       tolerations:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
       affinity:
@@ -5189,7 +5197,13 @@ spec:
               - matchExpressions:
                   - key: kubernetes.io/hostname
                     operator: In
-                    values: [ks5-cp-1, ks5-cp-2, ks5-cp-3, ubuntu]
+                    values: [ubuntu]
+      # 2026-08-21: con UN solo dominio esta restriccion es inerte -- todos los
+      # pods caen en el mismo hostname, asi que el skew es siempre 0 y nunca puede
+      # violarse. Se conserva a proposito: si algun dia se vuelve a ensanchar el
+      # nodeAffinity, la maquinaria de reparto vuelve a funcionar sola, y los
+      # contratos de tests/test_litellm_rollout_shape_contract.py la leen.
+      #
       # ScheduleAnyway y NO DoNotSchedule (2026-08-19). Este es el cambio que de
       # verdad desserializa el rollout; bajar replicas por si solo NO bastaba.
       #
