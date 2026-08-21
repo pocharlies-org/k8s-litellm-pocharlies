@@ -1960,7 +1960,7 @@ data:
     # backend que iba a servir declare que ve (decision del owner). Se apaga entero
     # con LITELLM_VISION_FALLBACK_MODEL="".
     VISION_FALLBACK_MODEL = os.environ.get(
-        "LITELLM_VISION_FALLBACK_MODEL", ""
+        "LITELLM_VISION_FALLBACK_MODEL", "deepseek-v4-flash-0731"
     )
     # Nombres de CAPACIDAD, los unicos que se desvian. Un nombre de MODELO
     # (`deepseek-v4-flash-0731`, `dense`, `ornith-1.0`...) NO se desvia jamas, por
@@ -5051,7 +5051,7 @@ spec:
             # openclaw: se resuelve por /key/list en vez de por el payload del
             # team. Aditivo, como el de OpenClaw: nunca quita modelos.
             - { name: SAUVAGE_KEY_ALIAS, value: "sauvage-shield" }
-            - { name: SAUVAGE_KEY_REQUIRED_MODELS, value: "tooling,gpt-5.6-luna,qwen35-4b" }
+            - { name: SAUVAGE_KEY_REQUIRED_MODELS, value: "tooling,qwen35-4b" }
             - { name: TEAM_RECONCILE_SECONDS, value: "300" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
@@ -5169,7 +5169,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c2859c5ce4d1
+        config.k8s.e-dani.com/revision: config-df26eac315dc
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

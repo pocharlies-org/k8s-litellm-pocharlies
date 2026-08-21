@@ -153,16 +153,22 @@ def test_router_solo_selecciona_los_cuatro_tiers(hook):
     assert _chain(hook, "OFF") == ("tooling",)
     for category in ("LOW", "HIGH", "MAX"):
         chain = _chain(hook, category)
-        assert chain[-1] == "cloudblue/gpt-5.6-luna"
         assert not any(alias.startswith("dense") for alias in chain)
 
 
-def test_every_chain_ends_in_independent_cloud_fallback(hook):
+def test_ninguna_cadena_sale_a_la_nube(hook):
+    """2026-08-21: retirado el catalogo ChatGPT/Codex. Invierte el contrato viejo.
+
+    La nube era el unico destino INDEPENDIENTE: `agent`/`high`/`max` son nombres de
+    capacidad del MISMO backend, y `qwen38-27b` es el residente del OTRO perfil de
+    computo, que por diseno nunca esta vivo a la vez. Al quitarla no queda a donde
+    degradar y la cadena pasa a un solo elemento A PROPOSITO: un residente caido
+    sale como error visible, en vez de desviarse a un backend que no es el pedido.
+    """
     for category in ("LOW", "HIGH", "MAX"):
         chain = _chain(hook, category)
-        assert len(chain) >= 2, f"{category} no tiene a donde degradar: {chain}"
-        assert len(set(chain)) == len(chain), f"{category} repite un alias: {chain}"
-        assert chain[-1] == "cloudblue/gpt-5.6-luna", chain
+        assert len(chain) == 1, f"{category} ya no debe degradar: {chain}"
+        assert not any("/" in alias for alias in chain), chain
 
 
 def test_degrade_walks_to_the_first_live_alias(hook):
@@ -171,9 +177,9 @@ def test_degrade_walks_to_the_first_live_alias(hook):
 
     assert hook._degrade("HIGH", alias_live=lambda a: True) == (tools[0], "primary")
 
-    # Solo el ultimo vivo -> tiene que llegar hasta el, no pararse en el primero.
-    assert hook._degrade("HIGH", alias_live=lambda a: a == tools[-1]) \
-        == (tools[-1], "degraded")
+    # 2026-08-21: cadena de UN elemento. Sin destino independiente ya no hay paso
+    # intermedio "degraded"; se pasa de primary a dry directamente.
+    assert len(tools) == 1, tools
 
     # Cadena seca: devuelve el primario y lo marca, en vez de despachar a ciegas.
     assert hook._degrade("HIGH", alias_live=lambda a: False) == (tools[0], "dry")
@@ -232,16 +238,13 @@ def test_solo_tooling_degrada_y_los_nombres_de_modelo_no(hook):
             f"{explicit} degradaria en silencio")
 
 
-def test_tooling_usa_luna_si_el_alias_local_no_esta_registrado(hook):
+def test_tooling_sin_alias_local_registrado_sale_seco(hook):
     """Lo importante de fusionar el -ha dentro de `tooling`: en el caso normal no
     cambia NADA. Solo actua cuando el alias no esta, que es el hueco donde antes
     salia un 400 duro que `router_settings.fallbacks` no puede cubrir, porque el
     proxy rechaza el nombre antes de que corra el Router."""
     entry = hook.CAPABILITY_CHAINS["tooling"]
     assert hook._walk_chain(entry, alias_live=lambda a: True) == ("tooling", "primary")
-    assert hook._walk_chain(
-        entry, alias_live=lambda a: a == "cloudblue/gpt-5.6-luna"
-    ) == ("cloudblue/gpt-5.6-luna", "degraded")
     assert hook._walk_chain(entry, alias_live=lambda a: False) == ("tooling", "dry")
 
 
@@ -271,7 +274,7 @@ def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
         None,
         "compute_mode_transition",
     )
-    assert hook.TOOLING_LUNA_FALLBACKS == ("cloudblue/gpt-5.6-luna",)
+    assert hook.TOOLING_LUNA_FALLBACKS == ()
 
     local_live = lambda alias: alias in {"deepseek-v4-flash-0731", "qwen38-27b"}
     assert hook._tooling_route_for_state(ready_tp, local_live) == (
@@ -281,11 +284,9 @@ def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
         "qwen38-27b", "primary", None
     )
     # A stale local registration cannot win while the profile is switching.
-    stale_local_and_luna = lambda alias: alias in {
-        "deepseek-v4-flash-0731", "qwen38-27b", "cloudblue/gpt-5.6-luna"
-    }
-    assert hook._tooling_route_for_state(transition, stale_local_and_luna) == (
-        "cloudblue/gpt-5.6-luna", "degraded", "compute_mode_transition"
+    stale_local = lambda alias: alias in {"deepseek-v4-flash-0731", "qwen38-27b"}
+    assert hook._tooling_route_for_state(transition, stale_local) == (
+        None, "dry", "compute_mode_transition"
     )
     assert hook._tooling_route_for_state(ready_creative, lambda alias: False) == (
         None, "dry", "compute_profile_target_unavailable"
@@ -328,9 +329,11 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
         for src, dsts in entry.items():
             graph.setdefault(src, []).extend(dsts or [])
 
-    # Alias registrado pero residente no sano: Luna CloudBlue es la única red.
-    assert graph.get("tooling") == ["cloudblue/gpt-5.6-luna"]
-    assert graph.get("cloudblue/gpt-5.6-luna") is None
+    # 2026-08-21: `tooling` se queda SIN red. Su unico destino era la nube.
+    assert graph.get("tooling") is None
+    assert not [
+        d for dsts in graph.values() for d in dsts if d.startswith("cloudblue/")
+    ]
 
     # Los tres perfiles con razonamiento conservan la red local por cooldown.
     destinos = {p_: graph.get(p_) for p_ in ("agent", "high", "max")}

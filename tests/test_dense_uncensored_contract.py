@@ -56,7 +56,7 @@ def test_openclaw_team_permission_is_reconciled_without_removing_models():
     assert 'OPENCLAW_TEAM_ID, value: "openclaw"' in text
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
     assert 'SAUVAGE_KEY_ALIAS, value: "sauvage-shield"' in text
-    assert 'SAUVAGE_KEY_REQUIRED_MODELS, value: "tooling,gpt-5.6-luna,qwen35-4b"' in text
+    assert 'SAUVAGE_KEY_REQUIRED_MODELS, value: "tooling,qwen35-4b"' in text
     # La lista crece (union aditiva), asi que se comprueba pertenencia y no el
     # literal: lo que importa aqui es que `qwen38-27b` siga concedido.
     match = re.search(r'OPENCLAW_TEAM_REQUIRED_MODELS, value: "([^"]*)"', text)

@@ -86,10 +86,7 @@ def _policy(hook, key_alias, data=None):
 
 def test_aurora_uses_the_healthy_local_resident(hook):
     request, disabled = _policy(hook, "aurora-rca")
-    live = lambda alias: alias in {
-        "deepseek-v4-flash-0731",
-        "cloudblue/gpt-5.6-luna",
-    }
+    live = lambda alias: alias == "deepseek-v4-flash-0731"
 
     assert disabled is True
     assert request["disable_fallbacks"] is True
@@ -98,12 +95,12 @@ def test_aurora_uses_the_healthy_local_resident(hook):
     ) == ("deepseek-v4-flash-0731", "primary", None)
 
 
-def test_aurora_does_not_use_luna_when_the_local_alias_is_absent(hook):
+def test_aurora_falla_cerrado_si_el_alias_local_no_esta(hook):
     _, disabled = _policy(hook, "aurora-rca")
-    only_cloudblue = lambda alias: alias == "cloudblue/gpt-5.6-luna"
+    nada_vivo = lambda alias: False
 
     assert hook._tooling_route_for_state(
-        READY_TP, only_cloudblue, disable_fallbacks=disabled
+        READY_TP, nada_vivo, disable_fallbacks=disabled
     ) == (None, "dry", "compute_profile_target_unavailable")
 
 
@@ -126,19 +123,22 @@ def test_registered_but_unhealthy_keeps_the_router_kill_switch(hook):
 
 
 @pytest.mark.parametrize("key_alias", ["keep", "k8sgpt", "openclaw", "unknown"])
-def test_other_keys_keep_the_global_cloud_fallback(hook, key_alias):
+def test_las_demas_keys_ya_no_tienen_red_de_nube(hook, key_alias):
+    """2026-08-21: retirado el catalogo ChatGPT/Codex.
+
+    La politica de key SIGUE distinguiendo a Aurora (falla cerrado) del resto -- por
+    eso se conservan las aserciones sobre `disabled` y `disable_fallbacks`. Lo que
+    desaparece es el salto que esa politica deshabilitaba: sin destino independiente
+    las dos ramas acaban igual, en `dry`.
+    """
     request, disabled = _policy(hook, key_alias)
-    only_cloudblue = lambda alias: alias == "cloudblue/gpt-5.6-luna"
+    nada_vivo = lambda alias: False
 
     assert disabled is False
     assert "disable_fallbacks" not in request
     assert hook._tooling_route_for_state(
-        READY_TP, only_cloudblue, disable_fallbacks=disabled
-    ) == (
-        "cloudblue/gpt-5.6-luna",
-        "degraded",
-        "compute_profile_target_unavailable",
-    )
+        READY_TP, nada_vivo, disable_fallbacks=disabled
+    ) == (None, "dry", "compute_profile_target_unavailable")
 
 
 def test_policy_is_wired_before_both_tooling_resolution_paths():
@@ -193,5 +193,9 @@ def test_global_tooling_fallback_remains_for_every_other_key():
         for source, destinations in edge.items()
     }
 
-    assert graph["tooling"] == ["cloudblue/gpt-5.6-luna"]
-    assert "cloudblue/gpt-5.6-luna" not in graph
+    assert "tooling" not in graph, (
+        "tooling ya no sale a la nube: su unica red era cloudblue/gpt-5.6-luna"
+    )
+    assert not [
+        dst for dsts in graph.values() for dst in dsts if dst.startswith("cloudblue/")
+    ]

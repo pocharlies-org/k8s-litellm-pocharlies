@@ -108,8 +108,14 @@ def test_nombre_de_modelo_sin_veredicto_no_se_desvia(hook):
 
 
 def test_nombre_de_modelo_que_declara_que_NO_ve_si_se_desvia(hook):
-    """Sabemos que iba a fallar seguro: desviar no puede estropear ninguna medida."""
-    assert _target(hook, _con_imagen(), "deepseek-v4-flash-0731", "deepseek-v4-flash-0731",
+    """Sabemos que iba a fallar seguro: desviar no puede estropear ninguna medida.
+
+    2026-08-21: el ejemplo pasa a `qwen35-4b`, que es el unico del catalogo que
+    declara `supports_vision: false`. Antes usaba `deepseek-v4-flash-0731`, que
+    desde la retirada de ChatGPT es el PROPIO destino de la desviacion: pedirle
+    que se desvie a si mismo es un no-op, no un fallo del contrato.
+    """
+    assert _target(hook, _con_imagen(), "qwen35-4b", "qwen35-4b",
                    ve=False) == hook.VISION_FALLBACK_MODEL
 
 
