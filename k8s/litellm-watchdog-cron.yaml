@@ -72,6 +72,20 @@ spec:
         metadata:
           labels: { app: litellm-watchdog }
         spec:
+          # 2026-08-21: todo litellm corre EXCLUSIVAMENTE en `ubuntu` (el x86 de la
+          # RTX). Estos Jobs no tenian restriccion y caian en cualquier ks5. Aqui no se
+          # pierde HA: son tareas puntuales, no servicio. Se tolera el taint blando
+          # pool=dev:PreferNoSchedule del nodo para no penalizarlo en la puntuacion.
+          tolerations:
+            - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values: [ubuntu]
           restartPolicy: Never
           serviceAccountName: litellm-watchdog
           containers:

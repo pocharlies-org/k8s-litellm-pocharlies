@@ -111,9 +111,13 @@ def test_replicas_keep_HA_without_over_provisioning(deploy):
         ["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"][0]
         ["matchExpressions"][0]["values"]
     )
-    assert 2 <= replicas <= domains, (
-        f"{replicas} replicas: por debajo de 2 no hay HA, por encima de {domains} "
-        f"el reparto por nodo deja de ser satisfacible")
+    assert replicas >= 2, (
+        f"{replicas} replicas: por debajo de 2 no hay HA ni frente a la caida de "
+        f"un pod, y esto es el proxy de TODO el trafico LLM")
+    if domains > 1:
+        assert replicas <= domains, (
+            f"{replicas} replicas sobre {domains} dominios: el reparto por nodo "
+            f"deja de ser satisfacible y ScheduleAnyway degrada en silencio")
 
 
 def test_the_PDB_cannot_block_a_node_drain(deploy):
@@ -122,6 +126,11 @@ def test_the_PDB_cannot_block_a_node_drain(deploy):
     Con 2 replicas un `minAvailable: 2` da allowedDisruptions=0 y CUELGA cualquier
     drenaje de nodo -- rutina en los ks5. Se expresa como `maxUnavailable` para que
     siga siendo correcto si las replicas vuelven a cambiar.
+
+    2026-08-21: esto sigue siendo necesario pero YA NO ES SUFICIENTE. Con el pin a
+    un unico nodo, drenar `ubuntu` se cuelga igual -- no por el PDB sino por el
+    nodeAffinity: el pod desalojado no tiene otro nodo donde ir. Es el precio
+    aceptado del aislamiento en x86, no una regresion que arreglar aqui.
     """
     spec = _named("PodDisruptionBudget", "litellm")["spec"]
     assert "minAvailable" not in spec, (
