@@ -66,7 +66,20 @@ spec:
     spec:
       backoffLimit: 0
       activeDeadlineSeconds: 300
-      ttlSecondsAfterFinished: 86400
+      # 3600, no 86400. ArgoCD agrega los Jobs hijos de un CronJob a la salud de
+      # la Application, asi que un Job fallido deja la app —y la tarjeta— en
+      # Degraded mientras el objeto exista. Con 24 h, un corte de inferencia de
+      # VEINTE MINUTOS pintaba LiteLLM en rojo durante todo el dia siguiente,
+      # mucho despues de haberse recuperado.
+      #
+      # Paso el 21-08-2026 a las 22:06 UTC: el cluster cambio a perfil `creative`
+      # y qwen38-27b (quien sirve `tooling` ahi) tardo 21 min en escalar; el
+      # watchdog fallo dos veces, aviso por Telegram —que es el canal de verdad—
+      # y a las 22:45 ya volvia a dar `ok`. La app seguia Degraded.
+      #
+      # 1 h deja evidencia suficiente para mirar el fallo y no miente el resto
+      # del dia. Mismo valor y misma razon que los crons del brain.
+      ttlSecondsAfterFinished: 3600
       template:
         metadata:
           labels: { app: litellm-watchdog }
