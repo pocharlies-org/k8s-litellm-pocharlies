@@ -185,11 +185,8 @@ data:
     #
     # Por que tumbaba a Codex Y a DeepSeek A LA VEZ: comparten la salida. Con
     # num_retries 1 el unico reintento cae casi siempre por encima del mismo
-    # tope, y entonces dispara la red de fallbacks -- donde `tooling` y
-    # `deepseek-v4-flash-0731` caen LOS DOS a cloudblue/e-dani gpt-5.6-luna. Si
-    # el plan de ChatGPT esta gastado, eso devuelve OTRO 429
-    # (`usage_limit_reached`): las dos ramas mueren con el mismo codigo y parece
-    # culpa del upstream cuando el 429 lo genera ESTE fichero.
+    # tope. Las antiguas salidas externas ya no forman parte del grafo: un 429
+    # actual se diagnostica contra este límite o el backend local.
     #
     # La aritmetica, con numeros ya medidos en este repo (ver el comentario de
     # `replicas` del Deployment: sweep-line sobre 89.672 peticiones de 48 h):
@@ -551,54 +548,12 @@ data:
       # Both layers are load-bearing. Neither one substitutes for the other.
       fallbacks:
       # En llm-tp, agent/high/max y deepseek-v4-flash-0731 son el MISMO backend.
-      # `tooling` es distinto: siempre nombra al residente del perfil global
-      # (`llm-tp` -> DeepSeek V4; `creative` -> Qwen3.6 27B) y, por decision del
-      # owner del 15-08-2026, si ese residente sigue registrado pero deja de estar
-      # sano cae a GPT-5.6 Luna por la cuenta CloudBlue.
-      #
-      # Parece que un fallback entre ellos no puede servir de nada. LO PARECE Y NO
-      # ES ASI, y por poco lo borro entero el 14-08 creyendolo. El COOLDOWN es POR
-      # GRUPO DE MODELO: con allowed_fails 3 y cooldown_time 120 (mas abajo),
-      # `tooling` puede estar penalizado mientras `deepseek-v4-flash-0731` no lo
-      # esta. Mismo backend, distinto contador. Ahi es donde esta red dispara.
-      #
-      # El otro modo de fallo —alias BORRADO del model_list por /model/delete— no lo
-      # cubre ningun fallback: el proxy lanza ProxyModelNotFoundError antes de
-      # llegar al Router. De ese se encarga la cadena del hook. Los dos modos estan
-      # explicados en detalle en el comentario de router_settings, mas abajo.
-      #
-      # Historia de este bloque, que ha estado mal tres veces:
-      #   1) cloudblue/gpt-5.6-luna: alias que el proceso ni tenia cargado. Cero red.
-      #   2) e-dani/gpt-5.6-sol (13-08): mandaba las CUATRO rutas calientes a un
-      #      backend externo con 12 reinicios en 18 h. Cuando el puente entro en
-      #      CrashLoopBackOff, LiteLLM se paso la tarde reintentando contra un host
-      #      muerto hasta que lo mato el OOM, dos veces.
-      #   3) borrarlos (14-08): dejaba sin red el caso del cooldown, que es real.
-      # Para agent/high/max el destino sigue siendo un alias DEL MISMO backend,
-      # pero con OTRO contador de cooldown. `tooling` es la excepcion deliberada:
-      # por la decision nueva cae a Luna cuando el residente no esta sano.
+      # Conservan un único salto local con otro contador de cooldown. `tooling`
+      # no tiene fallback: siempre representa al residente del perfil global y
+      # falla de forma visible cuando no hay residente utilizable.
       - agent: ["deepseek-v4-flash-0731"]
       - high: ["deepseek-v4-flash-0731"]
       - max: ["deepseek-v4-flash-0731"]
-      # Los alias desnudos de Codex Desktop son deployments distintos a ojos del
-      # Router aunque apunten al mismo bridge que `cloudblue/*`. Los fallbacks se
-      # buscan por model_group exacto y NO se heredan: el 20-08 un 429 de
-      # `gpt-5.6-sol` termino en `No fallback model group found` mientras la red
-      # equivalente de `cloudblue/gpt-5.6-sol` estaba declarada. Se replica la
-      # misma salida hacia el nombre prefijado CloudBlue para todos los aliases.
-      # 2026-08-14, peticion del owner: el residente tambien tiene red. Cubre el
-      # modo "registrado pero sin deployment sano" -- el que tumbo a Aurora --
-      # para quien pide el modelo por su nombre. El modo "alias BORRADO" (el sync
-      # llama a /model/delete cuando el Service se cae) NO lo cubre esto ni puede:
-      # el proxy responde 400 antes de que corra el Router, y la cadena del hook
-      # solo desvia nombres de CAPACIDAD, no de modelo.
-      #
-      # AVISO, que esto ya mordio: el destino NO es un alias del mismo backend,
-      # que es lo que recomienda la historia de arriba. Son las dos cuentas de
-      # ChatGPT por codex-bridge, la misma forma del caso 2) del 13-08 que dejo a
-      # LiteLLM reintentando contra un puente en CrashLoop hasta dos OOM. Se monta
-      # asi a peticion expresa del owner. Mientras e-dani esta desactivada queda
-      # un unico salto a CloudBlue.
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -680,7 +635,7 @@ data:
         "llm-tp": "deepseek-v4-flash-0731",
         "creative": "qwen38-27b",
     }
-    TOOLING_LUNA_FALLBACKS = ()
+    TOOLING_FALLBACKS = ()
     # Alias que significan «el residente del perfil vivo» y por eso se reescriben al
     # nombre directo antes de enrutar. `tooling` = sin pensar; agent/high/max = el
     # MISMO backend con otro nivel de pensamiento. router/auto/litellmrouter NO estan
@@ -772,18 +727,18 @@ data:
         return target, None
 
     def _tooling_route_for_state(state, alias_live, disable_fallbacks=False):
-        """Choose the profile resident, then the two independent Luna accounts.
+        """Choose the profile resident and fail visibly when it is unavailable.
 
         The local head is considered only while the global profile is coherent and
-        Ready. During a transition a stale ``tooling`` registration must not win:
-        an ordinary request goes straight to Luna instead of hitting the outgoing
-        resident. Keys with ``disable_fallbacks`` fail closed before that cloud hop.
+        Ready. During a transition a stale ``tooling`` registration must not win.
+        ``disable_fallbacks`` remains part of the policy contract, although the
+        current fallback list is intentionally empty.
         """
         target, reason = _tooling_target_for_compute_mode(state)
         if target and alias_live(target):
             return target, "primary", reason
         if not disable_fallbacks:
-            for fallback in TOOLING_LUNA_FALLBACKS:
+            for fallback in TOOLING_FALLBACKS:
                 if alias_live(fallback):
                     return fallback, "degraded", reason or "compute_profile_target_unavailable"
         return None, "dry", reason or "compute_profile_target_unavailable"
@@ -830,13 +785,11 @@ data:
         )
 
     async def _resolve_tooling_profile(disable_fallbacks=False):
-        """Resolve tooling to the active resident, then to GPT-5.6 Luna.
+        """Resolve tooling exclusively to the active local resident.
 
-        Both compute profiles dynamically register ``tooling`` on their own local
-        resident. If the profile is transitioning, its target is missing, or its
-        alias was deleted by backend-sync, ordinary keys use CloudBlue Luna and then
-        e-dani Luna. A key with fallbacks disabled receives 503 as soon as the local
-        target is unavailable.
+        Both compute profiles publish ``tooling`` on their own resident. If the
+        profile is transitioning, its target is missing, or its alias is not live,
+        the caller receives 503.
         """
         state = await _compute_mode_state()
         resolved, route_state, reason = _tooling_route_for_state(
@@ -851,7 +804,7 @@ data:
                 "error": "tooling profile target is unavailable",
                 "blocked": reason,
                 "target": _tooling_target_for_compute_mode(state)[0],
-                "fallbacks": [] if disable_fallbacks else list(TOOLING_LUNA_FALLBACKS),
+                "fallbacks": [] if disable_fallbacks else list(TOOLING_FALLBACKS),
                 "fallbacks_disabled": disable_fallbacks,
                 "desired_mode": (state or {}).get("desired_mode"),
                 "effective_mode": (state or {}).get("effective_mode"),
@@ -864,9 +817,8 @@ data:
     # POR QUE NO VALE `_alias_has_deployments`: pregunta por el REGISTRO en el router
     # y falla abierto. Con `store_model_in_db: false` el registro viene de git, asi
     # que un alias declarado responde "si" incluso con su Deployment a 0 replicas.
-    # Para `tooling` eso da igual -- tiene `fallbacks` a Luna a nivel de router, que
-    # atrapan el error. La ruta abliterada NO tiene esa red a proposito, asi que su
-    # unica alternativa a un health real es un 500.
+    # La ruta abliterada no tiene red alternativa a proposito, asi que su unica
+    # alternativa a un health real es un 503 controlado.
     #
     # FAIL-CLOSED, al contrario que todo lo demas de este hook: si no se puede
     # confirmar que el backend abliterado esta arriba, se responde 503 con
@@ -925,11 +877,10 @@ data:
     async def _resolve_tooling_uncensored():
         """Resolve `tooling-uncensored` to the live resident's abliterated name.
 
-        DELIBERATELY WITHOUT THE LUNA NET that `_resolve_tooling_profile` has. Luna
-        is a cloud model WITH its guardrails on: degrading here would answer a
-        request that explicitly asked for no refusal from a censored model, HTTP 200
-        and no warning. The whole point of this alias is the seal, and a fallback
-        that cannot carry it must not be reached. A 503 is the correct answer.
+        Deliberately without any fallback: degrading here could answer a request
+        that explicitly asked for no refusal from a censored model. The whole point
+        of this alias is the seal, and a route that cannot carry it must not be
+        reached. A 503 is the correct answer.
         """
         state = await _compute_mode_state()
         target, reason = _tooling_uncensored_target(state)
@@ -1839,8 +1790,7 @@ data:
     # to _apply_thinking_tier after the request model has been rewritten.
     ROUTE = {
         # OFF is the tooling profile itself. Its backend is selected from the
-        # effective compute mode. If that resident is unavailable it follows the
-        # tooling fallback policy: CloudBlue Luna and then e-dani Luna.
+        # effective compute mode. If that resident is unavailable it fails visibly.
         "OFF": {"model": "tooling", "fallbacks": ()},
         "LOW": {"model": "agent", "fallbacks": ()},
         "HIGH": {"model": "high", "fallbacks": ()},
@@ -1908,25 +1858,14 @@ data:
     # falta comparar modelos pilotando un CLI agentico, hay que disenar la medida de
     # cero.
     #
-    # QUE HACE ESTO. Los perfiles con razonamiento conservan su alias como cabeza
-    # y usan cloudblue/gpt-5.6-luna como red independiente. Cubre el modo
-    # "alias DESREGISTRADO" (el sync llama a /model/delete cuando el Service se cae),
-    # que el proxy rechaza en route_llm_request ANTES de que corra el Router, asi que
-    # `router_settings.fallbacks` no puede salvarlo. El otro modo -- "registrado pero
-    # sin deployment sano", que es el que de verdad tumbo a Aurora -- lo cubre
-    # `router_settings.fallbacks`. Las dos capas siguen siendo
-    # necesarias y ninguna sustituye a la otra.
-    #
-    # Funciona porque pre_call_hook reescribe data["model"] ANTES del gate de nombre
-    # del proxy (proxy_server.py:8691 vs route_request en :8698).
-    # `tooling` representa el perfil local, no un checkpoint: backend-sync lo
-    # registra sobre DeepSeek V4 en `llm-tp` y sobre Qwen3.6 27B en `creative`.
-    # Desde el 15-08-2026 tiene salida explicita a las dos cuentas Luna. Este
-    # mismo orden cubre el alias DESREGISTRADO; router_settings cubre el alias aun
-    # registrado cuyo deployment ya no esta sano.
+    # Los perfiles con razonamiento conservan su alias como cabeza, pero todos se
+    # resuelven exclusivamente al residente local. El pre_call_hook reescribe
+    # data["model"] antes del gate de nombre del proxy. `tooling` representa el
+    # perfil local, no un checkpoint: DeepSeek V4 en `llm-tp` y Qwen3.8 27B en
+    # `creative`. Sin residente, la petición falla de forma visible.
     CAPABILITY_CHAINS = {
-        "tooling": {"model": "tooling", "fallbacks": TOOLING_LUNA_FALLBACKS},
-        # Los perfiles con razonamiento conservan la red independiente anterior.
+        "tooling": {"model": "tooling", "fallbacks": TOOLING_FALLBACKS},
+        # Los perfiles con razonamiento conservan su ruta local independiente.
         "agent": {"model": "agent", "fallbacks": ()},
         "high": {"model": "high", "fallbacks": ()},
         "max": {"model": "max", "fallbacks": ()},
@@ -1937,8 +1876,7 @@ data:
         # CENSURADO bajo un nombre que dice lo contrario. Cazado MIDIENDO el
         # comportamiento (3/3 rechazos identicos a `tooling`), no leyendo el codigo.
         #
-        # `fallbacks` VACIO, no las cuentas Luna: son un modelo de nube con sus
-        # barreras puestas y no pueden llevar el sello. La resolucion real la hace
+        # `fallbacks` VACIO: una ruta censurada no puede llevar el sello. La resolucion real la hace
         # _resolve_tooling_uncensored, que da 503 antes que degradar.
         "tooling-uncensored": {"model": "tooling-uncensored", "fallbacks": ()},
     }
@@ -1949,16 +1887,8 @@ data:
     # `router`/`tooling`/... llega a un modelo que no ve: el backend la rechaza, y
     # cuando no la rechaza es peor -- contesta a ciegas sobre lo que diga el texto.
     #
-    # El unico modelo del gateway que ve hoy es la cuenta ChatGPT Pro por
-    # codex-bridge. VERIFICADO contra el upstream real el 2026-08-11: un
-    # `input_image` con `image_url` STRING (data: URI vale) se responde bien
-    # (imagen azul de 64x64 -> "Azul"); con `image_url` objeto devuelve 400
-    # "expected an image URL, but got an object instead". El puente lo traduce.
-    #
-    # OJO CON LA CUOTA: luna comparte limites con el Codex interactivo del usuario,
-    # y desde el 2026-08-11 TODO lo que lleve imagen sale por aqui salvo que el
-    # backend que iba a servir declare que ve (decision del owner). Se apaga entero
-    # con LITELLM_VISION_FALLBACK_MODEL="".
+    # La desviación de visión también es local: por defecto usa el backend
+    # DeepSeek multimodal. Se apaga entero con LITELLM_VISION_FALLBACK_MODEL="".
     VISION_FALLBACK_MODEL = os.environ.get(
         "LITELLM_VISION_FALLBACK_MODEL", "deepseek-v4-flash-0731"
     )
@@ -2799,7 +2729,7 @@ data:
                 raise HTTPException(status_code=403, detail=_detail)
 
             # Antes de resolver el alias: si el residente ha desaparecido, esta
-            # misma politica impide que el hook lo reescriba a Luna. La marca queda
+            # misma politica impide que el hook lo reescriba a otra ruta. La marca queda
             # en ``data`` para que el Router cubra tambien el caso distinto en que
             # el alias existe pero todos sus deployments estan unhealthy/cooldown.
             fallbacks_disabled = _apply_key_fallback_policy(data, user_api_key_dict)
@@ -2851,12 +2781,12 @@ data:
                 # pensamiento). El nivel lo sigue poniendo THINKING_TIERS a partir
                 # del alias PEDIDO (`thinking_alias`), que no se toca aqui.
                 #
-                # Efecto lateral querido: agent/high/max heredan la red de las DOS
-                # cuentas Luna (TOOLING_LUNA_FALLBACKS) en vez de solo cloudblue.
+                # Los cuatro perfiles comparten la misma política local. La lista
+                # está vacía desde la retirada de las salidas externas.
                 if cap_alias in TOOLING_UNCENSORED_ALIASES:
                     # Mismo mecanismo que los cuatro de abajo, otro destino y sin
-                    # red a Luna: degradar a la nube devolveria un modelo censurado
-                    # a quien pidio explicitamente que no lo estuviera.
+                    # fallback: degradar devolveria un modelo censurado a quien
+                    # pidio explicitamente que no lo estuviera.
                     cap_resolved, cap_state = await _resolve_tooling_uncensored()
                 elif cap_alias in TOOLING_PROFILE_ALIASES:
                     cap_resolved, cap_state = await _resolve_tooling_profile(
@@ -3212,15 +3142,7 @@ data:
         "qwen38-27b",
     }
 
-    HOSTED_MODEL_PREFIXES = ("cloudblue/",)
-
     def _is_local_vllm_request(model, proxy_model, api_base):
-        # The hook may have rewritten an originally local `tooling` request to a
-        # hosted Luna fallback. The resolved model wins over proxy_model here;
-        # otherwise compute-mode admission would turn that valid fallback back
-        # into a 503 merely because the original body still says `tooling`.
-        if str(model or "").startswith(HOSTED_MODEL_PREFIXES):
-            return False
         if resolve_server_id(model, api_base):
             return True
         return str(proxy_model or model or "") in LOCAL_VLLM_ALIASES
@@ -4256,9 +4178,9 @@ data:
             # 0.1.1-rank1f-vision). Verificado contra el pod: describe una imagen
             # de prueba correctamente, 257 tokens de imagen, y el servidor arranca
             # con limit_mm_per_prompt {'image': 8}.
-            # Con False aqui, _vision_target desviaba TODA peticion con imagen a
-            # cloudblue/gpt-5.6-luna (cuota ChatGPT separada) y OpenClaw contestaba
-            # "este modelo no admite entrada de imagenes" sin llegar a preguntar.
+            # Con False aqui, _vision_target desviaba TODA peticion con imagen y
+            # OpenClaw contestaba "este modelo no admite entrada de imagenes" sin
+            # llegar a preguntar al backend correcto.
             # Este flag es la unica pieza que faltaba: el modelo ya veia.
             "supports_vision": True,
         },
@@ -4994,7 +4916,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-08efc0abee81
+        config.k8s.e-dani.com/revision: sync-ec8c8139a953
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -5033,10 +4955,7 @@ spec:
             # es aditivo, asi que esto solo ensancha.
             #
             # 2026-08-13: +dense, +dense-reasoning, +tooling, +deepseek-v4-flash-0731
-            # 2026-08-15: -dense, -dense-reasoning, -dense-uncensored (+qwen38-27b)
-            # y los IDs de la cuenta CloudBlue del codex-bridge (peticion del owner:
-            # OpenClaw tiene que
-            # poder con gpt-5.*, DeepSeek V4 y dense). Dos avisos:
+            # 2026-08-15: -dense, -dense-reasoning, -dense-uncensored (+qwen38-27b).
             #
             #   - Esto abre PERMISO, no uso: el modelo que corre cada agente sigue
             #     declarado en values.yaml del chart de OpenClaw.
@@ -5169,7 +5088,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-df26eac315dc
+        config.k8s.e-dani.com/revision: config-9001d341e711
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

@@ -1,8 +1,7 @@
 """Contrato del desvio de VISION (2026-08-11).
 
-DeepSeek es solo texto. Mientras sea el residente, una peticion con imagen a un
-nombre de CAPACIDAD se manda al unico modelo del gateway que ve: la cuenta
-ChatGPT Pro por codex-bridge (`cloudblue/gpt-5.6-luna`).
+Una peticion con imagen a un nombre de CAPACIDAD se manda al fallback de vision
+local cuando el backend servido declara que no ve.
 
 Lo que este contrato fija, que es lo que se puede romper sin darse cuenta:
 
@@ -32,7 +31,7 @@ WANT_FN = {"_vision_target", "_has_part_type", "_message_entries",
            # _vision_target ligue en el `def`. Los tests inyectan stubs.
            "_alias_supports_vision", "_alias_has_deployments"}
 WANT_CONST = {"VISION_FALLBACK_MODEL", "VISION_DIVERTIBLE", "AUTO_ROUTED_MODELS",
-              "CAPABILITY_CHAINS", "IMAGE_PART_TYPES", "TOOLING_LUNA_FALLBACKS"}
+              "CAPABILITY_CHAINS", "IMAGE_PART_TYPES", "TOOLING_FALLBACKS"}
 
 
 @pytest.fixture(scope="module")

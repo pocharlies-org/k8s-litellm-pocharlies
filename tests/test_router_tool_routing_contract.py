@@ -35,7 +35,7 @@ WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "THINK_MARKERS",
               "THINKING_TIERS", "ROUTER_MAX_HINTS", "ROUTER_HIGH_HINTS",
               "ROUTER_LOW_HINTS", "ROUTER_OFF_HINTS",
               "ROUTER_HIGH_CONTEXT_TOKENS", "ROUTER_MAX_CONTEXT_TOKENS",
-              "TOOLING_MODE_TARGETS", "TOOLING_LUNA_FALLBACKS"}
+              "TOOLING_MODE_TARGETS", "TOOLING_FALLBACKS"}
 
 
 @pytest.fixture(scope="module")
@@ -156,14 +156,12 @@ def test_router_solo_selecciona_los_cuatro_tiers(hook):
         assert not any(alias.startswith("dense") for alias in chain)
 
 
-def test_ninguna_cadena_sale_a_la_nube(hook):
-    """2026-08-21: retirado el catalogo ChatGPT/Codex. Invierte el contrato viejo.
+def test_ninguna_cadena_sale_del_cluster(hook):
+    """Las cadenas tienen un solo destino local y fallan de forma visible.
 
-    La nube era el unico destino INDEPENDIENTE: `agent`/`high`/`max` son nombres de
-    capacidad del MISMO backend, y `qwen38-27b` es el residente del OTRO perfil de
-    computo, que por diseno nunca esta vivo a la vez. Al quitarla no queda a donde
-    degradar y la cadena pasa a un solo elemento A PROPOSITO: un residente caido
-    sale como error visible, en vez de desviarse a un backend que no es el pedido.
+    `agent`/`high`/`max` son nombres de capacidad del MISMO backend, y
+    `qwen38-27b` es el residente del OTRO perfil de computo, que por diseño nunca
+    esta vivo a la vez.
     """
     for category in ("LOW", "HIGH", "MAX"):
         chain = _chain(hook, category)
@@ -207,7 +205,7 @@ def test_solo_tooling_degrada_y_los_nombres_de_modelo_no(hook):
     # checkpoint. Esta aqui porque `cap_alias` solo se fija sobre claves de este
     # dict: fuera de el la reescritura no ocurre y la peticion sale al Service de
     # pool sin sello, o sea sirve el residente CENSURADO. Su cadena va VACIA (lo
-    # comprueba test_uncensored_alias_contract.py), asi que no degrada a Luna: 503.
+    # comprueba test_uncensored_alias_contract.py), asi que no degrada: 503.
     assert set(hook.CAPABILITY_CHAINS) == {
         "tooling", "agent", "high", "max", "tooling-uncensored"}, (
         "solo los nombres de capacidad degradan; anadir un nombre de modelo aqui "
@@ -248,7 +246,7 @@ def test_tooling_sin_alias_local_registrado_sale_seco(hook):
     assert hook._walk_chain(entry, alias_live=lambda a: False) == ("tooling", "dry")
 
 
-def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
+def test_tooling_target_follows_profile_and_fails_without_resident(hook):
     ready_tp = {"phase": "ready", "desired_mode": "llm-tp", "effective_mode": "llm-tp"}
     ready_creative = {
         "phase": "ready", "desired_mode": "creative", "effective_mode": "creative"
@@ -274,7 +272,7 @@ def test_tooling_target_follows_profile_and_falls_back_to_luna(hook):
         None,
         "compute_mode_transition",
     )
-    assert hook.TOOLING_LUNA_FALLBACKS == ()
+    assert hook.TOOLING_FALLBACKS == ()
 
     local_live = lambda alias: alias in {"deepseek-v4-flash-0731", "qwen38-27b"}
     assert hook._tooling_route_for_state(ready_tp, local_live) == (
@@ -329,11 +327,8 @@ def test_proxy_fallbacks_are_acyclic(proxy_config):
         for src, dsts in entry.items():
             graph.setdefault(src, []).extend(dsts or [])
 
-    # 2026-08-21: `tooling` se queda SIN red. Su unico destino era la nube.
+    # `tooling` no tiene salida alternativa.
     assert graph.get("tooling") is None
-    assert not [
-        d for dsts in graph.values() for d in dsts if d.startswith("cloudblue/")
-    ]
 
     # Los tres perfiles con razonamiento conservan la red local por cooldown.
     destinos = {p_: graph.get(p_) for p_ in ("agent", "high", "max")}

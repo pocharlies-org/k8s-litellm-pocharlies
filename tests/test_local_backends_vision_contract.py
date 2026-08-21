@@ -8,9 +8,7 @@ servidor paso a servir `DeepseekV4VisionForCausalLM` (plugin FlyCockpit: tower
 DeepEncoderV2 + adapter). A partir de ahi el flag quedo MINTIENDO, y el efecto no
 fue un error sino algo peor:
 
-  - `_vision_target` desviaba TODA peticion con imagen a
-    `cloudblue/gpt-5.6-luna`, que gasta
-    la cuota de ChatGPT del usuario;
+  - `_vision_target` desviaba TODA peticion con imagen al fallback configurado;
   - y OpenClaw/OpenChamber, que leen la misma capacidad, contestaban "este modelo
     no admite entrada de imagenes" SIN LLEGAR A PREGUNTARLE AL MODELO.
 
@@ -112,7 +110,7 @@ def test_deepseek_declara_que_ve():
     ds = _backends()["deepseek-v4-flash-tp2"]
     assert ds["supports_vision"] is True, (
         "deepseek-v4-flash-tp2 sirve DeepseekV4VisionForCausalLM y SI ve. Con "
-        "False, _vision_target desvia toda imagen a cloudblue/gpt-5.6-luna y los clientes "
+        "False, _vision_target desvia toda imagen al fallback y los clientes "
         "responden 'no admite imagenes' sin preguntar al modelo."
     )
 

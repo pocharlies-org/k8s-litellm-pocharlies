@@ -79,8 +79,8 @@ class DialTest(unittest.TestCase):
                 "api_base": "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/v1"}},
             {"model_name": "max", "litellm_params": {
                 "api_base": "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1"}},
-            {"model_name": "cloudblue/gpt", "litellm_params": {
-                "api_base": "https://api.cloudblue.example/v1"}},
+            {"model_name": "openai/remote-model", "litellm_params": {
+                "api_base": "https://api.example.invalid/v1"}},
         ]
 
     def test_registro_tiene_on_lambda_distinto_por_runtime(self):
@@ -122,7 +122,7 @@ class DialTest(unittest.TestCase):
 
     def test_alias_ajeno_no_se_sella(self):
         heads[QW] = {"lambda": 1.0}
-        self.assertEqual(run(ns["_refusal_lambda_for_async"]("cloudblue/gpt", None)),
+        self.assertEqual(run(ns["_refusal_lambda_for_async"]("openai/remote-model", None)),
                          (None, None))
 
     def test_ttl_cachea_por_runtime_sin_mezclar(self):

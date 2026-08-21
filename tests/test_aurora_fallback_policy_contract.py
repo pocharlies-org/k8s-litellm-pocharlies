@@ -1,8 +1,8 @@
-"""Aurora keeps the local tooling resident and never spends ChatGPT fallback quota.
+"""Aurora keeps the local tooling resident and fails closed without it.
 
 There are two independent failure paths to cover:
 
-* missing local alias: the pre-call hook itself can otherwise rewrite to Luna;
+* missing local alias: the pre-call hook must not invent another route;
 * registered but unhealthy local deployment: LiteLLM's Router otherwise follows
   ``router_settings.fallbacks`` after the hook returns.
 
@@ -30,7 +30,7 @@ WANT_FN = {
 }
 WANT_CONST = {
     "NO_FALLBACK_KEY_ALIASES",
-    "TOOLING_LUNA_FALLBACKS",
+    "TOOLING_FALLBACKS",
     "TOOLING_MODE_TARGETS",
 }
 
@@ -109,7 +109,7 @@ def test_registered_but_unhealthy_keeps_the_router_kill_switch(hook):
 
     Returning the local alias together with the top-level flag is therefore the
     exact hand-off needed for LiteLLM to raise the local error instead of following
-    its global ``tooling -> Luna`` edge.
+    any global fallback edge.
     """
     request, disabled = _policy(
         hook, "aurora-rca", {"disable_fallbacks": False}
@@ -123,10 +123,8 @@ def test_registered_but_unhealthy_keeps_the_router_kill_switch(hook):
 
 
 @pytest.mark.parametrize("key_alias", ["keep", "k8sgpt", "openclaw", "unknown"])
-def test_las_demas_keys_ya_no_tienen_red_de_nube(hook, key_alias):
-    """2026-08-21: retirado el catalogo ChatGPT/Codex.
-
-    La politica de key SIGUE distinguiendo a Aurora (falla cerrado) del resto -- por
+def test_las_demas_keys_tampoco_tienen_salida_externa(hook, key_alias):
+    """La politica de key SIGUE distinguiendo a Aurora (falla cerrado) del resto -- por
     eso se conservan las aserciones sobre `disabled` y `disable_fallbacks`. Lo que
     desaparece es el salto que esa politica deshabilitaba: sin destino independiente
     las dos ramas acaban igual, en `dry`.
@@ -193,9 +191,4 @@ def test_global_tooling_fallback_remains_for_every_other_key():
         for source, destinations in edge.items()
     }
 
-    assert "tooling" not in graph, (
-        "tooling ya no sale a la nube: su unica red era cloudblue/gpt-5.6-luna"
-    )
-    assert not [
-        dst for dsts in graph.values() for dst in dsts if dst.startswith("cloudblue/")
-    ]
+    assert "tooling" not in graph, "tooling debe fallar si no hay residente local"

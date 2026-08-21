@@ -36,9 +36,9 @@ MODEL_SCOPED_LAMBDA = {
 WANT_FN = {"_compute_mode_allows_local", "_tooling_uncensored_target"}
 WANT_CONST = {"TOOLING_UNCENSORED_MODE_TARGETS", "TOOLING_UNCENSORED_ALIASES",
               "ABLITERATED_HEALTH_URLS",
-              "CAPABILITY_CHAINS", "TOOLING_LUNA_FALLBACKS",
+              "CAPABILITY_CHAINS", "TOOLING_FALLBACKS",
               "TOOLING_MODE_TARGETS", "TOOLING_PROFILE_ALIASES",
-              "CAPABILITY_CHAINS", "TOOLING_LUNA_FALLBACKS"}
+              "CAPABILITY_CHAINS", "TOOLING_FALLBACKS"}
 
 
 def _docs():
@@ -195,13 +195,14 @@ def _code_only(text):
     return "\n".join(out)
 
 
-def test_the_uncensored_resolver_has_no_luna_net_at_all():
-    """`_resolve_tooling_profile` degrada a las dos cuentas Luna. El resolver
-    abliterado NO puede: Luna es un modelo de nube con sus barreras puestas.
-    Prefiere 503. Se comprueba sobre el texto de la funcion porque la rama que
-    importa es la que NO existe."""
+def test_the_uncensored_resolver_has_no_fallback_net_at_all():
+    """El resolver abliterado nunca puede degradar a una ruta censurada.
+
+    Prefiere 503. Se comprueba sobre el texto de la función porque la rama que
+    importa es la que NO existe.
+    """
     body = _code_only(_function_body(_hook_source(), "async def _resolve_tooling_uncensored"))
-    assert "TOOLING_LUNA_FALLBACKS" not in body
+    assert "TOOLING_FALLBACKS" not in body
     assert "503" in body
 
 
@@ -215,9 +216,8 @@ def test_liveness_is_by_HEALTH_not_by_registration(hook):
     devolvia **HTTP 500** (`Connection error. No fallback model group`), no el 503
     con Retry-After que el docstring prometia: la rama del 503 era inalcanzable.
 
-    Para `tooling` no importa -- tiene `fallbacks` a Luna a nivel de router que
-    atrapan el error. La ruta abliterada no tiene esa red a proposito, asi que su
-    unica alternativa a un 500 es preguntar por SALUD.
+    La ruta abliterada no admite ningun fallback a proposito, asi que su unica
+    alternativa a un 500 es preguntar por SALUD.
     """
     body = _code_only(_function_body(_hook_source(), "async def _resolve_tooling_uncensored"))
 

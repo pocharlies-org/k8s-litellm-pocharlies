@@ -8,10 +8,9 @@
 # pasan Codex, OpenClaw, el brain, el panel y los MCP. Si muere de madrugada, muere
 # todo lo que habla con un modelo.
 #
-# La cadena de aquel dia, para que se entienda que hay que vigilar:
-#   codex-bridge-edani entra en CrashLoopBackOff (12 reinicios en 18 h)
-#     -> LiteLLM acumula reintentos contra un host caido
-#       -> OOMKilled, dos veces
+# La cadena de aquel día fue una salida externa inestable, reintentos acumulados
+# y dos OOMKilled. Esa salida ya está retirada; el watchdog sigue siendo necesario
+# para detectar fallos propios de LiteLLM y de los backends locales.
 #
 # NO se avisa por el webhook de synapse. Comprobado el mismo dia:
 # https://synapse.e-dani.com/webhooks/brain-audit devuelve 404, y su propio contrato

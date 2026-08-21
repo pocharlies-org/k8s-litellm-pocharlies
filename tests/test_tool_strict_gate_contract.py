@@ -89,22 +89,14 @@ def test_gate_is_wired_into_local_vllm_requests():
     assert "_enforce_tool_strict(data" in block
 
 
-def test_hosted_tooling_fallback_bypasses_local_admission():
-    """El modelo ya resuelto manda sobre el alias original de la peticion.
-
-    Cuando `tooling` cae a Luna, `proxy_model` sigue diciendo `tooling`. La
-    deteccion debe tratar los dos destinos hosted como externos para que el gate
-    de compute-mode no convierta el fallback valido en un 503.
-    """
+def test_local_request_detection_uses_local_aliases_and_runtime_mapping():
+    """La admision local reconoce alias locales y deja fuera modelos ajenos."""
     docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
     src = next(d["data"]["litellm_strip_params.py"] for d in docs
                if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
     tree = ast.parse(src)
     keep = [n for n in tree.body
-            if (isinstance(n, ast.FunctionDef) and n.name == "_is_local_vllm_request")
-            or (isinstance(n, ast.Assign)
-                and any(getattr(t, "id", "") == "HOSTED_MODEL_PREFIXES"
-                        for t in n.targets))]
+            if isinstance(n, ast.FunctionDef) and n.name == "_is_local_vllm_request"]
     mod = types.ModuleType("localrequestpure")
     mod.__dict__.update({
         "LOCAL_VLLM_ALIASES": {"tooling"},
@@ -115,7 +107,7 @@ def test_hosted_tooling_fallback_bypasses_local_admission():
 
     assert mod._is_local_vllm_request("tooling", "tooling", "")
     assert not mod._is_local_vllm_request(
-        "cloudblue/gpt-5.6-luna", "tooling", ""
+        "openai/remote-model", "openai/remote-model", ""
     )
 
 
