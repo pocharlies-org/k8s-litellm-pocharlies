@@ -35,20 +35,18 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
             if document and document.get("kind") == kind
         ]
 
-    def test_litellm_is_not_published_through_the_edge_or_cloudflare(self):
-        """The API hostname is reachable only through the LAN/Tailscale route."""
+    def test_litellm_repo_only_owns_the_legacy_lan_alias(self):
+        """Canonical split routing is owned centrally by k8s-infra."""
         public = [
             resource
             for resource in self.resources("IngressRoute")
             if resource.get("metadata", {}).get("name") == "litellm-public"
         ]
-        self.assertEqual(public, [], "litellm-public would reintroduce Cloudflare")
+        self.assertEqual(public, [], "the app repo must not duplicate central routing")
 
         lan = self.resource("IngressRoute", "litellm-lan")
         matches = [route["match"] for route in lan["spec"]["routes"]]
-        internal = next(match for match in matches if "Host(`litellm.e-dani.com`)" in match)
-        self.assertIn("ClientIP(`192.168.50.0/24`)", internal)
-        self.assertIn("ClientIP(`100.64.0.0/10`)", internal)
+        self.assertEqual(matches, ["Host(`litellm.lan.e-dani.com`)"])
         self.assertNotIn("traefik-edge", lan["spec"].get("ingressClassName", ""))
 
     def test_every_litellm_request_timeout_is_600_seconds(self):
