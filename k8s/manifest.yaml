@@ -2314,6 +2314,67 @@ data:
         except Exception as e:  # nunca romper una peticion por esto
             log.debug("_apply_thinking_tier error: %s", e)
 
+    def _deployment_cache_salt(alias):
+        """`cache_salt` que la deployment declara para `alias`, o None.
+
+        Se lee del router VIVO, igual que _family_of_alias, en vez de repetir aqui
+        la tabla de UNCENSORED_ON_LAMBDA: si manana un alias cambia de valor de
+        encendido, este codigo se mueve con el.
+        """
+        try:
+            from litellm.proxy.proxy_server import llm_router
+            if llm_router is None:
+                return None
+            for dep in (llm_router.get_model_list(model_name=alias) or ()):
+                body = (dep.get("litellm_params") or {}).get("extra_body")
+                if isinstance(body, dict):
+                    salt = body.get("cache_salt")
+                    if isinstance(salt, str) and salt:
+                        return salt
+        except Exception as e:
+            log.debug("_deployment_cache_salt(%s): %s", alias, e)
+        return None
+
+    def _preserve_uncensored_seal(data):
+        """Devuelve el `cache_salt` de la deployment si algo puso un extra_body.
+
+        POR QUE HACE FALTA. El sello por peticion de los alias `-uncensored` vive
+        en `litellm_params.extra_body`, y extra_body es un DICT: cuando la peticion
+        trae el suyo, NO se fusiona con el de la deployment, lo SUSTITUYE entero.
+        Basta con que un cliente mande extra_body -- o con que lo cree este mismo
+        hook al fijar el nivel de pensamiento -- para que el cache_salt desaparezca
+        y el alias abliterado conteste EXACTAMENTE igual que el censurado, sin un
+        solo error por ningun lado.
+
+        MEDIDO el 22-08-2026 contra el residente vivo, temperatura 0, mismo prompt,
+        sha1 de la respuesta:
+
+            qwen38-27b                             61888e39  rechaza
+            qwen38-27b-uncensored                  488bb2a3  contesta
+            qwen38-27b-uncensored + extra_body     61888e39  rechaza  <- sello borrado
+            qwen38-27b-uncensored + effort=none    61888e39  rechaza  <- lo borro el hook
+
+        El segundo caso es el grave: `reasoning_effort` es AMBIENTE en los clientes
+        agente (OpenClaw lo adjunta a todo), asi que el sello se perdia en trafico
+        normal y el modo uncensored era un boton que no hacia nada.
+
+        NO PISA UN SELLO EXPLICITO. Si la peticion ya trae su propio `cache_salt`
+        manda ese: es como el playground barre lambdas sobre el alias base, y
+        quitarselo seria cambiarle el lambda a quien lo pidio a mano.
+        """
+        try:
+            body = data.get("extra_body")
+            if not isinstance(body, dict) or body.get("cache_salt"):
+                return
+            salt = _deployment_cache_salt((data.get("model") or "").strip())
+            if not salt:
+                return
+            body["cache_salt"] = salt
+            sampling_log.info("uncensored: sello restaurado cache_salt=%s en %s",
+                              salt, data.get("model"))
+        except Exception as e:  # nunca romper una peticion por esto
+            log.debug("_preserve_uncensored_seal error: %s", e)
+
     def _chain_of(entry):
         """The ordered aliases of a chain entry, primary first."""
         return (entry["model"],) + tuple(entry.get("fallbacks") or ())
@@ -2622,6 +2683,10 @@ data:
             # Explicit profiles follow the alias requested by the client. The
             # family still comes from the backend that will really serve the request.
             _apply_thinking_tier(data, thinking_alias)
+            # DESPUES de todo lo que escribe en extra_body, y por eso va aqui: si
+            # alguno de los de arriba lo creo, se llevo por delante el sello de la
+            # deployment. Esto lo devuelve.
+            _preserve_uncensored_seal(data)
             key_alias = _resolve_key_label(user_api_key_dict)
             model = data.get("model", "unknown")
             api_base = (
@@ -4755,7 +4820,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-05b5570c6d80
+        config.k8s.e-dani.com/revision: config-83530aa23c49
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

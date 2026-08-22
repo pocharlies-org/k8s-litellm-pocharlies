@@ -35,7 +35,8 @@ MODEL_SCOPED_LAMBDA = {
 
 WANT_FN = {"_component_is_ready", "_ready_tooling_modes",
            "_select_ready_tooling_mode", "_tooling_mode_for_model",
-           "_compute_mode_allows_local", "_tooling_uncensored_target"}
+           "_compute_mode_allows_local", "_tooling_uncensored_target",
+           "_deployment_cache_salt", "_preserve_uncensored_seal"}
 WANT_CONST = {"TOOLING_UNCENSORED_MODE_TARGETS", "TOOLING_UNCENSORED_ALIASES",
               "ABLITERATED_HEALTH_URLS",
               "CAPABILITY_CHAINS", "TOOLING_FALLBACKS",
@@ -301,3 +302,74 @@ def test_the_retired_sync_controller_stays_at_zero_replicas():
             )
             return
     raise AssertionError("ya no existe el Deployment litellm-dgx-backend-sync")
+
+
+# ── 3. el sello sobrevive a un extra_body ajeno ─────────────────────────────────
+#
+# extra_body es un DICT y el de la peticion SUSTITUYE al de la deployment, no se
+# fusiona con el. Asi que cualquiera que mande extra_body -- incluido este mismo
+# hook al fijar el nivel de pensamiento -- borraba el `cache_salt` del alias
+# abliterado, que entonces contestaba EXACTAMENTE igual que el censurado sin dar
+# un solo error. Medido el 22-08-2026 contra el residente vivo (sha1, temp 0):
+#
+#   qwen38-27b                             61888e39  rechaza
+#   qwen38-27b-uncensored                  488bb2a3  contesta
+#   qwen38-27b-uncensored + extra_body     61888e39  rechaza   <- sello borrado
+#   qwen38-27b-uncensored + effort=none    61888e39  rechaza   <- lo borro el hook
+#
+# El ultimo es el grave: `reasoning_effort` es AMBIENTE en los clientes agente.
+
+class _Log:
+    def __init__(self): self.lines = []
+    def info(self, *a): self.lines.append(a)
+    debug = info
+    warning = info
+
+
+@pytest.fixture
+def sealed(hook, monkeypatch):
+    """El hook con logs de mentira y una deployment que declara su sello."""
+    monkeypatch.setattr(hook, "log", _Log(), raising=False)
+    monkeypatch.setattr(hook, "sampling_log", _Log(), raising=False)
+    monkeypatch.setattr(hook, "_deployment_cache_salt",
+                        lambda alias: "refusal:1.0" if alias.endswith("-uncensored") else None,
+                        raising=False)
+    return hook
+
+
+def test_an_alien_extra_body_does_NOT_strip_the_seal(sealed):
+    data = {"model": "qwen38-27b-uncensored",
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    sealed._preserve_uncensored_seal(data)
+    assert data["extra_body"]["cache_salt"] == "refusal:1.0"
+    # y no se lleva por delante lo que ya habia
+    assert data["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_an_explicit_client_salt_WINS_over_the_deployment(sealed):
+    # Es como el playground barre lambdas sobre el alias base: quitarselo seria
+    # cambiarle el lambda a quien lo pidio a mano.
+    data = {"model": "qwen38-27b-uncensored",
+            "extra_body": {"cache_salt": "refusal:2.0"}}
+    sealed._preserve_uncensored_seal(data)
+    assert data["extra_body"]["cache_salt"] == "refusal:2.0"
+
+
+def test_a_censored_alias_never_gains_a_seal(sealed):
+    data = {"model": "qwen38-27b", "extra_body": {"chat_template_kwargs": {}}}
+    sealed._preserve_uncensored_seal(data)
+    assert "cache_salt" not in data["extra_body"]
+
+
+def test_without_extra_body_nothing_is_created(sealed):
+    # Sin extra_body propio, el de la deployment llega intacto por si solo: crear
+    # uno aqui seria trabajo de mas y una via nueva por la que equivocarse.
+    data = {"model": "qwen38-27b-uncensored"}
+    sealed._preserve_uncensored_seal(data)
+    assert "extra_body" not in data
+
+
+def test_it_never_raises_on_a_broken_request(sealed):
+    for data in ({"extra_body": {"a": 1}}, {"model": None, "extra_body": {}},
+                 {"model": "x", "extra_body": "no soy un dict"}):
+        sealed._preserve_uncensored_seal(data)   # no debe lanzar
