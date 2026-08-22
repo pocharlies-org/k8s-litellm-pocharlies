@@ -153,7 +153,7 @@ def test_las_demas_keys_tampoco_tienen_salida_externa(hook, key_alias):
     ) == (None, "dry", "compute_profile_target_unavailable")
 
 
-def test_policy_is_wired_before_both_tooling_resolution_paths():
+def test_policy_is_wired_before_tooling_resolution():
     source = _hook_source()
     tree = ast.parse(source)
     method = next(
@@ -177,9 +177,7 @@ def test_policy_is_wired_before_both_tooling_resolution_paths():
         and node.func.id == "_resolve_tooling_profile"
     ]
 
-    assert len(resolution_calls) == 2, (
-        "direct capability and auto-router paths must both be sealed"
-    )
+    assert len(resolution_calls) == 1
     for call in resolution_calls:
         keyword = next(
             (item for item in call.keywords if item.arg == "disable_fallbacks"),

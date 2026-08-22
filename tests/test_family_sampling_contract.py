@@ -1,12 +1,12 @@
 """Contrato del sampling por FAMILIA del backend.
 
-Los alias compartidos (`tooling`, `dense`, `litellmrouter`...) los sirve quien sea
+Los alias de capacidad (`tooling`, `high`, `max`) los sirve el residente que este
 el residente del momento, y cada familia de checkpoint quiere un sampling
 distinto. El cliente no puede saberlo, asi que lo pone el hook.
 
 Lo que este fichero fija es la propiedad que se rompio de verdad: el perfil se
 elige por el backend que VA A ATENDER la peticion, no por el nombre que escribio
-el cliente. Con `litellmrouter` coinciden solo por casualidad segun el perfil de
+el cliente. Sin esa resolucion coincidirian solo por casualidad segun el perfil de
 residente que este puesto, y con cualquier alias que el hook reescriba no coinciden.
 
 Se carga el hook REAL del manifest y se ejecutan solo sus funciones puras, con un
@@ -219,7 +219,7 @@ def test_detector_de_salida_estructurada(hook):
 
 # ── Nivel de pensamiento por nombre de alias ────────────────────────────────
 #
-# Cuatro alias sobre el MISMO backend que solo se diferencian en cuanto piensan.
+# Tres alias sobre el MISMO backend que solo se diferencian en cuanto piensan.
 # Existen para el cliente que solo tiene un campo `model` en un YAML -- k8sgpt,
 # Aurora, los ~15 adapters de Synapse -- y que no puede mandar extra_body.
 
@@ -234,7 +234,6 @@ def test_cada_alias_pide_su_nivel_en_deepseek(hook):
     _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
     esperado = {
         "tooling": {"thinking": False},
-        "agent": {"thinking": True, "reasoning_effort": "low"},
         "high": {"thinking": True, "reasoning_effort": "high"},
         "max": {"thinking": True, "reasoning_effort": "max"},
     }
@@ -245,11 +244,11 @@ def test_cada_alias_pide_su_nivel_en_deepseek(hook):
 
 
 def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
-    """Qwen no tiene reasoning_effort: solo `enable_thinking`. Los tres niveles
+    """Qwen no tiene reasoning_effort: solo `enable_thinking`. Los niveles
     colapsan a "piensa", y `tooling` sigue significando "no pienses". Lo que NO
     puede pasar es que se le cuelen las claves de DeepSeek."""
     _install_fake_litellm({"tooling": _dep("openai/nvidia-qwen36-35b-nvfp4")})
-    for alias in ("agent", "high", "max"):
+    for alias in ("high", "max"):
         data = {"model": "tooling"}
         hook._apply_thinking_tier(data, alias)
         assert _ctk(data) == {"enable_thinking": True}, alias
@@ -271,11 +270,10 @@ def test_el_tier_sale_del_alias_PEDIDO_no_del_resuelto(hook):
     assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
 
 
-def test_router_crudo_no_tiene_tier_propio(hook):
-    """El hook principal debe sustituir router por el alias que eligio. Esta
-    funcion pura no inventa un tier para un nombre automatico sin clasificar."""
+def test_un_nombre_desconocido_no_tiene_tier_propio(hook):
+    """La funcion pura no inventa un tier para un nombre desconocido."""
     _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
-    for alias in ("router", "auto", "litellmrouter", "dense", ""):
+    for alias in ("dense", "desconocido", ""):
         data = {"model": "tooling"}
         hook._apply_thinking_tier(data, alias)
         assert "extra_body" not in data, alias
@@ -303,7 +301,7 @@ def test_la_salida_estructurada_apaga_el_pensamiento_pida_lo_que_pida_el_alias(h
     assert _ctk(data) == {"thinking": False}
 
 
-def test_los_cuatro_tiers_son_swappable(hook):
+def test_los_tres_tiers_son_swappable(hook):
     """Si un tier se quedara fuera de SWAPPABLE_ALIASES, _apply_family_sampling
     saldria antes de tiempo y ese alias mandaria a DeepSeek el sampling de Qwen."""
     for alias in hook.THINKING_TIERS:

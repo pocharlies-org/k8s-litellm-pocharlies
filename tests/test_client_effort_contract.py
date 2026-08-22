@@ -1,7 +1,7 @@
 """Contrato del `/effort` del cliente sobre el nivel de pensamiento.
 
-Los cuatro perfiles del residente (`tooling`/`agent`/`high`/`max`) NO son cuatro
-modelos: son cuatro niveles del mismo checkpoint, y hasta ahora el unico modo de
+Los tres perfiles del residente (`tooling`/`high`/`max`) NO son tres modelos:
+son tres niveles del mismo checkpoint, y hasta ahora el unico modo de
 subir el nivel era cambiar de modelo en el selector. Este contrato fija la mitad
 de servidor del `/effort` de OpenClaw: un `reasoning_effort` traducible gana al
 nombre del alias.
@@ -111,7 +111,6 @@ def test_un_effort_deliberado_gana_al_nombre_del_alias(hook, alias, effort, espe
     # `tooling` -- "sin pensar", primary de culturismo e image-cloud -- pensaria
     # en cada turno y la etiqueta del selector mentiria.
     ("tooling", {"thinking": False}),
-    ("agent", {"thinking": True, "reasoning_effort": "low"}),
 ])
 @pytest.mark.parametrize("ambiente", ["low", "minimal"])
 def test_un_effort_ambiente_NO_pisa_al_alias(hook, alias, esperado, ambiente):
@@ -120,8 +119,8 @@ def test_un_effort_ambiente_NO_pisa_al_alias(hook, alias, esperado, ambiente):
 
 def test_tambien_lee_la_forma_de_la_responses_api(hook):
     """OpenClaw manda `reasoning_effort` plano, pero la responses API lo anida."""
-    data = {"model": "agent", "reasoning": {"effort": "max"}}
-    assert ctk(hook, data, "agent") == {"thinking": True, "reasoning_effort": "max"}
+    data = {"model": "tooling", "reasoning": {"effort": "max"}}
+    assert ctk(hook, data, "tooling") == {"thinking": True, "reasoning_effort": "max"}
 
 
 @pytest.mark.parametrize("effort,alias,esperado", [
@@ -152,12 +151,12 @@ def test_quien_ya_opino_en_chat_template_kwargs_sigue_mandando(hook):
 def test_qwen_no_gradua_y_el_effort_solo_lo_enciende(hook):
     """Qwen solo tiene `enable_thinking`. low/high/max colapsan a "piensa" y
     `none` sigue apagando: el effort no puede inventar niveles que no existen."""
-    data = {"model": "agent", "reasoning_effort": "max"}
-    assert ctk(hook, data, "agent", backend="openai/nvidia-qwen36-35b-nvfp4") == {
+    data = {"model": "tooling", "reasoning_effort": "max"}
+    assert ctk(hook, data, "tooling", backend="openai/qwen38-27b") == {
         "enable_thinking": True
     }
-    data = {"model": "agent", "reasoning_effort": "none"}
-    assert ctk(hook, data, "agent", backend="openai/nvidia-qwen36-35b-nvfp4") == {
+    data = {"model": "tooling", "reasoning_effort": "none"}
+    assert ctk(hook, data, "tooling", backend="openai/qwen38-27b") == {
         "enable_thinking": False
     }
 

@@ -11,7 +11,7 @@ REQUIRED_MODELS = (
     "ornith-canary",
     "ornith-1.0",
     "dense-uncensored",
-    "router",
+    "tooling",
     "qwen35-4b",
 )
 SAUVAGE_REQUIRED_MODELS = ("tooling", "gpt-5.6-luna", "qwen35-4b")
@@ -106,7 +106,7 @@ def test_reconciler_updates_only_the_named_openclaw_virtual_key():
                 "ornith-canary",
                 "ornith-1.0",
                 "dense-uncensored",
-                "router",
+                "tooling",
                 "qwen35-4b",
             ],
         },

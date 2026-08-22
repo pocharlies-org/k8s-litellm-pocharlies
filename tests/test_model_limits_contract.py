@@ -16,7 +16,7 @@ de los que puede.
 Lo que se fija aqui:
   1. los nombres de los campos son los de litellm, y `context_window` no vuelve
   2. ningun limite se hereda: todo backend declara los suyos
-  3. el router automatico ya no depende del 27B ni necesita un escape especial
+  3. `tooling` publica limites compatibles con ambos residentes
 """
 import ast
 import os
@@ -167,7 +167,7 @@ def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
     exec(compile(ast.Module(body=[function], type_ignores=[]), "<sync>", "exec"), namespace)
     contract = namespace["managed_model_contract"]
     current = {
-        "model_name": "agent",
+        "model_name": "tooling",
         "litellm_params": {
             "model": "openai/deepseek-v4-flash-0731",
             "api_base": "http://deepseek/v1",
@@ -193,15 +193,18 @@ def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
     assert "delete_model(model_id)" in reconcile
 
 
-def test_router_automatico_no_depende_del_dense(cms):
-    """Los limites del 27B no pueden volver a condicionar el perfil automatico."""
+def test_tooling_dinamico_no_incluye_aliases_dense(cms):
+    """El perfil local dinamico solo contiene nombres de capacidad vigentes."""
     tree = ast.parse(cms["hook"])
-    route = _const(cms["hook"], "ROUTE")
-    assert {entry["model"] for entry in route.values()} == {
-        "tooling", "agent", "high", "max"}
-    assert all(not alias.startswith("dense")
-               for entry in route.values()
-               for alias in (entry["model"], *entry.get("fallbacks", ())))
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(getattr(target, "id", "") == "CAPABILITY_CHAINS"
+                for target in node.targets)
+    )
+    aliases = {ast.literal_eval(key) for key in assignment.value.keys}
+    assert aliases == {"tooling", "high", "max", "tooling-uncensored"}
+    assert all(not alias.startswith("dense") for alias in aliases)
     assert not any(isinstance(node, ast.Assign) and any(
         getattr(target, "id", "") == "DENSE_CTX_ESCAPE" for target in node.targets)
         for node in tree.body)

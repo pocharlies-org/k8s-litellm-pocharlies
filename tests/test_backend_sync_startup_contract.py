@@ -39,6 +39,6 @@ def test_openclaw_team_has_canary_and_explicit_operational_routes():
     assert "qwen36-27b-nvfp4-v024-f2-dgx1" not in required
     assert {
         "ornith-canary", "ornith-1.0", "qwen38-27b",
-        "router", "agent", "high", "max",
+        "tooling", "high", "max",
     } <= required
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text

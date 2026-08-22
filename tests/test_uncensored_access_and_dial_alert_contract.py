@@ -93,7 +93,7 @@ def test_the_gate_also_covers_the_DIRECT_names(hook):
 
 def test_the_censored_route_is_NOT_gated(hook):
     """Esto no puede convertirse en un gate sobre el trafico normal."""
-    for alias in ("tooling", "agent", "high", "max", "deepseek-v4-flash-0731"):
+    for alias in ("tooling", "high", "max", "deepseek-v4-flash-0731"):
         denied, _ = hook._uncensored_access_denied(alias, "una-key-cualquiera")
         assert denied is False, alias
 

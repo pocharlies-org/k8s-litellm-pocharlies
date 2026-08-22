@@ -3,7 +3,7 @@
 HISTORIA (2026-08-13, ventana RHO backend-sync)
 -----------------------------------------------
 Este fichero afirmaba que `ornith-dgx1` era el unico backend de DGX1 y dueño de
-`tooling`/`router`/`auto` mas sus dos nombres de canary. Dejo de ser cierto por
+el perfil local mas sus dos nombres de canary. Dejo de ser cierto por
 partes y en fechas distintas:
 
   - 10-08-2026: se BORRAN los pesos de Ornith del disco por decision del operador.

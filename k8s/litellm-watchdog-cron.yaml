@@ -197,7 +197,7 @@ spec:
                   if modelos:
                       try:
                           d, latencia = pide("/v1/chat/completions", {
-                              "model": "agent",
+                              "model": "tooling",
                               "messages": [{"role": "user",
                                             "content": "Responde SOLO el numero: 17*23"}],
                               "max_tokens": 400,

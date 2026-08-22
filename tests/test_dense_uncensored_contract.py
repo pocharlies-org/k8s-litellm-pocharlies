@@ -41,14 +41,12 @@ def test_uncensored_is_the_creative_backend_owning_tooling_and_dense_aliases():
         assert dead not in text, f"{dead} apunta a un deployment borrado"
 
 
-def test_dense_uncensored_is_never_auto_routed():
-    """El nombre explicito `qwen38-27b` no lo reescribe el router: una
-    llamada directa debe fallar si DGX2 esta caido, no responder desde Ornith."""
+def test_qwen_direct_name_is_not_a_capability_alias():
+    """Un nombre concreto falla si su backend cae; no se cambia silenciosamente."""
     text = MANIFEST.read_text()
-    routed = _sync_block(text, "AUTO_ROUTED_MODELS = ", "# All four routes")
-    assert "qwen38-27b" not in routed
-    route = _sync_block(text, "ROUTE = {", "# Deterministic hints")
-    assert "dense" not in route  # retirado 15-08
+    capabilities = _sync_block(text, "CAPABILITY_CHAINS = {", "# ── Desvio de VISION")
+    assert '"qwen38-27b"' not in capabilities
+    assert '"dense"' not in capabilities
 
 
 def test_openclaw_team_permission_is_reconciled_without_removing_models():

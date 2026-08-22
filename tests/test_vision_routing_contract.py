@@ -30,7 +30,7 @@ WANT_FN = {"_vision_target", "_has_part_type", "_message_entries",
            # sondas por defecto: tienen que existir para que la firma de
            # _vision_target ligue en el `def`. Los tests inyectan stubs.
            "_alias_supports_vision", "_alias_has_deployments"}
-WANT_CONST = {"VISION_FALLBACK_MODEL", "VISION_DIVERTIBLE", "AUTO_ROUTED_MODELS",
+WANT_CONST = {"VISION_FALLBACK_MODEL", "VISION_DIVERTIBLE",
               "CAPABILITY_CHAINS", "IMAGE_PART_TYPES", "TOOLING_FALLBACKS"}
 
 
@@ -126,18 +126,18 @@ def test_sin_imagen_no_se_desvia(hook):
 def test_backend_que_ve_se_queda_la_peticion(hook):
     """Un residente multimodal (Ornith, el 27B, el nvidia-qwen36) recupera lo suyo
     sin tocar nada: el desvio se apaga solo."""
-    assert _target(hook, _con_imagen(), "router", "dense", ve=True) is None
+    assert _target(hook, _con_imagen(), "high", "qwen38-27b", ve=True) is None
     for alias in sorted(hook.VISION_DIVERTIBLE):
         assert _target(hook, _con_imagen(), alias, "tooling", ve=True) is None, alias
 
 
 def test_no_se_desvia_si_el_modelo_de_vision_no_esta_registrado(hook):
-    assert _target(hook, _con_imagen(), "router", "tooling", sol_viva=False) is None
+    assert _target(hook, _con_imagen(), "high", "tooling", sol_viva=False) is None
 
 
 def test_no_se_desvia_a_si_mismo(hook):
     """Pedir el propio modelo de vision no puede reentrar en el desvio."""
-    assert _target(hook, _con_imagen(), "router", hook.VISION_FALLBACK_MODEL) is None
+    assert _target(hook, _con_imagen(), "high", hook.VISION_FALLBACK_MODEL) is None
 
 
 def test_el_destino_es_un_modelo_del_model_list(hook):

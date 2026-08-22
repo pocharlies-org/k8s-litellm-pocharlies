@@ -1,6 +1,6 @@
 """Reasoning metadata published for the live DeepSeek backend.
 
-DeepSeek's compatibility aliases (tooling/agent/high/max) remain available for
+DeepSeek's capability aliases (tooling/high/max) remain available for
 clients that can only choose a model name. OpenCode and OpenChamber can send a
 reasoning effort, so the direct model must advertise its real tiers and let the
 client render one model with variants instead of four apparent checkpoints.
