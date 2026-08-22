@@ -33,11 +33,14 @@ MODEL_SCOPED_LAMBDA = {
     "qwen38-27b-uncensored": "refusal:1.0",
 }
 
-WANT_FN = {"_compute_mode_allows_local", "_tooling_uncensored_target"}
+WANT_FN = {"_component_is_ready", "_ready_tooling_modes",
+           "_select_ready_tooling_mode", "_tooling_mode_for_model",
+           "_compute_mode_allows_local", "_tooling_uncensored_target"}
 WANT_CONST = {"TOOLING_UNCENSORED_MODE_TARGETS", "TOOLING_UNCENSORED_ALIASES",
               "ABLITERATED_HEALTH_URLS",
               "CAPABILITY_CHAINS", "TOOLING_FALLBACKS",
-              "TOOLING_MODE_TARGETS", "TOOLING_PROFILE_ALIASES",
+              "TOOLING_MODE_TARGETS", "TOOLING_MODE_COMPONENTS",
+              "TOOLING_PROFILE_ALIASES",
               "CAPABILITY_CHAINS", "TOOLING_FALLBACKS"}
 
 
@@ -117,12 +120,32 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
     """Al abliterado del perfil, no al residente normal: si resolviera a
     `deepseek-v4-flash-0731` se perderia el sello y serviria censurado."""
     assert hook.TOOLING_UNCENSORED_ALIASES == frozenset({CAPABILITY})
+    components = {
+        "llm-tp": {
+            "dgx1": [{"name": "deepseek-worker", "ready": True,
+                      "desired_replicas": 1, "ready_replicas": 1}],
+            "dgx2": [{"name": "deepseek-head", "ready": True,
+                      "desired_replicas": 1, "ready_replicas": 1}],
+        },
+        "creative": {
+            "dgx1": [{"name": "dense-uncensored", "ready": True,
+                      "desired_replicas": 1, "ready_replicas": 1}],
+        },
+    }
     for mode, want in (("llm-tp", "deepseek-v4-flash-0731-uncensored"),
                        ("creative", "qwen38-27b-uncensored")):
         target, reason = hook._tooling_uncensored_target(
-            {"effective_mode": mode, "desired_mode": mode, "phase": "ready"}
+            {"effective_mode": mode, "desired_mode": mode, "phase": "ready",
+             "components": components[mode]}
         )
         assert (target, reason) == (want, None), (mode, target, reason)
+    # El cambio deseado puede estar pendiente: manda el residente que siga Ready.
+    assert hook._tooling_uncensored_target({
+        "effective_mode": "creative",
+        "desired_mode": "llm-tp",
+        "phase": "waiting",
+        "components": components["creative"],
+    }) == ("qwen38-27b-uncensored", None)
     # Y cada destino es una entrada con sello propio, no un nombre inventado.
     assert set(hook.TOOLING_UNCENSORED_MODE_TARGETS.values()) == set(MODEL_SCOPED_LAMBDA)
 

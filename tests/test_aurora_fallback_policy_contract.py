@@ -23,15 +23,23 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 WANT_FN = {
     "_apply_key_fallback_policy",
     "_auth_field",
+    "_component_is_ready",
     "_compute_mode_allows_local",
+    "_ready_tooling_modes",
     "_resolve_key_label",
+    "_select_ready_tooling_mode",
+    "_tooling_mode_for_model",
     "_tooling_route_for_state",
     "_tooling_target_for_compute_mode",
 }
 WANT_CONST = {
     "NO_FALLBACK_KEY_ALIASES",
     "TOOLING_FALLBACKS",
+    "TOOLING_MODE_COMPONENTS",
     "TOOLING_MODE_TARGETS",
+    "TOOLING_PROFILE_ALIASES",
+    "TOOLING_UNCENSORED_ALIASES",
+    "TOOLING_UNCENSORED_MODE_TARGETS",
 }
 
 
@@ -73,6 +81,12 @@ READY_TP = {
     "phase": "ready",
     "desired_mode": "llm-tp",
     "effective_mode": "llm-tp",
+    "components": {
+        "dgx1": [{"name": "deepseek-worker", "ready": True,
+                  "desired_replicas": 1, "ready_replicas": 1}],
+        "dgx2": [{"name": "deepseek-head", "ready": True,
+                  "desired_replicas": 1, "ready_replicas": 1}],
+    },
 }
 
 

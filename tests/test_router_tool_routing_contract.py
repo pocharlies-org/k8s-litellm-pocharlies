@@ -27,7 +27,9 @@ WANT_FN = {"_has_tools", "_classify_route", "_approx_input_tokens", "_message_en
            # body lazily imports litellm, so pulling it in costs nothing here -- the
            # chain tests inject a stub instead of calling it.
            "_degrade", "_alias_has_deployments", "_walk_chain", "_chain_of"}
-WANT_FN.update({"_compute_mode_allows_local", "_tooling_target_for_compute_mode",
+WANT_FN.update({"_component_is_ready", "_ready_tooling_modes",
+                "_select_ready_tooling_mode", "_tooling_mode_for_model",
+                "_compute_mode_allows_local", "_tooling_target_for_compute_mode",
                 "_tooling_route_for_state"})
 WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "THINK_MARKERS",
               "REASONING_EFFORT_SIGNAL", "TEXT_PART_TYPES", "IMAGE_PART_TYPES",
@@ -35,7 +37,10 @@ WANT_CONST = {"ROUTE", "AUTO_ROUTED_MODELS", "THINK_MARKERS",
               "THINKING_TIERS", "ROUTER_MAX_HINTS", "ROUTER_HIGH_HINTS",
               "ROUTER_LOW_HINTS", "ROUTER_OFF_HINTS",
               "ROUTER_HIGH_CONTEXT_TOKENS", "ROUTER_MAX_CONTEXT_TOKENS",
-              "TOOLING_MODE_TARGETS", "TOOLING_FALLBACKS"}
+              "TOOLING_MODE_TARGETS", "TOOLING_MODE_COMPONENTS",
+              "TOOLING_UNCENSORED_MODE_TARGETS",
+              "TOOLING_PROFILE_ALIASES", "TOOLING_UNCENSORED_ALIASES",
+              "TOOLING_FALLBACKS"}
 
 
 @pytest.fixture(scope="module")
@@ -247,12 +252,37 @@ def test_tooling_sin_alias_local_registrado_sale_seco(hook):
 
 
 def test_tooling_target_follows_profile_and_fails_without_resident(hook):
-    ready_tp = {"phase": "ready", "desired_mode": "llm-tp", "effective_mode": "llm-tp"}
+    ready_tp = {
+        "phase": "ready",
+        "desired_mode": "llm-tp",
+        "effective_mode": "llm-tp",
+        "components": {
+            "dgx1": [{"name": "deepseek-worker", "ready": True,
+                      "desired_replicas": 1, "ready_replicas": 1}],
+            "dgx2": [{"name": "deepseek-head", "ready": True,
+                      "desired_replicas": 1, "ready_replicas": 1}],
+        },
+    }
     ready_creative = {
-        "phase": "ready", "desired_mode": "creative", "effective_mode": "creative"
+        "phase": "ready",
+        "desired_mode": "creative",
+        "effective_mode": "creative",
+        "components": {
+            "dgx1": [{"name": "dense-uncensored", "ready": True,
+                      "desired_replicas": 1, "ready_replicas": 1}],
+        },
     }
     transition = {
-        "phase": "switching", "desired_mode": "creative", "effective_mode": "llm-tp"
+        "phase": "switching",
+        "desired_mode": "creative",
+        "effective_mode": "llm-tp",
+        "components": ready_tp["components"],
+    }
+    reverse_transition = {
+        "phase": "waiting",
+        "desired_mode": "llm-tp",
+        "effective_mode": "creative",
+        "components": ready_creative["components"],
     }
 
     # 2026-08-18: el destino es el NOMBRE DIRECTO del residente, no el alias
@@ -269,8 +299,15 @@ def test_tooling_target_follows_profile_and_fails_without_resident(hook):
         "qwen38-27b", None
     )
     assert hook._tooling_target_for_compute_mode(transition) == (
-        None,
-        "compute_mode_transition",
+        "deepseek-v4-flash-0731", None
+    )
+    assert hook._tooling_target_for_compute_mode(reverse_transition) == (
+        "qwen38-27b", None
+    )
+    assert hook._tooling_target_for_compute_mode({
+        "phase": "waiting", "desired_mode": "llm-tp", "effective_mode": "creative"
+    }) == (
+        None, "tooling_resident_not_ready"
     )
     assert hook.TOOLING_FALLBACKS == ()
 
@@ -281,10 +318,15 @@ def test_tooling_target_follows_profile_and_fails_without_resident(hook):
     assert hook._tooling_route_for_state(ready_creative, local_live) == (
         "qwen38-27b", "primary", None
     )
-    # A stale local registration cannot win while the profile is switching.
-    stale_local = lambda alias: alias in {"deepseek-v4-flash-0731", "qwen38-27b"}
-    assert hook._tooling_route_for_state(transition, stale_local) == (
-        None, "dry", "compute_mode_transition"
+    # El bookkeeping de una transicion no corta al residente que sigue Ready.
+    local_during_transition = lambda alias: alias in {
+        "deepseek-v4-flash-0731", "qwen38-27b"
+    }
+    assert hook._tooling_route_for_state(transition, local_during_transition) == (
+        "deepseek-v4-flash-0731", "primary", None
+    )
+    assert hook._tooling_route_for_state(reverse_transition, local_during_transition) == (
+        "qwen38-27b", "primary", None
     )
     assert hook._tooling_route_for_state(ready_creative, lambda alias: False) == (
         None, "dry", "compute_profile_target_unavailable"

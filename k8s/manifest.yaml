@@ -608,18 +608,6 @@ data:
     _compute_mode_cache = {"expires": 0.0, "state": None}
     _compute_mode_lock = asyncio.Lock()
 
-    def _compute_mode_allows_local(state):
-        if not isinstance(state, dict):
-            return False, "compute_mode_unavailable"
-        if state.get("phase") != "ready":
-            return False, "compute_mode_transition"
-        effective = state.get("effective_mode")
-        if effective not in {"llm-tp", "creative"}:
-            return False, "compute_mode_invalid"
-        if state.get("desired_mode") != effective:
-            return False, "compute_mode_inconsistent"
-        return True, None
-
     # 2026-08-18: los dos valores eran "tooling" porque el alias `tooling` lo
     # REGISTRABA en runtime el controlador sobre el residente que estuviera arriba,
     # asi que resolverlo era un no-op. Muerto el controlador, `tooling` es una
@@ -634,6 +622,16 @@ data:
     TOOLING_MODE_TARGETS = {
         "llm-tp": "deepseek-v4-flash-0731",
         "creative": "qwen38-27b",
+    }
+    # Componentes que prueban que un residente esta REALMENTE operativo. El
+    # estado desired/effective/phase describe la transicion del arbitro, no la
+    # disponibilidad para servir: durante minutos puede decir `waiting` mientras
+    # Qwen sigue Ready, o puede haber cambiado `desired_mode` antes de que DeepSeek
+    # termine de cargar. `tooling` debe seguir al que responde, no al que se desea.
+    # DeepSeek requiere sus dos ranks; Qwen es un unico Deployment en DGX1.
+    TOOLING_MODE_COMPONENTS = {
+        "llm-tp": (("dgx1", "deepseek-worker"), ("dgx2", "deepseek-head")),
+        "creative": (("dgx1", "dense-uncensored"),),
     }
     TOOLING_FALLBACKS = ()
     # Alias que significan «el residente del perfil vivo» y por eso se reescriben al
@@ -653,6 +651,85 @@ data:
         "creative": "qwen38-27b-uncensored",
     }
     TOOLING_UNCENSORED_ALIASES = frozenset({"tooling-uncensored"})
+
+    def _component_is_ready(state, node, name):
+        components = (state.get("components") or {}).get(node) or []
+        for component in components:
+            if not isinstance(component, dict) or component.get("name") != name:
+                continue
+            desired = component.get("desired_replicas")
+            ready = component.get("ready_replicas")
+            return (
+                component.get("ready") is True
+                and isinstance(desired, int)
+                and desired > 0
+                and isinstance(ready, int)
+                and ready >= desired
+            )
+        return False
+
+    def _ready_tooling_modes(state):
+        if not isinstance(state, dict):
+            return ()
+        return tuple(
+            mode
+            for mode, required in TOOLING_MODE_COMPONENTS.items()
+            if all(_component_is_ready(state, node, name) for node, name in required)
+        )
+
+    def _select_ready_tooling_mode(state):
+        if not isinstance(state, dict):
+            return None, "compute_mode_unavailable"
+        ready_modes = _ready_tooling_modes(state)
+        if not ready_modes:
+            return None, "tooling_resident_not_ready"
+        # Si ambos conviven brevemente, sigue la intencion del arbitro cuando ya
+        # sea operativa; si aun no lo es, conserva el residente anterior Ready.
+        for preferred in (state.get("desired_mode"), state.get("effective_mode")):
+            if preferred in ready_modes:
+                return preferred, None
+        return ready_modes[0], None
+
+    def _tooling_mode_for_model(model):
+        name = str(model or "")
+        if name.startswith("openai/"):
+            name = name.split("/", 1)[1]
+        for mode, target in TOOLING_MODE_TARGETS.items():
+            if name == target:
+                return mode
+        for mode, target in TOOLING_UNCENSORED_MODE_TARGETS.items():
+            if name == target:
+                return mode
+        return None
+
+    def _compute_mode_allows_local(state, model=None):
+        """Admission follows operational residents, not transition bookkeeping."""
+        if not isinstance(state, dict):
+            return False, "compute_mode_unavailable"
+        ready_modes = _ready_tooling_modes(state)
+        resident_mode = _tooling_mode_for_model(model)
+        if resident_mode:
+            return (
+                (True, None)
+                if resident_mode in ready_modes
+                else (False, "tooling_resident_not_ready")
+            )
+        if str(model or "") in TOOLING_PROFILE_ALIASES | TOOLING_UNCENSORED_ALIASES:
+            return (
+                (True, None)
+                if ready_modes
+                else (False, "tooling_resident_not_ready")
+            )
+        # Las otras rutas locales conservan la admision historica. Este cambio
+        # solo elimina el corte artificial de los aliases de residente.
+        if state.get("phase") != "ready":
+            return False, "compute_mode_transition"
+        effective = state.get("effective_mode")
+        if effective not in {"llm-tp", "creative"}:
+            return False, "compute_mode_invalid"
+        if state.get("desired_mode") != effective:
+            return False, "compute_mode_inconsistent"
+        return True, None
 
     # ── Quien puede pedir la ruta abliterada (19-08, tras auditoria) ─────────────
     #
@@ -708,20 +785,19 @@ data:
         }
 
     def _tooling_uncensored_target(state):
-        allowed, reason = _compute_mode_allows_local(state)
-        if not allowed:
+        mode, reason = _select_ready_tooling_mode(state)
+        if not mode:
             return None, reason
-        target = TOOLING_UNCENSORED_MODE_TARGETS.get(state.get("effective_mode"))
+        target = TOOLING_UNCENSORED_MODE_TARGETS.get(mode)
         if not target:
             return None, "compute_mode_invalid"
         return target, None
 
     def _tooling_target_for_compute_mode(state):
-        allowed, reason = _compute_mode_allows_local(state)
-        if not allowed:
+        mode, reason = _select_ready_tooling_mode(state)
+        if not mode:
             return None, reason
-        effective = state.get("effective_mode")
-        target = TOOLING_MODE_TARGETS.get(effective)
+        target = TOOLING_MODE_TARGETS.get(mode)
         if not target:
             return None, "compute_mode_invalid"
         return target, None
@@ -729,8 +805,8 @@ data:
     def _tooling_route_for_state(state, alias_live, disable_fallbacks=False):
         """Choose the profile resident and fail visibly when it is unavailable.
 
-        The local head is considered only while the global profile is coherent and
-        Ready. During a transition a stale ``tooling`` registration must not win.
+        The local head is selected from the residents whose Kubernetes components
+        are Ready. Transition bookkeeping never hides a still-operational resident.
         ``disable_fallbacks`` remains part of the policy contract, although the
         current fallback list is intentionally empty.
         """
@@ -769,15 +845,16 @@ data:
         if not _is_local_vllm_request(model, proxy_model, api_base):
             return
         state = await _compute_mode_state()
-        allowed, reason = _compute_mode_allows_local(state)
+        allowed, reason = _compute_mode_allows_local(state, model)
         if allowed:
             return
         raise HTTPException(
             status_code=503,
             headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)},
             detail={
-                "error": "local LLM admission is closed during compute profile transition",
+                "error": "local LLM target is not ready",
                 "blocked": reason,
+                "ready_tooling_modes": list(_ready_tooling_modes(state)),
                 "desired_mode": (state or {}).get("desired_mode"),
                 "effective_mode": (state or {}).get("effective_mode"),
                 "phase": (state or {}).get("phase"),
@@ -787,9 +864,9 @@ data:
     async def _resolve_tooling_profile(disable_fallbacks=False):
         """Resolve tooling exclusively to the active local resident.
 
-        Both compute profiles publish ``tooling`` on their own resident. If the
-        profile is transitioning, its target is missing, or its alias is not live,
-        the caller receives 503.
+        Both compute profiles publish ``tooling`` on their own resident. The ready
+        components choose the target even while the arbiter is waiting/switching.
+        If neither resident is Ready, or its alias is not live, the caller gets 503.
         """
         state = await _compute_mode_state()
         resolved, route_state, reason = _tooling_route_for_state(
@@ -804,6 +881,7 @@ data:
                 "error": "tooling profile target is unavailable",
                 "blocked": reason,
                 "target": _tooling_target_for_compute_mode(state)[0],
+                "ready_tooling_modes": list(_ready_tooling_modes(state)),
                 "fallbacks": [] if disable_fallbacks else list(TOOLING_FALLBACKS),
                 "fallbacks_disabled": disable_fallbacks,
                 "desired_mode": (state or {}).get("desired_mode"),
@@ -5088,7 +5166,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9001d341e711
+        config.k8s.e-dani.com/revision: config-46462b19a241
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

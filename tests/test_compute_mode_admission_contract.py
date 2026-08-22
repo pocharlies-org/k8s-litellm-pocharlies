@@ -20,27 +20,52 @@ def _hook_source():
 
 def _pure_gate():
     tree = ast.parse(_hook_source())
-    function = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "_compute_mode_allows_local"
-    )
+    functions = {
+        "_component_is_ready",
+        "_ready_tooling_modes",
+        "_tooling_mode_for_model",
+        "_compute_mode_allows_local",
+    }
+    constants = {
+        "TOOLING_MODE_TARGETS",
+        "TOOLING_MODE_COMPONENTS",
+        "TOOLING_UNCENSORED_MODE_TARGETS",
+        "TOOLING_PROFILE_ALIASES",
+        "TOOLING_UNCENSORED_ALIASES",
+    }
+    keep = [
+        node for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in functions)
+        or (isinstance(node, ast.Assign)
+            and any(getattr(target, "id", "") in constants for target in node.targets))
+    ]
     module = types.ModuleType("compute_mode_gate")
-    exec(compile(ast.Module(body=[function], type_ignores=[]), "<gate>", "exec"), module.__dict__)
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "<gate>", "exec"), module.__dict__)
     return module._compute_mode_allows_local
 
 
-def test_local_llm_admission_is_closed_until_one_profile_is_fully_ready():
+def test_tooling_admission_follows_the_ready_resident_during_transitions():
     gate = _pure_gate()
-    assert gate(None) == (False, "compute_mode_unavailable")
-    assert gate({"phase": "waiting"}) == (False, "compute_mode_transition")
-    assert gate({
-        "phase": "ready", "desired_mode": "creative", "effective_mode": "llm-tp"
-    }) == (False, "compute_mode_inconsistent")
-    assert gate({
-        "phase": "ready", "desired_mode": "creative", "effective_mode": "creative"
-    }) == (True, None)
+    qwen_ready = {
+        "phase": "waiting",
+        "desired_mode": "llm-tp",
+        "effective_mode": "creative",
+        "components": {
+            "dgx1": [{"name": "dense-uncensored", "ready": True,
+                      "desired_replicas": 1, "ready_replicas": 1}],
+        },
+    }
+    assert gate(None, "tooling") == (False, "compute_mode_unavailable")
+    assert gate({"phase": "waiting"}, "tooling") == (
+        False, "tooling_resident_not_ready"
+    )
+    assert gate(qwen_ready, "tooling") == (True, None)
+    assert gate(qwen_ready, "qwen38-27b") == (True, None)
+    assert gate(qwen_ready, "deepseek-v4-flash-0731") == (
+        False, "tooling_resident_not_ready"
+    )
+    # Fuera de los residentes/tooling se mantiene la puerta historica.
+    assert gate(qwen_ready, "ornith-1.0") == (False, "compute_mode_transition")
 
 
 def test_hook_checks_mode_before_tracking_a_new_local_request():
@@ -53,6 +78,10 @@ def test_hook_checks_mode_before_tracking_a_new_local_request():
     assert 'os.environ.get("COMPUTE_MODE_TIMEOUT_SECONDS", "10")' in source
     assert "httpx.AsyncClient(timeout=COMPUTE_MODE_TIMEOUT_SECONDS)" in source
     assert "COMPUTE_MODE_RETRY_AFTER_SECONDS" in source
+    assert "_compute_mode_allows_local(state, model)" in source
+    assert '"deepseek-worker"' in source
+    assert '"deepseek-head"' in source
+    assert '"dense-uncensored"' in source
     assert 'status_code=503' in source
     assert 'headers={"Retry-After": str(COMPUTE_MODE_RETRY_AFTER_SECONDS)}' in source
 
