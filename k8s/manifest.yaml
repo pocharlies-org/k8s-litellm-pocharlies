@@ -304,7 +304,14 @@ data:
         # Mismo backend que el alias de arriba: mismos tiers honrados.
         supported_reasoning_efforts: [none, high, max]
     # Independiente del perfil: vive en la RTX del x86, no en los Sparks, asi que
-    # esta arriba en los dos modos. Los dos nombres son el mismo backend.
+    # esta arriba en los dos modos.
+    #
+    # 24-08-2026: se retira la segunda entrada `qwen3.5-4b`. Era el MISMO backend
+    # con el nombre puntuado y ocupaba una linea propia en el picker de OpenClaw,
+    # que se siembra de /v1/models. El nombre viejo sigue contestando por
+    # `model_group_alias` (oculto), porque hay un consumidor cada ~16 min que no
+    # esta identificado y el default del asistente del video-director del panel
+    # tambien lo nombra.
     - model_name: qwen35-4b
       litellm_params: &qwen35_4b_params
         model: openai/qwen3.5-4b
@@ -322,13 +329,15 @@ data:
         supports_reasoning: true
         # Igual que los otros locales: none/low/medium daban reasoning_content 0.
         supported_reasoning_efforts: [none, high, max]
-    - model_name: qwen3.5-4b
-      litellm_params: *qwen35_4b_params
-      model_info: *qwen35_4b_info
     # ── ALIAS DE CAPACIDAD: al Service de POOL ───────────────────────────────────
-    # `tooling` significa «el residente del perfil vivo, sin pensar»; high/max son
-    # el MISMO backend con otro nivel de pensamiento (lo pone THINKING_TIERS en el
-    # hook, no un modelo distinto).
+    # `tooling` significa «el residente del perfil vivo, sin pensar».
+    #
+    # 24-08-2026: se retiran `high` y `max`. No eran modelos: eran el MISMO
+    # backend con otro nivel de pensamiento, y ese nivel lo pide el cliente por
+    # `reasoning_effort` (`/effort` en OpenClaw) desde que la lista honesta de
+    # efforts vive en `supported_reasoning_efforts`. Como nombres solo servian
+    # para ocupar dos lineas mas del picker; 0 peticiones en los ultimos 1000
+    # requests del proxy cuando se midio.
     - model_name: tooling
       litellm_params: &tooling_pool_params
         model: openai/tooling
@@ -351,12 +360,6 @@ data:
         # cercano y el effort que llega es DELIBERADO. Ver el alias directo de
         # DeepSeek para el fallo que arregla.
         supported_reasoning_efforts: [none, high, max]
-    - model_name: high
-      litellm_params: *tooling_pool_params
-      model_info: *tooling_pool_info
-    - model_name: max
-      litellm_params: *tooling_pool_params
-      model_info: *tooling_pool_info
     # ── `tooling-uncensored`: el residente del perfil, abliterado ───────────────
     #
     # POR QUE HACE FALTA UN NOMBRE DE CAPACIDAD. `deepseek-v4-flash-0731-uncensored`
@@ -518,6 +521,15 @@ data:
       # ~4 min, so this only has to cover that window.
       allowed_fails: 3
       cooldown_time: 120
+      # Compatibilidad del nombre puntuado del 4B sin ocupar linea en el picker:
+      # `hidden` lo deja fuera de /v1/models, que es de donde OpenClaw siembra el
+      # menu, y el router lo sigue resolviendo al grupo `qwen35-4b`. Es una
+      # deprecacion, no una entrada nueva: cuando el consumidor de cada ~16 min
+      # este identificado y repuntado, esta clave se cae.
+      model_group_alias:
+        "qwen3.5-4b":
+          model: qwen35-4b
+          hidden: true
       # There are two failure modes with two different errors and layers:
       #   * alias REGISTERED but no healthy deployment (cooldown after allowed_fails,
       #     a wedged vLLM whose /health still answers 200) -> the Router raises from
@@ -529,13 +541,14 @@ data:
       #     capability hook's chain, which runs at pre_call_hook, ahead of the
       #     model-name gate.
       # Both layers are load-bearing. Neither one substitutes for the other.
-      fallbacks:
-      # En llm-tp, high/max y deepseek-v4-flash-0731 son el MISMO backend.
-      # Conservan un único salto local con otro contador de cooldown. `tooling`
-      # no tiene fallback: siempre representa al residente del perfil global y
-      # falla de forma visible cuando no hay residente utilizable.
-      - high: ["deepseek-v4-flash-0731"]
-      - max: ["deepseek-v4-flash-0731"]
+      # 24-08-2026: la clave `fallbacks` desaparece entera. Sus dos unicas
+      # entradas eran `high` y `max`, que se retiran del model_list —no eran
+      # modelos, eran niveles de pensamiento—, y un `fallbacks:` sin lista se
+      # carga como null. `tooling` nunca tuvo fallback a proposito: representa al
+      # residente del perfil global y tiene que fallar de forma VISIBLE cuando no
+      # hay residente utilizable. La segunda capa (la cadena del hook de
+      # capacidad, que corre en pre_call_hook) sigue intacta y es la que cubre el
+      # modo "alias borrado del model_list" que se describe arriba.
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
@@ -619,7 +632,10 @@ data:
     # Alias que significan «el residente del perfil vivo» y por eso se reescriben
     # al nombre directo antes de enrutar. `tooling` = sin pensar; high/max = el
     # MISMO backend con otro nivel de pensamiento.
-    TOOLING_PROFILE_ALIASES = frozenset({"tooling", "high", "max"})
+    # 24-08-2026: `high` y `max` salen del model_list, asi que ya no se pueden
+    # pedir: una peticion con esos nombres muere en route_llm_request antes del
+    # hook. Dejarlos aqui seria describir una superficie que no existe.
+    TOOLING_PROFILE_ALIASES = frozenset({"tooling"})
 
     # `tooling-uncensored` significa lo mismo que `tooling` —el residente del perfil
     # vivo— pero con la proyeccion rank-1 encendida. Se resuelve al nombre DIRECTO
@@ -2012,8 +2028,8 @@ data:
     # En una llamada explicita manda el alias que pidio el cliente.
     THINKING_TIERS = {
         "tooling": "off",
-        "high": "high",
-        "max": "max",
+        # 24-08-2026: `high` y `max` se retiran como NOMBRES. El nivel se pide
+        # con `reasoning_effort`, que es la via que ya usaba todo el mundo.
         # `tooling-uncensored` no entra aqui: la ablacion es una capacidad
         # solicitada de forma explicita, no un nivel de pensamiento.
     }
@@ -4695,7 +4711,10 @@ spec:
             # tocar desde aqui `openclaw-codex-app-server` ni
             # `openclaw-operator-readonly`: sus bootstraps comparan igualdad EXACTA
             # de la lista de modelos y ensancharlas rompe el sync.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,qwen38-27b,tooling,high,max,deepseek-v4-flash-0731,qwen35-4b" }
+            # 24-08-2026: fuera `high` y `max` — retirados del model_list. El
+            # reconciler es ADITIVO: lo que no se quita aqui se le vuelve a
+            # escribir al equipo en cada ciclo aunque el modelo no exista.
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,qwen38-27b,tooling,deepseek-v4-flash-0731,qwen35-4b" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             # Key del bot sauvage-shield: su allowlist se declara AQUI (GitOps)
             # y _reconcile_key_models la re-aplica cada ciclo. Fuera del equipo
@@ -4820,7 +4839,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-83530aa23c49
+        config.k8s.e-dani.com/revision: config-2361bdbbe069
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

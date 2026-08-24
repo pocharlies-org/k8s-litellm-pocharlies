@@ -1,6 +1,7 @@
 """Contrato del sampling por FAMILIA del backend.
 
-Los alias de capacidad (`tooling`, `high`, `max`) los sirve el residente que este
+Los alias de capacidad (`tooling`, y hasta el 24-08-2026 tambien `high` y `max`,
+hoy retirados en favor de `reasoning_effort`) los sirve el residente que este
 el residente del momento, y cada familia de checkpoint quiere un sampling
 distinto. El cliente no puede saberlo, asi que lo pone el hook.
 
@@ -228,19 +229,28 @@ def _ctk(data):
     return (data.get("extra_body") or {}).get("chat_template_kwargs") or {}
 
 
-def test_cada_alias_pide_su_nivel_en_deepseek(hook):
-    """El nombre del alias ES la peticion de nivel, traducida al dialecto de la
-    familia viva. DeepSeek lee `thinking` + `reasoning_effort`."""
+def test_cada_nivel_pedido_se_traduce_al_dialecto_de_deepseek(hook):
+    """El nivel se pide con `reasoning_effort` y se traduce al dialecto de la
+    familia viva. DeepSeek lee `thinking` + `reasoning_effort`.
+
+    24-08-2026: hasta hoy el nivel tambien podia venir en el NOMBRE (`high`,
+    `max`). Esos dos alias se retiran del model_list —eran el mismo backend con
+    otro nivel— y el unico nombre que sigue diciendo algo del pensamiento es
+    `tooling`, que significa «no pienses».
+    """
     _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    data = {"model": "tooling"}
+    hook._apply_thinking_tier(data, "tooling")
+    assert _ctk(data) == {"thinking": False}
+
     esperado = {
-        "tooling": {"thinking": False},
         "high": {"thinking": True, "reasoning_effort": "high"},
         "max": {"thinking": True, "reasoning_effort": "max"},
     }
-    for alias, kwargs in esperado.items():
-        data = {"model": "tooling"}          # ya resuelto; el tier va por el pedido
-        hook._apply_thinking_tier(data, alias)
-        assert _ctk(data) == kwargs, alias
+    for effort, kwargs in esperado.items():
+        data = {"model": "tooling", "reasoning_effort": effort}
+        hook._apply_thinking_tier(data, "tooling")
+        assert _ctk(data) == kwargs, effort
 
 
 def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
@@ -248,25 +258,25 @@ def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
     colapsan a "piensa", y `tooling` sigue significando "no pienses". Lo que NO
     puede pasar es que se le cuelen las claves de DeepSeek."""
     _install_fake_litellm({"tooling": _dep("openai/nvidia-qwen36-35b-nvfp4")})
-    for alias in ("high", "max"):
-        data = {"model": "tooling"}
-        hook._apply_thinking_tier(data, alias)
-        assert _ctk(data) == {"enable_thinking": True}, alias
+    for effort in ("high", "max"):
+        data = {"model": "tooling", "reasoning_effort": effort}
+        hook._apply_thinking_tier(data, "tooling")
+        assert _ctk(data) == {"enable_thinking": True}, effort
     data = {"model": "tooling"}
     hook._apply_thinking_tier(data, "tooling")
     assert _ctk(data) == {"enable_thinking": False}
 
 
-def test_el_tier_sale_del_alias_PEDIDO_no_del_resuelto(hook):
-    """La propiedad que justifica pasar `requested_alias` por separado.
+def test_el_tier_sale_de_lo_PEDIDO_no_del_modelo_resuelto(hook):
+    """La propiedad que justifica calcular el tier antes de resolver el destino.
 
-    Cuando `max` degrada a `dense`, data["model"] ya dice "dense" -- que no esta en
-    la tabla. Si el tier se calculara sobre el resuelto, un `max` degradado se
-    quedaria sin pensar, que es justo el nivel contrario al que se pidio.
+    Cuando la peticion degrada a otro alias, data["model"] ya dice otra cosa. Si
+    el tier se calculara sobre el resuelto, un `max` degradado se quedaria sin
+    pensar, que es justo el nivel contrario al que se pidio.
     """
     _install_fake_litellm({"dense": _dep("openai/deepseek-v4-flash-0731")})
-    data = {"model": "dense"}
-    hook._apply_thinking_tier(data, "max")
+    data = {"model": "dense", "reasoning_effort": "max"}
+    hook._apply_thinking_tier(data, "tooling")
     assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
 
 
@@ -296,8 +306,12 @@ def test_la_salida_estructurada_apaga_el_pensamiento_pida_lo_que_pida_el_alias(h
     razonamiento delante del JSON guiado y el parse revienta (3/3). Pedir `max` y
     un json_schema a la vez no es mas pensamiento, es una contradiccion."""
     _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
-    data = {"model": "tooling", "response_format": {"type": "json_schema"}}
-    hook._apply_thinking_tier(data, "max")
+    data = {
+        "model": "tooling",
+        "reasoning_effort": "max",
+        "response_format": {"type": "json_schema"},
+    }
+    hook._apply_thinking_tier(data, "tooling")
     assert _ctk(data) == {"thinking": False}
 
 

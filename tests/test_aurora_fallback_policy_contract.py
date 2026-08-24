@@ -197,9 +197,13 @@ def test_global_tooling_fallback_remains_for_every_other_key():
         and doc.get("kind") == "ConfigMap"
         and doc["metadata"]["name"] == "litellm-config"
     )
+    # 24-08-2026: la clave `fallbacks` ya no existe. Sus dos unicas entradas eran
+    # `high` y `max`, que se retiran del model_list por no ser modelos. La regla
+    # que este test protege no cambia y ahora se cumple de la forma mas fuerte
+    # posible: si no hay grafo, `tooling` no puede tener salto.
     graph = {
         source: destinations
-        for edge in config["router_settings"]["fallbacks"]
+        for edge in config["router_settings"].get("fallbacks") or []
         for source, destinations in edge.items()
     }
 

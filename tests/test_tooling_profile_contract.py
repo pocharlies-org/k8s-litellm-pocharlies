@@ -127,8 +127,9 @@ def test_proxy_fallbacks_never_leave_local_models():
         for entry in entries
         for source, destinations in entry.items()
     }
-    assert graph == {
-        "high": ["deepseek-v4-flash-0731"],
-        "max": ["deepseek-v4-flash-0731"],
-    }
+    # 24-08-2026: `high` y `max` se retiran del model_list —eran el mismo backend
+    # con otro nivel de pensamiento, que hoy se pide con `reasoning_effort`— y con
+    # ellos sus dos saltos, que eran los unicos. Un fallback declarado para un
+    # alias que ya no existe no se dispara jamas.
+    assert graph == {}
     assert all("/" not in target for targets in graph.values() for target in targets)
