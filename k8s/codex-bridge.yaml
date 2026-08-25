@@ -290,6 +290,20 @@ spec:
 #    Imprime https://auth.openai.com/codex/device y un codigo. Abrirlo, meter el
 #    codigo e iniciar sesion con pocharlies@gmail.com. Caduca en 15 min.
 #
+#    Y en el caso normal ni hace falta ese exec: el arranque del pod lanza el flujo
+#    solo y deja la URL y el codigo en su propio log:
+#      kubectl logs -n litellm deploy/litellm-codex --tail=50 | grep -A3 "Sign in"
+#
+# 1-bis. SI CADUCA UN CODIGO SIN USAR, BORRAR EL FICHERO ANTES DE REINTENTAR.
+#    Un codigo emitido deja un auth.json de UNA sola clave, `device_code_requested_at`,
+#    que NO es un fichero vacio: el arranque siguiente lo lee, calcula el cooldown de
+#    5 min (DEVICE_CODE_COOLDOWN_SECONDS) y se queda esperando en
+#    `_wait_for_access_token()` SIN imprimir codigo ninguno. Parece que el puente esta
+#    roto y solo esta en cooldown. Reset limpio:
+#
+#      rm /home/dibanez/litellm-codex-auth/auth.json
+#      kubectl delete po -n litellm -l app=litellm-codex
+#
 # 2. Comprobar que el fichero esta y a quien pertenece:
 #
 #      kubectl exec -n litellm deploy/litellm-codex -- python -c "
