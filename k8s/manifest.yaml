@@ -424,6 +424,54 @@ data:
     # cosas distintas). Y reasoning_effort low no es tacaneria: con `high` o `max`
     # el bloque de pensamiento se dispara y el TTFT se va al garete -- medido a
     # low, TTFT mediana 0.209s. Todo eso vive ahora en FAMILY_SAMPLING.
+
+    # ── PUENTE ChatGPT (Codex) — SOLO para la key `codex` ────────────────────────
+    #
+    # Salida al Deployment `litellm-codex` (k8s/codex-bridge.yaml), que es un LiteLLM
+    # de UNA replica corriendo el proveedor nativo `chatgpt/` sobre la suscripcion de
+    # pocharlies@gmail.com. Aqui NO se habla `chatgpt/` directamente y no es un
+    # detalle de estilo: `Authenticator` escribe auth.json sin lock ninguno y OpenAI
+    # rota el refresh_token, asi que con las 2 replicas de este gateway los dos pods
+    # se matarian la sesion — y el sintoma seria una peticion colgada 15 min (device
+    # login), no un error. El razonamiento completo esta en codex-bridge.yaml.
+    #
+    # `openai/` y no `litellm_proxy/`: es el mismo patron que usaba el puente casero
+    # retirado y el que tiene el paso de /v1/responses probado. El slug que viaja
+    # aguas arriba lo decide el model_list del puente, no este.
+    #
+    # LO QUE ESTE ALIAS NO ESTA, Y NO ES OMISION:
+    #   - NO esta en CAPABILITY_CHAINS, luego tampoco en VISION_DIVERTIBLE
+    #     (`frozenset(CAPABILITY_CHAINS)`). El desvio de vision hacia una cuenta
+    #     ChatGPT es la via por la que el catalogo de airsoft provoco los dos baneos
+    #     del 20/21-08 («Acts of Violence»): 478 de 494 llamadas con imagen llevaban
+    #     «replica». Meterlo ahi reabre exactamente esa causa.
+    #   - NO esta en `router_settings.fallbacks` ni en TOOLING_FALLBACKS. Nada cae
+    #     aqui cuando el residente local falla: esa es la peticion literal del owner
+    #     («ningun fallback a estas cuentas»), y ademas el failover automatico por
+    #     cuota es un mecanismo para SOSTENER mas volumen, que es lo que actuo de
+    #     detector en los baneos.
+    #   - `supports_vision: false`. Ver arriba. No es una limitacion del modelo
+    #     (gpt-5.6-* si ve): es la politica.
+    - model_name: gpt-5.6-sol
+      litellm_params:
+        model: openai/gpt-5.6-sol
+        api_base: http://litellm-codex.litellm.svc.cluster.local:4000/v1
+        api_key: os.environ/LITELLM_CODEX_BRIDGE_KEY
+        timeout: 600
+        # Sin reintentos: el volumen que llega a OpenAI es el que pide el cliente.
+        num_retries: 0
+      model_info:
+        mode: chat
+        backend: codex-bridge-pocharlies
+        max_input_tokens: 272000
+        max_output_tokens: 128000
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        # 96 llamadas/dia por replica contra la cuenta serian trafico plano 24/7 con
+        # prompt fijo — el patron que sirvio de detector en los baneos — y no
+        # informan de nada: la cuota agotada solo se ve en una peticion real.
+        disable_background_health_check: true
     litellm_settings:
       success_callback:
       - db
@@ -778,6 +826,49 @@ data:
             "requested": requested,
             "key": key_label,
             "allowed": sorted(UNCENSORED_ALLOWED_KEY_ALIASES),
+        }
+
+    # ── Puente ChatGPT: lista cerrada de keys, y deny por defecto ────────────────
+    #
+    # POR QUE ESTE GATE TIENE QUE EXISTIR
+    #
+    # Porque el allowlist de la key NO sirve para esto. `models: []` en una key
+    # significa TODOS los modelos (medido en las 4 replicas el 22-08), y de las 10
+    # keys vivas hay 7 con `models: []` y una con `["*"]`. O sea: en el instante en
+    # que `gpt-5.6-sol` entra en el model_list, ocho keys lo heredan solas. Poner un
+    # allowlist en la key nueva de Codex no deniega a nadie — solo se limita a si
+    # misma. La unica capa que puede cerrar la puerta a una key con `models: []` es
+    # esta, en pre_call_hook, antes del gate de nombre de modelo del proxy.
+    #
+    # FALLA CERRADO, al contrario que el gate abliterado de arriba. Alli una lista
+    # vacia deja pasar (era una relajacion deliberada); aqui una lista vacia deniega
+    # a todo el mundo, master incluida. Es lo pedido: «solo la key de CODEX, deny a
+    # TODO lo demas». Un despliegue sin la variable de entorno deja el puente
+    # inservible, que es el fallo seguro y no el peligroso.
+    #
+    # Se listan los nombres PUBLICOS del gateway. No hace falta cubrir el slug
+    # aguas arriba: el puente vive detras de un Service sin ingress y su master key
+    # solo la tiene este proceso, asi que no hay forma de rodearlo pidiendo el
+    # nombre directo — que era el agujero que si tenia la ruta abliterada.
+    CODEX_ONLY_MODELS = frozenset({"gpt-5.6-sol"})
+
+    CODEX_ALLOWED_KEY_ALIASES = frozenset(
+        alias.strip()
+        for alias in os.environ.get("LITELLM_CODEX_ALLOWED_KEYS", "").split(",")
+        if alias.strip()
+    )
+
+    def _codex_only_access_denied(requested, key_label):
+        """(bool, detalle) si esta key NO puede pedir el puente ChatGPT."""
+        if requested not in CODEX_ONLY_MODELS:
+            return False, None
+        if key_label in CODEX_ALLOWED_KEY_ALIASES:
+            return False, None
+        return True, {
+            "error": "this key may not request the ChatGPT bridge",
+            "requested": requested,
+            "key": key_label,
+            "allowed": sorted(CODEX_ALLOWED_KEY_ALIASES),
         }
 
     def _tooling_uncensored_target(state):
@@ -2584,6 +2675,19 @@ data:
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
 
+            # Gate del puente ChatGPT, al mismo nivel y por el mismo motivo: es un
+            # deny-por-defecto que tiene que correr ANTES de resolver alias o tocar
+            # el backend. Aqui es donde se cumple de verdad «solo la key de CODEX»,
+            # porque el allowlist de la key no puede: `models: []` = todos.
+            _denied, _detail = _codex_only_access_denied(
+                requested_model, _resolve_key_label(user_api_key_dict)
+            )
+            if _denied:
+                router_log.warning(
+                    "codex-bridge: key %r pidio %r y no esta en la lista",
+                    _detail["key"], _detail["requested"])
+                raise HTTPException(status_code=403, detail=_detail)
+
             # Antes de resolver el alias: si el residente ha desaparecido, esta
             # misma politica impide que el hook lo reescriba a otra ruta. La marca queda
             # en ``data`` para que el Router cubra tambien el caso distinto en que
@@ -3556,6 +3660,15 @@ spec:
       remoteRef: { key: secret/litellm, property: LANGFUSE_PUBLIC_KEY }
     - secretKey: LANGFUSE_SECRET_KEY
       remoteRef: { key: secret/litellm, property: LANGFUSE_SECRET_KEY }
+    # Credencial con la que ESTE gateway habla con el puente `litellm-codex`
+    # (codex-bridge.yaml). Es la master key de ese proxy interno, no una key de
+    # cliente, y no tiene nada que ver con la cuenta ChatGPT: el OAuth de la cuenta
+    # vive en el auth.json del hostPath del puente y no pasa por Vault.
+    # Añadir con `vault kv patch`, NUNCA `kv put`: en secret/litellm vive tambien
+    # LITELLM_MASTER_KEY y un put la borraria, tumbando a todos los consumidores.
+    #   vault kv patch secret/litellm LITELLM_CODEX_BRIDGE_KEY=sk-...
+    - secretKey: LITELLM_CODEX_BRIDGE_KEY
+      remoteRef: { key: secret/litellm, property: LITELLM_CODEX_BRIDGE_KEY }
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -4839,7 +4952,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2361bdbbe069
+        config.k8s.e-dani.com/revision: config-79ccb203e6e1
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -4934,6 +5047,14 @@ spec:
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LANGFUSE_SECRET_KEY } }
             - name: LANGFUSE_HOST
               value: "http://langfuse-web.langfuse.svc.cluster.local:3000"
+            # Credencial hacia el puente `litellm-codex` (ver codex-bridge.yaml).
+            - name: LITELLM_CODEX_BRIDGE_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_CODEX_BRIDGE_KEY } }
+            # Keys autorizadas a pedir los alias del puente ChatGPT. Lista CERRADA:
+            # a diferencia del gate abliterado, este falla CERRADO — si la variable
+            # llega vacia se deniega a todo el mundo, incluida la master. Es lo
+            # pedido: «solo la key de CODEX, deny a todo lo demas».
+            - { name: LITELLM_CODEX_ALLOWED_KEYS, value: "codex" }
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS

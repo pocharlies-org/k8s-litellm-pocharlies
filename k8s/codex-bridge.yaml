@@ -1,0 +1,297 @@
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# codex-bridge — LiteLLM dedicado sobre la suscripcion ChatGPT de pocharlies@gmail.com
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# QUE ES ESTE PUENTE, Y QUE NO ES
+#
+# NO es codigo propio. Es el proveedor `chatgpt/` que LiteLLM trae de serie desde
+# antes de la v1.96.0 que ya corremos: `litellm/llms/chatgpt/`. Habla el Responses
+# API privado de Codex con el OAuth de una suscripcion ChatGPT, sin API key de pago
+# por token:
+#
+#     CHATGPT_API_BASE  = https://chatgpt.com/backend-api/codex
+#     CHATGPT_CLIENT_ID = app_EMoamEEZ73f0CkXaXp7hrann
+#     originator        = codex_cli_rs
+#
+# Esto SUSTITUYE al codex-bridge casero de 1650 lineas que se retiro el 21-08
+# (commits f6e6068, 0665781, 900013b). El puente casero hacia a mano la traduccion,
+# el refresco de token con Lease de Kubernetes y el master/replica; upstream hace
+# la traduccion y el refresco. Lo que upstream NO hace es la exclusion mutua del
+# refresco — de ahi la forma de este Deployment (ver «UN SOLO ESCRITOR»).
+#
+# POR QUE NO EL FORK DE jibanez-staticduo/litellm
+#
+# Ese fork es de donde viene la idea, y su base es exactamente este mismo
+# `llms/chatgpt/`. Lo unico que añade sobre upstream es:
+#
+#     chatgpt_auth_profile              (perfiles auth.json / account2.json / ...)
+#     allow_chatgpt_cross_profile_fallback
+#
+# Verificado por grep contra la imagen v1.96.0 que corremos: esos dos simbolos no
+# existen upstream, y el resto del puente si. Es decir, el fork aporta multicuenta
+# con failover automatico por cuota — que es LO QUE ESTA VETADO aqui (ver «CUOTA Y
+# BANEO»). Cambiar la imagen del gateway compartido por un fork no oficial para
+# habilitar la unica funcion que no queremos no sale a cuenta: afecta a Synapse,
+# OpenClaw, el dashboard y el brain, que consumen la misma imagen.
+#
+# UN SOLO ESCRITOR — ES LA RAZON DE QUE ESTO SEA UN DEPLOYMENT APARTE
+#
+# `Authenticator.get_access_token()` corre en el camino de CADA peticion. Si el
+# access_token ha caducado refresca contra https://auth.openai.com/oauth/token y
+# guarda el resultado con un `open(self.auth_file, "w")` PELADO
+# (llms/chatgpt/authenticator.py:97): sin flock, sin fcntl, sin escritura atomica,
+# sin lease. Y OpenAI ROTA el refresh_token — el propio codigo lo asume:
+#
+#     "refresh_token": data.get("refresh_token", refresh_token)
+#
+# Con dos escritores eso es una perdida de actualizacion: los dos refrescan, OpenAI
+# invalida el token del que llegue segundo, el fichero se queda con uno de los dos y
+# el otro pod arrastra un refresh_token muerto. Y el fallo NO es un 401 limpio:
+# cuando el refresco falla, `get_access_token()` cae a `_login_device_code()`, que
+# hace polling hasta 15 MINUTOS (DEVICE_CODE_TIMEOUT_SECONDS) imprimiendo un codigo
+# de dispositivo en un log que nadie mira. O sea: una peticion colgada 15 min, no un
+# error. Exactamente el mismo agujero que el puente casero tapaba con el Lease
+# `codex-bridge-refresh`.
+#
+# El gateway principal corre `replicas: 2` y no puede bajar a 1 (es el proxy de TODO
+# el trafico LLM). Por eso el puente vive aqui, en su propio Deployment con UNA
+# replica y `strategy: Recreate` — Recreate y no RollingUpdate a proposito: un
+# rollout con maxSurge dejaria dos pods vivos a la vez, que es precisamente el estado
+# que no puede existir. Se acepta el corte de ~20 s del rollout.
+#
+# CUOTA Y BANEO — LO QUE HACE QUE ESTO NO REPITA EL 20/21-08
+#
+# Las dos cuentas anteriores del puente (cloudblue y me@e-dani.com) se BANEARON el
+# 20 y el 21-08. Motivo literal del correo de OpenAI: «Acts of Violence», sin aviso.
+# El volumen fue el detector (~1.900 M tokens/dia, trafico plano 24/7 sobre un plan
+# de consumidor) pero el veredicto fue de CONTENIDO, y lo que encaja es el catalogo
+# de airsoft: 478 de 494 llamadas con imagen llevaban «replica». El desvio de vision
+# hacia ChatGPT es la via por la que ese contenido llegaba alli.
+#
+# Las tres decisiones que se derivan, y que son el motivo de que este puente sea
+# distinto del anterior y no un reintento del mismo:
+#
+#   1. NADA automatico apunta aqui. Este alias solo lo puede pedir la key `codex`,
+#      con un gate de deny-por-defecto en el hook del gateway principal
+#      (CODEX_ONLY_MODELS en manifest.yaml). Sin desvio de vision, sin cadena de
+#      capacidad, sin `agent`, sin Aurora.
+#   2. NO es destino de ningun fallback. Ni en `router_settings.fallbacks`, ni en
+#      TOOLING_FALLBACKS, ni en CAPABILITY_CHAINS — y por tanto tampoco en
+#      VISION_DIVERTIBLE, que es literalmente `frozenset(CAPABILITY_CHAINS)`.
+#   3. `supports_vision: false` y `num_retries: 0`. Lo primero cierra la puerta por
+#      la que entro el contenido que motivo el baneo; lo segundo mantiene el volumen
+#      igual al que pide el cliente, sin multiplicadores.
+#
+# La cuota es la MISMA que el Codex interactivo de esa cuenta. Es para uso manual.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-codex-config
+  namespace: litellm
+data:
+  config.yaml: |
+    # Catalogo del puente. Los slugs son por CUENTA (los sirve el plan), y el
+    # catalogo autoritativo no hay que adivinarlo:
+    #
+    #   GET https://chatgpt.com/backend-api/codex/models?client_version=0.144.0
+    #       Authorization: Bearer <access_token>
+    #       chatgpt-account-id: <account_id>
+    #
+    # Sin `client_version` devuelve 400. Da slug, input_modalities, context_window
+    # y visibility. Cualquier alias que se añada aqui debe salir de ESA lista para
+    # la cuenta de pocharlies, no de la de otra cuenta: `gpt-5.6` a secas y los
+    # sufijos -codex/-pro/-high devuelven 400 «not supported when using Codex with
+    # a ChatGPT account».
+    model_list:
+      - model_name: gpt-5.6-sol
+        litellm_params:
+          model: chatgpt/gpt-5.6-sol
+          timeout: 600
+          # Sin reintentos: el volumen que sale a OpenAI es el que pide el cliente
+          # y ni uno mas. Ver «CUOTA Y BANEO» en el manifiesto.
+          num_retries: 0
+        model_info:
+          # El bucle de health check de fondo son 96 llamadas/dia POR REPLICA
+          # contra la cuenta — trafico plano 24/7 con prompt fijo, que es
+          # exactamente el patron que sirvio de detector en los dos baneos. Y el
+          # contenido no aporta nada: LiteLLM no sabe si la cuota esta agotada
+          # hasta que un cliente real lo pide. Se apaga. Un `GET /health` a mano
+          # sigue sondeandolo cuando un operador lo pide expresamente.
+          disable_background_health_check: true
+
+    general_settings:
+      # Su propia master key, distinta de la del gateway principal: lo unico que
+      # habla con este proxy es el gateway, con esta credencial. No hay ingress.
+      master_key: os.environ/LITELLM_CODEX_BRIDGE_KEY
+      # SIN database_url a proposito. El spend, las keys y los equipos son del
+      # gateway principal, que es quien recibe al cliente y ya loguea la peticion;
+      # duplicar filas aqui solo engorda una tabla que ya llego a 21 GB. Y sin
+      # postgres este proxy arranca y enruta aunque la DB este caida.
+      background_health_checks: false
+
+    litellm_settings:
+      drop_params: true
+      set_verbose: false
+      num_retries: 0
+      request_timeout: 600
+
+    router_settings:
+      # `fallbacks` VACIO y explicito. No es un default heredado: es la politica.
+      # Este puente no cae a ningun sitio y nada cae a el.
+      fallbacks: []
+      num_retries: 0
+      timeout: 600
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-codex
+  namespace: litellm
+spec:
+  # UNA replica, no negociable. Ver «UN SOLO ESCRITOR» arriba: dos pods refrescando
+  # el mismo refresh_token rotativo se matan la sesion, y el sintoma es una peticion
+  # colgada 15 min, no un error.
+  replicas: 1
+  # Recreate y no RollingUpdate: cualquier surge crea el segundo escritor durante el
+  # rollout. El corte es de ~20 s y solo afecta a la key `codex`.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: litellm-codex }
+  template:
+    metadata:
+      labels: { app: litellm-codex }
+      annotations:
+        # LiteLLM lee config.yaml AL ARRANCAR. Que kubelet refresque el fichero
+        # montado no recarga el router en memoria — misma trampa que costo 12 h con
+        # el backend-sync el 13-08. Al tocar el ConfigMap de arriba, bumpear esto.
+        # Este fichero no lo cubre tests/test_configmap_revision_bump_contract.py,
+        # que solo lee manifest.yaml: aqui la disciplina es manual.
+        config.k8s.e-dani.com/revision: codex-20260825-01
+    spec:
+      enableServiceLinks: false
+      # Fijado a `ubuntu` por dos motivos independientes que apuntan al mismo sitio:
+      # todo el stack de litellm corre ahi por decision del owner (21-08), y el
+      # auth.json vive en un hostPath de ESE nodo (unico escritor, unico disco).
+      tolerations:
+        - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [ubuntu]
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:v1.96.0
+          args:
+            - --config=/config/config.yaml
+            - --host=0.0.0.0
+            - --port=4000
+          ports:
+            - { name: http, containerPort: 4000 }
+          env:
+            - { name: LITELLM_LOG, value: INFO }
+            # Donde vive auth.json. El default de upstream es
+            # ~/.config/litellm/chatgpt, que en este contenedor seria efimero: al
+            # reiniciar el pod se perderia el refresh_token y habria que rehacer el
+            # login de dispositivo a mano.
+            - { name: CHATGPT_TOKEN_DIR, value: /var/lib/chatgpt-auth }
+            - name: LITELLM_CODEX_BRIDGE_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_CODEX_BRIDGE_KEY } }
+          volumeMounts:
+            - { name: config, mountPath: /config }
+            # Montaje de ESCRITURA, y tiene que serlo. Un Secret proyectado es
+            # read-only: `_write_auth_file` fallaria con OSError, que el codigo se
+            # TRAGA (solo lo loguea). Efecto: el refresco funciona en memoria pero no
+            # persiste, asi que la siguiente peticion vuelve a refrescar con un
+            # refresh_token ya rotado -> falla -> device login -> 15 min colgado.
+            # Un secret montado aqui no es una alternativa mas segura, es una bomba.
+            - { name: auth, mountPath: /var/lib/chatgpt-auth }
+          resources:
+            # Un proxy async I/O-bound que sirve a un cliente interactivo. El gateway
+            # principal, con 54 modelos y ~74 req/min, mide 5-6m de CPU por pod; esto
+            # sirve un alias a una persona.
+            requests: { cpu: 25m, memory: 512Mi }
+            limits: { memory: 2Gi }
+          livenessProbe:
+            httpGet: { path: /health/liveliness, port: 4000 }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /health/readiness, port: 4000 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap: { name: litellm-codex-config }
+        # hostPath y no PVC, mismo patron que el volumen `tracking` del gateway: el
+        # pod ya esta clavado a `ubuntu` por nodeAffinity, asi que un RWO no compra
+        # nada y añade Longhorn (y sus snapshots) a la ruta critica de una credencial.
+        # El fichero lo siembra el login de dispositivo, no un Secret — ver el
+        # runbook al final de este fichero.
+        - name: auth
+          hostPath:
+            path: /home/dibanez/litellm-codex-auth
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-codex
+  namespace: litellm
+spec:
+  selector: { app: litellm-codex }
+  ports:
+    - { name: http, port: 4000, targetPort: 4000 }
+---
+# ══════════════════════════════════════════════════════════════════════════════
+# RUNBOOK — alta de la cuenta (login de dispositivo)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# No hay Secret con auth.json ni ESO que lo siembre, y es deliberado: el fichero es
+# mutable (el refresh_token rota) y una copia en Vault se queda obsoleta al primer
+# refresco, con lo que restaurarla METERIA un token muerto. La fuente de verdad es
+# el hostPath del nodo; el login se rehace cuando haga falta, tarda un minuto.
+#
+# 1. Lanzar el flujo de dispositivo DENTRO del pod, que es lo que deja el fichero en
+#    el formato exacto que espera upstream (plano: access_token / refresh_token /
+#    id_token / account_id / expires_at). OJO: el auth.json que escribe el CLI de
+#    Codex NO sirve tal cual — anida los tokens bajo `tokens: {...}` y este
+#    Authenticator los lee del nivel raiz.
+#
+#      kubectl exec -it -n litellm deploy/litellm-codex -- python -c "
+#      from litellm.llms.chatgpt.authenticator import Authenticator
+#      print(Authenticator()._login_device_code())"
+#
+#    Imprime https://auth.openai.com/codex/device y un codigo. Abrirlo, meter el
+#    codigo e iniciar sesion con pocharlies@gmail.com. Caduca en 15 min.
+#
+# 2. Comprobar que el fichero esta y a quien pertenece:
+#
+#      kubectl exec -n litellm deploy/litellm-codex -- python -c "
+#      import json;d=json.load(open('/var/lib/chatgpt-auth/auth.json'))
+#      print(d.get('account_id'), sorted(d))"
+#
+# 3. Preguntar a la cuenta QUE sirve de verdad, y añadir al model_list de arriba
+#    solo lo que salga en esa lista:
+#
+#      kubectl exec -n litellm deploy/litellm-codex -- python -c "
+#      import json,httpx
+#      from litellm.llms.chatgpt.authenticator import Authenticator
+#      a=Authenticator()
+#      r=httpx.get('https://chatgpt.com/backend-api/codex/models',
+#                  params={'client_version':'0.144.0'},
+#                  headers={'Authorization':'Bearer '+a.get_access_token(),
+#                           'chatgpt-account-id':a.get_account_id()})
+#      print(json.dumps(r.json(),indent=1)[:4000])"
+#
+# 4. Un `Broken pipe` o un 401 `token_revoked` aqui NO se arregla reintentando: si
+#    alguna vez llegan a existir dos escritores, el refresh_token esta muerto y hay
+#    que repetir el paso 1. Y recordar que un 429 en este alias puede ser un 401
+#    disfrazado por el cooldown de 120 s del Router del gateway principal — el motivo
+#    real va en el CUERPO, no en el status.
