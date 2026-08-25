@@ -503,6 +503,21 @@ data:
         <<: *codex_bridge_params
         model: openai/gpt-5.4-mini
       model_info: *codex_bridge_info
+    # AÑADIDOS AL PASAR LA CUENTA A PLUS (25-08, el mismo dia): el catalogo pasa de 5
+    # a 7 modelos y entran estos dos. El plan viaja DENTRO del access_token
+    # (claim `chatgpt_plan_type`), asi que con el token viejo el catalogo no cambiaba
+    # y el endpoint devolvia 401 `token_expired` con 10 dias de `expires_at` local.
+    # Se cura forzando el refresco; el detalle esta en codex-bridge.yaml.
+    - model_name: gpt-5.6-sol
+      litellm_params:
+        <<: *codex_bridge_params
+        model: openai/gpt-5.6-sol
+      model_info: *codex_bridge_info
+    - model_name: gpt-5.4
+      litellm_params:
+        <<: *codex_bridge_params
+        model: openai/gpt-5.4
+      model_info: *codex_bridge_info
     litellm_settings:
       success_callback:
       - db
@@ -887,7 +902,14 @@ data:
     # alias vuelve a existir esa key lo hereda sola. Este frozenset es lo unico que
     # se lo impide. Sacar `luna` de aqui = darle una cuenta ChatGPT a sauvage-shield.
     CODEX_ONLY_MODELS = frozenset(
-        {"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"}
+        {
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+        }
     )
 
     CODEX_ALLOWED_KEY_ALIASES = frozenset(
@@ -4990,7 +5012,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-72bf87b781f7
+        config.k8s.e-dani.com/revision: config-fba6810cb9b1
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

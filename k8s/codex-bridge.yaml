@@ -108,17 +108,33 @@ data:
     # CATALOGO REAL DE pocharlies@gmail.com, leido del endpoint de arriba el
     # 2026-08-25 nada mas completar el login (account 3684972b-52c4-4bc0-8bfb-080598dbb5f2):
     #
+    #   gpt-5.6-sol        text+image  272k  visibility: list   <- solo con Plus
     #   gpt-5.6-terra      text+image  272k  visibility: list
     #   gpt-5.6-luna       text+image  272k  visibility: list
     #   gpt-5.5            text+image  272k  visibility: list
+    #   gpt-5.4            text+image  272k  visibility: list   <- solo con Plus
     #   gpt-5.4-mini       text+image  272k  visibility: list
     #   codex-auto-review  text+image  272k  visibility: hide   <- no se publica
     #
-    # **NO HAY `gpt-5.6-sol` EN ESTA CUENTA.** El primer despliegue publicaba `sol`
-    # por analogia con la cuenta anterior y lo que devolvia era un 403 con una PAGINA
-    # HTML de ChatGPT, no un JSON de error: el catalogo es POR CUENTA y lo manda el
-    # plan. De ahi que el runbook diga que hay que preguntarselo a la cuenta y no
-    # deducirlo. Tampoco sirve `gpt-5.3-codex-spark`, que si tenia la otra.
+    # **NO HABIA `gpt-5.6-sol` CON LA CUENTA EN FREE.** El primer despliegue lo
+    # publicaba por analogia con la cuenta anterior y lo que devolvia era un 403 con
+    # una PAGINA HTML de ChatGPT, no un JSON de error: el catalogo es POR CUENTA y lo
+    # manda el plan. De ahi que el runbook diga que hay que preguntarselo a la cuenta
+    # y no deducirlo. `gpt-5.3-codex-spark` sigue sin estar, y la otra cuenta si lo
+    # tenia — otra prueba de que esto no se hereda.
+    #
+    # AL PASAR A PLUS, el mismo dia, el catalogo pasa de 5 a 7: entran `gpt-5.6-sol`
+    # y `gpt-5.4`. Nada desaparece. Y una trampa que costo un 401 enganoso:
+    #
+    #   EL PLAN VIAJA DENTRO DEL access_token, en el claim
+    #   `https://api.openai.com/auth` -> `chatgpt_plan_type`.
+    #
+    # Con el token emitido antes del pago, ese claim seguia diciendo "free" y el
+    # catalogo NO cambiaba. Peor: el endpoint empezo a devolver 401 `token_expired`
+    # aunque el `expires_at` local diera 10 dias de vida — el cambio de plan invalida
+    # la sesion aguas arriba y el fichero local no se entera. La cura es forzar el
+    # refresco con el refresh_token, y entonces el claim pasa a "plus" y aparecen los
+    # dos modelos nuevos. NO hace falta rehacer el login de dispositivo.
     model_list:
       - model_name: gpt-5.6-terra
         litellm_params:
@@ -150,6 +166,21 @@ data:
       - model_name: gpt-5.4-mini
         litellm_params:
           model: chatgpt/gpt-5.4-mini
+          timeout: 600
+          num_retries: 0
+        model_info: *bridge_info
+      # AÑADIDOS AL PASAR LA CUENTA A PLUS (25-08, mismo dia). El catalogo pasa de 5
+      # a 7 modelos: aparecen `gpt-5.6-sol` y `gpt-5.4`. Ver la nota de arriba sobre
+      # el token — el plan viaja DENTRO del access_token y no se ve hasta refrescar.
+      - model_name: gpt-5.6-sol
+        litellm_params:
+          model: chatgpt/gpt-5.6-sol
+          timeout: 600
+          num_retries: 0
+        model_info: *bridge_info
+      - model_name: gpt-5.4
+        litellm_params:
+          model: chatgpt/gpt-5.4
           timeout: 600
           num_retries: 0
         model_info: *bridge_info
@@ -202,7 +233,7 @@ spec:
         # el backend-sync el 13-08. Al tocar el ConfigMap de arriba, bumpear esto.
         # Este fichero no lo cubre tests/test_configmap_revision_bump_contract.py,
         # que solo lee manifest.yaml: aqui la disciplina es manual.
-        config.k8s.e-dani.com/revision: codex-20260825-02-catalogo-real
+        config.k8s.e-dani.com/revision: codex-20260825-03-plus-sol-y-54
     spec:
       enableServiceLinks: false
       # Fijado a `ubuntu` por dos motivos independientes que apuntan al mismo sitio:
