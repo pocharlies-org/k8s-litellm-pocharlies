@@ -2345,7 +2345,7 @@ data:
         return True
 
 
-    def _apply_family_sampling(data):
+    def _apply_family_sampling(data, requested_alias=None):
         """Ajusta el sampling al backend que de verdad va a atender la peticion.
 
         SALIDA ESTRUCTURADA (2026-08-10). Una peticion con `response_format` recibe
@@ -2372,10 +2372,33 @@ data:
         DeepSeek con esquema o sin el.
         """
         try:
-            alias = (data.get("model") or "").strip()
-            if alias not in SWAPPABLE_ALIASES:
+            # DOS PREGUNTAS DISTINTAS, y hasta el 25-08-2026 se contestaban las
+            # dos con `data["model"]`:
+            #
+            #   la PUERTA  -> "¿este alias es de los que se pueden pisar?".
+            #                 Se contesta con el alias que pidio el CLIENTE.
+            #   la FAMILIA -> "¿que checkpoint va a atender esto?".
+            #                 Se contesta con el modelo YA RESUELTO.
+            #
+            # Mezclarlas dejo la funcion MUERTA, no imprecisa. Esta llamada corre
+            # despues del salto de CAPABILITY_CHAINS (se movio abajo el 2026-08-10
+            # para que la familia saliera del checkpoint real), y con
+            # `compute_mode: llm-tp` ese salto reescribe `tooling` ->
+            # `deepseek-v4-flash-0731` (TOOLING_MODE_TARGETS). Asi que la puerta
+            # comparaba SIEMPRE un nombre post-reescritura contra un conjunto de
+            # nombres pre-reescritura: `tooling` no llegaba nunca y el nombre
+            # directo no esta en el conjunto. Return temprano en los dos casos.
+            #
+            # Medido el 25-08 contra los dos alias, antes de este arreglo:
+            #   min_p=1.0      -> 1/4 salidas unicas (argmax): el min_p LLEGO al
+            #                     backend, o sea el `drop` no se aplico.
+            #   temperature=0  -> 1/4 unicas: no se piso a 1.0.
+            # Con el perfil vivo, min_p se descarta y temperature sube a 1.0.
+            gate = (requested_alias or data.get("model") or "").strip()
+            if gate not in SWAPPABLE_ALIASES:
                 return
-            fam = _family_of_alias(alias)
+            resolved = (data.get("model") or "").strip()
+            fam = _family_of_alias(resolved)
             if not fam:
                 return
             prof = FAMILY_SAMPLING[fam]
@@ -2398,8 +2421,9 @@ data:
                 if fam == "deepseek-v4" and _disable_thinking(data):
                     changed.append("estructurada:thinking=off")
             if changed:
-                sampling_log.info("sampling: alias=%s familia=%s ajustes=%s",
-                                  alias, fam, ",".join(changed))
+                sampling_log.info(
+                    "sampling: pedido=%s resuelto=%s familia=%s ajustes=%s",
+                    gate, resolved, fam, ",".join(changed))
         except Exception as e:  # nunca romper una peticion por esto
             log.debug("_apply_family_sampling error: %s", e)
 
@@ -2859,7 +2883,14 @@ data:
             # cliente. Es la unica posicion en la que el perfil corresponde al
             # checkpoint real -- calcularlo antes de las bifurcaciones daba el
             # perfil de un alias que no servia la peticion.
-            _apply_family_sampling(data)
+            #
+            # 25-08-2026: se le pasa TAMBIEN el alias pedido. La familia sigue
+            # saliendo del modelo resuelto (que es el motivo de estar aqui abajo),
+            # pero la PUERTA de SWAPPABLE_ALIASES tiene que mirar lo que pidio el
+            # cliente — si no, nunca coincide y la funcion entera es un no-op.
+            # Mismo criterio que `_apply_thinking_tier` justo debajo, que ya
+            # recibia `thinking_alias` por esta misma razon.
+            _apply_family_sampling(data, thinking_alias)
             # Explicit profiles follow the alias requested by the client. The
             # family still comes from the backend that will really serve the request.
             _apply_thinking_tier(data, thinking_alias)
@@ -5012,7 +5043,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-fba6810cb9b1
+        config.k8s.e-dani.com/revision: config-97f838e70328
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

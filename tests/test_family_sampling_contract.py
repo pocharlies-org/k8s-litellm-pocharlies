@@ -329,3 +329,50 @@ def test_ningun_tier_dice_medium(hook):
         assert "medium" not in niveles, fam
         for kw in niveles.values():
             assert kw.get("reasoning_effort") in (None, "low", "high", "max")
+
+
+# ── La forma REAL de produccion (2026-08-25) ────────────────────────────────
+#
+# Los tests de arriba llaman con `data["model"] = "tooling"`, o sea con el alias
+# SIN reescribir. Produccion no tiene esa forma: `_apply_family_sampling` corre
+# despues del salto de CAPABILITY_CHAINS, y con `compute_mode: llm-tp` ese salto
+# ya ha puesto `data["model"] = "deepseek-v4-flash-0731"` (TOOLING_MODE_TARGETS).
+#
+# Por eso el fixture no cazo que la funcion llevaba semanas MUERTA: la puerta
+# comparaba el nombre post-reescritura contra un conjunto de nombres
+# pre-reescritura. Medido contra el cluster antes del arreglo, con los dos
+# alias: `min_p=1.0` daba 1/4 salidas unicas (argmax -> el min_p LLEGO al
+# backend) y `temperature=0` daba 1/4 (no se piso a 1.0).
+
+def test_tooling_reescrito_a_deepseek_SI_lleva_perfil(hook):
+    """La regresion del 25-08. Forma exacta de produccion: el cliente pidio
+    `tooling` y el hook ya lo reescribio al nombre directo del residente.
+
+    Si la puerta mira `data["model"]` en vez del alias pedido, `tooling` no
+    llega nunca aqui y ningun cliente recibe el perfil de familia.
+    """
+    _install_fake_litellm(
+        {"deepseek-v4-flash-0731": _dep("openai/deepseek-v4-flash-0731")})
+    data = {"model": "deepseek-v4-flash-0731", "temperature": 0.0,
+            "min_p": 1.0, "top_k": 3, "presence_penalty": 1.5}
+    hook._apply_family_sampling(data, "tooling")
+    assert data["temperature"] == 1.0 and data["top_p"] == 0.95
+    for gone in ("top_k", "min_p", "presence_penalty"):
+        assert gone not in data, f"{gone} llego a DeepSeek"
+
+
+def test_pedir_el_nombre_directo_sigue_sin_llevar_perfil(hook):
+    """La otra mitad, y es la que el arreglo NO puede romper: quien nombra un
+    modelo concreto se respeta tal cual.
+
+    Mismo `data["model"]` que el test de arriba — la unica diferencia es que
+    aqui el cliente lo pidio por su nombre en vez de llegar por `tooling`.
+    """
+    _install_fake_litellm(
+        {"deepseek-v4-flash-0731": _dep("openai/deepseek-v4-flash-0731")})
+    data = {"model": "deepseek-v4-flash-0731", "temperature": 0.0,
+            "min_p": 1.0, "presence_penalty": 1.5}
+    hook._apply_family_sampling(data, "deepseek-v4-flash-0731")
+    assert data["temperature"] == 0.0, "se piso el sampling de un nombre directo"
+    assert data["min_p"] == 1.0
+    assert data["presence_penalty"] == 1.5
