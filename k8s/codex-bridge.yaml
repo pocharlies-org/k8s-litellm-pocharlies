@@ -218,13 +218,32 @@ spec:
             # sirve un alias a una persona.
             requests: { cpu: 25m, memory: 512Mi }
             limits: { memory: 2Gi }
+          # startupProbe y NO un initialDelay largo en el liveness, porque el
+          # arranque de ESTE pod puede tardar 15 min y depende de una PERSONA.
+          #
+          # Medido el 25-08 con el primer despliegue: sin auth.json, LiteLLM lanza el
+          # flujo de dispositivo DENTRO del startup ("Waiting for application
+          # startup"), imprime la URL y el codigo en su propio log, y ahi se queda
+          # hasta que alguien inicia sesion o hasta que caduca a los 15 min
+          # (DEVICE_CODE_TIMEOUT_SECONDS). Con liveness a 60s+30s el kubelet mataba
+          # el pod al minuto y medio, mucho antes de que se pudiera abrir la URL — y
+          # cada reinicio empieza de cero y encima entra en el cooldown de 5 min de
+          # los codigos (DEVICE_CODE_COOLDOWN_SECONDS). Bucle perfecto.
+          #
+          # Mientras el startupProbe no pase, el kubelet NO evalua el liveness. 120 x
+          # 10s = 20 min de margen, que cubre la ventana de 15 min del codigo con
+          # holgura. Una vez hay auth.json en el hostPath el arranque es inmediato y
+          # esto pasa a ser inerte, asi que el margen no cuesta nada en el caso
+          # normal: solo en el alta de la cuenta.
+          startupProbe:
+            httpGet: { path: /health/liveliness, port: 4000 }
+            periodSeconds: 10
+            failureThreshold: 120
           livenessProbe:
             httpGet: { path: /health/liveliness, port: 4000 }
-            initialDelaySeconds: 60
             periodSeconds: 30
           readinessProbe:
             httpGet: { path: /health/readiness, port: 4000 }
-            initialDelaySeconds: 20
             periodSeconds: 10
       volumes:
         - name: config
