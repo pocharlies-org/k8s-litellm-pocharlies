@@ -452,26 +452,57 @@ data:
     #     detector en los baneos.
     #   - `supports_vision: false`. Ver arriba. No es una limitacion del modelo
     #     (gpt-5.6-* si ve): es la politica.
-    - model_name: gpt-5.6-sol
-      litellm_params:
-        model: openai/gpt-5.6-sol
+    # LOS SLUGS SALEN DEL CATALOGO DE LA CUENTA, NO DE OTRA CUENTA. Leidos el 25-08
+    # nada mas completar el login de pocharlies (account 3684972b-...):
+    #   gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4-mini  (+ codex-auto-review, hide)
+    # `gpt-5.6-sol` NO lo sirve esta cuenta. El primer despliegue lo publicaba por
+    # analogia con la cuenta anterior y devolvia un 403 con una PAGINA HTML de
+    # ChatGPT — no un JSON de error, asi que ni se parece a un modelo desconocido.
+    #
+    # OJO CON `gpt-5.6-luna`: la key `sauvage-shield` lo lleva en su allowlist
+    # explicito desde antes de la purga del 21-08 (['tooling','gpt-5.6-luna',
+    # 'qwen35-4b']). Era una entrada MUERTA mientras el alias no existia; al
+    # republicarlo, esa key lo hereda SOLA sin que nadie la toque. Lo unico que lo
+    # impide es que `luna` este en CODEX_ONLY_MODELS. Si algun dia se quita de ahi,
+    # se le esta dando una cuenta ChatGPT a sauvage-shield sin quererlo.
+    - model_name: gpt-5.6-terra
+      litellm_params: &codex_bridge_params
+        model: openai/gpt-5.6-terra
         api_base: http://litellm-codex.litellm.svc.cluster.local:4000/v1
         api_key: os.environ/LITELLM_CODEX_BRIDGE_KEY
         timeout: 600
         # Sin reintentos: el volumen que llega a OpenAI es el que pide el cliente.
         num_retries: 0
-      model_info:
+      model_info: &codex_bridge_info
         mode: chat
         backend: codex-bridge-pocharlies
         max_input_tokens: 272000
         max_output_tokens: 128000
         supports_function_calling: true
+        # La cuenta declara text+image en los cuatro. Esto es POLITICA, no un limite
+        # del modelo: el desvio de vision a ChatGPT es la via por la que el catalogo
+        # de airsoft provoco los baneos del 20/21-08.
         supports_vision: false
         supports_reasoning: true
         # 96 llamadas/dia por replica contra la cuenta serian trafico plano 24/7 con
         # prompt fijo — el patron que sirvio de detector en los baneos — y no
         # informan de nada: la cuota agotada solo se ve en una peticion real.
         disable_background_health_check: true
+    - model_name: gpt-5.6-luna
+      litellm_params:
+        <<: *codex_bridge_params
+        model: openai/gpt-5.6-luna
+      model_info: *codex_bridge_info
+    - model_name: gpt-5.5
+      litellm_params:
+        <<: *codex_bridge_params
+        model: openai/gpt-5.5
+      model_info: *codex_bridge_info
+    - model_name: gpt-5.4-mini
+      litellm_params:
+        <<: *codex_bridge_params
+        model: openai/gpt-5.4-mini
+      model_info: *codex_bridge_info
     litellm_settings:
       success_callback:
       - db
@@ -850,7 +881,14 @@ data:
     # aguas arriba: el puente vive detras de un Service sin ingress y su master key
     # solo la tiene este proceso, asi que no hay forma de rodearlo pidiendo el
     # nombre directo — que era el agujero que si tenia la ruta abliterada.
-    CODEX_ONLY_MODELS = frozenset({"gpt-5.6-sol"})
+    # Los CUATRO slugs que sirve la cuenta de pocharlies. `gpt-5.6-luna` es el que
+    # mas importa de la lista: la key `sauvage-shield` lo lleva en su allowlist
+    # explicito desde antes de la purga del 21-08, asi que en el momento en que el
+    # alias vuelve a existir esa key lo hereda sola. Este frozenset es lo unico que
+    # se lo impide. Sacar `luna` de aqui = darle una cuenta ChatGPT a sauvage-shield.
+    CODEX_ONLY_MODELS = frozenset(
+        {"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini"}
+    )
 
     CODEX_ALLOWED_KEY_ALIASES = frozenset(
         alias.strip()
@@ -4952,7 +4990,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-79ccb203e6e1
+        config.k8s.e-dani.com/revision: config-72bf87b781f7
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

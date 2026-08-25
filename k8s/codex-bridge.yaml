@@ -104,15 +104,30 @@ data:
     # la cuenta de pocharlies, no de la de otra cuenta: `gpt-5.6` a secas y los
     # sufijos -codex/-pro/-high devuelven 400 «not supported when using Codex with
     # a ChatGPT account».
+    #
+    # CATALOGO REAL DE pocharlies@gmail.com, leido del endpoint de arriba el
+    # 2026-08-25 nada mas completar el login (account 3684972b-52c4-4bc0-8bfb-080598dbb5f2):
+    #
+    #   gpt-5.6-terra      text+image  272k  visibility: list
+    #   gpt-5.6-luna       text+image  272k  visibility: list
+    #   gpt-5.5            text+image  272k  visibility: list
+    #   gpt-5.4-mini       text+image  272k  visibility: list
+    #   codex-auto-review  text+image  272k  visibility: hide   <- no se publica
+    #
+    # **NO HAY `gpt-5.6-sol` EN ESTA CUENTA.** El primer despliegue publicaba `sol`
+    # por analogia con la cuenta anterior y lo que devolvia era un 403 con una PAGINA
+    # HTML de ChatGPT, no un JSON de error: el catalogo es POR CUENTA y lo manda el
+    # plan. De ahi que el runbook diga que hay que preguntarselo a la cuenta y no
+    # deducirlo. Tampoco sirve `gpt-5.3-codex-spark`, que si tenia la otra.
     model_list:
-      - model_name: gpt-5.6-sol
+      - model_name: gpt-5.6-terra
         litellm_params:
-          model: chatgpt/gpt-5.6-sol
+          model: chatgpt/gpt-5.6-terra
           timeout: 600
           # Sin reintentos: el volumen que sale a OpenAI es el que pide el cliente
           # y ni uno mas. Ver «CUOTA Y BANEO» en el manifiesto.
           num_retries: 0
-        model_info:
+        model_info: &bridge_info
           # El bucle de health check de fondo son 96 llamadas/dia POR REPLICA
           # contra la cuenta — trafico plano 24/7 con prompt fijo, que es
           # exactamente el patron que sirvio de detector en los dos baneos. Y el
@@ -120,6 +135,24 @@ data:
           # hasta que un cliente real lo pide. Se apaga. Un `GET /health` a mano
           # sigue sondeandolo cuando un operador lo pide expresamente.
           disable_background_health_check: true
+      - model_name: gpt-5.6-luna
+        litellm_params:
+          model: chatgpt/gpt-5.6-luna
+          timeout: 600
+          num_retries: 0
+        model_info: *bridge_info
+      - model_name: gpt-5.5
+        litellm_params:
+          model: chatgpt/gpt-5.5
+          timeout: 600
+          num_retries: 0
+        model_info: *bridge_info
+      - model_name: gpt-5.4-mini
+        litellm_params:
+          model: chatgpt/gpt-5.4-mini
+          timeout: 600
+          num_retries: 0
+        model_info: *bridge_info
 
     general_settings:
       # Su propia master key, distinta de la del gateway principal: lo unico que
@@ -169,7 +202,7 @@ spec:
         # el backend-sync el 13-08. Al tocar el ConfigMap de arriba, bumpear esto.
         # Este fichero no lo cubre tests/test_configmap_revision_bump_contract.py,
         # que solo lee manifest.yaml: aqui la disciplina es manual.
-        config.k8s.e-dani.com/revision: codex-20260825-01
+        config.k8s.e-dani.com/revision: codex-20260825-02-catalogo-real
     spec:
       enableServiceLinks: false
       # Fijado a `ubuntu` por dos motivos independientes que apuntan al mismo sitio:
