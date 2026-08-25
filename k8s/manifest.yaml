@@ -2158,7 +2158,18 @@ data:
         "tooling", "high", "max",
         # 2026-08-15: fuera `dense`, `dense-reasoning`, `dense-uncensored` y
         # `taxonomy`. `qwen38-27b` NO entra aqui a proposito: es un nombre de
-        # MODELO, y esos se respetan tal cual igual que deepseek-v4-flash-0731.
+        # MODELO, y esos se respetan tal cual.
+        #
+        # 25-08-2026: ENTRA `deepseek-v4-flash-0731`, y con el se rompe la regla
+        # de arriba a sabiendas. No entra por el sampling: entra ARRASTRADO por
+        # THINKING_TIERS, porque test_los_tres_tiers_son_swappable exige que todo
+        # tier este tambien aqui — si no, `_apply_family_sampling` sale por el
+        # return temprano y ese alias le manda a DeepSeek el sampling de Qwen.
+        # Efecto que hay que tener presente: este alias pasa de respetar el
+        # sampling del cliente a recibir temperature 1.0 / top_p 0.95 y a perder
+        # top_k/min_p/penalties. Con salida estructurada se sigue respetando lo
+        # que mande el cliente. Es el mismo trato que ya tenia `tooling`.
+        "deepseek-v4-flash-0731",
     })
 
     # ── Nivel de pensamiento por ALIAS (2026-08-10) ─────────────────────────────
@@ -2179,6 +2190,26 @@ data:
     # En una llamada explicita manda el alias que pidio el cliente.
     THINKING_TIERS = {
         "tooling": "off",
+        # 25-08-2026: entra el nombre DIRECTO de DeepSeek, con el mismo "off"
+        # que `tooling`. Hasta hoy no estaba, y la consecuencia no era neutra:
+        # un alias fuera de esta tabla devuelve tier=None y `_apply_thinking_tier`
+        # hace return sin tocar nada, asi que mandaba el default del SERVIDOR,
+        # que en el arranque de vLLM es {'thinking': True, 'reasoning_effort':
+        # 'low'} — o sea el nombre directo PENSABA en cada turno y `tooling` no.
+        #
+        # Medido el 25-08 con la misma pregunta trivial: `tooling` 4 tokens de
+        # salida, el directo 155 con 515 chars en `reasoning_content`. A 97k de
+        # contexto eso se come el presupuesto entero (600/600 tokens, todos de
+        # razonamiento, CERO de contenido, finish=length) y el cliente ve un
+        # timeout de 10 min que en realidad es el `timeout: 600` del proxy.
+        #
+        # Un `reasoning_effort` high/max explicito sigue ganando: el orden es
+        # `requested_tier or THINKING_TIERS.get(...)`. Lo que cambia es el
+        # DEFAULT, que pasa de "piensa" a "no piensa".
+        #
+        # `deepseek-v4-flash-0731-uncensored` NO entra: esta en ABLITERATED y
+        # test_the_abliterated_aliases_are_not_router_selectable lo prohibe.
+        "deepseek-v4-flash-0731": "off",
         # 24-08-2026: `high` y `max` se retiran como NOMBRES. El nivel se pide
         # con `reasoning_effort`, que es la via que ya usaba todo el mundo.
         # `tooling-uncensored` no entra aqui: la ablacion es una capacidad
@@ -5043,7 +5074,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-97f838e70328
+        config.k8s.e-dani.com/revision: config-d2914b4728b4
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

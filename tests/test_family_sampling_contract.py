@@ -361,18 +361,26 @@ def test_tooling_reescrito_a_deepseek_SI_lleva_perfil(hook):
         assert gone not in data, f"{gone} llego a DeepSeek"
 
 
-def test_pedir_el_nombre_directo_sigue_sin_llevar_perfil(hook):
-    """La otra mitad, y es la que el arreglo NO puede romper: quien nombra un
-    modelo concreto se respeta tal cual.
+def test_el_nombre_directo_de_deepseek_SI_lleva_perfil(hook):
+    """`deepseek-v4-flash-0731` es la EXCEPCION deliberada (25-08-2026).
 
-    Mismo `data["model"]` que el test de arriba — la unica diferencia es que
-    aqui el cliente lo pidio por su nombre en vez de llegar por `tooling`.
+    La regla general sigue siendo que un nombre de modelo concreto se respeta
+    tal cual (lo cubre `test_un_alias_que_nombra_un_modelo_concreto_no_se_toca`
+    con `deepseek-v4-flash-opencode`). Este alias se saco de esa regla a
+    peticion del operador: debia comportarse igual que `tooling`, y el nivel de
+    pensamiento y el sampling son la misma decision -- THINKING_TIERS obliga a
+    estar en SWAPPABLE_ALIASES (ver `test_los_tres_tiers_son_swappable`), asi
+    que no se puede tener uno sin el otro.
+
+    Mismo `data["model"]` que el test de arriba: la unica diferencia es que
+    aqui el cliente lo pidio por su nombre en vez de llegar por `tooling`, y
+    desde el cambio el resultado es el mismo a proposito.
     """
     _install_fake_litellm(
         {"deepseek-v4-flash-0731": _dep("openai/deepseek-v4-flash-0731")})
     data = {"model": "deepseek-v4-flash-0731", "temperature": 0.0,
             "min_p": 1.0, "presence_penalty": 1.5}
     hook._apply_family_sampling(data, "deepseek-v4-flash-0731")
-    assert data["temperature"] == 0.0, "se piso el sampling de un nombre directo"
-    assert data["min_p"] == 1.0
-    assert data["presence_penalty"] == 1.5
+    assert data["temperature"] == 1.0, "el perfil de familia deberia aplicarse"
+    assert "min_p" not in data
+    assert "presence_penalty" not in data
