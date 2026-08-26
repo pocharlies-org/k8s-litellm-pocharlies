@@ -843,12 +843,15 @@ data:
     # mandar peticiones a la ruta abliterada para comparar (A/B) censurado vs
     # no-censurado. El paso de la key dedicada sigue siendo del owner: en cuanto
     # exista, se quita de aqui la del gateway y se pone la nueva.
+    # `open-webui-v3` entra (2026-08-26, pedido explicito del owner) porque es la key
+    # de Pocharlies Chat / Open WebUI: el owner quiere que deepseek-v4 y su alias
+    # uncensored esten operativos en Open WebUI.
     # Vacio = sin restriccion, y es DELIBERADO que el default NO sea vacio.
     UNCENSORED_ALLOWED_KEY_ALIASES = frozenset(
         alias.strip()
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
-            "openclaw-qwen36-prod,master,playground",
+            "openclaw-qwen36-prod,master,playground,open-webui-v3",
         ).split(",")
         if alias.strip()
     )
