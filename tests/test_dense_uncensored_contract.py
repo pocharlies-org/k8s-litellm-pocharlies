@@ -104,15 +104,22 @@ def test_backends_cubren_las_formas_de_exclusion():
     """
     text = MANIFEST.read_text()
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    assert backends.count('"name": "') == 3
+    # 26-08: entra qwen38-flash-next (residente llm-tp, SGLang TP=2); DeepSeek
+    # se queda como rollback con solo su nombre directo.
+    assert backends.count('"name": "') == 4
     for name in (
         "qwen38-27b",
+        "qwen38-flash-next",
         "deepseek-v4-flash-tp2",
         "qwen35-4b-int4",
     ):
         assert f'"name": "{name}"' in backends
-    # El de TP=2 tiene que decir que vive en los dos nodos: es lo que justifica que
-    # comparta los alias de tooling sin romper la unicidad.
+    # Los de TP=2 tienen que decir que viven en los dos nodos: es lo que
+    # justifica que el residente comparta los alias de tooling sin romper la
+    # unicidad.
+    qn = backends[backends.index('"name": "qwen38-flash-next"'):
+                  backends.index('"name": "deepseek-v4-flash-tp2"')]
+    assert '"backend": "dgx1+dgx2"' in qn
     ds = backends[backends.index('"name": "deepseek-v4-flash-tp2"'):]
     assert '"backend": "dgx1+dgx2"' in ds
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",
@@ -126,7 +133,7 @@ def test_backends_cubren_las_formas_de_exclusion():
     # El backend conserva su identidad estable, pero Creative lo sirve en DGX1
     # con la ventana real de 64K en vez de heredar 256K.
     dense = backends[backends.index('"name": "qwen38-27b"'):
-                     backends.index('"name": "deepseek-v4-flash-tp2"')]
+                     backends.index('"name": "qwen38-flash-next"')]
     assert '"backend": "dgx1"' in dense
     assert '"max_input_tokens": 262144' in dense
     assert '"supports_function_calling": True' in dense
@@ -136,6 +143,7 @@ def test_backends_cubren_las_formas_de_exclusion():
     retired = _sync_block(text, "RETIRED_MANAGED_ID_PREFIXES = (", "TOKEN_PATH =")
     dead_prefixes = re.findall(r'"(dgx\d-[a-z0-9-]+-)"', retired)
     for prefix in ("dgx1-nvidia-qwen36-35b-nvfp4-", "ds4-flash-0731-tp2-",
+                   "qwen38-flash-next-tp2-",
                    "qwen38-27b-"):
         for dead in dead_prefixes:
             assert not prefix.startswith(dead), f"{prefix} seria purgado por {dead}"
@@ -172,12 +180,12 @@ def test_shared_tooling_alias_is_guarded_against_double_registration():
                                           backends, re.S)
                  if a in ("QWEN38_27B_ALIASES", "TOOLING_RESIDENT_ALIASES")]
     assert sorted(comparten) == [
-        "deepseek-v4-flash-tp2",
         "qwen38-27b",
+        "qwen38-flash-next",
     ], comparten
 
     dense = backends[backends.index('"name": "qwen38-27b"'):
-                     backends.index('"name": "deepseek-v4-flash-tp2"')]
+                     backends.index('"name": "qwen38-flash-next"')]
     assert '"aliases": QWEN38_27B_ALIASES' in dense
     aliases = _sync_block(
         text, "QWEN38_27B_ALIASES = (", "QWEN38_REPEAT_GUARD_PARAMS"

@@ -100,13 +100,13 @@ def _policy(hook, key_alias, data=None):
 
 def test_aurora_uses_the_healthy_local_resident(hook):
     request, disabled = _policy(hook, "aurora-rca")
-    live = lambda alias: alias == "deepseek-v4-flash-0731"
+    live = lambda alias: alias == "qwen38-flash-next"
 
     assert disabled is True
     assert request["disable_fallbacks"] is True
     assert hook._tooling_route_for_state(
         READY_TP, live, disable_fallbacks=disabled
-    ) == ("deepseek-v4-flash-0731", "primary", None)
+    ) == ("qwen38-flash-next", "primary", None)
 
 
 def test_aurora_falla_cerrado_si_el_alias_local_no_esta(hook):
@@ -128,11 +128,11 @@ def test_registered_but_unhealthy_keeps_the_router_kill_switch(hook):
     request, disabled = _policy(
         hook, "aurora-rca", {"disable_fallbacks": False}
     )
-    registered_but_unhealthy = lambda alias: alias == "deepseek-v4-flash-0731"
+    registered_but_unhealthy = lambda alias: alias == "qwen38-flash-next"
 
     assert hook._tooling_route_for_state(
         READY_TP, registered_but_unhealthy, disable_fallbacks=disabled
-    ) == ("deepseek-v4-flash-0731", "primary", None)
+    ) == ("qwen38-flash-next", "primary", None)
     assert request == {"disable_fallbacks": True}
 
 

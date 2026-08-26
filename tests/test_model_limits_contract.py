@@ -56,6 +56,8 @@ def backends(cms):
     wanted = {"ORNITH_CANARY_ALIASES", "TOOLING_COMPAT_ALIASES", "ORNITH_ALIASES",
               "THINKING_TIER_ALIASES",
               "TOOLING_RESIDENT_ALIASES", "DEEPSEEK_V4_FLASH_DIRECT_ALIASES",
+              # 26-08: nombre directo del residente llm-tp nuevo (Qwen3.8-Flash-Next).
+              "QWEN38_FLASH_NEXT_DIRECT_ALIASES",
               "QWEN35_4B_ALIASES",
               "QWEN3CODER_ALIASES",
               "QWEN38_27B_ALIASES", "QWEN38_REPEAT_GUARD_PARAMS",

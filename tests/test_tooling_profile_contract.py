@@ -69,14 +69,17 @@ def _state(*, deepseek=False, qwen=False, desired="llm-tp", effective="llm-tp", 
     }
 
 
-def test_tooling_uses_deepseek_only_when_both_ranks_are_ready(hook):
+def test_tooling_uses_the_tp2_resident_only_when_both_ranks_are_ready(hook):
+    # 26-08: el residente llm-tp es qwen38-flash-next. Las keys de componente
+    # del fixture (deepseek-head/worker) se quedan: son el contrato del
+    # dashboard y hoy apuntan a los deploys qwen38-flash-next-*.
     state = _state(deepseek=True)
     assert hook._tooling_target_for_compute_mode(state) == (
-        "deepseek-v4-flash-0731",
+        "qwen38-flash-next",
         None,
     )
-    assert hook._tooling_route_for_state(state, lambda name: name == "deepseek-v4-flash-0731") == (
-        "deepseek-v4-flash-0731",
+    assert hook._tooling_route_for_state(state, lambda name: name == "qwen38-flash-next") == (
+        "qwen38-flash-next",
         "primary",
         None,
     )
