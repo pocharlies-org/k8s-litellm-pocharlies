@@ -598,12 +598,22 @@ data:
     # («Provider returned error») en TODAS las llamadas — su unico endpoint, Decart,
     # esta saturado — y `thinkingmachines/inkling:free` da 403. Ninguno de los dos
     # entra. minimax-m3 respondio chat y tool_calls a la primera.
-    - model_name: or-minimax
+    # LOS 16 `:free` CON `tools` DEL CATALOGO, no una seleccion. Medido el 26-08 en
+    # dos rondas separadas: cuales responden CAMBIA entre rondas. `minimax-m3` iba en
+    # la ronda 1 y daba 429 en la 2; `glm-5.2` al reves. Elegir tres por una foto
+    # puntual era el error: con un solo endpoint por modelo y sin fallbacks, lo que
+    # salva la papeleta es tener alternativa a mano. Publicarlos no cuesta nada — son
+    # gratis y llevan `disable_background_health_check` — y el gate del hook los
+    # mantiene cerrados a todo lo que no sea la key de opencode.
+    #
+    # Los que hoy dan 403 (`inkling`, `inkling-small`) o 429 (`glm`, los `gemma-4`,
+    # los `minimax`) se quedan A PROPOSITO: manana pueden ir. Un 429 al llamarlos es
+    # visible y no rompe nada.
+    - model_name: or-nemotron
       litellm_params: &openrouter_free_params
-        model: openrouter/minimax/minimax-m3:free
+        model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
         api_key: os.environ/OPENROUTER_API_KEY
         timeout: 600
-        # Sin reintentos: con 20 req/min, un reintento automatico es una peticion menos.
         num_retries: 0
       model_info: &openrouter_free_info
         mode: chat
@@ -611,50 +621,140 @@ data:
         supports_function_calling: true
         supports_vision: false
         supports_reasoning: true
-        # 4 replicas x 96 llamadas/dia contra una cuota diaria se la comerian entera
-        # varias veces. La cuota agotada solo se ve en una peticion real, igual que en
-        # el puente.
         disable_background_health_check: true
-        # Cifras leidas de la API el 26-08 (`context_length` y
-        # `top_provider.max_completion_tokens`), no estimadas. `max_output_tokens` es
-        # ademas obligatorio para opencode: sin el, su plugin rechaza la config ENTERA
-        # con `Missing key ...["limit"]["output"]`.
-        max_input_tokens: 1048576
-        max_output_tokens: 943718
-    # INESTABLE, y se deja a proposito con el aviso escrito: el 26-08 respondio chat las
-    # dos veces, pero la llamada con `tools` dio tool_calls en una ronda y 502 en la
-    # siguiente. Sirve para chat; para agente, `or-code` u `or-minimax` primero.
-    - model_name: or-nemotron
-      litellm_params:
-        <<: *openrouter_free_params
-        model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
-      model_info:
-        <<: *openrouter_free_info
         max_input_tokens: 262144
         max_output_tokens: 235929
-    # EL UNICO que sobrevive a `data_collection: deny` (medido: 200 OK contra Cohere,
-    # mientras nemotron da 404 sin ruta). Por eso el deny se declara AQUI y no en el
-    # anchor: es el unico alias del bloque cuyo endpoint gratuito no entrena.
     - model_name: or-code
       litellm_params:
         <<: *openrouter_free_params
         model: openrouter/cohere/north-mini-code:free
-        # OpenrouterConfig funde `extra_body` en el cuerpo de la peticion
-        # (`response.update(extra_body)`), asi que `provider` llega tal cual arriba.
+        # UNICO con deny: medido 200 OK contra Cohere, mientras nemotron da 404.
         extra_body:
           provider:
             data_collection: deny
       model_info:
         <<: *openrouter_free_info
-        # north-mini-code NO acepta `reasoning_effort` (medido el 26-08). Sigue siendo
-        # `supports_reasoning: true` porque el modelo razona; lo que no tiene es dial.
-        #
-        # Y OJO CON max_tokens BAJO en todo el bloque: con `max_tokens: 16` este modelo
-        # devolvio 200 con `finish_reason: length` y **content VACIO** — el razonamiento
-        # se comio el presupuesto entero. Con 300 responde normal. Un 200 vacio aqui no
-        # es un modelo roto, es un budget corto.
         max_input_tokens: 256000
         max_output_tokens: 64000
+    - model_name: or-minimax
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/minimax/minimax-m3:free
+      model_info:
+        <<: *openrouter_free_info
+        supports_vision: true
+        max_input_tokens: 1048576
+        max_output_tokens: 943718
+    - model_name: or-ultra
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      model_info:
+        <<: *openrouter_free_info
+        max_input_tokens: 1000000
+        max_output_tokens: 65536
+    - model_name: or-lightning
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/nvidia/nemotron-3.5-lightning:free
+      model_info:
+        <<: *openrouter_free_info
+        max_input_tokens: 1000000
+        max_output_tokens: 65536
+    - model_name: or-omni
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
+      model_info:
+        <<: *openrouter_free_info
+        supports_vision: true
+        max_input_tokens: 256000
+        max_output_tokens: 65536
+    - model_name: or-dots
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/dots-studio/dots-3-note-preview:free
+      model_info:
+        <<: *openrouter_free_info
+        supports_vision: true
+        max_input_tokens: 512000
+        max_output_tokens: 460800
+    - model_name: or-laguna-s
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/poolside/laguna-s-2.1:free
+      model_info:
+        <<: *openrouter_free_info
+        max_input_tokens: 262144
+        max_output_tokens: 32768
+    - model_name: or-laguna-xs
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/poolside/laguna-xs-2.1:free
+      model_info:
+        <<: *openrouter_free_info
+        max_input_tokens: 262144
+        max_output_tokens: 32768
+    - model_name: or-lfm
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/liquid/lfm-2.5-2.6b:free
+      model_info:
+        <<: *openrouter_free_info
+        max_input_tokens: 65536
+        max_output_tokens: 8192
+    - model_name: or-inkling
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/thinkingmachines/inkling:free
+      model_info:
+        <<: *openrouter_free_info
+        supports_vision: true
+        max_input_tokens: 1048576
+        max_output_tokens: 262144
+    - model_name: or-inkling-small
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/thinkingmachines/inkling-small:free
+      model_info:
+        <<: *openrouter_free_info
+        supports_vision: true
+        max_input_tokens: 1048576
+        max_output_tokens: 262144
+    - model_name: or-glm
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/z-ai/glm-5.2:free
+      model_info:
+        <<: *openrouter_free_info
+        max_input_tokens: 256000
+        max_output_tokens: 230400
+    - model_name: or-gemma-26b
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/google/gemma-4-26b-a4b-it:free
+      model_info:
+        <<: *openrouter_free_info
+        supports_vision: true
+        max_input_tokens: 262144
+        max_output_tokens: 32768
+    - model_name: or-gemma-31b
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/google/gemma-4-31b-it:free
+      model_info:
+        <<: *openrouter_free_info
+        supports_vision: true
+        max_input_tokens: 262144
+        max_output_tokens: 32768
+    - model_name: or-minimax-m27
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/minimax/minimax-m2.7:free
+      model_info:
+        <<: *openrouter_free_info
+        max_input_tokens: 196608
+        max_output_tokens: 176947
     # <<< openrouter-free — FIN DEL BLOQUE GESTIONADO POR EL PANEL
     litellm_settings:
       success_callback:
