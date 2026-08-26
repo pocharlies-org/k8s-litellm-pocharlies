@@ -570,12 +570,19 @@ data:
     # `allow_fallbacks` ni `require_parameters`: con un unico proveedor no filtran nada
     # y solo aNaden formas de quedarse sin ruta.
     #
-    # `data_collection: deny` SI se pone, y es la decision arriesgada del bloque: los
-    # `:free` son gratis porque el proveedor se queda el dato, asi que con un solo
-    # endpoint esto es cara o cruz — o ese proveedor cumple, o la peticion se queda sin
-    # ruta y falla. Se elige fallar RUIDOSAMENTE antes que enviar datos en silencio.
-    # ANTES DE MERGEAR hay que probarlo con la key real (ver el plan, seccion 1.2); si
-    # no hay ruta, se quita en un commit aparte y con eso escrito.
+    # `data_collection: deny` NO va en el anchor, y esto esta MEDIDO con la key real el
+    # 26-08, no razonado:
+    #   nemotron + deny -> 404 «No endpoints found matching your data policy
+    #                      (Free model training)». El deny lo deja SIN RUTA.
+    #   north-mini-code + deny -> 200 OK, provider Cohere.
+    # O sea: los `:free` son gratis porque el proveedor entrena, y el unico de los
+    # elegidos cuyo endpoint gratuito NO entrena es el de Cohere. Poner el deny en el
+    # anchor apagaria el resto del bloque en silencio.
+    #
+    # La barrera que SI queda para todos: en la cuenta, «Allow free endpoints that
+    # publish prompts» esta OFF — ningun prompt acaba en un dataset publico. Lo que se
+    # acepta a cambio de gratis es el entrenamiento del proveedor, y por eso el gate del
+    # hook (solo la key de opencode) deja de ser higiene y pasa a ser LA proteccion.
     #
     # LO QUE ESTOS ALIAS NO ESTAN, Y NO ES OMISION — mismo criterio que el puente:
     #   - NO estan en CAPABILITY_CHAINS, luego tampoco en VISION_DIVERTIBLE.
@@ -587,18 +594,17 @@ data:
     #   - Quien cierra el acceso es `_openrouter_access_denied` en el hook. El allowlist
     #     de la key NO puede: `models: []` = todos, y 7 de 10 keys lo tienen asi, luego
     #     publicar el alias lo concede solo a ocho keys.
-    - model_name: or-glm
+    # Medido el 26-08 con la key real, 2 rondas: `z-ai/glm-5.2:free` devolvio 429
+    # («Provider returned error») en TODAS las llamadas — su unico endpoint, Decart,
+    # esta saturado — y `thinkingmachines/inkling:free` da 403. Ninguno de los dos
+    # entra. minimax-m3 respondio chat y tool_calls a la primera.
+    - model_name: or-minimax
       litellm_params: &openrouter_free_params
-        model: openrouter/z-ai/glm-5.2:free
+        model: openrouter/minimax/minimax-m3:free
         api_key: os.environ/OPENROUTER_API_KEY
         timeout: 600
         # Sin reintentos: con 20 req/min, un reintento automatico es una peticion menos.
         num_retries: 0
-        # OpenrouterConfig funde `extra_body` en el cuerpo de la peticion
-        # (`response.update(extra_body)`), asi que `provider` llega tal cual arriba.
-        extra_body:
-          provider:
-            data_collection: deny
       model_info: &openrouter_free_info
         mode: chat
         backend: openrouter-free
@@ -613,8 +619,11 @@ data:
         # `top_provider.max_completion_tokens`), no estimadas. `max_output_tokens` es
         # ademas obligatorio para opencode: sin el, su plugin rechaza la config ENTERA
         # con `Missing key ...["limit"]["output"]`.
-        max_input_tokens: 256000
-        max_output_tokens: 230400
+        max_input_tokens: 1048576
+        max_output_tokens: 943718
+    # INESTABLE, y se deja a proposito con el aviso escrito: el 26-08 respondio chat las
+    # dos veces, pero la llamada con `tools` dio tool_calls en una ronda y 502 en la
+    # siguiente. Sirve para chat; para agente, `or-code` u `or-minimax` primero.
     - model_name: or-nemotron
       litellm_params:
         <<: *openrouter_free_params
@@ -623,15 +632,27 @@ data:
         <<: *openrouter_free_info
         max_input_tokens: 262144
         max_output_tokens: 235929
+    # EL UNICO que sobrevive a `data_collection: deny` (medido: 200 OK contra Cohere,
+    # mientras nemotron da 404 sin ruta). Por eso el deny se declara AQUI y no en el
+    # anchor: es el unico alias del bloque cuyo endpoint gratuito no entrena.
     - model_name: or-code
       litellm_params:
         <<: *openrouter_free_params
         model: openrouter/cohere/north-mini-code:free
+        # OpenrouterConfig funde `extra_body` en el cuerpo de la peticion
+        # (`response.update(extra_body)`), asi que `provider` llega tal cual arriba.
+        extra_body:
+          provider:
+            data_collection: deny
       model_info:
         <<: *openrouter_free_info
-        # north-mini-code NO acepta `reasoning_effort` (medido el 26-08), a diferencia
-        # de los otros dos. Sigue siendo `supports_reasoning: true` porque el modelo
-        # razona; lo que no tiene es dial.
+        # north-mini-code NO acepta `reasoning_effort` (medido el 26-08). Sigue siendo
+        # `supports_reasoning: true` porque el modelo razona; lo que no tiene es dial.
+        #
+        # Y OJO CON max_tokens BAJO en todo el bloque: con `max_tokens: 16` este modelo
+        # devolvio 200 con `finish_reason: length` y **content VACIO** — el razonamiento
+        # se comio el presupuesto entero. Con 300 responde normal. Un 200 vacio aqui no
+        # es un modelo roto, es un budget corto.
         max_input_tokens: 256000
         max_output_tokens: 64000
     # <<< openrouter-free — FIN DEL BLOQUE GESTIONADO POR EL PANEL
