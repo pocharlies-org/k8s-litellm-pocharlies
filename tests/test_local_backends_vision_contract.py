@@ -55,6 +55,10 @@ MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 # caido" a que esos nombres no tengan dueño en ningun sitio.
 BACKENDS_LOCALES = {
     "qwen38-27b",
+    # 26-08: residente llm-tp nuevo. Declara supports_vision=True (checkpoint
+    # multimodal nativo, vision encoder BF16) — PROVISIONAL hasta el smoke de
+    # vision del primer arranque contra SGLang (fase 3).
+    "qwen38-flash-next",
     "deepseek-v4-flash-tp2",
     "qwen35-4b-int4",
 }

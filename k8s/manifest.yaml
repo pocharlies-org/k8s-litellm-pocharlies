@@ -709,7 +709,10 @@ data:
     # en Qwen, el repetition_penalty 1.08. Una entrada al pool no puede llevar eso
     # porque no sabe quien va a contestar.
     TOOLING_MODE_TARGETS = {
-        "llm-tp": "deepseek-v4-flash-0731",
+        # 26-08: el residente llm-tp pasa a Qwen3.8-Flash-Next NVFP4 (SGLang
+        # TP=2, k8s-ai-pocharlies#3). DeepSeek conserva su entrada del
+        # model_list como rollback: el EndpointSlice decide quien publica.
+        "llm-tp": "qwen38-flash-next",
         "creative": "qwen38-27b",
     }
     # Componentes que prueban que un residente esta REALMENTE operativo. El
@@ -717,7 +720,11 @@ data:
     # disponibilidad para servir: durante minutos puede decir `waiting` mientras
     # Qwen sigue Ready, o puede haber cambiado `desired_mode` antes de que DeepSeek
     # termine de cargar. `tooling` debe seguir al que responde, no al que se desea.
-    # DeepSeek requiere sus dos ranks; Qwen es un unico Deployment en DGX1.
+    # El residente llm-tp requiere sus dos ranks (desde el 26-08 es
+    # Qwen3.8-Flash-Next TP=2); el de creative es un unico Deployment en DGX1.
+    # OJO: las keys "deepseek-head"/"deepseek-worker" son HISTORICAS a proposito
+    # — son el contrato de componentes de compute_mode.COMPONENTS del dashboard,
+    # que hoy apunta con esas keys a los deploys qwen38-flash-next-*.
     TOOLING_MODE_COMPONENTS = {
         "llm-tp": (("dgx1", "deepseek-worker"), ("dgx2", "deepseek-head")),
         "creative": (("dgx1", "dense-uncensored"),),
@@ -2173,6 +2180,9 @@ data:
         # top_k/min_p/penalties. Con salida estructurada se sigue respetando lo
         # que mande el cliente. Es el mismo trato que ya tenia `tooling`.
         "deepseek-v4-flash-0731",
+        # 26-08: mismo arrastre por THINKING_TIERS para el residente nuevo
+        # (test_los_tres_tiers_son_swappable exige tier ⊆ swappable).
+        "qwen38-flash-next",
     })
 
     # ── Nivel de pensamiento por ALIAS (2026-08-10) ─────────────────────────────
@@ -2213,6 +2223,11 @@ data:
         # `deepseek-v4-flash-0731-uncensored` NO entra: esta en ABLITERATED y
         # test_the_abliterated_aliases_are_not_router_selectable lo prohibe.
         "deepseek-v4-flash-0731": "off",
+        # 26-08: el nombre directo del residente llm-tp nuevo, con el mismo
+        # trato que el de DeepSeek y por el mismo motivo del 25-08: fuera de
+        # esta tabla el default seria el del SERVIDOR, y el chat template de
+        # Qwen3.8-Flash-Next arranca con thinking ON.
+        "qwen38-flash-next": "off",
         # 24-08-2026: `high` y `max` se retiran como NOMBRES. El nivel se pide
         # con `reasoning_effort`, que es la via que ya usaba todo el mundo.
         # `tooling-uncensored` no entra aqui: la ablacion es una capacidad
@@ -3935,6 +3950,13 @@ data:
         # UNCENSORED_ON_LAMBDA). No es un segundo checkpoint ni un segundo pod.
         "deepseek-v4-flash-0731-uncensored",
     )
+    # Nombre directo y exclusivo de Qwen3.8-Flash-Next (residente llm-tp desde
+    # el 26-08). SIN variante -uncensored a proposito: no existe checkpoint
+    # abliterated ni port rank1 de esta arquitectura, y un alias que promete y
+    # no cumple es peor que no tenerlo (decision operador 26-08: aparcado).
+    QWEN38_FLASH_NEXT_DIRECT_ALIASES = (
+        "qwen38-flash-next",
+    )
 
     # ── ALIAS `-uncensored`: lambda POR PETICION ────────────────────────────────
     #
@@ -4107,6 +4129,56 @@ data:
             "supported_reasoning_efforts": ("none", "high", "max"),
         },
         {
+            # Qwen3.8-Flash-Next NVFP4 (125B MoE / 6B activos + 51B PLE) en TP=2
+            # sobre los DOS Sparks con SGLang (k8s-ai-pocharlies#3). Residente
+            # llm-tp desde el 26-08; DeepSeek (entrada de abajo) queda como
+            # rollback y el EndpointSlice decide quien publica: ambos declaran
+            # los aliases de tooling pero son fisicamente exclusivos.
+            "name": "qwen38-flash-next",
+            "label": "QWEN38_FLASH_NEXT_TP2",
+            "backend": "dgx1+dgx2",
+            "base_model": os.getenv(
+                "QWEN38_FLASH_NEXT_MODEL",
+                # "qwen38" en el id => familia de sampling qwen (0.7/0.8), que
+                # es el perfil no-thinking que documenta el model card. El
+                # perfil thinking (1.0/0.95) por familia queda para despues del
+                # bench de fase 3, medido y no copiado.
+                "openai/qwen38-flash-next",
+            ),
+            "aliases": TOOLING_RESIDENT_ALIASES + QWEN38_FLASH_NEXT_DIRECT_ALIASES,
+            "service": os.getenv(
+                "K8S_SERVICE_QWEN38_FLASH_NEXT",
+                "qwen38-flash-next",
+            ),
+            "api_base": os.getenv(
+                "QWEN38_FLASH_NEXT_API_BASE",
+                "http://qwen38-flash-next.llm.svc.cluster.local:8000/v1",
+            ),
+            "id_prefix": "qwen38-flash-next-tp2",
+            # = --max-running-requests del servidor SGLang. Pedir mas solo encola.
+            "max_parallel_requests": 16,
+            "max_output_tokens": 16384,
+            # 262144 es el --context-length REAL del servidor (256K nativo, sin
+            # YaRN). No anunciar mas de lo que sirve el motor: leccion del 15-08
+            # con el 27B (el estate entero creia que tenia 64K) y del arranque
+            # fallido de DeepSeek a 1M.
+            "max_input_tokens": 262144,
+            "supports_function_calling": True,
+            # El checkpoint es multimodal nativo (vision encoder BF16) y la
+            # build qwen4_exp de SGLang sirve VLM. PROVISIONAL hasta el smoke
+            # de vision del primer arranque (fase 3): si falla, poner False —
+            # con True roto, _vision_target manda imagenes a un backend que
+            # error, con False de mas las desvia sin preguntar.
+            "supports_vision": True,
+            # PROVISIONAL (fase 3): mismos tiers que declara la familia qwen38
+            # medida en el 27B. El mapeo reasoning_effort->thinking contra
+            # SGLang se verifica en el primer arranque; si el motor no los
+            # distingue, recortar aqui antes de anunciar — no mentir en el
+            # catalogo (regla del 15-08).
+            "supports_reasoning": True,
+            "supported_reasoning_efforts": ("none", "high", "max"),
+        },
+        {
             # DeepSeek-V4-Flash-0731 (284B MoE / 13B activos) en TP=2 REPARTIDO
             # ENTRE LOS DOS SPARKS sobre RoCE 200G. Es el unico backend del
             # cluster que no vive en un solo nodo.
@@ -4129,7 +4201,11 @@ data:
                 "DS4_FLASH_MODEL",
                 "openai/deepseek-v4-flash-0731",
             ),
-            "aliases": TOOLING_RESIDENT_ALIASES + DEEPSEEK_V4_FLASH_DIRECT_ALIASES,
+            # 26-08: la titularidad de los alias de capacidad (tooling, tiers)
+            # pasa a qwen38-flash-next — el invariante es UN dueño declarado
+            # (test_ornith_canary). Este backend conserva solo su nombre
+            # directo; el revert de este commit le devuelve el asiento.
+            "aliases": DEEPSEEK_V4_FLASH_DIRECT_ALIASES,
             "service": os.getenv(
                 "K8S_SERVICE_DS4_FLASH",
                 "deepseek-v4-flash-0731",
@@ -4902,7 +4978,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-113143b2dac5
+        config.k8s.e-dani.com/revision: sync-67926820a976
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -5077,7 +5153,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d2914b4728b4
+        config.k8s.e-dani.com/revision: config-dcaacc15df7e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

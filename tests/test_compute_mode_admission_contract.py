@@ -61,10 +61,15 @@ def test_tooling_admission_follows_the_ready_resident_during_transitions():
     )
     assert gate(qwen_ready, "tooling") == (True, None)
     assert gate(qwen_ready, "qwen38-27b") == (True, None)
-    assert gate(qwen_ready, "deepseek-v4-flash-0731") == (
+    # 26-08: el nombre directo del residente llm-tp es qwen38-flash-next.
+    assert gate(qwen_ready, "qwen38-flash-next") == (
         False, "tooling_resident_not_ready"
     )
-    # Fuera de los residentes/tooling se mantiene la puerta historica.
+    # Fuera de los residentes/tooling se mantiene la puerta historica —
+    # incluido el nombre directo de DeepSeek, que ya no es residente de perfil.
+    assert gate(qwen_ready, "deepseek-v4-flash-0731") == (
+        False, "compute_mode_transition"
+    )
     assert gate(qwen_ready, "ornith-1.0") == (False, "compute_mode_transition")
 
 

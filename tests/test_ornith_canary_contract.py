@@ -74,8 +74,11 @@ def test_los_alias_de_capacidad_siguen_teniendo_dueno():
     assert backends.count('"aliases": TOOLING_RESIDENT_ALIASES') == 1, (
         "los alias de capacidad tienen que tener exactamente UN dueño declarado"
     )
-    ds = backends[backends.index('"name": "deepseek-v4-flash-tp2"'):]
-    assert '"aliases": TOOLING_RESIDENT_ALIASES' in ds, (
-        "el dueño tiene que ser DeepSeek: es el unico backend vivo y su TP=2 "
-        "excluye a cualquier otro por hardware en los dos nodos"
+    # 26-08: el asiento pasa a qwen38-flash-next (residente llm-tp); DeepSeek
+    # conserva solo su nombre directo y recupera la titularidad con el revert.
+    qn = backends[backends.index('"name": "qwen38-flash-next"'):
+                  backends.index('"name": "deepseek-v4-flash-tp2"')]
+    assert '"aliases": TOOLING_RESIDENT_ALIASES' in qn, (
+        "el dueño tiene que ser el residente llm-tp vivo (qwen38-flash-next): "
+        "su TP=2 excluye a cualquier otro por hardware en los dos nodos"
     )
