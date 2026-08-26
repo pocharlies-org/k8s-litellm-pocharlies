@@ -549,6 +549,92 @@ data:
         <<: *codex_bridge_params
         model: openai/gpt-5.4
       model_info: *codex_bridge_info
+    # >>> openrouter-free — BLOQUE GESTIONADO POR EL PANEL (openrouter.e-dani.com)
+    # No edites a mano entre estos dos centinelas: el panel inserta y retira entradas
+    # AQUI por insercion textual, y un PR suyo puede reescribir lo que haya dentro.
+    #
+    # PRIMER upstream del gateway que sale a INTERNET. Todos los demas apuntan a
+    # `.llm.svc` o a `.litellm.svc`. Medido el 26-08 desde el propio pod: alcanza
+    # openrouter.ai (HTTP 200, 417 modelos) y el ns `litellm` no tiene NetworkPolicy.
+    #
+    # SOLO MODELOS `:free`. La cuenta lleva 10 USD comprados una vez, lo que sube la
+    # cuota de los gratis de 50 a 1000 peticiones/dia de forma PERMANENTE (va atado a
+    # haber comprado alguna vez, no al saldo que quede). El techo de 20 req/min NO se
+    # mueve con eso: para un agente encadenando tool-calls ese es el limite que muerde
+    # en rafaga, no la cuota diaria. El saldo queda disponible, pero aqui NO se publica
+    # ningun alias de pago: eso es una decision aparte, modelo a modelo y con max_price.
+    #
+    # CADA VARIANTE `:free` TIENE UN SOLO ENDPOINT DETRAS (medido el 26-08 en
+    # /api/v1/models/<slug>:free/endpoints: Decart para glm, Nvidia para nemotron,
+    # Cohere para north-mini-code). De ahi que NO se pongan `provider.only`, `sort`,
+    # `allow_fallbacks` ni `require_parameters`: con un unico proveedor no filtran nada
+    # y solo aNaden formas de quedarse sin ruta.
+    #
+    # `data_collection: deny` SI se pone, y es la decision arriesgada del bloque: los
+    # `:free` son gratis porque el proveedor se queda el dato, asi que con un solo
+    # endpoint esto es cara o cruz — o ese proveedor cumple, o la peticion se queda sin
+    # ruta y falla. Se elige fallar RUIDOSAMENTE antes que enviar datos en silencio.
+    # ANTES DE MERGEAR hay que probarlo con la key real (ver el plan, seccion 1.2); si
+    # no hay ruta, se quita en un commit aparte y con eso escrito.
+    #
+    # LO QUE ESTOS ALIAS NO ESTAN, Y NO ES OMISION — mismo criterio que el puente:
+    #   - NO estan en CAPABILITY_CHAINS, luego tampoco en VISION_DIVERTIBLE.
+    #   - NO estan en ningun fallback. Si el residente local cae, falla visible; no se
+    #     desvia a la nube por detras.
+    #   - `supported_reasoning_efforts` NO se declara aunque los modelos acepten
+    #     `reasoning_effort`: los valores de la casa son [none, high, max] y `max` no es
+    #     un effort de OpenRouter. Se aNade cuando se mida contra el endpoint real.
+    #   - Quien cierra el acceso es `_openrouter_access_denied` en el hook. El allowlist
+    #     de la key NO puede: `models: []` = todos, y 7 de 10 keys lo tienen asi, luego
+    #     publicar el alias lo concede solo a ocho keys.
+    - model_name: or-glm
+      litellm_params: &openrouter_free_params
+        model: openrouter/z-ai/glm-5.2:free
+        api_key: os.environ/OPENROUTER_API_KEY
+        timeout: 600
+        # Sin reintentos: con 20 req/min, un reintento automatico es una peticion menos.
+        num_retries: 0
+        # OpenrouterConfig funde `extra_body` en el cuerpo de la peticion
+        # (`response.update(extra_body)`), asi que `provider` llega tal cual arriba.
+        extra_body:
+          provider:
+            data_collection: deny
+      model_info: &openrouter_free_info
+        mode: chat
+        backend: openrouter-free
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        # 4 replicas x 96 llamadas/dia contra una cuota diaria se la comerian entera
+        # varias veces. La cuota agotada solo se ve en una peticion real, igual que en
+        # el puente.
+        disable_background_health_check: true
+        # Cifras leidas de la API el 26-08 (`context_length` y
+        # `top_provider.max_completion_tokens`), no estimadas. `max_output_tokens` es
+        # ademas obligatorio para opencode: sin el, su plugin rechaza la config ENTERA
+        # con `Missing key ...["limit"]["output"]`.
+        max_input_tokens: 256000
+        max_output_tokens: 230400
+    - model_name: or-nemotron
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/nvidia/nemotron-3-super-120b-a12b:free
+      model_info:
+        <<: *openrouter_free_info
+        max_input_tokens: 262144
+        max_output_tokens: 235929
+    - model_name: or-code
+      litellm_params:
+        <<: *openrouter_free_params
+        model: openrouter/cohere/north-mini-code:free
+      model_info:
+        <<: *openrouter_free_info
+        # north-mini-code NO acepta `reasoning_effort` (medido el 26-08), a diferencia
+        # de los otros dos. Sigue siendo `supports_reasoning: true` porque el modelo
+        # razona; lo que no tiene es dial.
+        max_input_tokens: 256000
+        max_output_tokens: 64000
+    # <<< openrouter-free — FIN DEL BLOQUE GESTIONADO POR EL PANEL
     litellm_settings:
       success_callback:
       - db
@@ -970,6 +1056,45 @@ data:
             "requested": requested,
             "key": key_label,
             "allowed": sorted(CODEX_ALLOWED_KEY_ALIASES),
+        }
+
+    # Alias de OpenRouter. Se reconocen por PREFIJO, no por un frozenset literal, y
+    # eso es deliberado: el bloque `or-*` del model_list esta pensado para crecer
+    # (el panel de openrouter.e-dani.com inserta entradas por PR), y una lista
+    # literal aqui significaria que cada alias nuevo nace ABIERTO a las ocho keys
+    # con `models: []` hasta que alguien se acuerde de venir a cerrarlo. Con prefijo,
+    # un alias nuevo nace cerrado por construccion.
+    #
+    # Precedente de por que importa: `gpt-5.6-luna` volvio al model_list el 25-08 y
+    # `sauvage-shield` lo heredo sola, porque lo llevaba escrito en su allowlist de
+    # antes de la purga. Lo unico que lo detuvo fue CODEX_ONLY_MODELS.
+    OPENROUTER_ALIAS_PREFIX = "or-"
+
+    OPENROUTER_ALLOWED_KEY_ALIASES = frozenset(
+        alias.strip()
+        for alias in os.environ.get("LITELLM_OPENROUTER_ALLOWED_KEYS", "").split(",")
+        if alias.strip()
+    )
+
+    def _openrouter_access_denied(requested, key_label):
+        """(bool, detalle) si esta key NO puede pedir un alias de OpenRouter.
+
+        FALLA CERRADO, igual que el gate del puente y al reves que el abliterado: si
+        LITELLM_OPENROUTER_ALLOWED_KEYS llega vacia se deniega a todo el mundo,
+        incluida la master. Un despliegue sin la variable deja los alias `or-*`
+        inservibles, que es el fallo seguro; el peligroso seria dejarlos abiertos a
+        document-intake (facturas) y a synapse contra un endpoint gratuito cuya
+        politica de datos no controlamos.
+        """
+        if not str(requested or "").startswith(OPENROUTER_ALIAS_PREFIX):
+            return False, None
+        if key_label in OPENROUTER_ALLOWED_KEY_ALIASES:
+            return False, None
+        return True, {
+            "error": "this key may not request the OpenRouter catalogue",
+            "requested": requested,
+            "key": key_label,
+            "allowed": sorted(OPENROUTER_ALLOWED_KEY_ALIASES),
         }
 
     def _tooling_uncensored_target(state):
@@ -2852,6 +2977,20 @@ data:
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
 
+            # Gate de OpenRouter, tercero de la cadena y por el mismo motivo que los
+            # dos de arriba: deny-por-defecto antes de resolver alias. Sin el, los
+            # `or-*` quedarian abiertos a las ocho keys con `models: []` — entre ellas
+            # document-intake, que procesa facturas, contra un endpoint gratuito cuya
+            # politica de datos no controlamos.
+            _denied, _detail = _openrouter_access_denied(
+                requested_model, _resolve_key_label(user_api_key_dict)
+            )
+            if _denied:
+                router_log.warning(
+                    "openrouter: key %r pidio %r y no esta en la lista",
+                    _detail["key"], _detail["requested"])
+                raise HTTPException(status_code=403, detail=_detail)
+
             # Antes de resolver el alias: si el residente ha desaparecido, esta
             # misma politica impide que el hook lo reescriba a otra ruta. La marca queda
             # en ``data`` para que el Router cubra tambien el caso distinto en que
@@ -3840,6 +3979,14 @@ spec:
     #   vault kv patch secret/litellm LITELLM_CODEX_BRIDGE_KEY=sk-...
     - secretKey: LITELLM_CODEX_BRIDGE_KEY
       remoteRef: { key: secret/litellm, property: LITELLM_CODEX_BRIDGE_KEY }
+    # Key de la cuenta de OpenRouter (sk-or-...). Mismo aviso que arriba, y aqui
+    # importa el ORDEN: si esta entrada llega al cluster ANTES de que la propiedad
+    # exista en Vault, el ExternalSecret entero pasa a SecretSyncedError y deja de
+    # refrescar el resto — incluida LITELLM_MASTER_KEY. Primero el patch, despues
+    # el merge.
+    #   vault kv patch secret/litellm OPENROUTER_API_KEY=sk-or-...
+    - secretKey: OPENROUTER_API_KEY
+      remoteRef: { key: secret/litellm, property: OPENROUTER_API_KEY }
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -5286,7 +5433,22 @@ spec:
             # a diferencia del gate abliterado, este falla CERRADO — si la variable
             # llega vacia se deniega a todo el mundo, incluida la master. Es lo
             # pedido: «solo la key de CODEX, deny a todo lo demas».
-            - { name: LITELLM_CODEX_ALLOWED_KEYS, value: "codex" }
+            # 26-08-2026: entra `opencode-20260630-local`. Decision del owner con el
+            # riesgo sobre la mesa: es el puente de los dos baneos del 20/21-08. Lo
+            # que lo acota es que el default de opencode sigue siendo `tooling`
+            # (local), asi que estos modelos hay que elegirlos A MANO por sesion y no
+            # reciben trafico de fondo. Vigilar el consumo de la cuenta en spend logs.
+            - { name: LITELLM_CODEX_ALLOWED_KEYS, value: "codex,opencode-20260630-local" }
+            # Credencial de la cuenta de OpenRouter. Primer upstream del gateway que
+            # sale a Internet; el model_list lo consume como `os.environ/`.
+            - name: OPENROUTER_API_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: OPENROUTER_API_KEY } }
+            # Keys autorizadas a pedir los alias `or-*`. Misma forma que el gate del
+            # puente y por el mismo motivo: falla CERRADO. Si la variable llega vacia
+            # se deniega a todo el mundo, incluida la master. Hace falta porque el
+            # allowlist de la key NO puede cerrar nada — `models: []` = todos, y 7 de
+            # 10 keys lo tienen asi, luego publicar el alias lo concede a ocho keys.
+            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local" }
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS
