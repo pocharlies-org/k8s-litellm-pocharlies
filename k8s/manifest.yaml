@@ -233,6 +233,37 @@ data:
         # no declara: lo recorta al mas cercano y el effort que llega ya es
         # DELIBERADO, asi que el razonamiento vuelve a `reasoning_content`.
         supported_reasoning_efforts: [none, high, max]
+    # ── Residente llm-tp desde el 27-08: Qwen3.8-Flash-Next (SGLang TP=2) ────
+    #
+    # 27-08: PR #34 declaro este residente SOLO en sync.py — el controlador
+    # RETIRADO el 18-08 (0 replicas) — asi que el router nunca lo cargo y
+    # `_alias_has_deployments("qwen38-flash-next")` devolvia False: `tooling`
+    # respondia 503 `compute_profile_target_unavailable` con el residente
+    # perfectamente Ready. Esta es la entrada del mecanismo VIGENTE (model_list
+    # estatico). El hook ya lo tenia: TOOLING_MODE_TARGETS llm-tp -> este
+    # nombre, familia de sampling qwen y thinking off por defecto.
+    #
+    # ctx 262144 (256K nativo sin YaRN) y salida 16384 como el resto de la
+    # familia. El paralelismo real lo capa hoy el servidor en 8 (mamba cache
+    # con mem-fraction 0.78); 32 aqui sigue la misma regla documentada arriba:
+    # la saturacion la decide el motor con su cola, no el proxy.
+    - model_name: qwen38-flash-next
+      litellm_params:
+        model: openai/qwen38-flash-next
+        api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 32
+      model_info:
+        mode: chat
+        backend: dgx1+dgx2
+        max_input_tokens: 262144
+        max_output_tokens: 16384
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # Misma lista honesta que `tooling` y por el mismo motivo (ver arriba).
+        supported_reasoning_efforts: [none, high, max]
     # Mismo head, misma GPU, mismo checkpoint. Lo unico que cambia es que este
     # alias sella cada peticion con `cache_salt: refusal:1.5`, que vLLM expande a
     # lambda por token. COSTE: cache_salt entra en la clave de bloque del prefix
@@ -5153,7 +5184,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-dcaacc15df7e
+        config.k8s.e-dani.com/revision: config-7853f2174d54
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
