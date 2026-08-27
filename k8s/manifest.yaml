@@ -263,6 +263,9 @@ data:
         supports_vision: true
         supports_reasoning: true
         # Misma lista honesta que `tooling` y por el mismo motivo (ver arriba).
+        # Son los tiers que el HOOK honra (CLIENT_EFFORT_TIERS), no los que acepta
+        # el servidor: para la familia qwen el effort se traduce a `enable_thinking`
+        # y el valor crudo no debe viajar -- ver el strip en `_apply_thinking_tier`.
         supported_reasoning_efforts: [none, high, max]
     # Mismo head, misma GPU, mismo checkpoint. Lo unico que cambia es que este
     # alias sella cada peticion con `cache_salt: refusal:1.5`, que vLLM expande a
@@ -2876,6 +2879,34 @@ data:
                     continue
                 ctk[k] = v
                 applied.append("%s=%s" % (k, v))
+            # Traducido el nivel, el `reasoning_effort` de primer nivel YA NO puede
+            # viajar aguas arriba: aqui vive el vocabulario del CLIENTE
+            # (CLIENT_EFFORT_TIERS: none/off/high/max) y el del backend es otro.
+            #
+            # 27-08: Codex pedia `qwen38-flash-next` con reasoning_effort=high --su
+            # default-- y el backend contestaba 400 "Unexpected reasoning effort high.
+            # Supported types are xhigh (default), medium, and low". El hook ya habia
+            # hecho su trabajo (enable_thinking=True en chat_template_kwargs), pero
+            # ademas dejaba pasar el valor crudo, que para SGLang no existe. Solo se
+            # veia por /v1/responses; por chat/completions los seis valores dan 200,
+            # asi que el bug quedaba invisible en las pruebas normales.
+            #
+            # Se quita SOLO cuando hemos traducido de verdad (`kwargs` no vacio) y el
+            # nivel lo pidio el cliente: si el tier vino del nombre del alias, el
+            # cliente no puso nada que quitar. Un alias sin traduccion para su familia
+            # sale por el `return` de arriba y conserva su effort intacto.
+            if requested_tier:
+                for campo in ("reasoning_effort", "reasoningEffort"):
+                    if data.pop(campo, None) is not None:
+                        applied.append("strip:%s" % campo)
+                    b = data.get("extra_body")
+                    if isinstance(b, dict) and b.pop(campo, None) is not None:
+                        applied.append("strip:extra_body.%s" % campo)
+                r = data.get("reasoning")
+                if isinstance(r, dict) and r.pop("effort", None) is not None:
+                    applied.append("strip:reasoning.effort")
+                    if not r:
+                        data.pop("reasoning", None)
             if applied:
                 sampling_log.info("thinking: origen=%s alias=%s tier=%s familia=%s -> %s",
                                   "effort" if requested_tier else "alias",
@@ -5509,7 +5540,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-5d27f53ef772
+        config.k8s.e-dani.com/revision: config-9d01eafaaf5a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
