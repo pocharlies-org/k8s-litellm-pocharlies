@@ -2626,6 +2626,22 @@ data:
         "off": "off",
         "high": "high",
         "max": "max",
+        # 27-08: `xhigh` es SINONIMO de `max`, no un nivel nuevo. Existe porque el
+        # picker de Codex Desktop solo sabe pintar low/medium/high/xhigh: de los tres
+        # que declaran los modelos locales ([none, high, max]) descartaba `max`, y el
+        # menu se quedaba con una sola opcion util.
+        #
+        # Sin esta entrada, un `xhigh` caeria fuera de la tabla, seria tratado como
+        # effort AMBIENTE y decidiria el alias -- que para estos modelos es "off" en
+        # THINKING_TIERS. O sea: la etiqueta "Muy alto" daria MENOS pensamiento que
+        # "Alto". Ese era el motivo de que no se abriera el hueco antes, y esta linea
+        # es justo lo que faltaba (ver el comentario de CODEX_EFFORT_FALLBACKS en
+        # plugins/litellm-model-sync/scripts/sync_models.py).
+        #
+        # No se anade a `supported_reasoning_efforts` de ningun alias: ahi sigue
+        # viviendo el vocabulario honesto [none, high, max] que consumen OpenClaw y
+        # opencode. La traduccion xhigh->max vive solo en el catalogo de Codex.
+        "xhigh": "max",
     }
     # Cada familia dice lo mismo con otras palabras. DeepSeek lee `thinking` (bool)
     # + `reasoning_effort`; Qwen solo tiene `enable_thinking`, no gradua, asi que
@@ -5582,7 +5598,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e6c5d44837c8
+        config.k8s.e-dani.com/revision: config-5b8f71123d7a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

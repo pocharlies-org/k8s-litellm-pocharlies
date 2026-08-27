@@ -127,8 +127,6 @@ def test_tambien_lee_la_forma_de_la_responses_api(hook):
     # `medium` no se traduce por su cuenta: con un alias que no piensa, no lo
     # enciende. Es el nivel que no existe en DeepSeek.
     ("medium", "tooling", {"thinking": False}),
-    # `xhigh` tampoco se adivina como max: no esta en el menu publicado.
-    ("xhigh", "tooling", {"thinking": False}),
 ])
 def test_un_effort_sin_traduccion_no_se_adivina(hook, effort, alias, esperado):
     assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == esperado
@@ -161,11 +159,30 @@ def test_qwen_no_gradua_y_el_effort_solo_lo_enciende(hook):
     }
 
 
+def test_xhigh_es_sinonimo_de_max_para_el_picker_de_codex(hook):
+    """`xhigh` NO es un nivel nuevo: es el mismo `max` con otro nombre.
+
+    Existe por una limitacion del cliente, no del modelo. El picker de Codex Desktop
+    solo sabe pintar low/medium/high/xhigh; los alias locales declaran
+    [none, high, max], asi que `max` se caia del menu y quedaba UNA sola opcion util.
+    Con esta entrada el sync puede reetiquetar `max` -> `xhigh` en el catalogo de
+    Codex y el menu vuelve a tener los tres.
+
+    Lo que este test protege es que siga siendo un SINONIMO: si `xhigh` acabara
+    traduciendo a otra cosa -- o cayera fuera de la tabla -- seria un effort ambiente,
+    decidiria el alias, y para estos modelos el alias es "off". La etiqueta "Muy alto"
+    daria MENOS pensamiento que "Alto", que es exactamente el fallo que el comentario
+    de CODEX_EFFORT_FALLBACKS describia como motivo para no abrir el hueco.
+    """
+    assert hook.CLIENT_EFFORT_TIERS["xhigh"] == "max"
+    assert hook.CLIENT_EFFORT_TIERS["xhigh"] == hook.CLIENT_EFFORT_TIERS["max"]
+
+
 def test_el_menu_publicado_y_la_tabla_del_hook_no_se_separan(hook):
     """`medium` fuera de la tabla es la mitad del contrato; la otra mitad es que
     los tres niveles que SI se ofrecen esten aqui. Si alguien mete `medium`, este
     test cae antes de que el nombre empiece a mentir en produccion."""
-    assert set(hook.CLIENT_EFFORT_TIERS) == {"none", "off", "high", "max"}
+    assert set(hook.CLIENT_EFFORT_TIERS) == {"none", "off", "high", "max", "xhigh"}
     assert set(hook.THINKING_KWARGS["deepseek-v4"]) == {"off", "low", "high", "max"}
     for nivel in ("high", "max"):
         assert hook.CLIENT_EFFORT_TIERS[nivel] == nivel
