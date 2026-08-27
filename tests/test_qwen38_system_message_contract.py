@@ -16,7 +16,7 @@ import yaml
 
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
-WANT_FN = {"_normalize_leading_system_messages"}
+WANT_FN = {"_normalize_leading_system_messages", "_merge_system_contents"}
 WANT_CONST = {"STRICT_LEADING_SYSTEM_MODELS"}
 
 
@@ -64,7 +64,26 @@ def test_conversacion_sin_system_intermedios_queda_intacta(hook):
     assert data["messages"] == msgs
 
 
-def test_el_bloque_inicial_de_system_se_conserva(hook):
+def test_un_solo_system_inicial_queda_intacto(hook):
+    data = {
+        "messages": [
+            {"role": "system", "content": "a"},
+            {"role": "user", "content": "hola"},
+        ]
+    }
+    hook["_normalize_leading_system_messages"](data)
+    assert data["messages"] == [
+        {"role": "system", "content": "a"},
+        {"role": "user", "content": "hola"},
+    ]
+
+
+def test_el_bloque_inicial_de_system_se_funde_en_uno(hook):
+    """El caso de opencode: prompt del agente y reglas como entradas aparte.
+
+    Medido el 27-08 contra el backend: `[system, system, user]` devuelve el
+    mismo 400 que un system a mitad de conversacion.
+    """
     data = {
         "messages": [
             {"role": "system", "content": "a"},
@@ -73,8 +92,65 @@ def test_el_bloque_inicial_de_system_se_conserva(hook):
         ]
     }
     hook["_normalize_leading_system_messages"](data)
+    assert data["messages"] == [
+        {"role": "system", "content": "a\n\nb"},
+        {"role": "user", "content": "hola"},
+    ]
+
+
+def test_el_bloque_inicial_multimodal_conserva_las_partes(hook):
+    imagen = {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}}
+    data = {
+        "messages": [
+            {"role": "system", "content": "a"},
+            {"role": "system", "content": [imagen]},
+            {"role": "user", "content": "hola"},
+        ]
+    }
+    hook["_normalize_leading_system_messages"](data)
+    assert len(data["messages"]) == 2
+    assert data["messages"][0]["role"] == "system"
+    assert data["messages"][0]["content"] == [
+        {"type": "text", "text": "a"},
+        imagen,
+    ]
+
+
+def test_los_system_del_medio_no_reviven_el_bloque_inicial(hook):
+    """Tres system a la vez: dos al principio y uno a mitad."""
+    data = {
+        "messages": [
+            {"role": "system", "content": "a"},
+            {"role": "system", "content": "b"},
+            {"role": "user", "content": "hola"},
+            {"role": "assistant", "content": "dime"},
+            {"role": "system", "content": "recordatorio"},
+        ]
+    }
+    hook["_normalize_leading_system_messages"](data)
     roles = [m["role"] for m in data["messages"]]
-    assert roles == ["system", "system", "user"]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert data["messages"][0]["content"] == "a\n\nb"
+    assert "recordatorio" in data["messages"][3]["content"]
+
+
+def test_ninguna_conversacion_sale_con_mas_de_un_system(hook):
+    casos = [
+        [{"role": "system", "content": "a"}, {"role": "system", "content": "b"}],
+        [
+            {"role": "system", "content": "a"},
+            {"role": "user", "content": "u"},
+            {"role": "system", "content": "b"},
+            {"role": "system", "content": "c"},
+        ],
+        [{"role": "user", "content": "u"}, {"role": "system", "content": "b"}],
+    ]
+    for msgs in casos:
+        data = {"messages": [dict(m) for m in msgs]}
+        hook["_normalize_leading_system_messages"](data)
+        roles = [m["role"] for m in data["messages"]]
+        assert roles.count("system") <= 1, roles
+        assert "system" not in roles[1:], roles
 
 
 def test_system_intermedio_pasa_a_user_etiquetado_y_en_orden(hook):

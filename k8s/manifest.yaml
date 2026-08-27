@@ -2383,17 +2383,46 @@ data:
     # system-reminders a mitad de conversacion y el turno entero muere.
     # DeepSeek los aceptaba, asi que esto aplica SOLO a quien lo exige y con
     # el backend YA resuelto (ver la llamada, junto a _apply_thinking_tier).
+    #
+    # 27-08 (segunda medida): el template es mas estricto de lo que se asumio
+    # aqui — tampoco admite DOS `system` seguidos al principio. Contra el
+    # backend, `[system, user]` da 200 y `[system, system, user]` da el MISMO
+    # 400. Y ese es justo el caso de opencode, que manda el prompt del agente
+    # y las reglas como entradas separadas: moria en el primer turno, sin
+    # conversacion donde inyectar nada. Por eso el bloque inicial ya no se
+    # respeta tal cual: se funde en uno.
     STRICT_LEADING_SYSTEM_MODELS = frozenset({"qwen38-flash-next"})
 
-    def _normalize_leading_system_messages(data):
-        """Recoloca los `system` no iniciales como turnos `user` etiquetados.
+    def _merge_system_contents(messages):
+        """Funde el contenido de varios `system` en uno solo.
 
-        El bloque inicial de system (posicion y numero) queda intacto; todo
-        system posterior a un mensaje de otro rol se convierte en un turno
-        `user` envuelto en <system_reminder>...</system_reminder>, sin
-        alterar el orden relativo. Contenido en lista (partes multimodales)
-        se conserva encajando la etiqueta como partes de texto. Solo toca
-        `messages` (Chat Completions), que es la via de los engines locales.
+        Si todos traen texto plano, se unen separados por linea en blanco. Si
+        alguno trae partes (multimodal), el resultado es la lista concatenada
+        y el texto suelto entra como parte `text`, que es la unica forma de no
+        perder imagenes por el camino.
+        """
+        if any(isinstance(m.get("content"), list) for m in messages):
+            parts = []
+            for m in messages:
+                content = m.get("content")
+                if isinstance(content, list):
+                    parts.extend(content)
+                elif content:
+                    parts.append({"type": "text", "text": str(content)})
+            return parts
+        textos = [str(m.get("content") or "") for m in messages]
+        return "\n\n".join(t for t in textos if t)
+
+    def _normalize_leading_system_messages(data):
+        """Deja como mucho UN `system`, y en la posicion 0.
+
+        Todo system posterior a un mensaje de otro rol se convierte en un
+        turno `user` envuelto en <system_reminder>...</system_reminder>, sin
+        alterar el orden relativo. Despues, el bloque inicial de system —si
+        trae mas de uno— se funde en un unico mensaje que hereda las claves
+        del primero. Contenido en lista (partes multimodales) se conserva en
+        los dos caminos. Solo toca `messages` (Chat Completions), que es la
+        via de los engines locales.
         """
         msgs = data.get("messages")
         if not isinstance(msgs, list):
@@ -2426,6 +2455,19 @@ data:
             wrapped["role"] = "user"
             wrapped["content"] = wrapped_content
             out.append(wrapped)
+        # Y ahora el bloque inicial: mas de un `system` seguido es el mismo 400.
+        lead = 0
+        while (
+            lead < len(out)
+            and isinstance(out[lead], dict)
+            and out[lead].get("role") == "system"
+        ):
+            lead += 1
+        if lead > 1:
+            merged = dict(out[0])
+            merged["content"] = _merge_system_contents(out[:lead])
+            out = [merged] + out[lead:]
+            changed = True
         if changed:
             data["messages"] = out
 
@@ -5540,7 +5582,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9d01eafaaf5a
+        config.k8s.e-dani.com/revision: config-e6c5d44837c8
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
