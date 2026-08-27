@@ -2374,6 +2374,58 @@ data:
             )
         return entries
 
+    # Modelos cuyo chat template rechaza mensajes `system` que no vayan al
+    # PRINCIPIO ("System message must be at the beginning", HTTP 400). Medido
+    # el 27-08 con opencode contra qwen38-flash-next: opencode inyecta
+    # system-reminders a mitad de conversacion y el turno entero muere.
+    # DeepSeek los aceptaba, asi que esto aplica SOLO a quien lo exige y con
+    # el backend YA resuelto (ver la llamada, junto a _apply_thinking_tier).
+    STRICT_LEADING_SYSTEM_MODELS = frozenset({"qwen38-flash-next"})
+
+    def _normalize_leading_system_messages(data):
+        """Recoloca los `system` no iniciales como turnos `user` etiquetados.
+
+        El bloque inicial de system (posicion y numero) queda intacto; todo
+        system posterior a un mensaje de otro rol se convierte en un turno
+        `user` envuelto en <system_reminder>...</system_reminder>, sin
+        alterar el orden relativo. Contenido en lista (partes multimodales)
+        se conserva encajando la etiqueta como partes de texto. Solo toca
+        `messages` (Chat Completions), que es la via de los engines locales.
+        """
+        msgs = data.get("messages")
+        if not isinstance(msgs, list):
+            return
+        out = []
+        seen_non_system = False
+        changed = False
+        for m in msgs:
+            if not isinstance(m, dict) or m.get("role") != "system":
+                if isinstance(m, dict) and m.get("role"):
+                    seen_non_system = True
+                out.append(m)
+                continue
+            if not seen_non_system:
+                out.append(m)
+                continue
+            changed = True
+            content = m.get("content")
+            if isinstance(content, list):
+                wrapped_content = (
+                    [{"type": "text", "text": "<system_reminder>"}]
+                    + content
+                    + [{"type": "text", "text": "</system_reminder>"}]
+                )
+            else:
+                wrapped_content = (
+                    "<system_reminder>\n" + str(content or "") + "\n</system_reminder>"
+                )
+            wrapped = dict(m)
+            wrapped["role"] = "user"
+            wrapped["content"] = wrapped_content
+            out.append(wrapped)
+        if changed:
+            data["messages"] = out
+
     def _reasoning_effort_value(data):
         effort = data.get("reasoning_effort")
         if not effort:
@@ -3234,6 +3286,11 @@ data:
             # Explicit profiles follow the alias requested by the client. The
             # family still comes from the backend that will really serve the request.
             _apply_thinking_tier(data, thinking_alias)
+            # El template de qwen38-flash-next exige los system AL PRINCIPIO;
+            # va aqui abajo por lo mismo que el sampling por familia: solo con
+            # el modelo resuelto sabemos si el backend real lo exige.
+            if data.get("model") in STRICT_LEADING_SYSTEM_MODELS:
+                _normalize_leading_system_messages(data)
             # DESPUES de todo lo que escribe en extra_body, y por eso va aqui: si
             # alguno de los de arriba lo creo, se llevo por delante el sello de la
             # deployment. Esto lo devuelve.
@@ -5452,7 +5509,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-233abb0cd739
+        config.k8s.e-dani.com/revision: config-5d27f53ef772
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
