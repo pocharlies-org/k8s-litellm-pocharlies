@@ -29,7 +29,12 @@ WANT_FN = {"_apply_family_sampling", "_family_of_alias",
            # 2026-08-14: `_apply_thinking_tier` mira primero el `reasoning_effort`
            # del cliente. Sin estos dos el except de la funcion se traga un
            # NameError y el tier deja de aplicarse EN SILENCIO.
-           "_client_thinking_tier", "_reasoning_effort_value"}
+           "_client_thinking_tier", "_reasoning_effort_value",
+           # 2026-08-28: mismo motivo que los dos de arriba. `_thinking_is_on`
+           # lo llama `_apply_family_sampling`; si no se exporta aqui, el
+           # NameError cae en su except y el perfil de familia deja de
+           # aplicarse ENTERO, no solo la parte nueva.
+           "_thinking_is_on"}
 WANT_CONST = {"FAMILY_SAMPLING", "SWAPPABLE_ALIASES",
               "THINKING_TIERS", "THINKING_KWARGS", "CLIENT_EFFORT_TIERS"}
 
@@ -384,3 +389,99 @@ def test_el_nombre_directo_de_deepseek_SI_lleva_perfil(hook):
     assert data["temperature"] == 1.0, "el perfil de familia deberia aplicarse"
     assert "min_p" not in data
     assert "presence_penalty" not in data
+
+
+# ── El sampling depende de si se PIENSA (2026-08-28) ───────────────────────────
+#
+# Qwen documenta DOS perfiles, no uno: 0.7/0.8 sin pensar y 0.6/0.95 pensando,
+# con top_k 20 / min_p 0 en los dos. Hasta hoy solo existia el primero, asi que
+# el unico caso en que un alias qwen piensa -- `reasoning_effort: high|max` --
+# era tambien el unico que recibia el perfil equivocado.
+#
+# El orden importa y por eso `_thinking_is_on` recalcula en vez de leer:
+# `_apply_family_sampling` corre ANTES que `_apply_thinking_tier`, asi que
+# cuando el sampling decide no hay chat_template_kwargs escritos todavia.
+
+def test_qwen_sin_pensar_lleva_los_cuatro_del_model_card(hook):
+    """top_k y min_p faltaban: no estaban en `set` ni en `drop`, asi que si el
+    cliente no los mandaba -- y ninguno los manda -- decodificaba con la cola
+    entera de tokens."""
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    data = {"model": "tooling"}
+    hook._apply_family_sampling(data, "tooling")
+    assert data["temperature"] == 0.7 and data["top_p"] == 0.8
+    assert data["top_k"] == 20 and data["min_p"] == 0.0
+
+
+def test_qwen_pensando_cambia_al_perfil_de_pensar(hook):
+    """La regresion que arregla este commit: `high` encendia el pensamiento en
+    THINKING_KWARGS y se quedaba con 0.7/0.8, que es el perfil de NO pensar."""
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    data = {"model": "tooling", "reasoning_effort": "high"}
+    hook._apply_family_sampling(data, "tooling")
+    assert data["temperature"] == 0.6 and data["top_p"] == 0.95
+    assert data["top_k"] == 20 and data["min_p"] == 0.0
+
+
+def test_el_alias_que_no_piensa_no_se_lleva_el_perfil_de_pensar(hook):
+    """`qwen38-flash-next` esta en THINKING_TIERS como "off": sin effort
+    explicito no piensa, y su perfil tiene que ser el de no pensar."""
+    _install_fake_litellm(
+        {"qwen38-flash-next": _dep("openai/qwen38-flash-next")})
+    data = {"model": "qwen38-flash-next"}
+    hook._apply_family_sampling(data, "qwen38-flash-next")
+    assert data["temperature"] == 0.7 and data["top_p"] == 0.8
+
+
+def test_el_cliente_que_manda_extra_body_decide_tambien_el_sampling(hook):
+    """`_apply_thinking_tier` no pisa un chat_template_kwargs que ya trae el
+    cliente, asi que el sampling tampoco puede ignorarlo: si el cliente
+    enciende el pensamiento a mano, el perfil es el de pensar."""
+    _install_fake_litellm(
+        {"qwen38-flash-next": _dep("openai/qwen38-flash-next")})
+    data = {"model": "qwen38-flash-next",
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
+    hook._apply_family_sampling(data, "qwen38-flash-next")
+    assert data["temperature"] == 0.6 and data["top_p"] == 0.95
+
+
+def test_estructurada_nunca_usa_el_perfil_de_pensar(hook):
+    """El esquema apaga el pensamiento pase lo que pase (medido 3/3 el 10-08),
+    asi que pedir `max` y un json_schema no puede dar el perfil de pensar. Y con
+    esquema no se pisa el sampling del cliente en absoluto."""
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    data = _structured(temperature=0, reasoning_effort="max")
+    hook._apply_family_sampling(data, "tooling")
+    assert data["temperature"] == 0
+    assert hook._thinking_is_on(data, "tooling") is False
+
+
+def test_deepseek_no_declara_perfil_de_pensar_y_no_cambia(hook):
+    """Su model card da UN solo perfil agentico (1.0/0.95). Sin `set_thinking`
+    la familia se queda con el de siempre aunque la peticion piense."""
+    _install_fake_litellm(
+        {"deepseek-v4-flash-0731": _dep("openai/deepseek-v4-flash-0731")})
+    assert "set_thinking" not in hook.FAMILY_SAMPLING["deepseek-v4"]
+    data = {"model": "deepseek-v4-flash-0731", "reasoning_effort": "max"}
+    hook._apply_family_sampling(data, "deepseek-v4-flash-0731")
+    assert data["temperature"] == 1.0 and data["top_p"] == 0.95
+
+
+def test_sin_saber_si_piensa_manda_el_perfil_de_siempre(hook):
+    """Un alias fuera de THINKING_TIERS y sin effort deja el pensamiento al
+    default del SERVIDOR. Desde aqui no se sabe, y adivinar el perfil seria
+    peor que quedarse con el de hoy."""
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    assert hook._thinking_is_on({"model": "tooling"}, "dense") is None
+    data = {"model": "tooling"}
+    hook._apply_family_sampling(data, "tooling")
+    assert data["temperature"] == 0.7
+
+
+def test_los_dos_perfiles_de_una_familia_traen_las_mismas_claves(hook):
+    """Si `set_thinking` olvidara una clave que `set` si pone, esa clave se
+    quedaria sin fijar justo en el modo que la necesita igual."""
+    for fam, prof in hook.FAMILY_SAMPLING.items():
+        thinking = prof.get("set_thinking")
+        if thinking is not None:
+            assert set(thinking) == set(prof["set"]), fam

@@ -2531,7 +2531,22 @@ data:
         "qwen": {
             # Los de siempre. Qwen documenta que temperature casi-cero degrada el
             # tool-calling, de ahi 0.7 y no 0.
-            "set": {"temperature": 0.7, "top_p": 0.8},
+            #
+            # 28-08-2026: entran top_k y min_p, que el model card pide desde
+            # siempre y aqui NUNCA se mandaban. No estaban en `drop`, asi que no
+            # es que se quitaran: es que si el cliente no los ponia -- y ninguno
+            # los pone, ni opencode ni OpenClaw -- se decodificaba con la cola
+            # entera de tokens. Justo lo que Qwen documenta que degrada el
+            # tool-calling, y el motivo por el que da los cuatro juntos.
+            "set": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0},
+            # Y el perfil de PENSAR, que es otro: el card cambia los dos
+            # primeros a 0.6/0.95 con el bloque de razonamiento encendido.
+            # Hasta hoy un `reasoning_effort: high|max` sobre un alias qwen
+            # encendia el pensamiento (THINKING_KWARGS) y se quedaba con el
+            # perfil de NO pensar, porque el sampling no miraba el tier. El
+            # unico caso en que este alias piensa era el unico mal servido.
+            "set_thinking": {"temperature": 0.6, "top_p": 0.95,
+                             "top_k": 20, "min_p": 0.0},
             "drop": (),
         },
     }
@@ -2784,6 +2799,38 @@ data:
         return True
 
 
+    def _thinking_is_on(data, requested_alias=None):
+        """Si ESTA peticion va a pensar. True / False / None cuando no se sabe.
+
+        Existe porque el sampling correcto depende del pensamiento y las dos
+        decisiones se toman en funciones distintas. `_apply_family_sampling`
+        corre ANTES que `_apply_thinking_tier` (y tiene que seguir asi: el
+        perfil sale del modelo ya resuelto), asi que aqui todavia no hay
+        chat_template_kwargs que leer y el tier se recalcula con las MISMAS
+        entradas que usara la otra, en el mismo orden:
+
+            cliente explicito en chat_template_kwargs  >  reasoning_effort
+            deliberado (CLIENT_EFFORT_TIERS)  >  nombre del alias
+            (THINKING_TIERS)  >  None, que es "manda el servidor".
+
+        None NO es False: significa que no lo sabemos, y quien pregunta se
+        queda con el perfil por defecto en vez de inventarse el otro.
+        """
+        if _is_structured_output(data):
+            return False       # el esquema apaga el pensamiento pase lo que pase
+        body = data.get("extra_body")
+        ctk = body.get("chat_template_kwargs") if isinstance(body, dict) else None
+        if isinstance(ctk, dict):
+            for k in ("enable_thinking", "thinking"):
+                if k in ctk:
+                    return bool(ctk[k])
+        tier = (_client_thinking_tier(data)
+                or THINKING_TIERS.get((requested_alias or "").strip()))
+        if not tier:
+            return None
+        return tier != "off"
+
+
     def _apply_family_sampling(data, requested_alias=None):
         """Ajusta el sampling al backend que de verdad va a atender la peticion.
 
@@ -2841,6 +2888,12 @@ data:
             if not fam:
                 return
             prof = FAMILY_SAMPLING[fam]
+            # El perfil de pensar solo lo declara la familia que lo distingue
+            # (hoy qwen). Sin `set_thinking`, o sin saber si se piensa, manda el
+            # de siempre: preferimos el perfil de hoy a uno adivinado.
+            perfil = prof["set"]
+            if prof.get("set_thinking") and _thinking_is_on(data, requested_alias):
+                perfil = prof["set_thinking"]
             structured = _is_structured_output(data)
             body = data.get("extra_body") if isinstance(data.get("extra_body"), dict) else None
             changed = []
@@ -2849,7 +2902,7 @@ data:
                     if isinstance(c, dict) and c.pop(k, None) is not None:
                         changed.append("-" + k)
             if not structured:
-                for k, v in prof["set"].items():
+                for k, v in perfil.items():
                     if data.get(k) != v:
                         changed.append("%s=%s" % (k, v))
                     data[k] = v
@@ -5598,7 +5651,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-5b8f71123d7a
+        config.k8s.e-dani.com/revision: config-1287d9d1d04d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
