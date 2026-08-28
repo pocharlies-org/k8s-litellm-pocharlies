@@ -36,7 +36,11 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 WANT_FN = {"_apply_thinking_tier", "_client_thinking_tier",
            "_reasoning_effort_value", "_family_of_alias",
-           "_is_structured_output"}
+           # 2026-08-28: `_apply_thinking_tier` apaga el pensamiento cuando la
+           # peticion lleva tools (sglang#36537). Sin exportar `_has_tools` su
+           # NameError cae en el except de la funcion y el tier deja de
+           # aplicarse ENTERO, no solo esa rama.
+           "_is_structured_output", "_has_tools"}
 WANT_CONST = {"THINKING_TIERS", "THINKING_KWARGS", "CLIENT_EFFORT_TIERS",
               # `_family_of_alias` resuelve la familia contra esta tabla.
               "FAMILY_SAMPLING"}
