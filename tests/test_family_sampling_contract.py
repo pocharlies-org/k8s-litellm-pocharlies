@@ -34,7 +34,7 @@ WANT_FN = {"_apply_family_sampling", "_family_of_alias",
            # lo llama `_apply_family_sampling`; si no se exporta aqui, el
            # NameError cae en su except y el perfil de familia deja de
            # aplicarse ENTERO, no solo la parte nueva.
-           "_thinking_is_on"}
+           "_thinking_is_on", "_has_tools"}
 WANT_CONST = {"FAMILY_SAMPLING", "SWAPPABLE_ALIASES",
               "THINKING_TIERS", "THINKING_KWARGS", "CLIENT_EFFORT_TIERS"}
 
@@ -485,3 +485,63 @@ def test_los_dos_perfiles_de_una_familia_traen_las_mismas_claves(hook):
         thinking = prof.get("set_thinking")
         if thinking is not None:
             assert set(thinking) == set(prof["set"]), fam
+
+
+
+# ── Bucle de token 0 con tools (sglang#36537, 2026-08-28) ─────────────────────
+#
+# Con thinking + tools + `--tool-call-parser qwen3_coder` --las tres a la vez--
+# Qwen3.8-Flash-Next entra en un bucle DETERMINISTA de token id 0, que con este
+# tokenizer decodifica como `!`. La respuesta sale como `...tool!!!!!!!!` hasta
+# max_tokens, con tool_calls null y finish_reason length. El servidor corre con
+# TOOL_CALL_PARSER=qwen3_coder, asi que la tercera condicion esta siempre puesta
+# y la unica que podemos quitar desde aqui es el pensamiento.
+
+
+def _tools(**extra):
+    d = {"model": "tooling",
+         "tools": [{"type": "function",
+                    "function": {"name": "shell_probe", "parameters": {}}}]}
+    d.update(extra)
+    return d
+
+
+def test_con_tools_qwen_no_piensa_aunque_pidan_effort(hook):
+    """El caso de opencode: manda tools en cada turno y un effort alto."""
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    data = _tools(reasoning_effort="high")
+    hook._apply_thinking_tier(data, "tooling")
+    assert _ctk(data) == {"enable_thinking": False}
+
+
+def test_con_tools_deepseek_SI_piensa(hook):
+    """El bug es del parser qwen3_coder. Quitarle el razonamiento a un agente
+    DeepSeek seria pagar por un fallo que no tiene."""
+    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    data = _tools(reasoning_effort="max")
+    hook._apply_thinking_tier(data, "tooling")
+    assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
+
+
+def test_sin_tools_qwen_sigue_pensando_si_se_lo_piden(hook):
+    """La puerta es SOLO para tools: sin ellas el effort manda como siempre."""
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    data = {"model": "tooling", "reasoning_effort": "high"}
+    hook._apply_thinking_tier(data, "tooling")
+    assert _ctk(data) == {"enable_thinking": True}
+
+
+def test_con_tools_el_sampling_usa_el_perfil_de_no_pensar(hook):
+    """Las dos mitades tienen que decir lo mismo: si no se piensa, el perfil
+    es 0.7/0.8 y no 0.6/0.95."""
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    data = _tools(reasoning_effort="high")
+    hook._apply_family_sampling(data, "tooling")
+    assert data["temperature"] == 0.7 and data["top_p"] == 0.8
+    assert hook._thinking_is_on(data, "tooling") is False
+
+
+def test_detector_de_tools(hook):
+    assert hook._has_tools({"tools": [{"type": "function"}]})
+    assert not hook._has_tools({"tools": []})
+    assert not hook._has_tools({})
