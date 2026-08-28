@@ -214,10 +214,27 @@ metadata:
   name: litellm-codex
   namespace: litellm
 spec:
-  # UNA replica, no negociable. Ver «UN SOLO ESCRITOR» arriba: dos pods refrescando
-  # el mismo refresh_token rotativo se matan la sesion, y el sintoma es una peticion
-  # colgada 15 min, no un error.
-  replicas: 1
+  # APAGADO EL 28-08. La cuenta pocharlies@gmail.com fue desactivada el 27-08 22:26
+  # UTC (caso C-6t9fzKpscgZl) con motivo literal «Recidivism», y su refresh_token
+  # devuelve `refresh_token_invalidated`: el puente no puede autenticar contra nada.
+  #
+  # No es solo que no funcione. Las mitigaciones del 25-08 (sin vision, sin
+  # fallbacks, `num_retries: 0`, health checks de fondo apagados) cerraron el vector
+  # de CONTENIDO y el de VOLUMEN, que fueron los detectores del 20 y el 21-08. Lo que
+  # nunca cerraron es que servir una credencial OAuth de ChatGPT de consumidor como
+  # endpoint `/v1/responses` compartido es, por si solo, incumplimiento de los
+  # terminos — con independencia de que se pida y de cuanto. Ese es el motivo de que
+  # arreglar contenido y volumen no evitase el tercer baneo.
+  #
+  # Mientras el Deployment siga arriba, cada peticion es un 401 mas atando este host
+  # a cuentas ya terminadas, y eso perjudica las reclamaciones en curso. A 0 hasta
+  # que haya una via de acceso programatico legitima (API de plataforma con key de
+  # pago), que es lo que este puente estaba supliendo.
+  #
+  # Cuando se reactive: UNA replica, no negociable. Ver «UN SOLO ESCRITOR» arriba —
+  # dos pods refrescando el mismo refresh_token rotativo se matan la sesion, y el
+  # sintoma es una peticion colgada 15 min, no un error.
+  replicas: 0
   # Recreate y no RollingUpdate: cualquier surge crea el segundo escritor durante el
   # rollout. El corte es de ~20 s y solo afecta a la key `codex`.
   strategy:
