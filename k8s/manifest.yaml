@@ -5758,7 +5758,7 @@ spec:
           labelSelector: { matchLabels: { app: litellm } }
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm:v1.96.0
+          image: ghcr.io/berriai/litellm:v1.98.0
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
