@@ -259,14 +259,19 @@ def test_cada_nivel_pedido_se_traduce_al_dialecto_de_deepseek(hook):
 
 
 def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
-    """Qwen no tiene reasoning_effort: solo `enable_thinking`. Los niveles
-    colapsan a "piensa", y `tooling` sigue significando "no pienses". Lo que NO
-    puede pasar es que se le cuelen las claves de DeepSeek."""
+    """Qwen enciende y apaga, y ademas ACOTA el nivel. Lo que NO puede pasar es
+    que se le cuelen las claves de DeepSeek (`thinking`, effort `high`/`max`).
+
+    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. Solo hay DOS niveles utiles: `medium` pasa la validacion pero cae en un elif inexistente y deja las instrucciones vacias (medido: medium 2721 chars vs low 2993, indistinguibles), por eso `high` mapea a `low`."""
     _install_fake_litellm({"tooling": _dep("openai/nvidia-qwen36-35b-nvfp4")})
-    for effort in ("high", "max"):
+    esperado = {"high": "low", "max": "xhigh"}
+    for effort, backend_effort in esperado.items():
         data = {"model": "tooling", "reasoning_effort": effort}
         hook._apply_thinking_tier(data, "tooling")
-        assert _ctk(data) == {"enable_thinking": True}, effort
+        assert _ctk(data) == {
+            "enable_thinking": True,
+            "reasoning_effort": backend_effort,
+        }, effort
     data = {"model": "tooling"}
     hook._apply_thinking_tier(data, "tooling")
     assert _ctk(data) == {"enable_thinking": False}
@@ -328,12 +333,23 @@ def test_los_tres_tiers_son_swappable(hook):
 
 
 def test_ningun_tier_dice_medium(hook):
-    """El tokenizer viene parcheado para que lo desconocido caiga a "low", no a
-    "high". Un tier "medium" se comportaria como low y el nombre mentiria."""
+    """Ningun tier se LLAMA medium, y ninguno MANDA medium al backend.
+
+    Motivo original: el tokenizer de qwen38-27b venia parcheado para que lo
+    desconocido cayera a "low", asi que un tier "medium" mentiria. Sigue
+    valiendo para qwen38-flash-next por otra via: su template acepta `medium`
+    pero no le asigna instrucciones (cae en un elif que no existe), de modo que
+    "medium" es silencio, no un punto intermedio.
+
+    `xhigh` SI entra en la lista de valores validos: es el nivel maximo real del
+    template de qwen38-flash-next, y el unico que el tier `max` puede prometer
+    sin mentir."""
     for fam, niveles in hook.THINKING_KWARGS.items():
         assert "medium" not in niveles, fam
         for kw in niveles.values():
-            assert kw.get("reasoning_effort") in (None, "low", "high", "max")
+            assert kw.get("reasoning_effort") in (
+                None, "low", "high", "max", "xhigh"
+            ), fam
 
 
 # ── La forma REAL de produccion (2026-08-25) ────────────────────────────────
@@ -524,11 +540,15 @@ def test_con_tools_deepseek_SI_piensa(hook):
 
 
 def test_sin_tools_qwen_sigue_pensando_si_se_lo_piden(hook):
-    """La puerta es SOLO para tools: sin ellas el effort manda como siempre."""
+    """La puerta es SOLO para tools: sin ellas el effort manda como siempre.
+
+    El `high` del cliente viaja como `low` al backend, que es el unico nivel
+    acotado que este template sabe instruir. Ver la nota en
+    test_qwen_no_gradua_pero_si_enciende_y_apaga."""
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     data = {"model": "tooling", "reasoning_effort": "high"}
     hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"enable_thinking": True}
+    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "low"}
 
 
 def test_con_tools_el_sampling_usa_el_perfil_de_no_pensar(hook):
