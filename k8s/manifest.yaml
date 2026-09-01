@@ -550,9 +550,17 @@ data:
         <<: *codex_bridge_params
         model: openai/gpt-5.4
       model_info: *codex_bridge_info
-    # >>> openrouter-free — BLOQUE GESTIONADO POR EL PANEL (openrouter.e-dani.com)
-    # No edites a mano entre estos dos centinelas: el panel inserta y retira entradas
-    # AQUI por insercion textual, y un PR suyo puede reescribir lo que haya dentro.
+    # >>> openrouter-free — BLOQUE DE ALIAS `or-*` DEL CATALOGO `:free` DE OPENROUTER
+    # ESTE BLOQUE SE MANTIENE A MANO, en este fichero, en este commit. No hay panel ni
+    # generador detras: `openrouter.e-dani.com` no existe (404 en todo el dominio, sin
+    # repo) y no hay nada que inserte entradas aqui. Los centinelas siguen valiendo
+    # como marca de "esto es catalogo `:free` de OpenRouter, no residente local", pero
+    # lo que hay dentro lo escribe quien abre el PR.
+    #
+    # Consecuencia que hay que tener presente, y es la razon por la que el gate del
+    # hook va por PREFIJO y no por lista literal: el bloque crece a mano y puede crecer
+    # sin pasar por `tests/test_openrouter_access_contract.py`. Un alias nuevo nace
+    # cerrado por construccion (prefijo `or-`), no porque alguien recuerde cerrarlo.
     #
     # PRIMER upstream del gateway que sale a INTERNET. Todos los demas apuntan a
     # `.llm.svc` o a `.litellm.svc`. Medido el 26-08 desde el propio pod: alcanza
@@ -617,6 +625,7 @@ data:
         timeout: 600
         num_retries: 0
       model_info: &openrouter_free_info
+        description: Nemotron 3 Super - 120B total / 12B activos - gama alta, buen default
         mode: chat
         backend: openrouter-free
         supports_function_calling: true
@@ -635,6 +644,7 @@ data:
             data_collection: deny
       model_info:
         <<: *openrouter_free_info
+        description: North Mini Code (Cohere) - 30B total / 3B activos - coding agentic
         max_input_tokens: 256000
         max_output_tokens: 64000
     - model_name: or-minimax
@@ -643,6 +653,7 @@ data:
         model: openrouter/minimax/minimax-m3:free
       model_info:
         <<: *openrouter_free_info
+        description: MiniMax M3 - multimodal (texto+imagen+video), 1M de contexto - agentic
         supports_vision: true
         max_input_tokens: 1048576
         max_output_tokens: 943718
@@ -652,6 +663,7 @@ data:
         model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
       model_info:
         <<: *openrouter_free_info
+        description: Nemotron 3 Ultra - 550B total / 55B activos - frontier, lento
         max_input_tokens: 1000000
         max_output_tokens: 65536
     - model_name: or-lightning
@@ -660,6 +672,7 @@ data:
         model: openrouter/nvidia/nemotron-3.5-lightning:free
       model_info:
         <<: *openrouter_free_info
+        description: Nemotron 3.5 Lightning - 30B total / 3B activos - flash, alto throughput
         max_input_tokens: 1000000
         max_output_tokens: 65536
     - model_name: or-omni
@@ -668,6 +681,7 @@ data:
         model: openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free
       model_info:
         <<: *openrouter_free_info
+        description: Nemotron 3 Nano Omni - 30B total / 3B activos - sub-agente de percepcion multimodal
         supports_vision: true
         max_input_tokens: 256000
         max_output_tokens: 65536
@@ -677,6 +691,7 @@ data:
         model: openrouter/dots-studio/dots-3-note-preview:free
       model_info:
         <<: *openrouter_free_info
+        description: Dots3-Note Preview - 280B total / 16B activos - gama media-alta, preview
         supports_vision: true
         max_input_tokens: 512000
         max_output_tokens: 460800
@@ -686,6 +701,7 @@ data:
         model: openrouter/poolside/laguna-s-2.1:free
       model_info:
         <<: *openrouter_free_info
+        description: Poolside Laguna S 2.1 - 118B total / 8B activos - coding agent (70,2% Terminal-Bench 2.1)
         max_input_tokens: 262144
         max_output_tokens: 32768
     - model_name: or-laguna-xs
@@ -694,6 +710,7 @@ data:
         model: openrouter/poolside/laguna-xs-2.1:free
       model_info:
         <<: *openrouter_free_info
+        description: Poolside Laguna XS 2.1 - 33B total / 3B activos - coding agent pequeno
         max_input_tokens: 262144
         max_output_tokens: 32768
     - model_name: or-lfm
@@ -702,6 +719,7 @@ data:
         model: openrouter/liquid/lfm-2.5-2.6b:free
       model_info:
         <<: *openrouter_free_info
+        description: Liquid LFM2.5 - 2,6B - nano; NO para coding agentic (lo desaconseja el fabricante)
         max_input_tokens: 65536
         max_output_tokens: 8192
     - model_name: or-inkling
@@ -710,6 +728,7 @@ data:
         model: openrouter/thinkingmachines/inkling:free
       model_info:
         <<: *openrouter_free_info
+        description: Inkling (Thinking Machines) - 975B total / 41B activos - frontier multimodal
         supports_vision: true
         max_input_tokens: 1048576
         max_output_tokens: 262144
@@ -719,6 +738,7 @@ data:
         model: openrouter/thinkingmachines/inkling-small:free
       model_info:
         <<: *openrouter_free_info
+        description: Inkling Small - 276B total / 12B activos - multimodal eficiente
         supports_vision: true
         max_input_tokens: 1048576
         max_output_tokens: 262144
@@ -728,6 +748,7 @@ data:
         model: openrouter/z-ai/glm-5.2:free
       model_info:
         <<: *openrouter_free_info
+        description: "GLM 5.2 (Z.ai) - razonamiento grande, 1M de contexto - endpoint volatil: suele dar 429"
         max_input_tokens: 256000
         max_output_tokens: 230400
     - model_name: or-gemma-26b
@@ -736,6 +757,7 @@ data:
         model: openrouter/google/gemma-4-26b-a4b-it:free
       model_info:
         <<: *openrouter_free_info
+        description: Gemma 4 26B A4B - 26B total / 4B activos (MoE) - multimodal
         supports_vision: true
         max_input_tokens: 262144
         max_output_tokens: 32768
@@ -745,6 +767,7 @@ data:
         model: openrouter/google/gemma-4-31b-it:free
       model_info:
         <<: *openrouter_free_info
+        description: Gemma 4 31B - 31B denso - multimodal
         supports_vision: true
         max_input_tokens: 262144
         max_output_tokens: 32768
@@ -754,9 +777,10 @@ data:
         model: openrouter/minimax/minimax-m2.7:free
       model_info:
         <<: *openrouter_free_info
+        description: MiniMax M2.7 - agentic, 196K de contexto
         max_input_tokens: 196608
         max_output_tokens: 176947
-    # <<< openrouter-free — FIN DEL BLOQUE GESTIONADO POR EL PANEL
+    # <<< openrouter-free — FIN DEL BLOQUE DE ALIAS `or-*` (mantenido a mano en este fichero)
     litellm_settings:
       success_callback:
       - db
@@ -1184,11 +1208,13 @@ data:
         }
 
     # Alias de OpenRouter. Se reconocen por PREFIJO, no por un frozenset literal, y
-    # eso es deliberado: el bloque `or-*` del model_list esta pensado para crecer
-    # (el panel de openrouter.e-dani.com inserta entradas por PR), y una lista
-    # literal aqui significaria que cada alias nuevo nace ABIERTO a las ocho keys
-    # con `models: []` hasta que alguien se acuerde de venir a cerrarlo. Con prefijo,
-    # un alias nuevo nace cerrado por construccion.
+    # eso es deliberado: el bloque `or-*` del model_list esta pensado para crecer, y
+    # CRECE A MANO — aqui mismo, en un commit. No hay panel que lo alimente
+    # (`openrouter.e-dani.com` no existe; la idea de que "inserta entradas por PR" era
+    # falsa y ya costo una investigacion, commit 603cc3f). Como puede crecer sin pasar
+    # por el test, una lista literal aqui significaria que cada alias nuevo nace
+    # ABIERTO a las ocho keys con `models: []` hasta que alguien se acuerde de venir a
+    # cerrarlo. Con prefijo, un alias nuevo nace cerrado por construccion.
     #
     # Precedente de por que importa: `gpt-5.6-luna` volvio al model_list el 25-08 y
     # `sauvage-shield` lo heredo sola, porque lo llevaba escrito en su allowlist de
