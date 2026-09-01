@@ -74,10 +74,14 @@ def test_los_alias_de_capacidad_siguen_teniendo_dueno():
     assert backends.count('"aliases": TOOLING_RESIDENT_ALIASES') == 1, (
         "los alias de capacidad tienen que tener exactamente UN dueño declarado"
     )
-    # 26-08: el asiento pasa a qwen38-flash-next (residente llm-tp); DeepSeek
-    # conserva solo su nombre directo y recupera la titularidad con el revert.
-    qn = backends[backends.index('"name": "qwen38-flash-next"'):
-                  backends.index('"name": "deepseek-v4-flash-tp2"')]
+    # 26-08: el asiento pasa a qwen38-flash-next (residente llm-tp).
+    # 01-09: al retirarse DeepSeek-V4-Flash desaparece la frontera que cerraba
+    # este slice, asi que se corta en el SIGUIENTE "name" que haya -- o al final
+    # del bloque si es el ultimo. Cortar por un nombre concreto ataba el test a
+    # que ese vecino siguiera existiendo.
+    ini = backends.index('"name": "qwen38-flash-next"')
+    sig = backends.find('"name": "', ini + 10)
+    qn = backends[ini:sig if sig != -1 else len(backends)]
     assert '"aliases": TOOLING_RESIDENT_ALIASES' in qn, (
         "el dueño tiene que ser el residente llm-tp vivo (qwen38-flash-next): "
         "su TP=2 excluye a cualquier otro por hardware en los dos nodos"

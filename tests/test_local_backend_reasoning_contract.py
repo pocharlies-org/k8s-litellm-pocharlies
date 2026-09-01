@@ -117,7 +117,7 @@ def test_los_backends_del_sync_declaran_lo_mismo_que_el_config():
     assert vistos, "no he encontrado backends con efforts declarados"
 
 
-def _deepseek_backend() -> dict:
+def _llm_tp_backend() -> dict:
     tree = ast.parse(_sync_code())
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
@@ -133,19 +133,24 @@ def _deepseek_backend() -> dict:
                     entry[key.value] = ast.literal_eval(value)
                 except ValueError:
                     entry[key.value] = "<dinamico>"
-            if entry.get("name") == "deepseek-v4-flash-tp2":
+            if entry.get("name") == "qwen38-flash-next":
                 return entry
-    raise AssertionError("no encuentro deepseek-v4-flash-tp2 en BACKENDS")
+    raise AssertionError("no encuentro qwen38-flash-next en BACKENDS")
 
 
-def test_deepseek_publica_sus_tiers_reales():
-    backend = _deepseek_backend()
+def test_el_residente_llm_tp_publica_sus_tiers_reales():
+    """01-09-2026: hereda el ancla de DeepSeek-V4-Flash al retirarse este.
+
+    La lista honesta es la misma y por el mismo motivo: son los tiers que el
+    HOOK honra (CLIENT_EFFORT_TIERS), no los que acepta el servidor.
+    """
+    backend = _llm_tp_backend()
     assert backend["supports_reasoning"] is True
     # 2026-08-19: `low` FUERA, y no es cosmetica. El hook no traduce `low`
     # (CLIENT_EFFORT_TIERS: un effort ambiente de un cliente agente no es una
     # orden), asi que declararlo dejaba a OpenClaw parado en un nivel que el
     # servidor descarta -- creyendo pensar mientras `tooling` corria en
-    # thinking_mode "chat" y el monologo de DeepSeek salia por el canal visible.
+    # thinking_mode "chat" y el monologo salia por el canal visible.
     assert backend["supported_reasoning_efforts"] == (
         "none",
         "high",

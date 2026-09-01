@@ -29,11 +29,12 @@ def test_uncensored_is_the_creative_backend_owning_tooling_and_dense_aliases():
 
     assert text.count('"aliases": QWEN38_27B_ALIASES') == 1
     assert '"id_prefix": "qwen38-27b"' in text
-    assert '"backend": "dgx1"' in _sync_block(
-        text,
-        '"name": "qwen38-27b"',
-        '"name": "deepseek-v4-flash-tp2"',
-    )
+    # 01-09: la frontera era deepseek-v4-flash-tp2, que ya no existe. Se corta en
+    # el siguiente "name" del bloque, sea cual sea.
+    _bk = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
+    _ini = _bk.index('"name": "qwen38-27b"')
+    _sig = _bk.find('"name": "', _ini + 10)
+    assert '"backend": "dgx1"' in _bk[_ini:_sig if _sig != -1 else len(_bk)]
 
     # Los backends de los modelos borrados no deben volver.
     for dead in ("QWEN36_27B_DENSE_ALIASES", "QWEN36_35B_DGX1_ALIASES",
@@ -104,24 +105,24 @@ def test_backends_cubren_las_formas_de_exclusion():
     """
     text = MANIFEST.read_text()
     backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    # 26-08: entra qwen38-flash-next (residente llm-tp, SGLang TP=2); DeepSeek
-    # se queda como rollback con solo su nombre directo.
-    assert backends.count('"name": "') == 4
+    # 26-08: entra qwen38-flash-next (residente llm-tp, TP=2).
+    # 01-09: sale deepseek-v4-flash-tp2 con la retirada de DeepSeek; quedan 3.
+    assert backends.count('"name": "') == 3
     for name in (
         "qwen38-27b",
         "qwen38-flash-next",
-        "deepseek-v4-flash-tp2",
         "qwen35-4b-int4",
     ):
         assert f'"name": "{name}"' in backends
     # Los de TP=2 tienen que decir que viven en los dos nodos: es lo que
     # justifica que el residente comparta los alias de tooling sin romper la
     # unicidad.
-    qn = backends[backends.index('"name": "qwen38-flash-next"'):
-                  backends.index('"name": "deepseek-v4-flash-tp2"')]
+    # El slice se cierra en el SIGUIENTE "name", no en un vecino concreto: atarlo
+    # a deepseek-v4-flash-tp2 es lo que rompio al retirarlo.
+    ini = backends.index('"name": "qwen38-flash-next"')
+    sig = backends.find('"name": "', ini + 10)
+    qn = backends[ini:sig if sig != -1 else len(backends)]
     assert '"backend": "dgx1+dgx2"' in qn
-    ds = backends[backends.index('"name": "deepseek-v4-flash-tp2"'):]
-    assert '"backend": "dgx1+dgx2"' in ds
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",
                  "qwen36-27b-dense-dgx1", "qwen36-27b-dense-dgx2",
                  # retirado del cluster entero el 2026-08-10

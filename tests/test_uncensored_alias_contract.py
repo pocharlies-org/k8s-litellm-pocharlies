@@ -28,8 +28,9 @@ import yaml
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 CAPABILITY = "tooling-uncensored"
+# 01-09-2026: se va `deepseek-v4-flash-0731-uncensored` (refusal:1.5) con la
+# retirada de DeepSeek. Queda UN solo alias con sello propio.
 MODEL_SCOPED_LAMBDA = {
-    "deepseek-v4-flash-0731-uncensored": "refusal:1.5",
     "qwen38-27b-uncensored": "refusal:1.0",
 }
 
@@ -118,11 +119,22 @@ def test_no_uncensored_alias_has_a_fallback_to_the_cloud():
 # ── 2. el hook: quien reescribe la capacidad al residente vivo ──────────────────
 
 def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
-    """Al abliterado del perfil, no al residente normal: si resolviera a
-    `deepseek-v4-flash-0731` se perderia el sello y serviria censurado."""
+    """Al abliterado del perfil, no al residente normal: si resolviera al
+    residente censurado se perderia el sello y serviria censurado.
+
+    01-09-2026: `llm-tp` se queda SIN abliterado al retirarse DeepSeek. No es un
+    olvido: no existe checkpoint abliterado de Qwen3.8-Flash-Next ni port rank1
+    de esa arquitectura (decision operador 26-08), y un alias que promete y no
+    cumple es peor que no tenerlo. Lo que este test fija ahora es que la
+    ausencia se resuelve a (None, "compute_mode_invalid") -- un fallo VISIBLE --
+    y no a un residente censurado en silencio.
+    """
     assert hook.TOOLING_UNCENSORED_ALIASES == frozenset({CAPABILITY})
     components = {
         "llm-tp": {
+            # Las keys son HISTORICAS a proposito: son el contrato de
+            # componentes de compute_mode.COMPONENTS del dashboard y hoy
+            # apuntan a los deploys qwen38-flash-next-*.
             "dgx1": [{"name": "deepseek-worker", "ready": True,
                       "desired_replicas": 1, "ready_replicas": 1}],
             "dgx2": [{"name": "deepseek-head", "ready": True,
@@ -133,13 +145,13 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
                       "desired_replicas": 1, "ready_replicas": 1}],
         },
     }
-    for mode, want in (("llm-tp", "deepseek-v4-flash-0731-uncensored"),
-                       ("creative", "qwen38-27b-uncensored")):
-        target, reason = hook._tooling_uncensored_target(
+    for mode, want in (("llm-tp", (None, "compute_mode_invalid")),
+                       ("creative", ("qwen38-27b-uncensored", None))):
+        got = hook._tooling_uncensored_target(
             {"effective_mode": mode, "desired_mode": mode, "phase": "ready",
              "components": components[mode]}
         )
-        assert (target, reason) == (want, None), (mode, target, reason)
+        assert got == want, (mode, got)
     # El cambio deseado puede estar pendiente: manda el residente que siga Ready.
     assert hook._tooling_uncensored_target({
         "effective_mode": "creative",
