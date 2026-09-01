@@ -50,11 +50,35 @@ sys.modules.setdefault("litellm", types.ModuleType("litellm"))
 sys.modules.setdefault("litellm.proxy", types.ModuleType("litellm.proxy"))
 sys.modules["litellm.proxy.proxy_server"] = proxy_server
 
+# El registro REAL de produccion tiene un solo runtime desde que se retiro
+# DeepSeek (2026-09-01). El mecanismo sigue siendo N-runtime, y sus invariantes
+# --que cada uno sella SU lambda, con su cache y su TTL, sin contaminar al
+# otro-- necesitan dos para poder fallar. Se inyecta el segundo por el override
+# de entorno, que es la via soportada. El registro de verdad se fija aparte, en
+# `test_el_registro_real_de_produccion_tiene_un_solo_runtime`, que lee
+# REFUSAL_RUNTIMES_DEFAULT sin override.
+SYNTH = [
+    {"key": "qwen38-27b-nvfp4",
+     "label": "Qwen3.8-27B NVFP4 (dense)",
+     "admin_url": "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000"
+                  "/admin/refusal_lambda",
+     "api_base_match": "vllm-qwen38-27b-uncensored",
+     "on_lambda": 1.0},
+    {"key": "runtime-b",
+     "label": "Segundo runtime (sintetico, solo test)",
+     "admin_url": "http://runtime-b.llm.svc.cluster.local:8000"
+                  "/admin/refusal_lambda",
+     "api_base_match": "runtime-b",
+     "on_lambda": 1.5},
+]
+os.environ["LITELLM_REFUSAL_RUNTIMES"] = json.dumps(SYNTH)
+
 ns = {"os": os, "json": json, "time": time, "threading": threading,
       "httpx": httpx_stub, "log": logging.getLogger("t")}
 exec(compile(BLOCK, "dial", "exec"), ns)
+del os.environ["LITELLM_REFUSAL_RUNTIMES"]
 
-DS = "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/admin/refusal_lambda"
+DS = "http://runtime-b.llm.svc.cluster.local:8000/admin/refusal_lambda"
 QW = "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/admin/refusal_lambda"
 
 
@@ -78,20 +102,20 @@ class DialTest(unittest.TestCase):
             {"model_name": "tooling", "litellm_params": {
                 "api_base": "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/v1"}},
             {"model_name": "max", "litellm_params": {
-                "api_base": "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1"}},
+                "api_base": "http://runtime-b.llm.svc.cluster.local:8000/v1"}},
             {"model_name": "openai/remote-model", "litellm_params": {
                 "api_base": "https://api.example.invalid/v1"}},
         ]
 
     def test_registro_tiene_on_lambda_distinto_por_runtime(self):
         by = ns["REFUSAL_RUNTIMES_BY_KEY"]
-        self.assertEqual(by["deepseek-v4-flash-0731"]["on_lambda"], 1.5)
+        self.assertEqual(by["runtime-b"]["on_lambda"], 1.5)
         self.assertEqual(by["qwen38-27b-nvfp4"]["on_lambda"], 1.0)
 
     def test_rango_experimental_llega_hasta_dos_y_medio(self):
         self.assertEqual(ns["REFUSAL_MIN_LAMBDA"], 0.0)
         self.assertEqual(ns["REFUSAL_MAX_LAMBDA"], 2.5)
-        rt = ns["REFUSAL_RUNTIMES_BY_KEY"]["deepseek-v4-flash-0731"]
+        rt = ns["REFUSAL_RUNTIMES_BY_KEY"]["runtime-b"]
         self.assertEqual(ns["_refusal_lambda_from_payload"](
             {"lambda": 2.5}, rt), 2.5)
         for invalid in (-0.01, 2.5001, float("nan")):
@@ -99,7 +123,7 @@ class DialTest(unittest.TestCase):
                 ns["_refusal_lambda_from_payload"]({"lambda": invalid}, rt)
 
     def test_enabled_solo_queda_como_compatibilidad_de_rollout(self):
-        rt = ns["REFUSAL_RUNTIMES_BY_KEY"]["deepseek-v4-flash-0731"]
+        rt = ns["REFUSAL_RUNTIMES_BY_KEY"]["runtime-b"]
         self.assertEqual(ns["_refusal_lambda_from_payload"](
             {"enabled": True}, rt), 1.5)
         self.assertEqual(ns["_refusal_lambda_from_payload"](
@@ -109,14 +133,14 @@ class DialTest(unittest.TestCase):
         heads[DS] = {"lambda": 1.5, "consistent": True, "per_rank": [1.5, 1.5]}
         heads[QW] = {"lambda": 0.0, "consistent": True, "per_rank": [0.0]}
         self.assertEqual(run(ns["_refusal_lambda_for_async"]("max", None)),
-                         (1.5, "deepseek-v4-flash-0731"))
+                         (1.5, "runtime-b"))
         self.assertEqual(run(ns["_refusal_lambda_for_async"]("tooling", None)),
                          (0.0, "qwen38-27b-nvfp4"))
 
     def test_head_caido_no_apaga_el_sellado_del_otro(self):
         heads[QW] = {"lambda": 1.0, "consistent": True, "per_rank": [1.0]}
         self.assertEqual(run(ns["_refusal_lambda_for_async"]("max", None)),
-                         (None, "deepseek-v4-flash-0731"))
+                         (None, "runtime-b"))
         self.assertEqual(run(ns["_refusal_lambda_for_async"]("tooling", None)),
                          (1.0, "qwen38-27b-nvfp4"))
 
@@ -157,13 +181,14 @@ class DialTest(unittest.TestCase):
         ns["_alias_runtime_cache"].update({"ts": 0.0, "map": {}})
         self.assertEqual(
             run(ns["_refusal_lambda_for_async"](
-                "loquesea", "http://deepseek-v4-flash-0731.llm.svc:8000/v1")),
-            (1.5, "deepseek-v4-flash-0731"))
+                "loquesea", "http://runtime-b.llm.svc:8000/v1")),
+            (1.5, "runtime-b"))
 
     def test_env_override_con_json_roto_cae_al_default(self):
         os.environ["LITELLM_REFUSAL_RUNTIMES"] = "{no json"
         try:
-            self.assertEqual(len(ns["_load_refusal_runtimes"]()), 2)
+            # El default de produccion: un solo runtime desde el 01-09.
+            self.assertEqual(len(ns["_load_refusal_runtimes"]()), 1)
         finally:
             del os.environ["LITELLM_REFUSAL_RUNTIMES"]
 
@@ -172,8 +197,8 @@ class DialTest(unittest.TestCase):
         # flota. Si deja de derivarse del Service, la chapa desaparece sin ruido.
         by = ns["REFUSAL_RUNTIMES_BY_KEY"]
         self.assertEqual(
-            ns["_refusal_fleet_name"](by["deepseek-v4-flash-0731"]),
-            "deepseek-v4-flash-0731")
+            ns["_refusal_fleet_name"](by["runtime-b"]),
+            "runtime-b")
         self.assertEqual(
             ns["_refusal_fleet_name"](by["qwen38-27b-nvfp4"]),
             "vllm-qwen38-27b-uncensored")
@@ -198,11 +223,23 @@ class DialTest(unittest.TestCase):
         # No poder leer NO es "lambda=0": pintar censurado ahi seria afirmar algo
         # que no se sabe. enabled queda None y stamping False.
         st = ns["_refusal_runtime_state"](
-            ns["REFUSAL_RUNTIMES_BY_KEY"]["deepseek-v4-flash-0731"],
+            ns["REFUSAL_RUNTIMES_BY_KEY"]["runtime-b"],
             ns["_refusal_aliases_by_runtime"]())
         self.assertIsNone(st["lambda"])
         self.assertIsNone(st["enabled"])
         self.assertFalse(st["stamping"])
+
+    def test_el_registro_real_de_produccion_tiene_un_solo_runtime(self):
+        # Sin override: lo que corre en el cluster. DeepSeek se retiro el
+        # 01-09-2026 y su dial se fue con el; el unico backend que expone
+        # /admin/refusal_lambda es el 27B denso. qwen38-flash-next NO entra
+        # aqui a proposito: no sirve ese endpoint -- lo traia el plugin de
+        # DeepSeek -- y un dial que no puede leer publicaria "no censurado"
+        # sobre un backend que nadie ha medido.
+        real = ns["REFUSAL_RUNTIMES_DEFAULT"]
+        self.assertEqual([r["key"] for r in real], ["qwen38-27b-nvfp4"])
+        self.assertEqual(real[0]["on_lambda"], 1.0)
+        self.assertNotIn("deepseek", json.dumps(real).lower())
 
     def test_env_override_valido_se_respeta(self):
         os.environ["LITELLM_REFUSAL_RUNTIMES"] = json.dumps([
