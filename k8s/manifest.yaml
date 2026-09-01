@@ -201,38 +201,6 @@ data:
     # acotando una fuga. Quien debe decidir la saturacion es el motor con su
     # cola, el unico que sabe cuanta KV le queda; el proxy no tiene esa
     # informacion y no deberia estar decidiendo con ella.
-    - model_name: deepseek-v4-flash-0731
-      litellm_params:
-        model: openai/deepseek-v4-flash-0731
-        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 32
-      model_info:
-        mode: chat
-        backend: dgx1+dgx2
-        max_input_tokens: 393216
-        max_output_tokens: 16384
-        supports_function_calling: true
-        supports_vision: true
-        supports_reasoning: true
-        # 2026-08-19: FUERA `low` (y `medium` donde estaba). Solo se declara lo que
-        # el hook HONRA, que es la misma regla por la que `ultra` nunca se declaro.
-        #
-        # `low` era inerte y ademas daninno. CLIENT_EFFORT_TIERS no lo traduce a
-        # proposito -- un `low` de un cliente agente significa "no he tocado nada",
-        # no "quiero low" -- asi que un effort low se descarta y decide el tier del
-        # alias. Anunciarlo hacia que OpenClaw se quedara con `low` como nivel de
-        # sesion (thinkingDefault=low) y creyera estar pensando mientras `tooling`
-        # entraba en thinking_mode "chat": sin canal `<think>`, DeepSeek deliberaba
-        # en el canal VISIBLE y el monologo salia como respuesta. Medido en las
-        # sesiones vivas: 56 fugas en 421 mensajes de `tooling`, cero tags y cero
-        # bloques de thinking, mientras gpt-5.6 (Responses API) daba 0 en 1125.
-        #
-        # Con la lista honesta, OpenClaw no puede almacenar un nivel que el modelo
-        # no declara: lo recorta al mas cercano y el effort que llega ya es
-        # DELIBERADO, asi que el razonamiento vuelve a `reasoning_content`.
-        supported_reasoning_efforts: [none, high, max]
     # ── Residente llm-tp desde el 27-08: Qwen3.8-Flash-Next (SGLang TP=2) ────
     #
     # 27-08: PR #34 declaro este residente SOLO en sync.py — el controlador
@@ -266,28 +234,6 @@ data:
         # Son los tiers que el HOOK honra (CLIENT_EFFORT_TIERS), no los que acepta
         # el servidor: para la familia qwen el effort se traduce a `enable_thinking`
         # y el valor crudo no debe viajar -- ver el strip en `_apply_thinking_tier`.
-        supported_reasoning_efforts: [none, high, max]
-    # Mismo head, misma GPU, mismo checkpoint. Lo unico que cambia es que este
-    # alias sella cada peticion con `cache_salt: refusal:1.5`, que vLLM expande a
-    # lambda por token. COSTE: cache_salt entra en la clave de bloque del prefix
-    # cache, asi que este alias tiene su propio espacio de KV.
-    - model_name: deepseek-v4-flash-0731-uncensored
-      litellm_params:
-        model: openai/deepseek-v4-flash-0731
-        api_base: http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 32
-        extra_body: { cache_salt: "refusal:1.5" }
-      model_info:
-        mode: chat
-        backend: dgx1+dgx2
-        max_input_tokens: 393216
-        max_output_tokens: 16384
-        supports_function_calling: true
-        supports_vision: true
-        supports_reasoning: true
-        # Mismo checkpoint que el alias de arriba: mismos tiers honrados.
         supported_reasoning_efforts: [none, high, max]
     # NUEVO como nombre directo. El controlador solo registraba `tooling` y
     # `qwen38-27b-uncensored` sobre este backend, asi que el residente de
@@ -985,7 +931,6 @@ data:
     # la entrada del nombre directo y la lambda NO es la misma en los dos:
     # 1.5 DeepSeek / 1.0 Qwen3.8, medidas y no intercambiables.
     TOOLING_UNCENSORED_MODE_TARGETS = {
-        "llm-tp": "deepseek-v4-flash-0731-uncensored",
         "creative": "qwen38-27b-uncensored",
     }
     TOOLING_UNCENSORED_ALIASES = frozenset({"tooling-uncensored"})
@@ -1344,8 +1289,6 @@ data:
     # `Retry-After`. Un 503 es reintentable y dice la verdad; un 500 no, y contestar
     # desde otro sitio seria servir censurado a quien pidio lo contrario.
     ABLITERATED_HEALTH_URLS = {
-        "deepseek-v4-flash-0731-uncensored":
-            "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/health",
         "qwen38-27b-uncensored":
             "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/health",
     }
@@ -1542,16 +1485,6 @@ data:
     # fallo posible aqui: el panel diria "uncensored" y el modelo seguiria
     # rechazando la mitad de las veces.
     REFUSAL_RUNTIMES_DEFAULT = [
-        {
-            "key": "deepseek-v4-flash-0731",
-            "label": "DeepSeek-V4-Flash (TP=2)",
-            "admin_url": "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000"
-                         "/admin/refusal_lambda",
-            # Se compara contra el api_base VIVO del router, en minusculas y por
-            # subcadena: asi los alias que inyecta el sync dinamico entran solos.
-            "api_base_match": "deepseek-v4-flash",
-            "on_lambda": 1.5,
-        },
         {
             "key": "qwen38-27b-nvfp4",
             "label": "Qwen3.8-27B NVFP4 (dense)",
@@ -2351,7 +2284,7 @@ data:
     # La desviación de visión también es local: por defecto usa el backend
     # DeepSeek multimodal. Se apaga entero con LITELLM_VISION_FALLBACK_MODEL="".
     VISION_FALLBACK_MODEL = os.environ.get(
-        "LITELLM_VISION_FALLBACK_MODEL", "deepseek-v4-flash-0731"
+        "LITELLM_VISION_FALLBACK_MODEL", "qwen38-flash-next"
     )
     # Nombres de CAPACIDAD, los unicos que se desvian. Un nombre de MODELO
     # (`deepseek-v4-flash-0731`, `dense`, `ornith-1.0`...) NO se desvia jamas, por
@@ -2524,14 +2457,6 @@ data:
     # La familia se deduce del backend REAL que sirve el alias AHORA MISMO, no de
     # una tabla de alias: al intercambiar el residente el perfil cambia solo.
     FAMILY_SAMPLING = {
-        "deepseek-v4": {
-            # El model card de DeepSeek documenta esto para agentico/tool-calling.
-            "set": {"temperature": 1.0, "top_p": 0.95},
-            # NO documenta top_k/min_p/penalties, y los de Qwen le sientan mal:
-            # presence_penalty 1.5 le alarga las respuestas y le hace divagar.
-            "drop": ("top_k", "min_p", "presence_penalty",
-                     "frequency_penalty", "repetition_penalty"),
-        },
         "qwen": {
             # Los de siempre. Qwen documenta que temperature casi-cero degrada el
             # tool-calling, de ahi 0.7 y no 0.
@@ -2572,7 +2497,6 @@ data:
         # sampling del cliente a recibir temperature 1.0 / top_p 0.95 y a perder
         # top_k/min_p/penalties. Con salida estructurada se sigue respetando lo
         # que mande el cliente. Es el mismo trato que ya tenia `tooling`.
-        "deepseek-v4-flash-0731",
         # 26-08: mismo arrastre por THINKING_TIERS para el residente nuevo
         # (test_los_tres_tiers_son_swappable exige tier ⊆ swappable).
         "qwen38-flash-next",
@@ -2615,7 +2539,6 @@ data:
         #
         # `deepseek-v4-flash-0731-uncensored` NO entra: esta en ABLITERATED y
         # test_the_abliterated_aliases_are_not_router_selectable lo prohibe.
-        "deepseek-v4-flash-0731": "off",
         # 26-08: el nombre directo del residente llm-tp nuevo, con el mismo
         # trato que el de DeepSeek y por el mismo motivo del 25-08: fuera de
         # esta tabla el default seria el del SERVIDOR, y el chat template de
@@ -2671,12 +2594,6 @@ data:
     # el launch.sh para que lo desconocido caiga a "low" en vez de a "high", asi que
     # NO metas "medium" aqui: se comportaria como low y el nombre mentiria.
     THINKING_KWARGS = {
-        "deepseek-v4": {
-            "off": {"thinking": False},
-            "low": {"thinking": True, "reasoning_effort": "low"},
-            "high": {"thinking": True, "reasoning_effort": "high"},
-            "max": {"thinking": True, "reasoning_effort": "max"},
-        },
         "qwen": {
             "off": {"enable_thinking": False},
             "low": {"enable_thinking": True},
@@ -2920,8 +2837,6 @@ data:
                         body.pop(k, None)   # que no lo pise por detras
             else:
                 changed.append("estructurada:sampling-del-cliente")
-                if fam == "deepseek-v4" and _disable_thinking(data):
-                    changed.append("estructurada:thinking=off")
             if changed:
                 sampling_log.info(
                     "sampling: pedido=%s resuelto=%s familia=%s ajustes=%s",
@@ -3672,7 +3587,6 @@ data:
         "ornith",
         "ornith-1.0",
         "ornith-canary",
-        "deepseek-v4-flash-0731",
         "qwen38-27b",
     }
 
@@ -4479,16 +4393,6 @@ data:
     # nadie los servia. Ver la ventana RHO en
     # analysis/deepseek-v4-flash-2xspark/rho-backend-sync/.
     TOOLING_RESIDENT_ALIASES = TOOLING_COMPAT_ALIASES + THINKING_TIER_ALIASES
-    # Nombre directo y exclusivo de DeepSeek. A diferencia de los aliases de
-    # capacidad anteriores, este NO se comparte con Ornith/NVIDIA Qwen: quien
-    # selecciona un modelo concreto debe recibir ese modelo o un error visible.
-    DEEPSEEK_V4_FLASH_DIRECT_ALIASES = (
-        "deepseek-v4-flash-0731",
-        # Mismo backend, mismo head, misma GPU: lo unico que cambia es que este
-        # alias sella cada peticion con `cache_salt: refusal:1.5` (ver
-        # UNCENSORED_ON_LAMBDA). No es un segundo checkpoint ni un segundo pod.
-        "deepseek-v4-flash-0731-uncensored",
-    )
     # Nombre directo y exclusivo de Qwen3.8-Flash-Next (residente llm-tp desde
     # el 26-08). SIN variante -uncensored a proposito: no existe checkpoint
     # abliterated ni port rank1 de esta arquitectura, y un alias que promete y
@@ -4526,7 +4430,6 @@ data:
     # respuesta que ve el cliente sigue siendo la del target sellado.
     UNCENSORED_SUFFIX = "-uncensored"
     UNCENSORED_ON_LAMBDA = {
-        "openai/deepseek-v4-flash-0731": 1.5,
         "openai/qwen38-27b": 1.0,
     }
     # The uncensored 27B is the ONLY dense model in the cluster. Creative pins it
@@ -4716,76 +4619,6 @@ data:
             # catalogo (regla del 15-08).
             "supports_reasoning": True,
             "supported_reasoning_efforts": ("none", "high", "max"),
-        },
-        {
-            # DeepSeek-V4-Flash-0731 (284B MoE / 13B activos) en TP=2 REPARTIDO
-            # ENTRE LOS DOS SPARKS sobre RoCE 200G. Es el unico backend del
-            # cluster que no vive en un solo nodo.
-            #
-            # OJO CON LA READINESS: el Service selecciona SOLO el pod head
-            # (gx10-ec3d). El worker de nvidia-dgx no tiene Service ni /health
-            # porque corre --headless. Si el worker muere, el head deja de
-            # responder al health por su cuenta (pierde el rendezvous) y el
-            # EndpointSlice se cae solo, asi que la senal sigue siendo correcta
-            # — pero no hay forma de distinguir "worker caido" de "head caido"
-            # desde aqui. Para eso estan los logs de los dos pods.
-            #
-            # Se queda los aliases de tooling porque mientras esto corre NO HAY
-            # residente de DGX1: ocupa los dos Sparks, asi que la exclusion es
-            # fisica igual que antes, solo que ahora abarca los dos nodos.
-            "name": "deepseek-v4-flash-tp2",
-            "label": "DS4_FLASH_TP2",
-            "backend": "dgx1+dgx2",
-            "base_model": os.getenv(
-                "DS4_FLASH_MODEL",
-                "openai/deepseek-v4-flash-0731",
-            ),
-            # 26-08: la titularidad de los alias de capacidad (tooling, tiers)
-            # pasa a qwen38-flash-next — el invariante es UN dueño declarado
-            # (test_ornith_canary). Este backend conserva solo su nombre
-            # directo; el revert de este commit le devuelve el asiento.
-            "aliases": DEEPSEEK_V4_FLASH_DIRECT_ALIASES,
-            "service": os.getenv(
-                "K8S_SERVICE_DS4_FLASH",
-                "deepseek-v4-flash-0731",
-            ),
-            "api_base": os.getenv(
-                "DS4_FLASH_API_BASE",
-                "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000/v1",
-            ),
-            "id_prefix": "ds4-flash-0731-tp2",
-            # = --max-num-seqs del servidor. Pedir mas solo encola.
-            "max_parallel_requests": 6,
-            "max_output_tokens": 16384,
-            # 393216 es el max_model_len REAL del servidor (384K). Se publica en
-            # el mismo cambio que MAX_MODEL_LEN=393216 en ambos ranks: nunca se
-            # anuncia mas contexto del que sirve vLLM. No poner 1048576: una sola
-            # peticion de 1M pide 7.54 GiB de KV y tumbo el primer arranque. El
-            # pool medido es de 1.237.351 tokens (14,22 GiB), suficiente para 3,15
-            # peticiones simultaneas a longitud completa de 384K.
-            "max_input_tokens": 393216,
-            "supports_function_calling": True,
-            # OpenCode/OpenChamber can send reasoning_effort directly. Publish
-            # the exact client-facing tiers so they render as variants of this
-            # model instead of forcing users to infer capabilities from aliases.
-            #
-            # 2026-08-19: `low` fuera. Solo se declara lo que el hook HONRA, y
-            # `low` no esta en CLIENT_EFFORT_TIERS a proposito. Declararlo dejaba a
-            # OpenClaw parado en un nivel inerte y a DeepSeek deliberando en el
-            # canal visible: 56 fugas en 421 mensajes de `tooling`.
-            "supports_reasoning": True,
-            "supported_reasoning_efforts": ("none", "high", "max"),
-            # 2026-08-13: YA VE. El servidor no sirve DeepseekV4ForCausalLM sino
-            # DeepseekV4VisionForCausalLM (plugin FlyCockpit dsv4_vision_vllm:
-            # tower DeepEncoderV2 congelado + adapter BF16, imagen
-            # 0.1.1-rank1f-vision). Verificado contra el pod: describe una imagen
-            # de prueba correctamente, 257 tokens de imagen, y el servidor arranca
-            # con limit_mm_per_prompt {'image': 8}.
-            # Con False aqui, _vision_target desviaba TODA peticion con imagen y
-            # OpenClaw contestaba "este modelo no admite entrada de imagenes" sin
-            # llegar a preguntar al backend correcto.
-            # Este flag es la unica pieza que faltaba: el modelo ya veia.
-            "supports_vision": True,
         },
         {
             # Small latency-oriented text resident on the x86 RTX 3080 Ti.
@@ -5517,7 +5350,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-67926820a976
+        config.k8s.e-dani.com/revision: sync-bd60f3a9be6b
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -5567,7 +5400,7 @@ spec:
             # 24-08-2026: fuera `high` y `max` — retirados del model_list. El
             # reconciler es ADITIVO: lo que no se quita aqui se le vuelve a
             # escribir al equipo en cada ciclo aunque el modelo no exista.
-            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,qwen38-27b,tooling,deepseek-v4-flash-0731,qwen35-4b" }
+            - { name: OPENCLAW_TEAM_REQUIRED_MODELS, value: "ornith-canary,ornith-1.0,qwen38-27b,tooling,qwen38-flash-next,qwen35-4b" }
             - { name: OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod" }
             # Key del bot sauvage-shield: su allowlist se declara AQUI (GitOps)
             # y _reconcile_key_models la re-aplica cada ciclo. Fuera del equipo
@@ -5692,7 +5525,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-da898710ba18
+        config.k8s.e-dani.com/revision: config-1e547235ba51
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
