@@ -83,24 +83,6 @@ def hook():
     mod.sampling_log = logging.getLogger("test.hook.sampling")
     exec(compile(ast.Module(body=keep, type_ignores=[]), "<hook>", "exec"), mod.__dict__)
     return mod
-
-
-def test_deepseek_pisa_el_sampling_de_qwen(hook):
-    """Con DeepSeek detras de `tooling`, los valores de Qwen se van.
-
-    presence_penalty 1.5 es el que trae OpenClaw hardcodeado por alias en ~8
-    agentes: a DeepSeek le alarga las respuestas y le hace divagar. top_k/min_p no
-    estan documentados en su model card.
-    """
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
-    data = {"model": "tooling", "temperature": 0.7, "top_p": 0.8,
-            "top_k": 20, "min_p": 0.0, "presence_penalty": 1.5}
-    hook._apply_family_sampling(data)
-    assert data["temperature"] == 1.0 and data["top_p"] == 0.95
-    for gone in ("top_k", "min_p", "presence_penalty"):
-        assert gone not in data, f"{gone} llego a DeepSeek"
-
-
 def test_qwen_mantiene_su_perfil_en_el_mismo_alias(hook):
     """Mismo alias, otro residente, otro perfil. Es lo que hace que el boton de
     residente GPU no obligue a tocar ningun cliente."""
@@ -120,25 +102,28 @@ def test_el_perfil_se_elige_por_el_alias_RESUELTO_no_por_el_que_pidio_el_cliente
     residente. Se usa un nombre inexistente como sonda porque el sintoma es
     exactamente ese: alias no reconocido -> sin perfil.
     """
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
 
-    sin_resolver = {"model": "alias-que-el-hook-reescribe", "temperature": 0.7,
-                    "presence_penalty": 1.5}
+    # 01-09-2026: el discriminador ya no puede ser `temperature`. Con DeepSeek
+    # retirado la unica familia es `qwen`, cuyo perfil la pone en 0.7 -- el mismo
+    # valor con el que llega la sonda, asi que no distinguiria "sin perfil" de
+    # "con perfil". Se usa `top_p`, que SOLO aparece si el perfil se aplica.
+    # `presence_penalty` tampoco sirve ya: el `drop` de qwen esta vacio.
+    sin_resolver = {"model": "alias-que-el-hook-reescribe", "temperature": 0.7}
     hook._apply_family_sampling(sin_resolver)
-    assert sin_resolver["temperature"] == 0.7, "sin resolver no debe llevar perfil"
-    assert "presence_penalty" in sin_resolver
+    assert "top_p" not in sin_resolver, "sin resolver no debe llevar perfil"
 
-    ya_resuelto = {"model": "tooling", "temperature": 0.7, "presence_penalty": 1.5}
+    ya_resuelto = {"model": "tooling", "temperature": 0.7}
     hook._apply_family_sampling(ya_resuelto)
-    assert ya_resuelto["temperature"] == 1.0
-    assert "presence_penalty" not in ya_resuelto
+    assert ya_resuelto["top_p"] == 0.8
+    assert ya_resuelto["top_k"] == 20 and ya_resuelto["min_p"] == 0.0
 
 
 def test_un_alias_que_nombra_un_modelo_concreto_no_se_toca(hook):
     """`deepseek-v4-flash-opencode` y compania ya llevan su sampling en el
     model_list: quien los pide sabe con que habla y no se le pisa."""
     _install_fake_litellm({
-        "deepseek-v4-flash-opencode": _dep("openai/deepseek-v4-flash-0731")})
+        "deepseek-v4-flash-opencode": _dep("openai/qwen38-flash-next")})
     data = {"model": "deepseek-v4-flash-opencode", "temperature": 0.2}
     hook._apply_family_sampling(data)
     assert data["temperature"] == 0.2
@@ -170,39 +155,40 @@ def _structured(**extra):
                              "json_schema": {"name": "X", "strict": True, "schema": {}}}}
     d.update(extra)
     return d
-
-
-def test_estructurada_contra_deepseek_apaga_el_pensamiento(hook):
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
-    data = _structured()
-    hook._apply_family_sampling(data)
-    assert data["extra_body"]["chat_template_kwargs"]["thinking"] is False
-
-
 def test_estructurada_respeta_la_temperatura_del_cliente(hook):
     """El esquema fija la FORMA, no los VALORES: a temperatura 1.0 los numeros
     bailan, y quien pide un esquema quiere un dato. Si mando 0, se respeta."""
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     data = _structured(temperature=0)
     hook._apply_family_sampling(data)
     assert data["temperature"] == 0, "el perfil de familia no debe subirla a 1.0"
 
 
-def test_estructurada_sigue_quitando_los_penalties_de_qwen(hook):
-    """Los `drop` no dependen de que haya esquema: a DeepSeek le sientan mal igual."""
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+def test_estructurada_respeta_el_sampling_del_cliente(hook):
+    """Con esquema manda el cliente, no el perfil de familia.
+
+    01-09-2026: antes esto fijaba que los `drop` se aplicaban igual con esquema,
+    usando a DeepSeek de sujeto. Al retirarlo la unica familia es `qwen`, y su
+    `drop` esta VACIO: no hay nada que quitar. Lo que si sigue siendo invariante
+    -- y es lo que se fija aqui -- es que con salida estructurada el perfil NO
+    pisa lo que mande el cliente.
+    """
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     data = _structured(temperature=0, presence_penalty=1.5, top_k=20)
     hook._apply_family_sampling(data)
-    assert "presence_penalty" not in data and "top_k" not in data
+    assert data["temperature"] == 0, "con esquema no se pisa la temperatura"
+    assert data["presence_penalty"] == 1.5 and data["top_k"] == 20
 
 
 def test_sin_esquema_el_perfil_de_familia_manda_como_siempre(hook):
     """La ruta normal no cambia: sin `response_format` se sigue aplicando el
     sampling agentico que recomienda el model card, y no se toca el pensamiento."""
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     data = {"model": "tooling", "temperature": 0}
     hook._apply_family_sampling(data)
-    assert data["temperature"] == 1.0 and data["top_p"] == 0.95
+    # Perfil de la familia `qwen`, la unica que queda desde el 01-09-2026.
+    assert data["temperature"] == 0.7 and data["top_p"] == 0.8
+    assert data["top_k"] == 20 and data["min_p"] == 0.0
     assert "extra_body" not in data
 
 
@@ -232,32 +218,6 @@ def test_detector_de_salida_estructurada(hook):
 
 def _ctk(data):
     return (data.get("extra_body") or {}).get("chat_template_kwargs") or {}
-
-
-def test_cada_nivel_pedido_se_traduce_al_dialecto_de_deepseek(hook):
-    """El nivel se pide con `reasoning_effort` y se traduce al dialecto de la
-    familia viva. DeepSeek lee `thinking` + `reasoning_effort`.
-
-    24-08-2026: hasta hoy el nivel tambien podia venir en el NOMBRE (`high`,
-    `max`). Esos dos alias se retiran del model_list —eran el mismo backend con
-    otro nivel— y el unico nombre que sigue diciendo algo del pensamiento es
-    `tooling`, que significa «no pienses».
-    """
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
-    data = {"model": "tooling"}
-    hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"thinking": False}
-
-    esperado = {
-        "high": {"thinking": True, "reasoning_effort": "high"},
-        "max": {"thinking": True, "reasoning_effort": "max"},
-    }
-    for effort, kwargs in esperado.items():
-        data = {"model": "tooling", "reasoning_effort": effort}
-        hook._apply_thinking_tier(data, "tooling")
-        assert _ctk(data) == kwargs, effort
-
-
 def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
     """Qwen enciende y apaga, y ademas ACOTA el nivel. Lo que NO puede pasar es
     que se le cuelen las claves de DeepSeek (`thinking`, effort `high`/`max`).
@@ -274,7 +234,7 @@ def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
         }, effort
     data = {"model": "tooling"}
     hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"enable_thinking": False}
+    assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["off"]
 
 
 def test_el_tier_sale_de_lo_PEDIDO_no_del_modelo_resuelto(hook):
@@ -284,15 +244,18 @@ def test_el_tier_sale_de_lo_PEDIDO_no_del_modelo_resuelto(hook):
     el tier se calculara sobre el resuelto, un `max` degradado se quedaria sin
     pensar, que es justo el nivel contrario al que se pidio.
     """
-    _install_fake_litellm({"dense": _dep("openai/deepseek-v4-flash-0731")})
+    _install_fake_litellm({"dense": _dep("openai/qwen38-flash-next")})
     data = {"model": "dense", "reasoning_effort": "max"}
     hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
+    # Se deriva de la tabla del hook en vez de fijarla a mano: asi el test
+    # sobrevive a que cambie el dialecto de qwen (p.ej. al anadir la
+    # traduccion de reasoning_effort) sin dejar de proteger la propiedad.
+    assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["max"]
 
 
 def test_un_nombre_desconocido_no_tiene_tier_propio(hook):
     """La funcion pura no inventa un tier para un nombre desconocido."""
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     for alias in ("dense", "desconocido", ""):
         data = {"model": "tooling"}
         hook._apply_thinking_tier(data, alias)
@@ -303,26 +266,30 @@ def test_el_cliente_explicito_gana_al_alias(hook):
     """Quien sabe mandar extra_body no necesita que le elijan el nivel: es lo que
     hacen los perfiles del playground. Si el alias ganara, no habria forma de
     probar `max` contra un alias que no se llame `max`."""
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    # 01-09-2026: el cliente manda en el dialecto del residente vivo (`qwen`
+    # usa `enable_thinking`, DeepSeek usaba `thinking`). Lo que se fija es que
+    # SU valor sobrevive intacto, no que coincida con la tabla del hook: si
+    # coincidiera, el test no distinguiria "gana el cliente" de "gana el alias".
+    pedido = {"enable_thinking": True, "reasoning_effort": "xhigh"}
     data = {"model": "tooling",
-            "extra_body": {"chat_template_kwargs": {"thinking": True,
-                                                    "reasoning_effort": "max"}}}
-    hook._apply_thinking_tier(data, "tooling")   # el alias diria thinking:False
-    assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
+            "extra_body": {"chat_template_kwargs": dict(pedido)}}
+    hook._apply_thinking_tier(data, "tooling")   # el alias diria thinking off
+    assert _ctk(data) == pedido
 
 
 def test_la_salida_estructurada_apaga_el_pensamiento_pida_lo_que_pida_el_alias(hook):
     """Medido el 2026-08-10: con thinking activo se cuela una llave suelta del
     razonamiento delante del JSON guiado y el parse revienta (3/3). Pedir `max` y
     un json_schema a la vez no es mas pensamiento, es una contradiccion."""
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     data = {
         "model": "tooling",
         "reasoning_effort": "max",
         "response_format": {"type": "json_schema"},
     }
     hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"thinking": False}
+    assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["off"]
 
 
 def test_los_tres_tiers_son_swappable(hook):
@@ -364,51 +331,6 @@ def test_ningun_tier_dice_medium(hook):
 # pre-reescritura. Medido contra el cluster antes del arreglo, con los dos
 # alias: `min_p=1.0` daba 1/4 salidas unicas (argmax -> el min_p LLEGO al
 # backend) y `temperature=0` daba 1/4 (no se piso a 1.0).
-
-def test_tooling_reescrito_a_deepseek_SI_lleva_perfil(hook):
-    """La regresion del 25-08. Forma exacta de produccion: el cliente pidio
-    `tooling` y el hook ya lo reescribio al nombre directo del residente.
-
-    Si la puerta mira `data["model"]` en vez del alias pedido, `tooling` no
-    llega nunca aqui y ningun cliente recibe el perfil de familia.
-    """
-    _install_fake_litellm(
-        {"deepseek-v4-flash-0731": _dep("openai/deepseek-v4-flash-0731")})
-    data = {"model": "deepseek-v4-flash-0731", "temperature": 0.0,
-            "min_p": 1.0, "top_k": 3, "presence_penalty": 1.5}
-    hook._apply_family_sampling(data, "tooling")
-    assert data["temperature"] == 1.0 and data["top_p"] == 0.95
-    for gone in ("top_k", "min_p", "presence_penalty"):
-        assert gone not in data, f"{gone} llego a DeepSeek"
-
-
-def test_el_nombre_directo_de_deepseek_SI_lleva_perfil(hook):
-    """`deepseek-v4-flash-0731` es la EXCEPCION deliberada (25-08-2026).
-
-    La regla general sigue siendo que un nombre de modelo concreto se respeta
-    tal cual (lo cubre `test_un_alias_que_nombra_un_modelo_concreto_no_se_toca`
-    con `deepseek-v4-flash-opencode`). Este alias se saco de esa regla a
-    peticion del operador: debia comportarse igual que `tooling`, y el nivel de
-    pensamiento y el sampling son la misma decision -- THINKING_TIERS obliga a
-    estar en SWAPPABLE_ALIASES (ver `test_los_tres_tiers_son_swappable`), asi
-    que no se puede tener uno sin el otro.
-
-    Mismo `data["model"]` que el test de arriba: la unica diferencia es que
-    aqui el cliente lo pidio por su nombre en vez de llegar por `tooling`, y
-    desde el cambio el resultado es el mismo a proposito.
-    """
-    _install_fake_litellm(
-        {"deepseek-v4-flash-0731": _dep("openai/deepseek-v4-flash-0731")})
-    data = {"model": "deepseek-v4-flash-0731", "temperature": 0.0,
-            "min_p": 1.0, "presence_penalty": 1.5}
-    hook._apply_family_sampling(data, "deepseek-v4-flash-0731")
-    assert data["temperature"] == 1.0, "el perfil de familia deberia aplicarse"
-    assert "min_p" not in data
-    assert "presence_penalty" not in data
-
-
-# ── El sampling depende de si se PIENSA (2026-08-28) ───────────────────────────
-#
 # Qwen documenta DOS perfiles, no uno: 0.7/0.8 sin pensar y 0.6/0.95 pensando,
 # con top_k 20 / min_p 0 en los dos. Hasta hoy solo existia el primero, asi que
 # el unico caso en que un alias qwen piensa -- `reasoning_effort: high|max` --
@@ -470,19 +392,6 @@ def test_estructurada_nunca_usa_el_perfil_de_pensar(hook):
     hook._apply_family_sampling(data, "tooling")
     assert data["temperature"] == 0
     assert hook._thinking_is_on(data, "tooling") is False
-
-
-def test_deepseek_no_declara_perfil_de_pensar_y_no_cambia(hook):
-    """Su model card da UN solo perfil agentico (1.0/0.95). Sin `set_thinking`
-    la familia se queda con el de siempre aunque la peticion piense."""
-    _install_fake_litellm(
-        {"deepseek-v4-flash-0731": _dep("openai/deepseek-v4-flash-0731")})
-    assert "set_thinking" not in hook.FAMILY_SAMPLING["deepseek-v4"]
-    data = {"model": "deepseek-v4-flash-0731", "reasoning_effort": "max"}
-    hook._apply_family_sampling(data, "deepseek-v4-flash-0731")
-    assert data["temperature"] == 1.0 and data["top_p"] == 0.95
-
-
 def test_sin_saber_si_piensa_manda_el_perfil_de_siempre(hook):
     """Un alias fuera de THINKING_TIERS y sin effort deja el pensamiento al
     default del SERVIDOR. Desde aqui no se sabe, y adivinar el perfil seria
@@ -501,7 +410,6 @@ def test_los_dos_perfiles_de_una_familia_traen_las_mismas_claves(hook):
         thinking = prof.get("set_thinking")
         if thinking is not None:
             assert set(thinking) == set(prof["set"]), fam
-
 
 
 # ── Bucle de token 0 con tools (sglang#36537, 2026-08-28) ─────────────────────
@@ -527,18 +435,7 @@ def test_con_tools_qwen_no_piensa_aunque_pidan_effort(hook):
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     data = _tools(reasoning_effort="high")
     hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"enable_thinking": False}
-
-
-def test_con_tools_deepseek_SI_piensa(hook):
-    """El bug es del parser qwen3_coder. Quitarle el razonamiento a un agente
-    DeepSeek seria pagar por un fallo que no tiene."""
-    _install_fake_litellm({"tooling": _dep("openai/deepseek-v4-flash-0731")})
-    data = _tools(reasoning_effort="max")
-    hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"thinking": True, "reasoning_effort": "max"}
-
-
+    assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["off"]
 def test_sin_tools_qwen_sigue_pensando_si_se_lo_piden(hook):
     """La puerta es SOLO para tools: sin ellas el effort manda como siempre.
 

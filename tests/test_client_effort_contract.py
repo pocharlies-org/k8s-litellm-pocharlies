@@ -88,7 +88,7 @@ def hook():
     return mod
 
 
-def ctk(hook, body, alias, backend="openai/deepseek-v4-flash-0731"):
+def ctk(hook, body, alias, backend="openai/qwen38-flash-next"):
     """Los chat_template_kwargs que salen para el residente."""
     _install_fake_litellm(backend)
     data = dict(body)
@@ -99,13 +99,17 @@ def ctk(hook, body, alias, backend="openai/deepseek-v4-flash-0731"):
 @pytest.mark.parametrize("alias,effort,esperado", [
     # El alias dice off y el cliente pide el maximo: manda el cliente. Es el
     # caso que justifica todo esto -- subir el nivel sin cambiar de modelo.
-    ("tooling", "max", {"thinking": True, "reasoning_effort": "max"}),
-    ("tooling", "high", {"thinking": True, "reasoning_effort": "high"}),
+    # 01-09-2026: dialecto de `qwen`, la unica familia que queda. Los valores se
+    # derivan de THINKING_KWARGS en el propio test (ver `_kw`) para no fijar a
+    # mano un dialecto que aun puede ganar la traduccion de reasoning_effort.
+    ("tooling", "max", "max"),
+    ("tooling", "high", "high"),
     # Bajar tambien: `none` apaga aunque el alias sea el mas caro.
-    ("max", "none", {"thinking": False}),
+    ("max", "none", "off"),
 ])
 def test_un_effort_deliberado_gana_al_nombre_del_alias(hook, alias, effort, esperado):
-    assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == esperado
+    quiere = hook.THINKING_KWARGS["qwen"][esperado]
+    assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == quiere
 
 
 @pytest.mark.parametrize("alias,esperado", [
@@ -114,33 +118,35 @@ def test_un_effort_deliberado_gana_al_nombre_del_alias(hook, alias, effort, espe
     # traen thinkingDefault=low). Si un effort ambiente contara como orden,
     # `tooling` -- "sin pensar", primary de culturismo e image-cloud -- pensaria
     # en cada turno y la etiqueta del selector mentiria.
-    ("tooling", {"thinking": False}),
+    ("tooling", "off"),
 ])
 @pytest.mark.parametrize("ambiente", ["low", "minimal"])
 def test_un_effort_ambiente_NO_pisa_al_alias(hook, alias, esperado, ambiente):
-    assert ctk(hook, {"model": alias, "reasoning_effort": ambiente}, alias) == esperado
+    quiere = hook.THINKING_KWARGS["qwen"][esperado]
+    assert ctk(hook, {"model": alias, "reasoning_effort": ambiente}, alias) == quiere
 
 
 def test_tambien_lee_la_forma_de_la_responses_api(hook):
     """OpenClaw manda `reasoning_effort` plano, pero la responses API lo anida."""
     data = {"model": "tooling", "reasoning": {"effort": "max"}}
-    assert ctk(hook, data, "tooling") == {"thinking": True, "reasoning_effort": "max"}
+    assert ctk(hook, data, "tooling") == hook.THINKING_KWARGS["qwen"]["max"]
 
 
 @pytest.mark.parametrize("effort,alias,esperado", [
     # `medium` no se traduce por su cuenta: con un alias que no piensa, no lo
-    # enciende. Es el nivel que no existe en DeepSeek.
-    ("medium", "tooling", {"thinking": False}),
+    # enciende. Es el nivel que el template valida pero deja sin instruccion.
+    ("medium", "tooling", "off"),
 ])
 def test_un_effort_sin_traduccion_no_se_adivina(hook, effort, alias, esperado):
-    assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == esperado
+    quiere = hook.THINKING_KWARGS["qwen"][esperado]
+    assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == quiere
 
 
 def test_la_salida_estructurada_gana_a_un_effort_explicito(hook):
     """Pedir `max` y un json_schema a la vez no es mas pensamiento: es una
     contradiccion, y el esquema es el que tiene razon."""
     data = {"model": "max", "reasoning_effort": "max", "response_format": SCHEMA}
-    assert ctk(hook, data, "max") == {"thinking": False}
+    assert ctk(hook, data, "max") == hook.THINKING_KWARGS["qwen"]["off"]
 
 
 def test_quien_ya_opino_en_chat_template_kwargs_sigue_mandando(hook):
@@ -189,7 +195,7 @@ def test_el_menu_publicado_y_la_tabla_del_hook_no_se_separan(hook):
     los tres niveles que SI se ofrecen esten aqui. Si alguien mete `medium`, este
     test cae antes de que el nombre empiece a mentir en produccion."""
     assert set(hook.CLIENT_EFFORT_TIERS) == {"none", "off", "high", "max", "xhigh"}
-    assert set(hook.THINKING_KWARGS["deepseek-v4"]) == {"off", "low", "high", "max"}
+    assert set(hook.THINKING_KWARGS["qwen"]) == {"off", "low", "high", "max"}
     for nivel in ("high", "max"):
         assert hook.CLIENT_EFFORT_TIERS[nivel] == nivel
     # `low` fuera es la mitad del contrato: es el valor ambiente y no puede
