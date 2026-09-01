@@ -2595,10 +2595,33 @@ data:
     # NO metas "medium" aqui: se comportaria como low y el nombre mentiria.
     THINKING_KWARGS = {
         "qwen": {
+            # 31-08-2026: los niveles SI existen en qwen38-flash-next y hasta hoy
+            # no se traducian, con consecuencias. Su chat template hace
+            # `reasoning_effort|default('xhigh')`, asi que mandar solo
+            # `enable_thinking: True` deja el razonamiento en el MAXIMO.
+            #
+            # Medido contra el backend, prompt complejo, max_tokens 4000:
+            #   sin effort  reasoning 17658 chars  content     0  finish=length
+            #   xhigh       reasoning 17347 chars  content     0  finish=length
+            #   low         reasoning  2993 chars  content  9908  finish=stop
+            # Omitirlo es IDENTICO a xhigh: el modelo agota el presupuesto
+            # pensando y devuelve content VACIO con finish_reason=length, que es
+            # la firma exacta de sglang#36537 (bucle de token 0 / "!!!!!").
+            #
+            # SOLO HAY DOS NIVELES UTILES. El template valida ('xhigh','medium',
+            # 'low') pero solo emite instruccion para xhigh y low; `medium` cae en
+            # un `elif` que no existe y deja `reasoning_instructions` VACIO. No es
+            # un punto medio, es el silencio -- medido: medium 2721 chars, low
+            # 2993, indistinguibles. Por eso `high` mapea a `low` y no a `medium`:
+            # prometer "alto" y mandar "sin instruccion" seria mentir, que es lo
+            # que protege test_ningun_tier_dice_medium.
+            #
+            # `high` del backend NO existe: devuelve 400 "Unexpected reasoning
+            # effort high. Supported types are xhigh (default), medium, and low."
             "off": {"enable_thinking": False},
-            "low": {"enable_thinking": True},
-            "high": {"enable_thinking": True},
-            "max": {"enable_thinking": True},
+            "low": {"enable_thinking": True, "reasoning_effort": "low"},
+            "high": {"enable_thinking": True, "reasoning_effort": "low"},
+            "max": {"enable_thinking": True, "reasoning_effort": "xhigh"},
         },
     }
 
@@ -5525,7 +5548,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1e547235ba51
+        config.k8s.e-dani.com/revision: config-69dc78503077
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

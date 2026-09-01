@@ -157,11 +157,13 @@ def test_quien_ya_opino_en_chat_template_kwargs_sigue_mandando(hook):
 
 
 def test_qwen_no_gradua_y_el_effort_solo_lo_enciende(hook):
-    """Qwen solo tiene `enable_thinking`. low/high/max colapsan a "piensa" y
-    `none` sigue apagando: el effort no puede inventar niveles que no existen."""
+    """Qwen enciende, apaga y ACOTA, pero no inventa niveles que no existen.
+
+    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. Solo hay DOS niveles utiles: `medium` pasa la validacion pero cae en un elif inexistente y deja las instrucciones vacias (medido: medium 2721 chars vs low 2993, indistinguibles), por eso `high` mapea a `low`."""
     data = {"model": "tooling", "reasoning_effort": "max"}
     assert ctk(hook, data, "tooling", backend="openai/qwen38-27b") == {
-        "enable_thinking": True
+        "enable_thinking": True,
+        "reasoning_effort": "xhigh",
     }
     data = {"model": "tooling", "reasoning_effort": "none"}
     assert ctk(hook, data, "tooling", backend="openai/qwen38-27b") == {
