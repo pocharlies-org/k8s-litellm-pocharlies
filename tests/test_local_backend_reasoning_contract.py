@@ -151,11 +151,26 @@ def test_el_residente_llm_tp_publica_sus_tiers_reales():
     # orden), asi que declararlo dejaba a OpenClaw parado en un nivel que el
     # servidor descarta -- creyendo pensar mientras `tooling` corria en
     # thinking_mode "chat" y el monologo salia por el canal visible.
+    # 01-09-2026: entra `xhigh`, medido contra el servidor vivo (=max, 490
+    # reasoning_chars; high=139; low/medium=0) y default oficial del modelo
+    # segun su model card. El hook lo traduce a max (CLIENT_EFFORT_TIERS) y el
+    # strip impide que el valor crudo viaje al backend.
     assert backend["supported_reasoning_efforts"] == (
         "none",
         "high",
         "max",
+        "xhigh",
     )
+
+
+def test_el_residente_llm_tp_no_anuncia_los_inertes():
+    """`low`/`medium` existen en la recipe oficial del modelo pero NO en
+    nuestro motor: medido el 01-09, reasoning_chars 0 con ambos (3/3), y el
+    hook los descarta. Anunciarlos es el fallo de las 56 fugas del 19-08."""
+    backend = _llm_tp_backend()
+    efforts = set(backend["supported_reasoning_efforts"])
+    assert "low" not in efforts
+    assert "medium" not in efforts
 
 
 def test_el_reconciler_refresca_reasoning_y_efforts():

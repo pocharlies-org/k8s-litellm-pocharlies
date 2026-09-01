@@ -230,11 +230,19 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        # Misma lista honesta que `tooling` y por el mismo motivo (ver arriba).
-        # Son los tiers que el HOOK honra (CLIENT_EFFORT_TIERS), no los que acepta
-        # el servidor: para la familia qwen el effort se traduce a `enable_thinking`
-        # y el valor crudo no debe viajar -- ver el strip en `_apply_thinking_tier`.
-        supported_reasoning_efforts: [none, high, max]
+        # 01-09-2026: entra `xhigh`. La recipe oficial de Qwen (model card de
+        # HuggingFace y recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next) dice que este
+        # modelo gradua con `reasoning_effort` en niveles [low, medium, xhigh] y
+        # que su DEFAULT es xhigh. Contra NUESTRO servidor, medido el 01-09 en
+        # chat completions sin tools (reasoning_chars): low=0, medium=0 -- inertes
+        # en este motor, que no lleva --reasoning-parser --; high=139, max=455,
+        # xhigh=490. El hook traduce xhigh->max (CLIENT_EFFORT_TIERS) y el strip
+        # impide que el valor crudo viaje al backend. Con tools todos siguen a 0
+        # (sglang#36537). `low`/`medium` NO se anuncian: dan 0 chars aqui, y un
+        # nivel anunciado y no honrado es el fallo de las 56 fugas del 19-08.
+        # El resto de la familia (tooling, 27B, 4B) sigue con [none, high, max]:
+        # ahi xhigh no esta medido.
+        supported_reasoning_efforts: [none, high, max, xhigh]
     # NUEVO como nombre directo. El controlador solo registraba `tooling` y
     # `qwen38-27b-uncensored` sobre este backend, asi que el residente de
     # `creative` no tenia nombre propio servible. Ahora lo tiene, y es el destino
@@ -2580,9 +2588,10 @@ data:
         # es justo lo que faltaba (ver el comentario de CODEX_EFFORT_FALLBACKS en
         # plugins/litellm-model-sync/scripts/sync_models.py).
         #
-        # No se anade a `supported_reasoning_efforts` de ningun alias: ahi sigue
-        # viviendo el vocabulario honesto [none, high, max] que consumen OpenClaw y
-        # opencode. La traduccion xhigh->max vive solo en el catalogo de Codex.
+        # 01-09-2026: desde hoy `xhigh` SI se anuncia, pero solo en
+        # qwen38-flash-next — medido (=max, 490 reasoning_chars) y ademas el
+        # default oficial del modelo segun su model card. En el resto de alias
+        # sigue sin medirse y ahi vive el vocabulario [none, high, max].
         "xhigh": "max",
     }
     # Cada familia dice lo mismo con otras palabras. DeepSeek lee `thinking` (bool)
@@ -4635,13 +4644,13 @@ data:
             # con True roto, _vision_target manda imagenes a un backend que
             # error, con False de mas las desvia sin preguntar.
             "supports_vision": True,
-            # PROVISIONAL (fase 3): mismos tiers que declara la familia qwen38
-            # medida en el 27B. El mapeo reasoning_effort->thinking contra
-            # SGLang se verifica en el primer arranque; si el motor no los
-            # distingue, recortar aqui antes de anunciar — no mentir en el
-            # catalogo (regla del 15-08).
+            # 01-09-2026: xhigh medido (=max, 490 reasoning_chars) y declarado en
+            # la entrada estatica de este mismo backend; el sync registra por
+            # /model/new lo MISMO que el config — si aqui queda [none, high, max]
+            # la mentira del menu vuelve por la via dinamica (test_local_backend_
+            # reasoning_contract). low/medium siguen fuera: inertes en este motor.
             "supports_reasoning": True,
-            "supported_reasoning_efforts": ("none", "high", "max"),
+            "supported_reasoning_efforts": ("none", "high", "max", "xhigh"),
         },
         {
             # Small latency-oriented text resident on the x86 RTX 3080 Ti.
@@ -5373,7 +5382,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-bd60f3a9be6b
+        config.k8s.e-dani.com/revision: sync-dcf578d2a81a
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -5548,7 +5557,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-69dc78503077
+        config.k8s.e-dani.com/revision: config-8ff7e11f49d5
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
