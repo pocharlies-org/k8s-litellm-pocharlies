@@ -31,7 +31,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 # La ventana que sirve de verdad cada checkpoint. Si alguien cambia un
 # --max-model-len, este numero y el del sync tienen que moverse juntos.
 DGX2_UNCENSORED_27B = "qwen38-27b"
-DEEPSEEK_V4_FLASH = "deepseek-v4-flash-tp2"
+QWEN38_FLASH_NEXT = "qwen38-flash-next"
 QWEN35_4B = "qwen35-4b-int4"
 
 
@@ -55,7 +55,7 @@ def backends(cms):
     tree = ast.parse(cms["sync"])
     wanted = {"ORNITH_CANARY_ALIASES", "TOOLING_COMPAT_ALIASES", "ORNITH_ALIASES",
               "THINKING_TIER_ALIASES",
-              "TOOLING_RESIDENT_ALIASES", "DEEPSEEK_V4_FLASH_DIRECT_ALIASES",
+              "TOOLING_RESIDENT_ALIASES",
               # 26-08: nombre directo del residente llm-tp nuevo (Qwen3.8-Flash-Next).
               "QWEN38_FLASH_NEXT_DIRECT_ALIASES",
               "QWEN35_4B_ALIASES",
@@ -139,10 +139,16 @@ def test_el_27b_declara_la_ventana_que_sirve(backends):
     assert estrechos == {QWEN35_4B: 32768}, estrechos
 
 
-def test_deepseek_publica_la_ventana_operativa_de_384k(backends):
-    """El catalogo solo puede anunciar el max_model_len que sirve vLLM."""
-    assert backends[DEEPSEEK_V4_FLASH]["max_input_tokens"] == 393216
-    assert backends[DEEPSEEK_V4_FLASH]["max_output_tokens"] == 16384
+def test_qwen38_flash_next_publica_la_ventana_operativa_de_256k(backends):
+    """El catalogo solo puede anunciar el max_model_len que sirve vLLM.
+
+    01-09-2026: era el contrato de DeepSeek-V4-Flash (384K). Al retirarlo, el
+    residente de `llm-tp` pasa a ser Qwen3.8-Flash-Next, que arranca con
+    --max-model-len 262144. La propiedad protegida es la misma: el catalogo no
+    puede anunciar mas contexto del que sirve el motor.
+    """
+    assert backends[QWEN38_FLASH_NEXT]["max_input_tokens"] == 262144
+    assert backends[QWEN38_FLASH_NEXT]["max_output_tokens"] == 16384
 
 
 def test_qwen35_4b_publica_el_contexto_real_de_llama_cpp(backends):
@@ -150,11 +156,11 @@ def test_qwen35_4b_publica_el_contexto_real_de_llama_cpp(backends):
     assert backends[QWEN35_4B]["max_output_tokens"] == 8192
 
 
-def test_deepseek_publica_su_nombre_directo_solo_en_su_backend(backends):
+def test_qwen38_flash_next_publica_su_nombre_directo_solo_en_su_backend(backends):
     """El nombre concreto no puede resolver silenciosamente a otro residente."""
-    alias = "deepseek-v4-flash-0731"
+    alias = "qwen38-flash-next"
     owners = [name for name, backend in backends.items() if alias in backend["aliases"]]
-    assert owners == [DEEPSEEK_V4_FLASH]
+    assert owners == [QWEN38_FLASH_NEXT]
 
 
 def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
@@ -171,8 +177,8 @@ def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
     current = {
         "model_name": "tooling",
         "litellm_params": {
-            "model": "openai/deepseek-v4-flash-0731",
-            "api_base": "http://deepseek/v1",
+            "model": "openai/qwen38-flash-next",
+            "api_base": "http://qwen38/v1",
             "max_parallel_requests": 6,
         },
         "model_info": {
@@ -183,7 +189,7 @@ def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
             "supports_vision": False,
             "backend": "dgx1+dgx2",
             "k8s_namespace": "llm",
-            "k8s_service": "deepseek-v4-flash-0731",
+            "k8s_service": "qwen38-flash-next",
         },
     }
     desired = {**current, "model_info": {**current["model_info"], "max_input_tokens": 393216}}

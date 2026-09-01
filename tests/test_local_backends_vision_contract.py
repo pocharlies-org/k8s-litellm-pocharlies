@@ -1,12 +1,12 @@
-"""Los backends locales declaran supports_vision, y DeepSeek en particular.
+"""Los backends locales declaran supports_vision, y el residente llm-tp en particular.
 
 POR QUE EXISTE ESTE TEST (2026-08-13)
 ------------------------------------
-`deepseek-v4-flash-tp2` estuvo con `"supports_vision": False` con el comentario
-"DeepseekV4ForCausalLM: solo texto, no es multimodal". Era cierto hasta que el
-servidor paso a servir `DeepseekV4VisionForCausalLM` (plugin FlyCockpit: tower
-DeepEncoderV2 + adapter). A partir de ahi el flag quedo MINTIENDO, y el efecto no
-fue un error sino algo peor:
+Nacio anclando a `deepseek-v4-flash-tp2`, que estuvo con `"supports_vision": False`
+y el comentario "DeepseekV4ForCausalLM: solo texto, no es multimodal". Era cierto
+hasta que el servidor paso a servir `DeepseekV4VisionForCausalLM` (plugin
+FlyCockpit: tower DeepEncoderV2 + adapter). A partir de ahi el flag quedo
+MINTIENDO, y el efecto no fue un error sino algo peor:
 
   - `_vision_target` desviaba TODA peticion con imagen al fallback configurado;
   - y OpenClaw/OpenChamber, que leen la misma capacidad, contestaban "este modelo
@@ -16,7 +16,12 @@ O sea: el modelo veia perfectamente y la unica pieza rota era este booleano. Nad
 en los logs lo delataba. Este test fija el valor para que volver a ponerlo en
 False sea un fallo de CI y no un descubrimiento por sorpresa dentro de un mes.
 
-ALCANCE: este test ancla SOLO a DeepSeek.
+01-09-2026: DeepSeek-V4-Flash se retira del cluster y el ancla pasa a
+`qwen38-flash-next`, que hereda el papel de residente llm-tp Y de destino de
+LITELLM_VISION_FALLBACK_MODEL. El riesgo es el mismo pero mas agudo: si su flag
+miente, el desvio de imagenes apunta AL MISMO backend y no hay a donde caer.
+
+ALCANCE: este test ancla SOLO al residente llm-tp vivo.
 
 Los otros tres backends declarados (ornith-dgx1, nvidia-qwen36-dgx1,
 qwen38-27b) tambien tienen supports_vision=True, pero NO se fijan
@@ -59,7 +64,6 @@ BACKENDS_LOCALES = {
     # multimodal nativo, vision encoder BF16) — PROVISIONAL hasta el smoke de
     # vision del primer arranque contra SGLang (fase 3).
     "qwen38-flash-next",
-    "deepseek-v4-flash-tp2",
     "qwen35-4b-int4",
 }
 
@@ -110,12 +114,24 @@ def test_estan_todos_los_backends_locales_esperados():
     )
 
 
-def test_deepseek_declara_que_ve():
-    ds = _backends()["deepseek-v4-flash-tp2"]
-    assert ds["supports_vision"] is True, (
-        "deepseek-v4-flash-tp2 sirve DeepseekV4VisionForCausalLM y SI ve. Con "
-        "False, _vision_target desvia toda imagen al fallback y los clientes "
-        "responden 'no admite imagenes' sin preguntar al modelo."
+def test_qwen38_flash_next_declara_que_ve():
+    """01-09-2026: hereda el ancla que tenia DeepSeek-V4-Flash al retirarse.
+
+    Y aqui importa mas que antes: al irse DeepSeek, este backend pasa a ser el
+    destino de LITELLM_VISION_FALLBACK_MODEL. Ver el checkpoint:
+    `quantization_config.ignore` incluye `model.visual.*`, sus 333 tensores
+    visuales no llevan weight_scale (van en BF16), y vLLM registra
+    Qwen4ExpForConditionalGeneration en _MULTIMODAL_MODELS. El servidor arranca
+    SIN --language-model-only desde el mismo cambio.
+
+    Comprobado contra el pod: describe correctamente una imagen de prueba.
+    """
+    qn = _backends()["qwen38-flash-next"]
+    assert qn["supports_vision"] is True, (
+        "qwen38-flash-next es el backend de vision desde que se retiro DeepSeek. "
+        "Con False, _vision_target desvia toda imagen al fallback -- que es EL "
+        "MISMO backend -- y los clientes responden 'no admite imagenes' sin "
+        "preguntar al modelo."
     )
 
 
