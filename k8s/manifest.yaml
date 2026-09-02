@@ -342,6 +342,19 @@ data:
         # de los Sparks. Con 1 slot por replica, la sonda de fondo ademas compite
         # por el slot con el trafico real.
         disable_background_health_check: true
+    # 02-09-2026 (SC-131): `qwen35-4b-fast` es el MISMO backend que `qwen35-4b`
+    # con un nombre propio de lane barato. Por que hace falta un nombre aparte:
+    # el gate del hook (`_qwen35_4b_fast_access_denied`, deny-por-defecto) cierra
+    # este alias a la lista de keys de abajo, y el allowlist de la key NO puede
+    # cerrar nada (`models: []` = todos). Misma razon que or-* y -uncensored.
+    # Consumidor actual: el background review de los perfiles Hermes de
+    # k8s-openclaw-qwen36 (auxiliary.background_review.model), que traslada el
+    # fork de autoaprendizaje del residente (DGX) a este 4B en la RTX.
+    - model_name: qwen35-4b-fast
+      litellm_params:
+        <<: *qwen35_4b_params
+      model_info:
+        <<: *qwen35_4b_info
     # ── ALIAS DE CAPACIDAD: al Service de POOL ───────────────────────────────────
     # `tooling` significa «el residente del perfil vivo, sin pensar».
     #
@@ -1207,6 +1220,31 @@ data:
             "requested": requested,
             "key": key_label,
             "allowed": sorted(OPENROUTER_ALLOWED_KEY_ALIASES),
+        }
+
+    # 02-09-2026 (SC-131): gate del lane barato `qwen35-4b-fast`. Mismo patron
+    # que or-* y -uncensored: deny-por-defecto ANTES de resolver alias, porque el
+    # allowlist de la key no puede cerrar nada (`models: []` = todos). FALLA
+    # CERRADO: con LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS vacia no lo pide nadie.
+    QWEN35_4B_FAST_ALIAS = "qwen35-4b-fast"
+
+    QWEN35_4B_FAST_ALLOWED_KEY_ALIASES = frozenset(
+        alias.strip()
+        for alias in os.environ.get("LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS", "").split(",")
+        if alias.strip()
+    )
+
+    def _qwen35_4b_fast_access_denied(requested, key_label):
+        """(bool, detalle) si esta key NO puede pedir el lane barato 4B."""
+        if str(requested or "").strip() != QWEN35_4B_FAST_ALIAS:
+            return False, None
+        if key_label in QWEN35_4B_FAST_ALLOWED_KEY_ALIASES:
+            return False, None
+        return True, {
+            "error": "this key may not request the qwen35-4b-fast lane",
+            "requested": requested,
+            "key": key_label,
+            "allowed": sorted(QWEN35_4B_FAST_ALLOWED_KEY_ALIASES),
         }
 
     def _tooling_uncensored_target(state):
@@ -3322,6 +3360,17 @@ data:
             if _denied:
                 router_log.warning(
                     "openrouter: key %r pidio %r y no esta en la lista",
+                    _detail["key"], _detail["requested"])
+                raise HTTPException(status_code=403, detail=_detail)
+
+            # Gate del lane barato 4B (SC-131), cuarto de la cadena y por el mismo
+            # motivo: deny-por-defecto antes de resolver alias.
+            _denied, _detail = _qwen35_4b_fast_access_denied(
+                requested_model, _resolve_key_label(user_api_key_dict)
+            )
+            if _denied:
+                router_log.warning(
+                    "qwen35-4b-fast: key %r pidio %r y no esta en la lista",
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
 
@@ -5588,7 +5637,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-dd3c67b9ecb9
+        config.k8s.e-dani.com/revision: config-97d86ec9ff91
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -5706,6 +5755,9 @@ spec:
             # allowlist de la key NO puede cerrar nada — `models: []` = todos, y 7 de
             # 10 keys lo tienen asi, luego publicar el alias lo concede a ocho keys.
             - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local" }
+            # Keys autorizadas a pedir `qwen35-4b-fast` (lane barato del review de
+            # Hermes). Falla cerrado si se vacia. SC-131.
+            - { name: LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS, value: "openclaw-qwen36-prod" }
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS
