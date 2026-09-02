@@ -1289,6 +1289,262 @@ data:
             "allowed": sorted(QWEN35_4B_FAST_ALLOWED_KEY_ALIASES),
         }
 
+    # ------------------------------------------------------------------
+    # GET /openrouter/account — saldo y cupo de la cuenta de OpenRouter.
+    #
+    # QUE APORTA Y POR QUE VIVE AQUI. El saldo se puede leer a mano con la key del
+    # secret (`GET https://openrouter.ai/api/v1/credits`), pero eso obliga a sacar la
+    # key de Vault para mirar un numero. Esta ruta la lee desde el entorno del propio
+    # proceso — la key ya esta ahi porque el model_list la usa como
+    # `os.environ/OPENROUTER_API_KEY` — y devuelve SOLO cifras. La key no sale nunca
+    # de aqui: ni en el cuerpo, ni en el log, ni en el detalle de un fallo.
+    #
+    # POR QUE EN LiteLLM Y NO EN EL PANEL. El panel (dgx-infra/services/dashboard)
+    # no tiene la key de OpenRouter y no debe tenerla. El precedente del dial de
+    # refusal es el mismo: la configuracion y la credencial viven donde se usan, y el
+    # panel pregunta. Ver el comentario de `routes_llm_uncensored.py` alli.
+    #
+    # EL CUPO NO ES UNO, SON DOS, y el que muerde casi siempre es el pequeno:
+    #   - 20 req/min, fijo. No se mueve por haber comprado creditos.
+    #   - 50 req/dia si NUNCA se compraron creditos; 1000 req/dia habiendo comprado
+    #     alguna vez >= $10. Lo de los creditos comprados es PERMANENTE: va atado a
+    #     haber comprado alguna vez, no al saldo que quede.
+    # Medido 26-08 con la key real: /credits devuelve 200 aunque
+    # `is_management_key:false`, asi que la lectura no exige una key de gestion.
+    # Docs: openrouter.ai/docs/api-reference/limits y /get-credits.
+    #
+    # FALLO DEGRADADO, NUNCA 500. OpenRouter es de terceros: si no responde, esto
+    # devuelve 200 con status:"unreachable". Un 500 aqui no es que no haya dato, es
+    # que la tarjeta del panel se cae a trozos en cada refresco. Y el dato viejo es
+    # peor que decir "sin medir": por eso el `fetched_at`/`age_seconds` van siempre.
+    OPENROUTER_ACCOUNT_PATH = "/openrouter/account"
+    OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+    OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
+    OPENROUTER_ACCOUNT_TIMEOUT_S = float(
+        os.environ.get("LITELLM_OPENROUTER_ACCOUNT_TIMEOUT_S", "5")
+    )
+    # 60 s: el panel refresca la tarjeta a su ritmo y esto no puede golpear
+    # OpenRouter en cada refresco. Es el mismo patron que el TTL del dial.
+    OPENROUTER_ACCOUNT_TTL_S = float(
+        os.environ.get("LITELLM_OPENROUTER_ACCOUNT_TTL_S", "60")
+    )
+    OPENROUTER_FREE_RPM_CAP = 20
+    OPENROUTER_FREE_DAILY_CAP_UNFUNDED = 50
+    OPENROUTER_FREE_DAILY_CAP_FUNDED = 1000
+    # Umbral de "cuenta financiada" que OpenRouter usa para subir el cupo diario.
+    OPENROUTER_FUNDED_CREDITS_USD = 10.0
+    _openrouter_account_cache = {"expires": 0.0, "payload": None}
+    _openrouter_account_lock = asyncio.Lock()
+
+    def _openrouter_credits_to_usd(value):
+        """`total_credits`/`total_usage` de /credits ya vienen en USD: no hay conversion.
+
+        Medido el 02-09 con la key real y 10 USD comprados: /credits devuelve
+        `total_credits: 10`. La doc de OpenRouter no declara la unidad del campo
+        (solo `format: double`), pero la medida la zanja: dolares. Antes de cerrar
+        esto la cuenta media 10 y las dos lecturas (USD o centavos) daban el mismo
+        numero; con el saldo ya movido, dejar una variable de entorno para "arreglar
+        la unidad" seria mantener viva una duda que la medida resolvio.
+        """
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _openrouter_account_payload(credits_data, key_data, fetched_at):
+        """Da forma a la respuesta a partir de los dos JSON de OpenRouter.
+
+        Sin red y sin entorno: es lo que se puede probar sin depender de un
+        tercero. `credits_data` es `{"data": {...}}` de /credits; `key_data` el JSON
+        de /key. Cualquiera de los dos puede faltar — se reporta por separado.
+        """
+        credits = credits_data.get("data") if isinstance(credits_data, dict) else None
+        credits = credits if isinstance(credits, dict) else {}
+        key = key_data if isinstance(key_data, dict) else {}
+
+        total_credits = _openrouter_credits_to_usd(credits.get("total_credits"))
+        total_usage = _openrouter_credits_to_usd(credits.get("total_usage"))
+        balance = (
+            total_credits - total_usage
+            if total_credits is not None and total_usage is not None
+            else None
+        )
+
+        # `is_free_tier` manda cuando viene. Si no viene, se DEDUCE del saldo comprado
+        # — y la deducción puede estar equivocada: quien compró $10 y se gastó los
+        # $10 sigue en 1000/dia (el cupo va atado a haber comprado alguna vez, es
+        # permanente), y con saldo a 0 esto diria 50. Por eso `is_free_tier_source`
+        # dice de donde sale el booleano: quien lo lea tiene que poder dudar.
+        is_free_tier = key.get("is_free_tier")
+        if is_free_tier is None:
+            is_free_tier = (
+                True
+                if total_credits is None
+                else total_credits < OPENROUTER_FUNDED_CREDITS_USD
+            )
+            is_free_tier_source = "inferred_from_credits"
+        else:
+            is_free_tier_source = "key_endpoint"
+        daily_cap = (
+            OPENROUTER_FREE_DAILY_CAP_UNFUNDED
+            if is_free_tier
+            else OPENROUTER_FREE_DAILY_CAP_FUNDED
+        )
+
+        usage_daily = key.get("usage_daily")
+        try:
+            usage_daily = None if usage_daily is None else float(usage_daily)
+        except (TypeError, ValueError):
+            usage_daily = None
+
+        return {
+            "status": "ok" if credits or key else "unreachable",
+            "total_credits": total_credits,
+            "total_usage": total_usage,
+            "balance": balance,
+            "usage_daily": usage_daily,
+            "is_free_tier": bool(is_free_tier),
+            "is_free_tier_source": is_free_tier_source,
+            "daily_request_cap": daily_cap,
+            "rpm_cap": OPENROUTER_FREE_RPM_CAP,
+            # Que se pudo leer y que no. Sin esto, un /key caido se disfraza de
+            # "gasto de hoy = 0", que es justo el numero que alguien va a creer.
+            "sources": {
+                "credits": bool(credits),
+                "key": bool(key),
+            },
+            "fetched_at": fetched_at,
+            "ttl_seconds": OPENROUTER_ACCOUNT_TTL_S,
+            "note": "Cupo free: 20 req/min fijo y 50 o 1000 req/dia segun se hayan "
+                    "comprado creditos alguna vez (permanente). Cifras en USD.",
+        }
+
+    def _openrouter_account_unreachable(reason, fetched_at):
+        """200 con `unreachable`, jamas un 500: la tarjeta del panel no se cae."""
+        return {
+            "status": "unreachable",
+            "total_credits": None,
+            "total_usage": None,
+            "balance": None,
+            "usage_daily": None,
+            "is_free_tier": None,
+            "is_free_tier_source": None,
+            "daily_request_cap": None,
+            "rpm_cap": OPENROUTER_FREE_RPM_CAP,
+            "sources": {"credits": False, "key": False},
+            "reason": reason,
+            "fetched_at": fetched_at,
+            "ttl_seconds": OPENROUTER_ACCOUNT_TTL_S,
+        }
+
+    async def _openrouter_account_fetch():
+        """Lee /credits y /key. Nunca propaga la excepcion ni la key."""
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        fetched_at = time.time()
+        if not api_key:
+            # Sin credencial no hay forma de saber el saldo: es "sin medir", no 0.
+            return _openrouter_account_unreachable("missing_api_key", fetched_at)
+
+        headers = {"Authorization": "Bearer {}".format(api_key)}
+
+        async def _read(client, url):
+            try:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                return response.json(), None
+            except Exception as exc:  # noqa: BLE001
+                # Solo el tipo de excepcion: ni la URL ni la cabecera pueden acabar
+                # en el payload, que es publico para el panel.
+                return None, type(exc).__name__
+
+        credits_data = key_data = None
+        errors = []
+        async with httpx.AsyncClient(timeout=OPENROUTER_ACCOUNT_TIMEOUT_S) as client:
+            # Dos lecturas INDEPENDIENTES: si /key cae, el saldo sigue saliendo. Un
+            # only-first-a-fails-both aqui convertiria un endpoint caido en "sin dato".
+            (credits_data, credits_error), (key_data, key_error) = await asyncio.gather(
+                _read(client, OPENROUTER_CREDITS_URL),
+                _read(client, OPENROUTER_KEY_URL),
+            )
+            if credits_error:
+                errors.append("credits:{}".format(credits_error))
+            if key_error:
+                errors.append("key:{}".format(key_error))
+
+        if credits_data is None and key_data is None:
+            return _openrouter_account_unreachable("+".join(errors) or "unreachable", fetched_at)
+
+        payload = _openrouter_account_payload(credits_data, key_data, fetched_at)
+        if payload["status"] == "ok" and errors:
+            payload["status"] = "partial"
+            payload["reason"] = "+".join(errors)
+        return payload
+
+    async def _openrouter_account_cached():
+        """Cache TTL a la manera de `_compute_mode_state`: uno refresca, el resto lee.
+
+        `asyncio.Lock` y no `threading.Lock`: el fetch es `await` y esto corre en el
+        event loop del proxy. Un lock de hilo alrededor de un `await` es un
+        `RuntimeError` o un abrazo mortal, segun el orden.
+        """
+        now = time.monotonic()
+        if now < _openrouter_account_cache["expires"] and _openrouter_account_cache["payload"]:
+            payload = dict(_openrouter_account_cache["payload"])
+            payload["cached"] = True
+            payload["age_seconds"] = round(
+                time.time() - float(payload.get("fetched_at") or time.time()), 2
+            )
+            return payload
+
+        async with _openrouter_account_lock:
+            now = time.monotonic()
+            if (
+                now < _openrouter_account_cache["expires"]
+                and _openrouter_account_cache["payload"]
+            ):
+                payload = dict(_openrouter_account_cache["payload"])
+                payload["cached"] = True
+                payload["age_seconds"] = round(
+                    time.time() - float(payload.get("fetched_at") or time.time()), 2
+                )
+                return payload
+            payload = await _openrouter_account_fetch()
+            # Un `unreachable` se cachea MUCHO menos: si OpenRouter revive, el panel
+            # lo ve en el siguiente refresco, no un minuto despues.
+            ttl = 5.0 if payload.get("status") == "unreachable" else OPENROUTER_ACCOUNT_TTL_S
+            _openrouter_account_cache["payload"] = payload
+            _openrouter_account_cache["expires"] = time.monotonic() + ttl
+            out = dict(payload)
+            out["cached"] = False
+            out["age_seconds"] = 0.0
+            return out
+
+    def _register_openrouter_account_route():
+        from litellm.proxy.proxy_server import app
+
+        # Mismo doble-registro que el middleware de capacidades: el modulo puede
+        # reimportarse al recargar la configuracion y Starlette NO deduplica rutas.
+        state_key = "openrouter_account_route"
+        if getattr(app.state, state_key, False):
+            return
+        setattr(app.state, state_key, True)
+
+        # `async def`: el fetch es `await` (httpx.AsyncClient), igual que las rutas
+        # del dial que tambien hacen httpx. Un handler sincrono tendria que montar su
+        # propio event loop dentro del del proxy.
+        @app.get(OPENROUTER_ACCOUNT_PATH, tags=["admin"])
+        async def _openrouter_account():
+            # Sine qua non: solo lectura. No hay POST aqui, no hay forma de escribir
+            # el saldo, y la key no se devuelve en ningun camino.
+            return await _openrouter_account_cached()
+
+
+    try:
+        _register_openrouter_account_route()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo registrar /openrouter/account: %s", exc)
+
+
     def _tooling_uncensored_target(state):
         mode, reason = _select_ready_tooling_mode(state)
         if not mode:
@@ -5679,7 +5935,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-598e74a44f5e
+        config.k8s.e-dani.com/revision: config-bac882a6b8fc
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
