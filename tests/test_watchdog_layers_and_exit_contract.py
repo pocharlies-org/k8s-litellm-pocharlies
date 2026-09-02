@@ -167,6 +167,23 @@ def test_L1_roto_es_caido_sin_gastar_la_inferencia():
         "si el residente no publica, la inferencia no se paga: L1 existe para eso")
 
 
+def test_L1_dice_el_cuerpo_del_error_no_solo_el_codigo():
+    """`str(HTTPError)` es "HTTP Error 503: Service Unavailable": no dice si el
+    residente no tiene endpoints o si lo estamos bloqueando nosotros, y esas dos
+    cosas se arreglan en sitios distintos. El cuerpo tenia que llegar al log."""
+    def handler(url):
+        if "tooling.llm.svc" in url:
+            raise _http_error(
+                url, 503, b'{"error": "tooling profile target is unavailable"}')
+        return _verde(url)
+    with mock.patch("builtins.print") as salida:
+        _run(handler)
+    log = "\n".join(str(a) for c in salida.call_args_list for a in c.args)
+    assert "tooling profile target is unavailable" in log, (
+        "el fallo de L1 se reporto sin el cuerpo: en el aviso solo se veria "
+        "'HTTP Error 503' y hay que adivinar de que capa del enrutado es")
+
+
 def test_L1_pregunta_al_residente_no_al_catalogo_de_litellm():
     """El catalogo de LiteLLM sale del ConfigMap y se publica aunque el residente
     este a 0 replicas (auditoria del 19-08 con los alias -uncensored). Preguntarle

@@ -243,6 +243,14 @@ spec:
                               modelos = len(d.get("data", []))
                               if modelos == 0:
                                   fallos.append("residente tooling publica CERO modelos")
+                          except urllib.error.HTTPError as exc:
+                              # El cuerpo dice el porque (503 sin endpoints, 401,
+                              # ...) y `str(exc)` no lo lleva: mismo criterio que en
+                              # L2. Un "HTTP Error 503" a secas no dice si el
+                              # residente no existe o si lo estamos bloqueando
+                              # nosotros.
+                              fallos.append("residente tooling /v1/models: HTTP %d %s"
+                                            % (exc.code, cuerpo_error(exc)[:90]))
                           except Exception as exc:
                               fallos.append("residente tooling /v1/models: %s"
                                             % str(exc)[:110])
