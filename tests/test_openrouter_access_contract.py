@@ -9,10 +9,16 @@ model_list lo heredan ocho keys solas — incluida la de `document-intake`, que
 procesa facturas. La unica capa que puede cerrarlo es el hook.
 
 Y va por PREFIJO, no por lista literal, porque el bloque `or-*` esta pensado para
-crecer: el panel de openrouter.e-dani.com inserta entradas por PR. Con una lista
-literal, cada alias nuevo naceria ABIERTO hasta que alguien se acordara de venir a
-cerrarlo. El precedente esta medido: `gpt-5.6-luna` volvio al model_list el 25-08 y
-`sauvage-shield` lo heredo sola porque lo llevaba escrito de antes de la purga.
+crecer, y CRECE A MANO: se edita a pelo en `k8s/manifest.yaml`, en un commit, y puede
+crecer SIN pasar por este test. (Durante un tiempo este fichero afirmaba que lo
+alimentaba un panel en `openrouter.e-dani.com` que inserta entradas por PR. No existe
+tal panel: 404 en todo el dominio y sin repo. La conclusion — gate por prefijo — era
+la correcta; el razonamiento era falso, y ya costo una investigacion encima, commit
+603cc3f.) Con una lista literal, cada alias nuevo naceria ABIERTO hasta que alguien se
+acordara de venir a cerrarlo; con prefijo nace cerrado por construccion, que es justo
+lo que compensa que crezca a mano. El precedente esta medido: `gpt-5.6-luna` volvio al
+model_list el 25-08 y `sauvage-shield` lo heredo sola porque lo llevaba escrito de
+antes de la purga.
 """
 import ast
 import types
@@ -163,6 +169,26 @@ def test_no_background_health_check_burns_the_daily_quota():
     """4 replicas x 96 llamadas/dia contra una cuota diaria se la comen entera."""
     for m in _openrouter_entries():
         assert m["model_info"]["disable_background_health_check"] is True, m["model_name"]
+
+
+def test_every_openrouter_alias_carries_a_one_line_label():
+    """Cada alias `or-*` lleva `model_info.description` de UNA linea.
+
+    El picker de opencode no tiene donde decir que `or-ultra` es un frontier de 550B
+    y `or-lfm` un nano de 2,6B que el propio fabricante desaconseja para coding. La
+    etiqueta es lo unico que lo distingue en el menu, y sale del campo `description`
+    de `GET https://openrouter.ai/api/v1/models`.
+
+    Va de una linea porque el picker la pinta en un `span` sin salto de linea: un
+    salto aqui no parte la etiqueta, parte el YAML del ConfigMap.
+    """
+    for m in _openrouter_entries():
+        description = m["model_info"].get("description")
+        assert isinstance(description, str) and description.strip(), (
+            f"{m['model_name']} sin model_info.description"
+        )
+        assert "\n" not in description, m["model_name"]
+        assert len(description) <= 120, (m["model_name"], len(description))
 
 
 def test_openrouter_is_never_the_silent_destination_of_a_degradation():
