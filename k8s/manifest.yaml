@@ -243,6 +243,20 @@ data:
         # El resto de la familia (tooling, 27B, 4B) sigue con [none, high, max]:
         # ahi xhigh no esta medido.
         supported_reasoning_efforts: [none, high, max, xhigh]
+        # 02-09-2026 (STA-9): callado el bucle de fondo. Medido: `/health` decia
+        # `healthy_count: 0` MIENTRAS una inferencia real respondia 391 en 5 s. La
+        # sonda de fondo no es el watchdog: usa `max_tokens` 16 (el default de
+        # upstream, health_check.py::_resolve_health_check_max_tokens) y aqui todos
+        # los residentes son de razonamiento — el pensamiento se come los 16 tokens
+        # y devuelve content VACIO con HTTP 200, que el bucle apunta como unhealthy.
+        # Es el mismo bug que el cron del watchdog documenta para SU test (ver el
+        # comentario de max_tokens alli), pero el health-check interno de LiteLLM lo
+        # seguia teniendo. Coste aparte: 2 replicas x 4 alias de residente x 96
+        # ciclos/dia = ~768 llamadas/dia que no informan de nada. Mismo patron que
+        # los gemelos bge y el bloque openrouter-free. NO se pone
+        # `health_check_skip_disabled_background_models`: un `GET /health` a mano
+        # sigue sondeando de verdad (y ese si puede llevar effort/max_tokens a mano).
+        disable_background_health_check: true
     # NUEVO como nombre directo. El controlador solo registraba `tooling` y
     # `qwen38-27b-uncensored` sobre este backend, asi que el residente de
     # `creative` no tenia nombre propio servible. Ahora lo tiene, y es el destino
@@ -272,6 +286,9 @@ data:
         # MEDIDO en el comentario del BACKENDS: none/low/medium -> reasoning_content
         # 0 chars; solo high y max piensan de verdad. Se declaraban igualmente.
         supported_reasoning_efforts: [none, high, max]
+        # 02-09-2026 (STA-9): ver el flag de qwen38-flash-next — mismo residente,
+        # mismo falso rojo con la sonda de 16 tokens.
+        disable_background_health_check: true
     - model_name: qwen38-27b-uncensored
       litellm_params:
         model: openai/qwen38-27b
@@ -291,6 +308,10 @@ data:
         supports_reasoning: true
         # Mismo backend que el alias de arriba: mismos tiers honrados.
         supported_reasoning_efforts: [none, high, max]
+        # 02-09-2026 (STA-9): mismo deployment detras de `qwen38-27b`; si se calla
+        # solo el otro, el bucle de fondo sigue sondeando este y el bucle deduplica
+        # por model_info.id, no por api_base (ver el comentario de bge-m3-embedding).
+        disable_background_health_check: true
     # Independiente del perfil: vive en la RTX del x86, no en los Sparks, asi que
     # esta arriba en los dos modos.
     #
@@ -317,6 +338,10 @@ data:
         supports_reasoning: true
         # Igual que los otros locales: none/low/medium daban reasoning_content 0.
         supported_reasoning_efforts: [none, high, max]
+        # 02-09-2026 (STA-9): residente local de razonamiento, mismo caso que los
+        # de los Sparks. Con 1 slot por replica, la sonda de fondo ademas compite
+        # por el slot con el trafico real.
+        disable_background_health_check: true
     # ── ALIAS DE CAPACIDAD: al Service de POOL ───────────────────────────────────
     # `tooling` significa «el residente del perfil vivo, sin pensar».
     #
@@ -348,6 +373,12 @@ data:
         # cercano y el effort que llega es DELIBERADO. Ver el alias directo de
         # DeepSeek para el fallo que arregla.
         supported_reasoning_efforts: [none, high, max]
+        # 02-09-2026 (STA-9): el alias de capacidad apunta al MISMO Service de pool
+        # que el nombre directo del residente vivo, y el bucle de fondo deduplica
+        # por model_info.id y no por api_base (ver bge-m3-embedding): sondear los
+        # dos es dos inferencias contra el mismo motor. El residente ya lleva su
+        # flag; el de capacidad se calla igual.
+        disable_background_health_check: true
     # ── `tooling-uncensored`: el residente del perfil, abliterado ───────────────
     #
     # POR QUE HACE FALTA UN NOMBRE DE CAPACIDAD. `deepseek-v4-flash-0731-uncensored`
@@ -5557,7 +5588,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8ff7e11f49d5
+        config.k8s.e-dani.com/revision: config-dd3c67b9ecb9
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
