@@ -389,8 +389,18 @@ spec:
                           # ultimo_aviso solo se mueve si el mensaje SALIO. Si Telegram
                           # falla, la proxima corrida vuelve a intentarlo en vez de dar
                           # el aviso por dado.
+                          #
+                          # `visto` es la HORA DE ESTA CORRIDA, avise o no avise. El
+                          # panel lo usa para decir "la ultima sonda es de hace X":
+                          # sin el, un CronJob muerto deja el ultimo aviso de hace
+                          # dias y el panel sigue diciendo `ok`. Ese es justo el fallo
+                          # del que viene esta issue: un semaforo del que no se sabe
+                          # cuando se miro.
                           guarda_estado({"clase": clase, "desde": desde,
                                          "ultimo_aviso": ahora if enviado else ultimo,
+                                         "visto": ahora, "capa": capa,
+                                         "latencia_ms": round(latencia or 0),
+                                         "fallos": fallos,
                                          "vuelve": vuelve})
 
                       if not avisar:
@@ -489,6 +499,7 @@ spec:
                       try:
                           guarda_estado({"clase": "error-watchdog",
                                          "desde": int(time.time()),
+                                         "visto": int(time.time()),
                                          "ultimo_aviso": 0, "vuelve": None})
                       except Exception as exc2:
                           print("[litellm-watchdog] ni el estado pude escribir: %r"
