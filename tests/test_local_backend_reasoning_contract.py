@@ -139,38 +139,36 @@ def _llm_tp_backend() -> dict:
 
 
 def test_el_residente_llm_tp_publica_sus_tiers_reales():
-    """01-09-2026: hereda el ancla de DeepSeek-V4-Flash al retirarse este.
+    """03-09-2026: decision del owner — la receta oficial de Qwen3.8 es la
+    publicada, y el hook la pasa CRUDA (CLIENT_EFFORT_TIERS). La lista honesta
+    sigue siendo la de los tiers que el HOOK honra, no la que acepta el motor.
 
-    La lista honesta es la misma y por el mismo motivo: son los tiers que el
-    HOOK honra (CLIENT_EFFORT_TIERS), no los que acepta el servidor.
+    `low`/`medium` vuelven a estar anunciados porque el hook ya no los descarta:
+    viajan al chat template tal cual. Son INERTES en SGLang (medido 03-09:
+    reasoning_chars 0), y se anuncian aun asi por decision explicita del owner.
     """
     backend = _llm_tp_backend()
     assert backend["supports_reasoning"] is True
-    # 2026-08-19: `low` FUERA, y no es cosmetica. El hook no traduce `low`
-    # (CLIENT_EFFORT_TIERS: un effort ambiente de un cliente agente no es una
-    # orden), asi que declararlo dejaba a OpenClaw parado en un nivel que el
-    # servidor descarta -- creyendo pensar mientras `tooling` corria en
-    # thinking_mode "chat" y el monologo salia por el canal visible.
-    # 01-09-2026: entra `xhigh`, medido contra el servidor vivo (=max, 490
-    # reasoning_chars; high=139; low/medium=0) y default oficial del modelo
-    # segun su model card. El hook lo traduce a max (CLIENT_EFFORT_TIERS) y el
-    # strip impide que el valor crudo viaje al backend.
     assert backend["supported_reasoning_efforts"] == (
         "none",
-        "high",
-        "max",
+        "low",
+        "medium",
         "xhigh",
     )
 
 
-def test_el_residente_llm_tp_no_anuncia_los_inertes():
-    """`low`/`medium` existen en la recipe oficial del modelo pero NO en
-    nuestro motor: medido el 01-09, reasoning_chars 0 con ambos (3/3), y el
-    hook los descarta. Anunciarlos es el fallo de las 56 fugas del 19-08."""
+def test_el_residente_llm_tp_anuncia_la_receta_aunque_sea_inerte():
+    """`low`/`medium` salen del menu SOLO si el hook dejara de pasarlos crudo.
+
+    Son inertes en el motor (medido 03-09: reasoning_chars 0 con ambos), pero el
+    menu y el hook son UNA sola verdad: si alguien vuelve a traducir o descartar
+    esos niveles, este test y `test_client_effort_contract` caen juntos.
+    """
     backend = _llm_tp_backend()
     efforts = set(backend["supported_reasoning_efforts"])
-    assert "low" not in efforts
-    assert "medium" not in efforts
+    assert {"low", "medium", "xhigh"} <= efforts
+    assert "high" not in efforts and "max" not in efforts, \
+        "high/max no existen en la receta de Qwen; son dialecto de DeepSeek"
 
 
 def test_el_reconciler_refresca_reasoning_y_efforts():

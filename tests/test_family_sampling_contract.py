@@ -219,19 +219,39 @@ def test_detector_de_salida_estructurada(hook):
 def _ctk(data):
     return (data.get("extra_body") or {}).get("chat_template_kwargs") or {}
 def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
-    """Qwen enciende y apaga, y ademas ACOTA el nivel. Lo que NO puede pasar es
+    """Qwen enciende y apaga, y pasa la receta CRUDA. Lo que NO puede pasar es
     que se le cuelen las claves de DeepSeek (`thinking`, effort `high`/`max`).
 
-    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. Solo hay DOS niveles utiles: `medium` pasa la validacion pero cae en un elif inexistente y deja las instrucciones vacias (medido: medium 2721 chars vs low 2993, indistinguibles), por eso `high` mapea a `low`."""
-    _install_fake_litellm({"tooling": _dep("openai/nvidia-qwen36-35b-nvfp4")})
-    esperado = {"high": "low", "max": "xhigh"}
-    for effort, backend_effort in esperado.items():
-        data = {"model": "tooling", "reasoning_effort": effort}
+    03-09-2026: decision del owner — la receta oficial de Qwen3.8
+    ([low, medium, xhigh]) es la que se publica y la que viaja, SIN traduccion.
+    `high`/`max` ya no son dialecto de qwen: caen fuera de la tabla, el hook no
+    escribe nada para ellos y el motor contesta su 400 honesto (ver
+    test_high_y_max_solo_viven_para_deepseek en test_client_effort_contract).
+    `minimal` si es ambiente: no esta en CLIENT_EFFORT_TIERS, decide el alias y
+    `tooling` esta en THINKING_TIERS como "off". `low`/`medium` son inertes en
+    SGLang (medido 03-09: reasoning_chars 0) pero viajan igual, por decision
+    explicita del owner.
+    """
+    _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
+    for nivel in ("low", "medium", "xhigh"):
+        data = {"model": "tooling", "reasoning_effort": nivel}
         hook._apply_thinking_tier(data, "tooling")
         assert _ctk(data) == {
             "enable_thinking": True,
-            "reasoning_effort": backend_effort,
-        }, effort
+            "reasoning_effort": nivel,
+        }, nivel
+    for esfuerzo_ajeno in ("high", "max"):
+        data = {"model": "tooling", "reasoning_effort": esfuerzo_ajeno}
+        hook._apply_thinking_tier(data, "tooling")
+        assert _ctk(data) == {}, esfuerzo_ajeno
+        assert data.get("reasoning_effort") == esfuerzo_ajeno, esfuerzo_ajeno
+    data = {"model": "tooling", "reasoning_effort": "minimal"}
+    hook._apply_thinking_tier(data, "tooling")
+    assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["off"]
+    # El effort ambiente no era una orden, pero tampoco se inventa: el strip es
+    # para lo que el hook TRADUCIA. Un valor que el hook no entiende viaja tal
+    # cual y el motor decide con el.
+    assert data.get("reasoning_effort") == "minimal"
     data = {"model": "tooling"}
     hook._apply_thinking_tier(data, "tooling")
     assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["off"]
@@ -241,16 +261,16 @@ def test_el_tier_sale_de_lo_PEDIDO_no_del_modelo_resuelto(hook):
     """La propiedad que justifica calcular el tier antes de resolver el destino.
 
     Cuando la peticion degrada a otro alias, data["model"] ya dice otra cosa. Si
-    el tier se calculara sobre el resuelto, un `max` degradado se quedaria sin
+    el tier se calculara sobre el resuelto, un `xhigh` degradado se quedaria sin
     pensar, que es justo el nivel contrario al que se pidio.
     """
     _install_fake_litellm({"dense": _dep("openai/qwen38-flash-next")})
-    data = {"model": "dense", "reasoning_effort": "max"}
+    data = {"model": "dense", "reasoning_effort": "xhigh"}
     hook._apply_thinking_tier(data, "tooling")
     # Se deriva de la tabla del hook en vez de fijarla a mano: asi el test
     # sobrevive a que cambie el dialecto de qwen (p.ej. al anadir la
     # traduccion de reasoning_effort) sin dejar de proteger la propiedad.
-    assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["max"]
+    assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["xhigh"]
 
 
 def test_un_nombre_desconocido_no_tiene_tier_propio(hook):
@@ -280,12 +300,13 @@ def test_el_cliente_explicito_gana_al_alias(hook):
 
 def test_la_salida_estructurada_apaga_el_pensamiento_pida_lo_que_pida_el_alias(hook):
     """Medido el 2026-08-10: con thinking activo se cuela una llave suelta del
-    razonamiento delante del JSON guiado y el parse revienta (3/3). Pedir `max` y
-    un json_schema a la vez no es mas pensamiento, es una contradiccion."""
+    razonamiento delante del JSON guiado y el parse revienta (3/3). Pedir
+    `xhigh` y un json_schema a la vez no es mas pensamiento, es una
+    contradiccion."""
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     data = {
         "model": "tooling",
-        "reasoning_effort": "max",
+        "reasoning_effort": "xhigh",
         "response_format": {"type": "json_schema"},
     }
     hook._apply_thinking_tier(data, "tooling")
@@ -299,24 +320,28 @@ def test_los_tres_tiers_son_swappable(hook):
         assert alias in hook.SWAPPABLE_ALIASES, alias
 
 
-def test_ningun_tier_dice_medium(hook):
-    """Ningun tier se LLAMA medium, y ninguno MANDA medium al backend.
+def test_los_niveles_de_qwen_son_la_receta_oficial(hook):
+    """Lo que THINKING_KWARGS["qwen"] puede mandar al motor es EXACTAMENTE la
+    receta de las model cards de Qwen3.8: low / medium / xhigh, mas `off`
+    (enable_thinking:false), que no es un effort del modelo.
 
-    Motivo original: el tokenizer de qwen38-27b venia parcheado para que lo
-    desconocido cayera a "low", asi que un tier "medium" mentiria. Sigue
-    valiendo para qwen38-flash-next por otra via: su template acepta `medium`
-    pero no le asigna instrucciones (cae en un elif que no existe), de modo que
-    "medium" es silencio, no un punto intermedio.
-
-    `xhigh` SI entra en la lista de valores validos: es el nivel maximo real del
-    template de qwen38-flash-next, y el unico que el tier `max` puede prometer
-    sin mentir."""
+    03-09-2026: antes este test prohibia `medium` (el template de qwen38-27b lo
+    desconocia y caia a "low", y en flash-next caia en un elif inexistente). El
+    owner decidio publicar la receta oficial y pasarla cruda, inertes o no, asi
+    que lo que se fija aqui es la FRONTERA: `high`/`max` son dialecto de DeepSeek
+    y no pueden colarse en qwen.
+    """
+    RECETA = {"off", "low", "medium", "xhigh"}
+    assert set(hook.THINKING_KWARGS["qwen"]) == RECETA
     for fam, niveles in hook.THINKING_KWARGS.items():
-        assert "medium" not in niveles, fam
-        for kw in niveles.values():
-            assert kw.get("reasoning_effort") in (
-                None, "low", "high", "max", "xhigh"
-            ), fam
+        for nombre, kw in niveles.items():
+            esfuerzo = kw.get("reasoning_effort")
+            if esfuerzo is None:
+                continue
+            if fam == "qwen":
+                assert esfuerzo in ("low", "medium", "xhigh"), f"{fam}:{nombre}"
+            else:
+                assert esfuerzo in ("low", "high", "max", "xhigh"), f"{fam}:{nombre}"
 
 
 # ── La forma REAL de produccion (2026-08-25) ────────────────────────────────
@@ -333,8 +358,9 @@ def test_ningun_tier_dice_medium(hook):
 # backend) y `temperature=0` daba 1/4 (no se piso a 1.0).
 # Qwen documenta DOS perfiles, no uno: 0.7/0.8 sin pensar y 0.6/0.95 pensando,
 # con top_k 20 / min_p 0 en los dos. Hasta hoy solo existia el primero, asi que
-# el unico caso en que un alias qwen piensa -- `reasoning_effort: high|max` --
-# era tambien el unico que recibia el perfil equivocado.
+# el unico caso en que un alias qwen piensa -- un `reasoning_effort` de la
+# receta (low|medium|xhigh), antes `high|max` -- era tambien el unico que
+# recibia el perfil equivocado.
 #
 # El orden importa y por eso `_thinking_is_on` recalcula en vez de leer:
 # `_apply_family_sampling` corre ANTES que `_apply_thinking_tier`, asi que
@@ -352,10 +378,11 @@ def test_qwen_sin_pensar_lleva_los_cuatro_del_model_card(hook):
 
 
 def test_qwen_pensando_cambia_al_perfil_de_pensar(hook):
-    """La regresion que arregla este commit: `high` encendia el pensamiento en
-    THINKING_KWARGS y se quedaba con 0.7/0.8, que es el perfil de NO pensar."""
+    """La regresion que arregla este commit: un effort encendia el pensamiento
+    en THINKING_KWARGS y se quedaba con 0.7/0.8, que es el perfil de NO
+    pensar."""
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
-    data = {"model": "tooling", "reasoning_effort": "high"}
+    data = {"model": "tooling", "reasoning_effort": "xhigh"}
     hook._apply_family_sampling(data, "tooling")
     assert data["temperature"] == 0.6 and data["top_p"] == 0.95
     assert data["top_k"] == 20 and data["min_p"] == 0.0
@@ -385,10 +412,10 @@ def test_el_cliente_que_manda_extra_body_decide_tambien_el_sampling(hook):
 
 def test_estructurada_nunca_usa_el_perfil_de_pensar(hook):
     """El esquema apaga el pensamiento pase lo que pase (medido 3/3 el 10-08),
-    asi que pedir `max` y un json_schema no puede dar el perfil de pensar. Y con
-    esquema no se pisa el sampling del cliente en absoluto."""
+    asi que pedir `xhigh` y un json_schema no puede dar el perfil de pensar. Y
+    con esquema no se pisa el sampling del cliente en absoluto."""
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
-    data = _structured(temperature=0, reasoning_effort="max")
+    data = _structured(temperature=0, reasoning_effort="xhigh")
     hook._apply_family_sampling(data, "tooling")
     assert data["temperature"] == 0
     assert hook._thinking_is_on(data, "tooling") is False
@@ -433,26 +460,25 @@ def _tools(**extra):
 def test_con_tools_qwen_no_piensa_aunque_pidan_effort(hook):
     """El caso de opencode: manda tools en cada turno y un effort alto."""
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
-    data = _tools(reasoning_effort="high")
+    data = _tools(reasoning_effort="xhigh")
     hook._apply_thinking_tier(data, "tooling")
     assert _ctk(data) == hook.THINKING_KWARGS["qwen"]["off"]
 def test_sin_tools_qwen_sigue_pensando_si_se_lo_piden(hook):
     """La puerta es SOLO para tools: sin ellas el effort manda como siempre.
 
-    El `high` del cliente viaja como `low` al backend, que es el unico nivel
-    acotado que este template sabe instruir. Ver la nota en
+    Un nivel de la receta viaja tal cual al backend. Ver la nota en
     test_qwen_no_gradua_pero_si_enciende_y_apaga."""
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
-    data = {"model": "tooling", "reasoning_effort": "high"}
+    data = {"model": "tooling", "reasoning_effort": "xhigh"}
     hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "low"}
+    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "xhigh"}
 
 
 def test_con_tools_el_sampling_usa_el_perfil_de_no_pensar(hook):
     """Las dos mitades tienen que decir lo mismo: si no se piensa, el perfil
     es 0.7/0.8 y no 0.6/0.95."""
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
-    data = _tools(reasoning_effort="high")
+    data = _tools(reasoning_effort="xhigh")
     hook._apply_family_sampling(data, "tooling")
     assert data["temperature"] == 0.7 and data["top_p"] == 0.8
     assert hook._thinking_is_on(data, "tooling") is False

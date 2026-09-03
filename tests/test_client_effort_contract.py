@@ -1,23 +1,27 @@
 """Contrato del `/effort` del cliente sobre el nivel de pensamiento.
 
-Los tres perfiles del residente (`tooling`/`high`/`max`) NO son tres modelos:
-son tres niveles del mismo checkpoint, y hasta ahora el unico modo de
-subir el nivel era cambiar de modelo en el selector. Este contrato fija la mitad
-de servidor del `/effort` de OpenClaw: un `reasoning_effort` traducible gana al
-nombre del alias.
+03-09-2026: decision del owner — «la receta oficial de Qwen3.8 es
+[low, medium, xhigh]; quiero esa en LiteLLM y que los clientes usen lo de
+LiteLLM». El menu publicado (`supported_reasoning_efforts`) y lo que el hook
+deja pasar son UNA sola verdad: los niveles de la receta viajan PASA-CRUDO al
+motor, y `none` es `enable_thinking: false` (el unico que el hook sigue
+escribiendo, porque no es un effort del modelo).
 
 Lo que se fija aqui, y por que cada cosa:
 
-* Solo cuentan los efforts DELIBERADOS (high/max, y none para apagar). Los
-  clientes agente adjuntan un effort a todas las llamadas, asi que un `low` es
-  ambiente, no una orden: si mandara, `tooling` -- "sin pensar" -- pensaria en
-  cada turno. Misma regla que REASONING_EFFORT_SIGNAL.
-* `medium` no se traduce nunca. DeepSeek no tiene ese nivel y el tokenizer
-  parcheado hace caer lo desconocido a "low", asi que seria un nombre que
-  miente. Por eso tampoco esta en el menu del cliente.
+* La receta [low, medium, xhigh] + `none` esta en CLIENT_EFFORT_TIERS y en
+  THINKING_KWARGS["qwen"] con el MISMO valor. Si alguien vuelve a traducir
+  (`xhigh -> max`), este test cae: esa traduccion es justo la que el owner
+  quito.
+* El effort pasa-crudo NO se borra del cuerpo (strip): el valor que anuncia
+  /model/info es el que ve el backend.
+* Sigue habiendo effort AMBIENTE: un valor fuera de la tabla (p.ej. `minimal`)
+  no es una orden, decide el alias. `tooling` sigue sin pensar por defecto.
 * La salida estructurada gana incluso a un effort explicito. Medido 3/3 el
   2026-08-10: con thinking activo se cuela una llave del razonamiento delante
   del JSON guiado y el parse revienta.
+* Con tools sobre la familia qwen gana enable_thinking:false (sglang#36537):
+  eso no traduce el nivel, lo apaga, y el menu no lo puede prometer.
 * Quien ya opino en `chat_template_kwargs` sigue mandando, effort o no.
 
 Se carga el hook REAL del manifest y se ejecutan solo sus funciones puras, igual
@@ -46,6 +50,10 @@ WANT_CONST = {"THINKING_TIERS", "THINKING_KWARGS", "CLIENT_EFFORT_TIERS",
               "FAMILY_SAMPLING"}
 
 SCHEMA = {"type": "json_schema", "json_schema": {"name": "x", "schema": {}}}
+
+# La receta oficial de Qwen3.8 (model cards HF del denso y del flash-next,
+# identicas) mas `none` = enable_thinking:false.
+RECETA = ("low", "medium", "xhigh")
 
 
 def _install_fake_litellm(model):
@@ -96,109 +104,120 @@ def ctk(hook, body, alias, backend="openai/qwen38-flash-next"):
     return (data.get("extra_body") or {}).get("chat_template_kwargs") or {}
 
 
+@pytest.mark.parametrize("nivel", RECETA)
+def test_la_receta_oficial_viaja_pasa_crudo(hook, nivel):
+    """El menu y el backend son la misma verdad: low/medium/xhigh no se traducen.
+
+    El hook escribe el effort en chat_template_kwargs con el MISMO nombre y NO
+    borra el `reasoning_effort` del cliente: lo que anuncia /model/info es
+    literalmente lo que recibe el motor.
+    """
+    assert hook.CLIENT_EFFORT_TIERS[nivel] == nivel
+    assert hook.THINKING_KWARGS["qwen"][nivel] == {
+        "enable_thinking": True, "reasoning_effort": nivel}
+    _install_fake_litellm("openai/qwen38-flash-next")
+    data = {"model": "tooling", "reasoning_effort": nivel}
+    hook._apply_thinking_tier(data, "tooling")
+    assert data.get("reasoning_effort") == nivel, "el strip volvio: el menu mentiria"
+    assert ctk(hook, {"model": "tooling", "reasoning_effort": nivel}, "tooling") == {
+        "enable_thinking": True, "reasoning_effort": nivel
+    }
+
+
+def test_none_es_enable_thinking_false(hook):
+    """`none` no es un effort del modelo: es el interruptor del chat template."""
+    assert hook.CLIENT_EFFORT_TIERS["none"] == "off"
+    assert hook.THINKING_KWARGS["qwen"]["off"] == {"enable_thinking": False}
+    data = {"model": "tooling", "reasoning_effort": "none"}
+    hook._apply_thinking_tier(data, "tooling")
+    assert data.get("extra_body", {}).get("chat_template_kwargs") == {"enable_thinking": False}
+    # Apagado: `none` no es un nivel del motor (es enable_thinking:false), asi
+    # que el effort no describe lo enviado y el strip lo quita: no debe quedar
+    # flotando en una peticion que va sin pensamiento.
+    assert "reasoning_effort" not in data
+
+
 @pytest.mark.parametrize("alias,effort,esperado", [
-    # El alias dice off y el cliente pide el maximo: manda el cliente. Es el
-    # caso que justifica todo esto -- subir el nivel sin cambiar de modelo.
-    # 01-09-2026: dialecto de `qwen`, la unica familia que queda. Los valores se
-    # derivan de THINKING_KWARGS en el propio test (ver `_kw`) para no fijar a
-    # mano un dialecto que aun puede ganar la traduccion de reasoning_effort.
-    ("tooling", "max", "max"),
-    ("tooling", "high", "high"),
+    # El alias dice off y el cliente pide xhigh: manda el cliente, sin cambiar
+    # de modelo. Es el caso que justifica todo esto.
+    ("tooling", "xhigh", "xhigh"),
     # Bajar tambien: `none` apaga aunque el alias sea el mas caro.
     ("max", "none", "off"),
 ])
 def test_un_effort_deliberado_gana_al_nombre_del_alias(hook, alias, effort, esperado):
-    quiere = hook.THINKING_KWARGS["qwen"][esperado]
-    assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == quiere
+    data = {"model": alias, "reasoning_effort": effort}
+    result = ctk(hook, data, alias)
+    if esperado == "off":
+        assert result == hook.THINKING_KWARGS["qwen"]["off"]
+    else:
+        assert result == hook.THINKING_KWARGS["qwen"][esperado]
 
 
 @pytest.mark.parametrize("alias,esperado", [
     # LA REGRESION QUE ESTE TEST EXISTE PARA CAZAR. OpenClaw manda un effort en
-    # TODAS las llamadas y a falta de eleccion resuelve a "high" (y los agentes
-    # traen thinkingDefault=low). Si un effort ambiente contara como orden,
-    # `tooling` -- "sin pensar", primary de culturismo e image-cloud -- pensaria
-    # en cada turno y la etiqueta del selector mentiria.
+    # TODAS las llamadas y a falta de eleccion resuelve a un valor que ya no
+    # esta en la receta (los agentes traian thinkingDefault=low). Si un effort
+    # ambiente contara como orden, `tooling` -- "sin pensar" -- pensaria en cada
+    # turno y la etiqueta del selector mentiria.
     ("tooling", "off"),
 ])
-@pytest.mark.parametrize("ambiente", ["low", "minimal"])
+@pytest.mark.parametrize("ambiente", ["minimal", "ultra", "medium-bien?"])
 def test_un_effort_ambiente_NO_pisa_al_alias(hook, alias, esperado, ambiente):
-    quiere = hook.THINKING_KWARGS["qwen"][esperado]
-    assert ctk(hook, {"model": alias, "reasoning_effort": ambiente}, alias) == quiere
+    """Ambiente = lo que no esta en CLIENT_EFFORT_TIERS. `low` y `medium` ya NO
+    son ambiente: desde el 03-09 son orden deliberada (ver test de la receta)."""
+    assert ambiente not in hook.CLIENT_EFFORT_TIERS
+    assert ctk(hook, {"model": alias, "reasoning_effort": ambiente}, alias) == \
+        hook.THINKING_KWARGS["qwen"][esperado]
 
 
 def test_tambien_lee_la_forma_de_la_responses_api(hook):
     """OpenClaw manda `reasoning_effort` plano, pero la responses API lo anida."""
-    data = {"model": "tooling", "reasoning": {"effort": "max"}}
-    assert ctk(hook, data, "tooling") == hook.THINKING_KWARGS["qwen"]["max"]
+    data = {"model": "tooling", "reasoning": {"effort": "xhigh"}}
+    assert ctk(hook, data, "tooling") == hook.THINKING_KWARGS["qwen"]["xhigh"]
+    assert data["reasoning"].get("effort") == "xhigh", "forma anidada: pasa-crudo"
 
 
-@pytest.mark.parametrize("effort,alias,esperado", [
-    # `medium` no se traduce por su cuenta: con un alias que no piensa, no lo
-    # enciende. Es el nivel que el template valida pero deja sin instruccion.
-    ("medium", "tooling", "off"),
-])
-def test_un_effort_sin_traduccion_no_se_adivina(hook, effort, alias, esperado):
-    quiere = hook.THINKING_KWARGS["qwen"][esperado]
-    assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == quiere
+def test_high_y_max_solo_viven_para_deepseek(hook):
+    """`high`/`max` siguen en la tabla por DeepSeek (su vocabulario es
+    low/high/max), pero la familia qwen NO los traduce: el motor contesta 400
+    y ese 400 honesto es preferible a una traduccion nuestra."""
+    assert hook.CLIENT_EFFORT_TIERS["high"] == "high"
+    assert hook.CLIENT_EFFORT_TIERS["max"] == "max"
+    assert "high" not in hook.THINKING_KWARGS["qwen"]
+    assert "max" not in hook.THINKING_KWARGS["qwen"]
+    # Sobre un backend qwen: sin traduccion, sin escribir nada, sin strip.
+    data = {"model": "tooling", "reasoning_effort": "high"}
+    assert ctk(hook, data, "tooling") == {}
+    assert data.get("reasoning_effort") == "high"
 
 
 def test_la_salida_estructurada_gana_a_un_effort_explicito(hook):
-    """Pedir `max` y un json_schema a la vez no es mas pensamiento: es una
+    """Pedir `xhigh` y un json_schema a la vez no es mas pensamiento: es una
     contradiccion, y el esquema es el que tiene razon."""
-    data = {"model": "max", "reasoning_effort": "max", "response_format": SCHEMA}
-    assert ctk(hook, data, "max") == hook.THINKING_KWARGS["qwen"]["off"]
+    data = {"model": "tooling", "reasoning_effort": "xhigh",
+            "response_format": SCHEMA}
+    assert ctk(hook, data, "tooling") == hook.THINKING_KWARGS["qwen"]["off"]
+
+
+def test_tools_sobre_qwen_apagan_el_pensamiento(hook):
+    """sglang#36537: thinking + tools + qwen3_coder = bucle de token 0. No es
+    traduccion del nivel: es apagarlo, y el menu no puede prometerlo."""
+    data = {"model": "tooling", "reasoning_effort": "xhigh",
+            "tools": [{"type": "function", "function": {"name": "f"}}]}
+    assert ctk(hook, data, "tooling") == hook.THINKING_KWARGS["qwen"]["off"]
 
 
 def test_quien_ya_opino_en_chat_template_kwargs_sigue_mandando(hook):
     """La regla nº1 de _apply_thinking_tier no la toca el effort: es por clave."""
-    data = {"model": "max", "reasoning_effort": "max",
+    data = {"model": "tooling", "reasoning_effort": "xhigh",
             "extra_body": {"chat_template_kwargs": {"thinking": False}}}
-    assert ctk(hook, data, "max")["thinking"] is False
-
-
-def test_qwen_no_gradua_y_el_effort_solo_lo_enciende(hook):
-    """Qwen enciende, apaga y ACOTA, pero no inventa niveles que no existen.
-
-    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. Solo hay DOS niveles utiles: `medium` pasa la validacion pero cae en un elif inexistente y deja las instrucciones vacias (medido: medium 2721 chars vs low 2993, indistinguibles), por eso `high` mapea a `low`."""
-    data = {"model": "tooling", "reasoning_effort": "max"}
-    assert ctk(hook, data, "tooling", backend="openai/qwen38-27b") == {
-        "enable_thinking": True,
-        "reasoning_effort": "xhigh",
-    }
-    data = {"model": "tooling", "reasoning_effort": "none"}
-    assert ctk(hook, data, "tooling", backend="openai/qwen38-27b") == {
-        "enable_thinking": False
-    }
-
-
-def test_xhigh_es_sinonimo_de_max_para_el_picker_del_cliente(hook):
-    """`xhigh` NO es un nivel nuevo: es el mismo `max` con otro nombre.
-
-    Existe por una limitacion del cliente, no del modelo. El picker de algunos
-    clientes de escritorio solo sabe pintar low/medium/high/xhigh; los alias locales
-    declaran [none, high, max], asi que `max` se caia del menu y quedaba UNA sola
-    opcion util. Con esta entrada el sync puede reetiquetar `max` -> `xhigh` en el
-    catalogo que ve ese cliente y el menu vuelve a tener los tres.
-
-    Lo que este test protege es que siga siendo un SINONIMO: si `xhigh` acabara
-    traduciendo a otra cosa -- o cayera fuera de la tabla -- seria un effort ambiente,
-    decidiria el alias, y para estos modelos el alias es "off". La etiqueta "Muy alto"
-    daria MENOS pensamiento que "Alto", que es exactamente el fallo que el comentario
-    de los fallbacks de effort describia como motivo para no abrir el hueco.
-    """
-    assert hook.CLIENT_EFFORT_TIERS["xhigh"] == "max"
-    assert hook.CLIENT_EFFORT_TIERS["xhigh"] == hook.CLIENT_EFFORT_TIERS["max"]
+    assert ctk(hook, data, "tooling")["thinking"] is False
 
 
 def test_el_menu_publicado_y_la_tabla_del_hook_no_se_separan(hook):
-    """`medium` fuera de la tabla es la mitad del contrato; la otra mitad es que
-    los tres niveles que SI se ofrecen esten aqui. Si alguien mete `medium`, este
-    test cae antes de que el nombre empiece a mentir en produccion."""
-    assert set(hook.CLIENT_EFFORT_TIERS) == {"none", "off", "high", "max", "xhigh"}
-    assert set(hook.THINKING_KWARGS["qwen"]) == {"off", "low", "high", "max"}
-    for nivel in ("high", "max"):
+    """El contrato de UNA sola verdad, al reves que antes: la tabla del hook
+    cubre la receta + none, y lo que no este aqui no se traduce nunca."""
+    assert set(hook.CLIENT_EFFORT_TIERS) >= {"none", "off", *RECETA}
+    for nivel in RECETA:
         assert hook.CLIENT_EFFORT_TIERS[nivel] == nivel
-    # `low` fuera es la mitad del contrato: es el valor ambiente y no puede
-    # convertirse en una orden. `medium` fuera es la otra mitad.
-    assert "low" not in hook.CLIENT_EFFORT_TIERS
-    assert "medium" not in hook.CLIENT_EFFORT_TIERS
+    assert set(hook.THINKING_KWARGS["qwen"]) == {"off", *RECETA}
