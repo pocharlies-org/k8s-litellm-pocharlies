@@ -29,9 +29,15 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 CAPABILITY = "tooling-uncensored"
 # 01-09-2026: se va `deepseek-v4-flash-0731-uncensored` (refusal:1.5) con la
-# retirada de DeepSeek. Queda UN solo alias con sello propio.
+# retirada de DeepSeek.
+# 01-09 (tarde): entra `qwen38-flash-next-uncensored` con su propio sello. No es
+# el 1.5 de DeepSeek heredado: 1.5 es lo que sale de medir por diff de shards
+# windowsxp811203/Qwen3.8-Flash-Next-Abliterated (lambda_eff 1.4994-1.5008,
+# spread 0.09%) y aplicar el criterio del 27B, donde la variacion entre capas se
+# absorbe en un coef y aqui ese coef sale 1. Coincidir con DeepSeek es coincidencia.
 MODEL_SCOPED_LAMBDA = {
     "qwen38-27b-uncensored": "refusal:1.0",
+    "qwen38-flash-next-uncensored": "refusal:1.0",
 }
 
 WANT_FN = {"_component_is_ready", "_ready_tooling_modes",
@@ -122,12 +128,16 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
     """Al abliterado del perfil, no al residente normal: si resolviera al
     residente censurado se perderia el sello y serviria censurado.
 
-    01-09-2026: `llm-tp` se queda SIN abliterado al retirarse DeepSeek. No es un
-    olvido: no existe checkpoint abliterado de Qwen3.8-Flash-Next ni port rank1
-    de esa arquitectura (decision operador 26-08), y un alias que promete y no
-    cumple es peor que no tenerlo. Lo que este test fija ahora es que la
-    ausencia se resuelve a (None, "compute_mode_invalid") -- un fallo VISIBLE --
-    y no a un residente censurado en silencio.
+    01-09-2026: `llm-tp` estuvo SIN abliterado al retirarse DeepSeek, porque no
+    existia port rank-1 de la arquitectura. Ya existe: el anclaje de
+    k8s-ai-pocharlies@claude/qwen38-flash-next-vllm-rank1-20260901, sobre el
+    modulo vendorizado que el registry realmente instancia. Lo que este test fija
+    sigue siendo lo mismo y no se negocia: que el alias resuelva al nombre
+    ABLITERADO del perfil, y que la ausencia de destino se resuelva a un fallo
+    VISIBLE -- nunca a un residente censurado en silencio.
+
+    OJO a lo que este test NO puede probar: que el backend parse el sello. Eso se
+    comprueba contra el pod (GET /admin/refusal_lambda != 404), no aqui.
     """
     assert hook.TOOLING_UNCENSORED_ALIASES == frozenset({CAPABILITY})
     components = {
@@ -145,7 +155,7 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
                       "desired_replicas": 1, "ready_replicas": 1}],
         },
     }
-    for mode, want in (("llm-tp", (None, "compute_mode_invalid")),
+    for mode, want in (("llm-tp", ("qwen38-flash-next-uncensored", None)),
                        ("creative", ("qwen38-27b-uncensored", None))):
         got = hook._tooling_uncensored_target(
             {"effective_mode": mode, "desired_mode": mode, "phase": "ready",

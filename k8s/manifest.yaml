@@ -257,6 +257,61 @@ data:
         # `health_check_skip_disabled_background_models`: un `GET /health` a mano
         # sigue sondeando de verdad (y ese si puede llevar effort/max_tokens a mano).
         disable_background_health_check: true
+    # ── `qwen38-flash-next-uncensored`: el residente llm-tp, abliterado ────────
+    #
+    # MISMO backend, mismo head, misma GPU. Lo unico que cambia es que esta peticion
+    # sale sellada con `cache_salt: refusal:1.0` (ver UNCENSORED_ON_LAMBDA), o sea
+    # que es el unico nombre que da un comportamiento que `tooling` no puede dar.
+    #
+    # 03-09-2026: el sello era refusal:1.5 y pasa a 1.0. Hay dos ablaciones
+    # publicadas del mismo base y no coinciden (66 grados entre sus direcciones,
+    # cos 0.409). Se sirve la de orcarouter, que usa la proyeccion canonica
+    # lambda=1 y publica evaluacion medida (rechazo 64-100% -> 0-3,3%); la
+    # anterior sobre-proyectaba un 50% y no tiene numeros publicados. El literal
+    # esta contratado a los DOS lados: k8s-ai-pocharlies lo verifica en el build
+    # (test_cache_salt_contract.py, gate 7 del Dockerfile).
+    #
+    # ADVERTENCIA, y es lo unico delicado de esta entrada: el sello SOLO hace algo
+    # si el backend lo parsea. La imagen del residente es hoy `vllm/vllm-openai:
+    # qwen38-flash-next` SIN la capa rank-1 -- medido: GET /admin/refusal_lambda
+    # responde 404, o sea que el parche de ablacion no esta desplegado. Hasta que
+    # entre k8s-ai-pocharlies rama claude/qwen38-flash-next-vllm-rank1-20260901,
+    # este alias responde IGUAL que `qwen38-flash-next` y cachea aparte.
+    #
+    # Se declara aun asi, y no es un descuido: el registro del alias es lo que
+    # falta para que `tooling-uncensored` se resuelva en llm-tp, y el registro es
+    # inerte mientras el backend no tenga la capa. Lo que NO se hace aqui es
+    # anadir el runtime a REFUSAL_RUNTIMES_DEFAULT: eso publicaria un dial en el
+    # panel que daria 404 al moverlo. Eso va en el PR del build, no en este.
+    - model_name: qwen38-flash-next-uncensored
+      litellm_params:
+        model: openai/qwen38-flash-next
+        api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        max_parallel_requests: 32
+        extra_body: { cache_salt: "refusal:1.0" }
+      model_info:
+        mode: chat
+        backend: dgx1+dgx2
+        max_input_tokens: 262144
+        max_output_tokens: 16384
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # Mismo backend que la entrada censurada: mismos tiers honrados. Se declara
+        # aqui y no se hereda de nadie: el desvio de vision y el menu de razonamiento
+        # leen model_info de la entrada que se pide, y un alias `-uncensored` con
+        # model_info vacio se lee como "no se sabe".
+        supported_reasoning_efforts: [none, high, max, xhigh]
+        # Mismo motor que la entrada censurada, luego mismo trato con el bucle
+        # de fondo: el health-check deduplica por model_info.id y no por
+        # api_base, asi que los alias de un mismo backend se callan TODOS o
+        # ninguno (tests/test_local_resident_health_check_contract.py). El
+        # motivo es el de la entrada censurada: con max_tokens=16 un residente
+        # de razonamiento gasta el presupuesto pensando y devuelve content
+        # vacio con HTTP 200, que el bucle apunta como unhealthy.
+        disable_background_health_check: true
     # NUEVO como nombre directo. El controlador solo registraba `tooling` y
     # `qwen38-27b-uncensored` sobre este backend, asi que el residente de
     # `creative` no tenia nombre propio servible. Ahora lo tiene, y es el destino
@@ -958,6 +1013,18 @@ data:
     # 1.5 DeepSeek / 1.0 Qwen3.8, medidas y no intercambiables.
     TOOLING_UNCENSORED_MODE_TARGETS = {
         "creative": "qwen38-27b-uncensored",
+        # 01-09-2026: vuelve `llm-tp`. Estaba fuera desde el 26-08 porque el
+        # residente era Qwen3.8-Flash-Next SIN port rank-1 y un alias que promete
+        # y no cumple es peor que no tenerlo. Con el anclaje de
+        # k8s-ai-pocharlies@claude/qwen38-flash-next-vllm-rank1-20260901 el port
+        # existe; queda pendiente el build y el lambda=0 bit-exact.
+        #
+        # Mientras el backend no lleve la capa, esto NO sirve censurado: el health
+        # fail-closed responde 200 (el backend esta arriba) y el alias resuelve,
+        # pero sin capa rank-1 el cache_salt no hace nada. Es un alias inerte, no
+        # un alias mentiroso, y la diferencia importa: quien pida el alias recibe
+        # el residente del perfil, que es lo que `tooling-uncensored` siempre fue.
+        "llm-tp": "qwen38-flash-next-uncensored",
     }
     TOOLING_UNCENSORED_ALIASES = frozenset({"tooling-uncensored"})
 
@@ -1544,6 +1611,11 @@ data:
     ABLITERATED_HEALTH_URLS = {
         "qwen38-27b-uncensored":
             "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/health",
+        # Sin esta entrada _abliterated_target_ready devuelve
+        # `abliterated_health_url_missing` y el 503 persiste AUNQUE el backend
+        # este sano: es el descuido que este bloque existe para cazar.
+        "qwen38-flash-next-uncensored":
+            "http://qwen38-flash-next.llm.svc.cluster.local:8000/health",
     }
     ABLITERATED_HEALTH_TIMEOUT_SECONDS = float(
         os.environ.get("LITELLM_ABLITERATED_HEALTH_TIMEOUT_SECONDS", "2.0")
@@ -4668,6 +4740,11 @@ data:
     # no cumple es peor que no tenerlo (decision operador 26-08: aparcado).
     QWEN38_FLASH_NEXT_DIRECT_ALIASES = (
         "qwen38-flash-next",
+        # Como nombre directo de ESTE backend, el hook no lo reescribe: falla duro
+        # si el residente esta caido en vez de contestar desde otro checkpoint, y
+        # es el unico nombre del perfil que sella la peticion. Mismo criterio que
+        # `qwen38-27b-uncensored` (15-08/18-08).
+        "qwen38-flash-next-uncensored",
     )
 
     # ── ALIAS `-uncensored`: lambda POR PETICION ────────────────────────────────
@@ -4700,6 +4777,14 @@ data:
     UNCENSORED_SUFFIX = "-uncensored"
     UNCENSORED_ON_LAMBDA = {
         "openai/qwen38-27b": 1.0,
+        # 1.5, no 1.0. Medido por diff de shards contra
+        # windowsxp811203/Qwen3.8-Flash-Next-Abliterated: lambda_eff 1.4994-1.5008
+        # sobre 7 tensores que cubren las 4 clases de writer, spread 0.09% (el 27B:
+        # 0.999-1.291, spread 29%). Aplicando el criterio del 27B (lambda=1 =
+        # perfil horneado, con coef por modulo absorbiendo la variacion), aqui el
+        # coef sale 1 y el punto calibrado es 1.5. No es el 1.5 de DeepSeek
+        # heredado: es el que sale de medir ESTE checkpoint.
+        "openai/qwen38-flash-next": 1.5,
     }
     # The uncensored 27B is the ONLY dense model in the cluster. Creative pins it
     # on DGX1, where it owns `tooling` as well as every dense-shaped name.
@@ -5619,7 +5704,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-dcf578d2a81a
+        config.k8s.e-dani.com/revision: sync-592dbe5a0492
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -5794,7 +5879,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b70d2b91ab98
+        config.k8s.e-dani.com/revision: config-6a5bc9b4458b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
