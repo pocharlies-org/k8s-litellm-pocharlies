@@ -171,20 +171,20 @@ def test_qwen_no_gradua_y_el_effort_solo_lo_enciende(hook):
     }
 
 
-def test_xhigh_es_sinonimo_de_max_para_el_picker_de_codex(hook):
+def test_xhigh_es_sinonimo_de_max_para_el_picker_del_cliente(hook):
     """`xhigh` NO es un nivel nuevo: es el mismo `max` con otro nombre.
 
-    Existe por una limitacion del cliente, no del modelo. El picker de Codex Desktop
-    solo sabe pintar low/medium/high/xhigh; los alias locales declaran
-    [none, high, max], asi que `max` se caia del menu y quedaba UNA sola opcion util.
-    Con esta entrada el sync puede reetiquetar `max` -> `xhigh` en el catalogo de
-    Codex y el menu vuelve a tener los tres.
+    Existe por una limitacion del cliente, no del modelo. El picker de algunos
+    clientes de escritorio solo sabe pintar low/medium/high/xhigh; los alias locales
+    declaran [none, high, max], asi que `max` se caia del menu y quedaba UNA sola
+    opcion util. Con esta entrada el sync puede reetiquetar `max` -> `xhigh` en el
+    catalogo que ve ese cliente y el menu vuelve a tener los tres.
 
     Lo que este test protege es que siga siendo un SINONIMO: si `xhigh` acabara
     traduciendo a otra cosa -- o cayera fuera de la tabla -- seria un effort ambiente,
     decidiria el alias, y para estos modelos el alias es "off". La etiqueta "Muy alto"
     daria MENOS pensamiento que "Alto", que es exactamente el fallo que el comentario
-    de CODEX_EFFORT_FALLBACKS describia como motivo para no abrir el hueco.
+    de los fallbacks de effort describia como motivo para no abrir el hueco.
     """
     assert hook.CLIENT_EFFORT_TIERS["xhigh"] == "max"
     assert hook.CLIENT_EFFORT_TIERS["xhigh"] == hook.CLIENT_EFFORT_TIERS["max"]

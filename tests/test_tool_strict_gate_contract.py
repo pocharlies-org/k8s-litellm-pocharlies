@@ -78,7 +78,7 @@ def test_gate_is_wired_into_local_vllm_requests():
     _is_local_vllm_request), nunca para modelos de terceros.
 
     2026-08-11: la guarda lleva ademas `not vision_diverted`. Una peticion con
-    imagen desviada a ChatGPT sigue teniendo proxy_model=`tooling`, asi que sin
+    imagen desviada sigue teniendo proxy_model=`tooling`, asi que sin
     esa condicion _is_local_vllm_request diria True y se le marcarian las tools
     como strict para una gramatica de vLLM que no la va a servir.
     """

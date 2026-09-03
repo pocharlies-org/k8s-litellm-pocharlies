@@ -16,9 +16,9 @@ tal panel: 404 en todo el dominio y sin repo. La conclusion — gate por prefijo
 la correcta; el razonamiento era falso, y ya costo una investigacion encima, commit
 603cc3f.) Con una lista literal, cada alias nuevo naceria ABIERTO hasta que alguien se
 acordara de venir a cerrarlo; con prefijo nace cerrado por construccion, que es justo
-lo que compensa que crezca a mano. El precedente esta medido: `gpt-5.6-luna` volvio al
-model_list el 25-08 y `sauvage-shield` lo heredo sola porque lo llevaba escrito de
-antes de la purga.
+lo que compensa que crezca a mano. El precedente esta medido: un alias que vuelve al
+model_list lo hereda SOLA la key que lo llevaba escrito de antes de una purga, sin que
+nadie la toque.
 """
 import ast
 import types
@@ -106,7 +106,7 @@ def test_the_allowed_key_gets_through_and_nobody_else_does(open_gate):
     denied, _ = open_gate._openrouter_access_denied("or-glm", ALLOWED_KEY)
     assert not denied
 
-    for key in ("master", "synapse", "document-intake", "sauvage-shield", "codex"):
+    for key in ("master", "synapse", "document-intake", "sauvage-shield"):
         denied, detail = open_gate._openrouter_access_denied("or-glm", key)
         assert denied, f"{key} no deberia alcanzar OpenRouter"
         assert detail["requested"] == "or-glm"
@@ -119,7 +119,7 @@ def test_an_alias_that_does_not_exist_yet_is_already_closed(open_gate):
 
 
 def test_the_gate_ignores_everything_that_is_not_an_openrouter_alias(open_gate):
-    for model in ("tooling", "deepseek-v4-flash-0731", "gpt-5.6-sol", "qwen35-4b", "", None):
+    for model in ("tooling", "deepseek-v4-flash-0731", "qwen38-27b", "qwen35-4b", "", None):
         denied, _ = open_gate._openrouter_access_denied(model, "synapse")
         assert not denied, f"{model!r} no es un alias de OpenRouter y no le toca a este gate"
 
@@ -192,7 +192,7 @@ def test_every_openrouter_alias_carries_a_one_line_label():
 
 
 def test_openrouter_is_never_the_silent_destination_of_a_degradation():
-    """Mismo criterio que el puente ChatGPT: si el residente local cae, falla visible.
+    """Mismo criterio que el puente gpt-5.x retirado: si el residente local cae, falla visible.
 
     Un alias de nube dentro de CAPABILITY_CHAINS entra ademas en VISION_DIVERTIBLE,
     que es `frozenset(CAPABILITY_CHAINS)`.

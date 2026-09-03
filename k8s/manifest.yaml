@@ -182,7 +182,7 @@ data:
     # slots de EJECUCION del motor convertia "espera dos segundos" en "429 too
     # many requests", y el cliente lo remata con "exceeded retry limit".
     #
-    # Por que tumbaba a Codex Y a DeepSeek A LA VEZ: comparten la salida. Con
+    # Por que tumbaba al cliente externo Y a DeepSeek A LA VEZ: comparten la salida. Con
     # num_retries 1 el unico reintento cae casi siempre por encima del mismo
     # tope. Las antiguas salidas externas ya no forman parte del grafo: un 429
     # actual se diagnostica contra este límite o el backend local.
@@ -457,99 +457,33 @@ data:
     # el bloque de pensamiento se dispara y el TTFT se va al garete -- medido a
     # low, TTFT mediana 0.209s. Todo eso vive ahora en FAMILY_SAMPLING.
 
-    # ── PUENTE ChatGPT (Codex) — SOLO para la key `codex` ────────────────────────
+    # ── PUENTE EXTERNO gpt-5.x — RETIRADO 03-09-2026 ─────────────────────────────
     #
-    # Salida al Deployment `litellm-codex` (k8s/codex-bridge.yaml), que es un LiteLLM
-    # de UNA replica corriendo el proveedor nativo `chatgpt/` sobre la suscripcion de
-    # pocharlies@gmail.com. Aqui NO se habla `chatgpt/` directamente y no es un
-    # detalle de estilo: `Authenticator` escribe auth.json sin lock ninguno y OpenAI
-    # rota el refresh_token, asi que con las 2 replicas de este gateway los dos pods
-    # se matarian la sesion — y el sintoma seria una peticion colgada 15 min (device
-    # login), no un error. El razonamiento completo esta en codex-bridge.yaml.
+    # Aqui vivian seis alias (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
+    # `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`) que salian a un proxy interno de UNA
+    # replica contra una suscripcion externa. Se retiran enteros junto con ese
+    # Deployment y su ConfigMap (su manifiesto se borra en este mismo commit), el
+    # gate de keys que los cerraba y la credencial de Vault.
     #
-    # `openai/` y no `litellm_proxy/`: es el mismo patron que usaba el puente casero
-    # retirado y el que tiene el paso de /v1/responses probado. El slug que viaja
-    # aguas arriba lo decide el model_list del puente, no este.
+    # POR QUE AHORA: el Deployment llevaba dias a 0 replicas y el hostPath de
+    # credenciales no existia en el nodo, asi que lo unico que seguia publicado era
+    # el alias — apuntando a un Service sin backends. Eso no da «modelo
+    # desconocido», da un fallo de conexion, que es peor de diagnosticar.
     #
-    # LO QUE ESTE ALIAS NO ESTA, Y NO ES OMISION:
-    #   - NO esta en CAPABILITY_CHAINS, luego tampoco en VISION_DIVERTIBLE
-    #     (`frozenset(CAPABILITY_CHAINS)`). El desvio de vision hacia una cuenta
-    #     ChatGPT es la via por la que el catalogo de airsoft provoco los dos baneos
-    #     del 20/21-08 («Acts of Violence»): 478 de 494 llamadas con imagen llevaban
-    #     «replica». Meterlo ahi reabre exactamente esa causa.
-    #   - NO esta en `router_settings.fallbacks` ni en TOOLING_FALLBACKS. Nada cae
-    #     aqui cuando el residente local falla: esa es la peticion literal del owner
-    #     («ningun fallback a estas cuentas»), y ademas el failover automatico por
-    #     cuota es un mecanismo para SOSTENER mas volumen, que es lo que actuo de
-    #     detector en los baneos.
-    #   - `supports_vision: false`. Ver arriba. No es una limitacion del modelo
-    #     (gpt-5.6-* si ve): es la politica.
-    # LOS SLUGS SALEN DEL CATALOGO DE LA CUENTA, NO DE OTRA CUENTA. Leidos el 25-08
-    # nada mas completar el login de pocharlies (account 3684972b-...):
-    #   gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4-mini  (+ codex-auto-review, hide)
-    # `gpt-5.6-sol` NO lo sirve esta cuenta. El primer despliegue lo publicaba por
-    # analogia con la cuenta anterior y devolvia un 403 con una PAGINA HTML de
-    # ChatGPT — no un JSON de error, asi que ni se parece a un modelo desconocido.
+    # NO SE REPUBLICAN, Y EL MOTIVO NO ES TECNICO: el desvio de vision hacia esa
+    # cuenta es la via por la que el catalogo de airsoft provoco los dos baneos del
+    # 20/21-08 («Acts of Violence») — 478 de 494 llamadas con imagen llevaban
+    # «replica». Volver a publicarlos reabre exactamente esa causa.
     #
-    # OJO CON `gpt-5.6-luna`: la key `sauvage-shield` lo lleva en su allowlist
-    # explicito desde antes de la purga del 21-08 (['tooling','gpt-5.6-luna',
-    # 'qwen35-4b']). Era una entrada MUERTA mientras el alias no existia; al
-    # republicarlo, esa key lo hereda SOLA sin que nadie la toque. Lo unico que lo
-    # impide es que `luna` este en CODEX_ONLY_MODELS. Si algun dia se quita de ahi,
-    # se le esta dando una cuenta ChatGPT a sauvage-shield sin quererlo.
-    - model_name: gpt-5.6-terra
-      litellm_params: &codex_bridge_params
-        model: openai/gpt-5.6-terra
-        api_base: http://litellm-codex.litellm.svc.cluster.local:4000/v1
-        api_key: os.environ/LITELLM_CODEX_BRIDGE_KEY
-        timeout: 600
-        # Sin reintentos: el volumen que llega a OpenAI es el que pide el cliente.
-        num_retries: 0
-      model_info: &codex_bridge_info
-        mode: chat
-        backend: codex-bridge-pocharlies
-        max_input_tokens: 272000
-        max_output_tokens: 128000
-        supports_function_calling: true
-        # La cuenta declara text+image en los cuatro. Esto es POLITICA, no un limite
-        # del modelo: el desvio de vision a ChatGPT es la via por la que el catalogo
-        # de airsoft provoco los baneos del 20/21-08.
-        supports_vision: false
-        supports_reasoning: true
-        # 96 llamadas/dia por replica contra la cuenta serian trafico plano 24/7 con
-        # prompt fijo — el patron que sirvio de detector en los baneos — y no
-        # informan de nada: la cuota agotada solo se ve en una peticion real.
-        disable_background_health_check: true
-    - model_name: gpt-5.6-luna
-      litellm_params:
-        <<: *codex_bridge_params
-        model: openai/gpt-5.6-luna
-      model_info: *codex_bridge_info
-    - model_name: gpt-5.5
-      litellm_params:
-        <<: *codex_bridge_params
-        model: openai/gpt-5.5
-      model_info: *codex_bridge_info
-    - model_name: gpt-5.4-mini
-      litellm_params:
-        <<: *codex_bridge_params
-        model: openai/gpt-5.4-mini
-      model_info: *codex_bridge_info
-    # AÑADIDOS AL PASAR LA CUENTA A PLUS (25-08, el mismo dia): el catalogo pasa de 5
-    # a 7 modelos y entran estos dos. El plan viaja DENTRO del access_token
-    # (claim `chatgpt_plan_type`), asi que con el token viejo el catalogo no cambiaba
-    # y el endpoint devolvia 401 `token_expired` con 10 dias de `expires_at` local.
-    # Se cura forzando el refresco; el detalle esta en codex-bridge.yaml.
-    - model_name: gpt-5.6-sol
-      litellm_params:
-        <<: *codex_bridge_params
-        model: openai/gpt-5.6-sol
-      model_info: *codex_bridge_info
-    - model_name: gpt-5.4
-      litellm_params:
-        <<: *codex_bridge_params
-        model: openai/gpt-5.4
-      model_info: *codex_bridge_info
+    # SI ALGUIEN LOS REPUBLICA, LEER ESTO ANTES: la key `sauvage-shield` lleva
+    # `gpt-5.6-luna` en su allowlist explicito desde antes de la purga del 21-08
+    # (['tooling','gpt-5.6-luna','qwen35-4b']). Es una entrada MUERTA mientras el
+    # alias no exista, pero en el instante en que vuelva al model_list esa key lo
+    # hereda SOLA, sin que nadie la toque. El gate de keys que lo impedia se va en
+    # este mismo commit: no queda gate, solo esta advertencia y el test.
+    #
+    # La lapida la sostiene tests/test_retired_gpt5_bridge_contract.py, con el mismo
+    # criterio que test_retired_routing_aliases_contract.py.
     # >>> openrouter-free — BLOQUE DE ALIAS `or-*` DEL CATALOGO `:free` DE OPENROUTER
     # ESTE BLOQUE SE MANTIENE A MANO, en este fichero, en este commit. No hay panel ni
     # generador detras: `openrouter.e-dani.com` no existe (404 en todo el dominio, sin
@@ -1134,7 +1068,7 @@ data:
     # `opencode-20260630-local` entra (2026-08-29, pedido explicito del owner): es la
     # key de opencode, y sin ella opencode se comia "this key may not request the
     # abliterated route" al pedir qwen38-27b-uncensored. Ya estaba en los gates de
-    # codex y openrouter (mas abajo), asi que esto solo cierra la simetria.
+    # openrouter (mas abajo), asi que esto solo cierra la simetria.
     # Vacio = sin restriccion, y es DELIBERADO que el default NO sea vacio.
     UNCENSORED_ALLOWED_KEY_ALIASES = frozenset(
         alias.strip()
@@ -1166,63 +1100,6 @@ data:
             "allowed": sorted(UNCENSORED_ALLOWED_KEY_ALIASES),
         }
 
-    # ── Puente ChatGPT: lista cerrada de keys, y deny por defecto ────────────────
-    #
-    # POR QUE ESTE GATE TIENE QUE EXISTIR
-    #
-    # Porque el allowlist de la key NO sirve para esto. `models: []` en una key
-    # significa TODOS los modelos (medido en las 4 replicas el 22-08), y de las 10
-    # keys vivas hay 7 con `models: []` y una con `["*"]`. O sea: en el instante en
-    # que `gpt-5.6-sol` entra en el model_list, ocho keys lo heredan solas. Poner un
-    # allowlist en la key nueva de Codex no deniega a nadie — solo se limita a si
-    # misma. La unica capa que puede cerrar la puerta a una key con `models: []` es
-    # esta, en pre_call_hook, antes del gate de nombre de modelo del proxy.
-    #
-    # FALLA CERRADO, al contrario que el gate abliterado de arriba. Alli una lista
-    # vacia deja pasar (era una relajacion deliberada); aqui una lista vacia deniega
-    # a todo el mundo, master incluida. Es lo pedido: «solo la key de CODEX, deny a
-    # TODO lo demas». Un despliegue sin la variable de entorno deja el puente
-    # inservible, que es el fallo seguro y no el peligroso.
-    #
-    # Se listan los nombres PUBLICOS del gateway. No hace falta cubrir el slug
-    # aguas arriba: el puente vive detras de un Service sin ingress y su master key
-    # solo la tiene este proceso, asi que no hay forma de rodearlo pidiendo el
-    # nombre directo — que era el agujero que si tenia la ruta abliterada.
-    # Los CUATRO slugs que sirve la cuenta de pocharlies. `gpt-5.6-luna` es el que
-    # mas importa de la lista: la key `sauvage-shield` lo lleva en su allowlist
-    # explicito desde antes de la purga del 21-08, asi que en el momento en que el
-    # alias vuelve a existir esa key lo hereda sola. Este frozenset es lo unico que
-    # se lo impide. Sacar `luna` de aqui = darle una cuenta ChatGPT a sauvage-shield.
-    CODEX_ONLY_MODELS = frozenset(
-        {
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-        }
-    )
-
-    CODEX_ALLOWED_KEY_ALIASES = frozenset(
-        alias.strip()
-        for alias in os.environ.get("LITELLM_CODEX_ALLOWED_KEYS", "").split(",")
-        if alias.strip()
-    )
-
-    def _codex_only_access_denied(requested, key_label):
-        """(bool, detalle) si esta key NO puede pedir el puente ChatGPT."""
-        if requested not in CODEX_ONLY_MODELS:
-            return False, None
-        if key_label in CODEX_ALLOWED_KEY_ALIASES:
-            return False, None
-        return True, {
-            "error": "this key may not request the ChatGPT bridge",
-            "requested": requested,
-            "key": key_label,
-            "allowed": sorted(CODEX_ALLOWED_KEY_ALIASES),
-        }
-
     # Alias de OpenRouter. Se reconocen por PREFIJO, no por un frozenset literal, y
     # eso es deliberado: el bloque `or-*` del model_list esta pensado para crecer, y
     # CRECE A MANO — aqui mismo, en un commit. No hay panel que lo alimente
@@ -1232,9 +1109,10 @@ data:
     # ABIERTO a las ocho keys con `models: []` hasta que alguien se acuerde de venir a
     # cerrarlo. Con prefijo, un alias nuevo nace cerrado por construccion.
     #
-    # Precedente de por que importa: `gpt-5.6-luna` volvio al model_list el 25-08 y
-    # `sauvage-shield` lo heredo sola, porque lo llevaba escrito en su allowlist de
-    # antes de la purga. Lo unico que lo detuvo fue CODEX_ONLY_MODELS.
+    # Precedente de por que importa, y esta medido: un alias que vuelve al model_list
+    # lo heredan SOLAS las keys que lo llevaban escrito en su allowlist de antes de
+    # una purga — sin que nadie las toque, y sin aviso. Lo unico que puede detenerlo
+    # es un gate como este. Ver la lapida del puente gpt-5.x en el model_list.
     OPENROUTER_ALIAS_PREFIX = "or-"
 
     OPENROUTER_ALLOWED_KEY_ALIASES = frozenset(
@@ -1246,7 +1124,7 @@ data:
     def _openrouter_access_denied(requested, key_label):
         """(bool, detalle) si esta key NO puede pedir un alias de OpenRouter.
 
-        FALLA CERRADO, igual que el gate del puente y al reves que el abliterado: si
+        FALLA CERRADO, al reves que el abliterado: si
         LITELLM_OPENROUTER_ALLOWED_KEYS llega vacia se deniega a todo el mundo,
         incluida la master. Un despliegue sin la variable deja los alias `or-*`
         inservibles, que es el fallo seguro; el peligroso seria dejarlos abiertos a
@@ -2580,7 +2458,7 @@ data:
         return "unknown"
 
     # Aurora is intentionally local-only. Its incident loop is expendable when the
-    # resident is unavailable and must not consume either ChatGPT account as a
+    # resident is unavailable and must not consume any external account as a
     # transparent replacement. This has to cover BOTH fallback layers:
     #
     #   * the hook's own alias-missing path (handled by the boolean returned here);
@@ -2944,7 +2822,8 @@ data:
         "high": "high",
         "max": "max",
         # 27-08: `xhigh` es SINONIMO de `max`, no un nivel nuevo. Existe porque el
-        # picker de Codex Desktop solo sabe pintar low/medium/high/xhigh: de los tres
+        # picker de algunos clientes de escritorio solo sabe pintar
+        # low/medium/high/xhigh: de los tres
         # que declaran los modelos locales ([none, high, max]) descartaba `max`, y el
         # menu se quedaba con una sola opcion util.
         #
@@ -2952,7 +2831,7 @@ data:
         # effort AMBIENTE y decidiria el alias -- que para estos modelos es "off" en
         # THINKING_TIERS. O sea: la etiqueta "Muy alto" daria MENOS pensamiento que
         # "Alto". Ese era el motivo de que no se abriera el hueco antes, y esta linea
-        # es justo lo que faltaba (ver el comentario de CODEX_EFFORT_FALLBACKS en
+        # es justo lo que faltaba (ver el comentario de los fallbacks de effort en
         # plugins/litellm-model-sync/scripts/sync_models.py).
         #
         # 01-09-2026: desde hoy `xhigh` SI se anuncia, pero solo en
@@ -3063,7 +2942,7 @@ data:
 
         La primera version invertia esto: solo desviaba con un
         `supports_vision: False` EXPLICITO, y si no se sabia (None) dejaba pasar la
-        peticion para no gastar cuota de ChatGPT en silencio. Medido en produccion
+        peticion para no gastar cuota de la cuenta externa en silencio. Medido en produccion
         el mismo dia contra el cluster real: con el plano local en transicion NO
         HAY NINGUN alias registrado, `get_model_list("tooling")` devuelve vacio y
         eso es None -- o sea que la vision se caia (503 de la admision de
@@ -3349,7 +3228,7 @@ data:
             # viajar aguas arriba: aqui vive el vocabulario del CLIENTE
             # (CLIENT_EFFORT_TIERS: none/off/high/max) y el del backend es otro.
             #
-            # 27-08: Codex pedia `qwen38-flash-next` con reasoning_effort=high --su
+            # 27-08: un cliente externo pedia `qwen38-flash-next` con reasoning_effort=high --su
             # default-- y el backend contestaba 400 "Unexpected reasoning effort high.
             # Supported types are xhigh (default), medium, and low". El hook ya habia
             # hecho su trabajo (enable_thinking=True en chat_template_kwargs), pero
@@ -3634,21 +3513,8 @@ data:
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
 
-            # Gate del puente ChatGPT, al mismo nivel y por el mismo motivo: es un
-            # deny-por-defecto que tiene que correr ANTES de resolver alias o tocar
-            # el backend. Aqui es donde se cumple de verdad «solo la key de CODEX»,
-            # porque el allowlist de la key no puede: `models: []` = todos.
-            _denied, _detail = _codex_only_access_denied(
-                requested_model, _resolve_key_label(user_api_key_dict)
-            )
-            if _denied:
-                router_log.warning(
-                    "codex-bridge: key %r pidio %r y no esta en la lista",
-                    _detail["key"], _detail["requested"])
-                raise HTTPException(status_code=403, detail=_detail)
-
-            # Gate de OpenRouter, tercero de la cadena y por el mismo motivo que los
-            # dos de arriba: deny-por-defecto antes de resolver alias. Sin el, los
+            # Gate de OpenRouter, segundo de la cadena y por el mismo motivo que el
+            # de arriba: deny-por-defecto antes de resolver alias. Sin el, los
             # `or-*` quedarian abiertos a las ocho keys con `models: []` — entre ellas
             # document-intake, que procesa facturas, contra un endpoint gratuito cuya
             # politica de datos no controlamos.
@@ -3812,7 +3678,7 @@ data:
             # `not vision_diverted` es OBLIGATORIO, no cosmetico:
             # _is_local_vllm_request mira tambien `proxy_model`, que sigue diciendo
             # `tooling` despues del desvio. Sin este guard, una imagen que sale a
-            # ChatGPT pasaria por la admision de compute-mode (503 cuando el
+            # el fallback de vision pasaria por la admision de compute-mode (503 cuando el
             # computo local esta apagado, que es justo cuando mas falta hace la
             # nube) y se le marcarian las tools como strict para una gramatica de
             # vLLM que no la va a atender ningun vLLM.
@@ -4655,16 +4521,9 @@ spec:
       remoteRef: { key: secret/litellm, property: LANGFUSE_PUBLIC_KEY }
     - secretKey: LANGFUSE_SECRET_KEY
       remoteRef: { key: secret/litellm, property: LANGFUSE_SECRET_KEY }
-    # Credencial con la que ESTE gateway habla con el puente `litellm-codex`
-    # (codex-bridge.yaml). Es la master key de ese proxy interno, no una key de
-    # cliente, y no tiene nada que ver con la cuenta ChatGPT: el OAuth de la cuenta
-    # vive en el auth.json del hostPath del puente y no pasa por Vault.
-    # Añadir con `vault kv patch`, NUNCA `kv put`: en secret/litellm vive tambien
-    # LITELLM_MASTER_KEY y un put la borraria, tumbando a todos los consumidores.
-    #   vault kv patch secret/litellm LITELLM_CODEX_BRIDGE_KEY=sk-...
-    - secretKey: LITELLM_CODEX_BRIDGE_KEY
-      remoteRef: { key: secret/litellm, property: LITELLM_CODEX_BRIDGE_KEY }
-    # Key de la cuenta de OpenRouter (sk-or-...). Mismo aviso que arriba, y aqui
+    # Key de la cuenta de OpenRouter (sk-or-...). Añadir SIEMPRE con `vault kv
+    # patch`, NUNCA `kv put`: en secret/litellm vive tambien LITELLM_MASTER_KEY y un
+    # put la borraria, tumbando a todos los consumidores. Y aqui
     # importa el ORDEN: si esta entrada llega al cluster ANTES de que la propiedad
     # exista en Vault, el ExternalSecret entero pasa a SecretSyncedError y deja de
     # refrescar el resto — incluida LITELLM_MASTER_KEY. Primero el patch, despues
@@ -5855,7 +5714,7 @@ metadata:
 spec:
   # 2026-08-14: de singleton a 4 replicas, una por nodo amd64 util (los tres
   # ks5-cp + ubuntu/x86). Motivo: dos OOMKill seguidos a 3Gi con ~74 req/min --
-  # LiteLLM es hoy el proxy de TODO (residente local + ChatGPT) y un singleton
+  # LiteLLM es hoy el proxy de TODO (residente local + upstreams externos) y un singleton
   # es un punto unico de fallo con cola. El registro dinamico de modelos vive en
   # postgres (store_model_in_db), asi que las replicas comparten catalogo; el
   # estado en proceso (cooldowns del router, active-requests) pasa a ser por-pod
@@ -5935,7 +5794,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-bac882a6b8fc
+        config.k8s.e-dani.com/revision: config-b70d2b91ab98
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -6030,25 +5889,12 @@ spec:
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LANGFUSE_SECRET_KEY } }
             - name: LANGFUSE_HOST
               value: "http://langfuse-web.langfuse.svc.cluster.local:3000"
-            # Credencial hacia el puente `litellm-codex` (ver codex-bridge.yaml).
-            - name: LITELLM_CODEX_BRIDGE_KEY
-              valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_CODEX_BRIDGE_KEY } }
-            # Keys autorizadas a pedir los alias del puente ChatGPT. Lista CERRADA:
-            # a diferencia del gate abliterado, este falla CERRADO — si la variable
-            # llega vacia se deniega a todo el mundo, incluida la master. Es lo
-            # pedido: «solo la key de CODEX, deny a todo lo demas».
-            # 26-08-2026: entra `opencode-20260630-local`. Decision del owner con el
-            # riesgo sobre la mesa: es el puente de los dos baneos del 20/21-08. Lo
-            # que lo acota es que el default de opencode sigue siendo `tooling`
-            # (local), asi que estos modelos hay que elegirlos A MANO por sesion y no
-            # reciben trafico de fondo. Vigilar el consumo de la cuenta en spend logs.
-            - { name: LITELLM_CODEX_ALLOWED_KEYS, value: "codex,opencode-20260630-local" }
             # Credencial de la cuenta de OpenRouter. Primer upstream del gateway que
             # sale a Internet; el model_list lo consume como `os.environ/`.
             - name: OPENROUTER_API_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: OPENROUTER_API_KEY } }
-            # Keys autorizadas a pedir los alias `or-*`. Misma forma que el gate del
-            # puente y por el mismo motivo: falla CERRADO. Si la variable llega vacia
+            # Keys autorizadas a pedir los alias `or-*`. Falla CERRADO, al reves que
+            # el gate abliterado. Si la variable llega vacia
             # se deniega a todo el mundo, incluida la master. Hace falta porque el
             # allowlist de la key NO puede cerrar nada — `models: []` = todos, y 7 de
             # 10 keys lo tienen asi, luego publicar el alias lo concede a ocho keys.
