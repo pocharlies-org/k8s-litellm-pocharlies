@@ -107,7 +107,7 @@ def test_el_bucle_de_fondo_sigue_activo_globalmente():
     """Se callan los locales, no el bucle.
 
     El bucle sigue siendo la unica sena automatica de los upstream de pago
-    (openrouter, codex bridge) cuando cambian de estado. Apagar
+    (openrouter) cuando cambian de estado. Apagar
     `background_health_checks` entero dejaria el panel sin ninguna senal continua.
     """
     docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]

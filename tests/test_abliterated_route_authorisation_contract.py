@@ -16,7 +16,7 @@ nombre: una convencion, no un control.
 LO QUE ESTE TEST SI PUEDE HACER: impedir que una concesion de modelos declarada en
 git incluya la ruta abliterada por descuido. Las dos listas declarativas que hay
 son `OPENCLAW_TEAM_REQUIRED_MODELS` (aqui) y `expected_models` del bootstrap de la
-key de codex (en k8s-openclaw-qwen36-pocharlies). Ninguna debe concederla.
+key de OpenClaw (en k8s-openclaw-qwen36-pocharlies). Ninguna debe concederla.
 
 LO QUE NO PUEDE HACER, y queda para el owner: estrechar la key VIVA del gateway.
 Hoy vale `models: []` y OpenClaw resuelve sus modelos del catalogo vivo con

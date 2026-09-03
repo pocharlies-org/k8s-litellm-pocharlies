@@ -51,7 +51,7 @@ def _client_effort_tiers() -> dict:
 def _local_aliases_with_efforts() -> list[tuple[str, list[str]]]:
     """Alias servidos DENTRO del cluster que declaran niveles de esfuerzo.
 
-    El discriminador es el `api_base`: los alias de nube (gpt-5.6) declaran
+    El discriminador es el `api_base`: los alias de nube declaran
     low/medium/xhigh/ultra y hacen bien -- su effort viaja al upstream, que si los
     honra. Los locales pasan por _apply_thinking_tier, y ahi manda la tabla.
     """

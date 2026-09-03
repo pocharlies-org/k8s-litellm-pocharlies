@@ -5,7 +5,7 @@
 # ---------------------------
 # LiteLLM se cayo dos veces esta tarde (OOMKilled, exit 137, limite de 3Gi) y NADIE
 # aviso: se entero el humano por su cuenta. Y LiteLLM no es un servicio mas — por el
-# pasan Codex, OpenClaw, el brain, el panel y los MCP. Si muere de madrugada, muere
+# pasan OpenClaw, el brain, el panel y los MCP. Si muere de madrugada, muere
 # todo lo que habla con un modelo.
 #
 # La cadena de aquel día fue una salida externa inestable, reintentos acumulados
@@ -411,7 +411,7 @@ spec:
                           titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
                           intro = "No esta sirviendo."
                           cuerpo = ["· " + f for f in fallos]
-                          quehacer = ("Lo usa TODO: Codex, OpenClaw, el brain, el panel.\n"
+                          quehacer = ("Lo usa TODO: OpenClaw, el brain, el panel.\n"
                                       "Mira <code>kubectl get pods -n litellm</code>.\n"
                                       "Si pone OOMKilled, el limite esta en el manifiesto.\n"
                                       "Si un pod reinicia en bucle, mira SUS logs antes de\n"

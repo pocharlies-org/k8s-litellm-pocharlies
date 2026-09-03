@@ -14,7 +14,7 @@ REQUIRED_MODELS = (
     "tooling",
     "qwen35-4b",
 )
-SAUVAGE_REQUIRED_MODELS = ("tooling", "gpt-5.6-luna", "qwen35-4b")
+SAUVAGE_REQUIRED_MODELS = ("tooling", "ornith-1.0", "qwen35-4b")
 
 
 def load_reconciler(request_json, log):
@@ -185,7 +185,7 @@ def test_sauvage_key_is_widened_via_key_list_without_touching_openclaw():
         "http://litellm.test/key/update",
         {
             "key": "hashed-sauvage-key",
-            "models": ["tooling", "gpt-5.6-luna", "qwen35-4b"],
+            "models": ["tooling", "ornith-1.0", "qwen35-4b"],
         },
         {"Authorization": "Bearer test"},
     )
@@ -257,7 +257,7 @@ def test_sauvage_reconcile_never_removes_models():
     assert len(update_calls) == 1
     models = update_calls[0][2]["models"]
     assert "extra-model" in models, "el reconciliador quito un modelo"
-    assert models == ["tooling", "extra-model", "qwen35-4b", "gpt-5.6-luna"]
+    assert models == ["tooling", "extra-model", "qwen35-4b", "ornith-1.0"]
 
 
 def test_sauvage_key_is_reconciled_when_it_is_a_team_member():
@@ -289,4 +289,4 @@ def test_sauvage_key_is_reconciled_when_it_is_a_team_member():
     update_calls = [c for c in calls if c[0] == "POST"]
     assert len(update_calls) == 1
     assert update_calls[0][2]["key"] == "hashed-sauvage-key"
-    assert update_calls[0][2]["models"] == ["tooling", "gpt-5.6-luna", "qwen35-4b"]
+    assert update_calls[0][2]["models"] == ["tooling", "ornith-1.0", "qwen35-4b"]

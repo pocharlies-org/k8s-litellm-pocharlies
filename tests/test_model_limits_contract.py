@@ -88,7 +88,7 @@ def test_el_model_info_usa_los_nombres_de_litellm(cms):
     """`context_window` era un campo inventado. Los que litellm lee de verdad son
     `max_input_tokens` y `max_output_tokens`; `max_tokens` es el legacy y se
     mantiene con el valor de salida, que es la convencion que aplica litellm a los
-    modelos que si conoce (gpt-5.6-sol: max_tokens == max_output_tokens)."""
+    modelos que si conoce (max_tokens == max_output_tokens)."""
     block = cms["sync"]
     block = block[block.index("def desired_deployments"):block.index("def current_model_ids")]
     for field in ('"max_input_tokens": backend["max_input_tokens"]',

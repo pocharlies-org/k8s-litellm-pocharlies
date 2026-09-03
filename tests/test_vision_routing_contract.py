@@ -96,7 +96,7 @@ def test_nombre_de_modelo_sin_veredicto_no_se_desvia(hook):
     """Un nombre de MODELO que no dice si ve se sirve tal cual.
 
     Si esto cae, una medida contra `ornith-1.0` puede acabar respondida por
-    ChatGPT sin que nadie lo pida.
+    el fallback de vision sin que nadie lo pida.
     """
     for alias in ("ornith-1.0", "dense-uncensored", "qwen36-35b"):
         assert hook._vision_target(
@@ -111,7 +111,7 @@ def test_nombre_de_modelo_que_declara_que_NO_ve_si_se_desvia(hook):
 
     2026-08-21: el ejemplo pasa a `qwen35-4b`, que es el unico del catalogo que
     declara `supports_vision: false`. Antes usaba `deepseek-v4-flash-0731`, que
-    desde la retirada de ChatGPT es el PROPIO destino de la desviacion: pedirle
+    desde la retirada del puente externo es el PROPIO destino de la desviacion: pedirle
     que se desvie a si mismo es un no-op, no un fallo del contrato.
     """
     assert _target(hook, _con_imagen(), "qwen35-4b", "qwen35-4b",
