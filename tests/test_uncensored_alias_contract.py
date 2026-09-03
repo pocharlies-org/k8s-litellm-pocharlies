@@ -28,6 +28,11 @@ import yaml
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 CAPABILITY = "tooling-uncensored"
+
+# Alias censurados que tienen que llevar sello EXPLICITO a 0. Desde que el
+# residente sirve con el lambda global en 1.0, "sin sello" ya no significa
+# "censurado": significa "usa el global", que es ablado.
+CENSURABLES = ("qwen38-flash-next", "tooling")
 # 01-09-2026: se va `deepseek-v4-flash-0731-uncensored` (refusal:1.5) con la
 # retirada de DeepSeek.
 # 01-09 (tarde): entra `qwen38-flash-next-uncensored` con su propio sello. No es
@@ -104,14 +109,39 @@ def test_the_capability_alias_carries_NO_salt_of_its_own(model_list):
     residentes SIEMPRE: 1.0 deja a DeepSeek rechazando, 1.5 le cuesta a Qwen 26,8
     puntos de MMLU-Pro. El sello viaja en la entrada del nombre directo al que el
     hook reescribe, que es la unica que sabe de que backend habla.
+
+    03-09-2026: el ancla `tooling_pool_params` ahora SI lleva sello (refusal:0),
+    y por eso `tooling-uncensored` lo hereda en el YAML. Eso no rompe el diseño:
+    el uncensored no se sirve de esta entrada. El hook reescribe el alias al
+    nombre de destino (TOOLING_UNCENSORED_MODE_TARGETS ->
+    qwen38-flash-next-uncensored / qwen38-27b-uncensored), y cada destino lleva
+    su sello en su propia entrada. Se comprueba el destino, no el alias.
     """
     entry = model_list[CAPABILITY]
-    assert "extra_body" not in entry["litellm_params"], entry["litellm_params"]
+    heredado = (entry["litellm_params"].get("extra_body") or {}).get("cache_salt")
+    assert heredado in (None, "refusal:0"), entry["litellm_params"]
 
 
-def test_the_censored_twin_never_gained_a_salt(model_list):
-    """`tooling` es el residente CON censura y tiene que seguir siendolo."""
-    assert "extra_body" not in model_list["tooling"]["litellm_params"]
+def test_the_uncensored_DESTINATIONS_carry_the_seal(model_list):
+    """Donde viaja de verdad el sello uncensored: los nombres de destino."""
+    for destino in ("qwen38-flash-next-uncensored", "qwen38-27b-uncensored"):
+        body = model_list[destino]["litellm_params"].get("extra_body") or {}
+        assert body.get("cache_salt") == "refusal:1.0", (destino, body)
+
+
+def test_the_censored_aliases_carry_an_EXPLICIT_zero(model_list):
+    """Un alias censurado NO puede depender del lambda global.
+
+    03-09-2026: `qwen38-flash-next` no llevaba sello y, con el global en 1.0
+    desde #38, salia ablado igual que su gemelo `-uncensored`. El alias
+    "censurado" no censuraba nada y ningun test lo cazaba, porque el test que
+    habia decia justamente lo contrario: "no tiene que ganar un sello".
+
+    Con el sello a 0 el alias es censurado pase lo que pase con el global.
+    """
+    for alias in CENSURABLES:
+        body = model_list[alias]["litellm_params"].get("extra_body") or {}
+        assert body.get("cache_salt") == "refusal:0", (alias, body)
 
 
 def test_no_uncensored_alias_has_a_fallback_to_the_cloud():

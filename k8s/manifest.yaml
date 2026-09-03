@@ -222,6 +222,11 @@ data:
         api_key: not-used
         timeout: 600
         max_parallel_requests: 32
+        # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
+        # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
+        # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
+        # comportamiento base del modelo.
+        extra_body: { cache_salt: "refusal:0" }
       model_info:
         mode: chat
         backend: dgx1+dgx2
@@ -426,6 +431,22 @@ data:
         api_key: not-used
         timeout: 600
         max_parallel_requests: 32
+        # 03-09-2026: sello EXPLICITO a 0, y es una correccion, no un detalle.
+        #
+        # El pool `tooling` ES hoy el qwen38-flash-next ablado: el service
+        # `tooling` selecciona llm.dgx-infra/pool=tooling-resident, que apunta al
+        # head de qwen38-flash-next (verificado con kubectl). Desde #38 el
+        # residente sirve con el lambda global en 1.0, asi que sin sello `tooling`
+        # contestaba ABLADO igual que `tooling-uncensored`: los dos alias eran
+        # uncensored y el censurado no censuraba nada.
+        #
+        # El ancla se comparte con `tooling-uncensored`, pero el hook
+        # _preserve_uncensored_seal no pisa un sello explicito, y la resolucion
+        # del uncensored va por nombre de destino
+        # (TOOLING_UNCENSORED_MODE_TARGETS -> qwen38-flash-next-uncensored /
+        # qwen38-27b-uncensored), que tienen el suyo. El sello heredado aqui no
+        # llega a ninguna peticion uncensored.
+        extra_body: { cache_salt: "refusal:0" }
       model_info: &tooling_pool_info
         mode: chat
         backend: profile-resident
@@ -5879,7 +5900,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6a5bc9b4458b
+        config.k8s.e-dani.com/revision: config-643f5e2bd299
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
