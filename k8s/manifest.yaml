@@ -260,8 +260,16 @@ data:
     # ── `qwen38-flash-next-uncensored`: el residente llm-tp, abliterado ────────
     #
     # MISMO backend, mismo head, misma GPU. Lo unico que cambia es que esta peticion
-    # sale sellada con `cache_salt: refusal:1.5` (ver UNCENSORED_ON_LAMBDA), o sea
+    # sale sellada con `cache_salt: refusal:1.0` (ver UNCENSORED_ON_LAMBDA), o sea
     # que es el unico nombre que da un comportamiento que `tooling` no puede dar.
+    #
+    # 03-09-2026: el sello era refusal:1.5 y pasa a 1.0. Hay dos ablaciones
+    # publicadas del mismo base y no coinciden (66 grados entre sus direcciones,
+    # cos 0.409). Se sirve la de orcarouter, que usa la proyeccion canonica
+    # lambda=1 y publica evaluacion medida (rechazo 64-100% -> 0-3,3%); la
+    # anterior sobre-proyectaba un 50% y no tiene numeros publicados. El literal
+    # esta contratado a los DOS lados: k8s-ai-pocharlies lo verifica en el build
+    # (test_cache_salt_contract.py, gate 7 del Dockerfile).
     #
     # ADVERTENCIA, y es lo unico delicado de esta entrada: el sello SOLO hace algo
     # si el backend lo parsea. La imagen del residente es hoy `vllm/vllm-openai:
@@ -282,7 +290,7 @@ data:
         api_key: not-used
         timeout: 600
         max_parallel_requests: 32
-        extra_body: { cache_salt: "refusal:1.5" }
+        extra_body: { cache_salt: "refusal:1.0" }
       model_info:
         mode: chat
         backend: dgx1+dgx2
@@ -5871,7 +5879,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-284585db3518
+        config.k8s.e-dani.com/revision: config-6a5bc9b4458b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

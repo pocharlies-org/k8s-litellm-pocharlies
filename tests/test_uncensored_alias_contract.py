@@ -37,7 +37,7 @@ CAPABILITY = "tooling-uncensored"
 # absorbe en un coef y aqui ese coef sale 1. Coincidir con DeepSeek es coincidencia.
 MODEL_SCOPED_LAMBDA = {
     "qwen38-27b-uncensored": "refusal:1.0",
-    "qwen38-flash-next-uncensored": "refusal:1.5",
+    "qwen38-flash-next-uncensored": "refusal:1.0",
 }
 
 WANT_FN = {"_component_is_ready", "_ready_tooling_modes",
