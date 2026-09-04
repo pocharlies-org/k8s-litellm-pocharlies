@@ -187,8 +187,8 @@ class DialTest(unittest.TestCase):
     def test_env_override_con_json_roto_cae_al_default(self):
         os.environ["LITELLM_REFUSAL_RUNTIMES"] = "{no json"
         try:
-            # El default de produccion: un solo runtime desde el 01-09.
-            self.assertEqual(len(ns["_load_refusal_runtimes"]()), 1)
+            # El default de produccion: dos runtimes desde el 04-09.
+            self.assertEqual(len(ns["_load_refusal_runtimes"]()), 2)
         finally:
             del os.environ["LITELLM_REFUSAL_RUNTIMES"]
 
@@ -229,17 +229,42 @@ class DialTest(unittest.TestCase):
         self.assertIsNone(st["enabled"])
         self.assertFalse(st["stamping"])
 
-    def test_el_registro_real_de_produccion_tiene_un_solo_runtime(self):
-        # Sin override: lo que corre en el cluster. DeepSeek se retiro el
-        # 01-09-2026 y su dial se fue con el; el unico backend que expone
-        # /admin/refusal_lambda es el 27B denso. qwen38-flash-next NO entra
-        # aqui a proposito: no sirve ese endpoint -- lo traia el plugin de
-        # DeepSeek -- y un dial que no puede leer publicaria "no censurado"
-        # sobre un backend que nadie ha medido.
+    def test_el_registro_real_de_produccion_son_los_dos_backends_con_capa(self):
+        # Sin override: lo que corre en el cluster. La regla NO es "los modelos
+        # que nos gustaria abliterar" sino "los que SIRVEN
+        # /admin/refusal_lambda": un dial que no puede leer publicaria "no
+        # censurado" sobre un backend que nadie ha medido.
+        #
+        # DeepSeek se retiro el 01-09 y su dial se fue con el. qwen38-flash-next
+        # entro el 04-09, cuando dejo de ser cierto que no servia el endpoint:
+        # corre la imagen rank1 -g desde el 03-09 (k8s-ai#40) y responde 200.
+        # El comentario que decia lo contrario se quedo cuatro dias de mas, y
+        # mientras tanto el UNICO runtime con dial vivo era el que no estaba
+        # aqui — el 27b registrado vive a 0 replicas fuera de `creative`.
         real = ns["REFUSAL_RUNTIMES_DEFAULT"]
-        self.assertEqual([r["key"] for r in real], ["qwen38-27b-nvfp4"])
-        self.assertEqual(real[0]["on_lambda"], 1.0)
+        self.assertEqual(
+            sorted(r["key"] for r in real),
+            ["qwen38-27b-nvfp4", "qwen38-flash-next"])
+        # 1.0 en los dos, y no es la misma escala: son dos direcciones sobre dos
+        # bases distintas que coinciden por casualidad. Se afirma por key, no por
+        # indice, para que reordenar la lista no cambie lo que se comprueba.
+        by = {r["key"]: r for r in real}
+        self.assertEqual(by["qwen38-27b-nvfp4"]["on_lambda"], 1.0)
+        self.assertEqual(by["qwen38-flash-next"]["on_lambda"], 1.0)
         self.assertNotIn("deepseek", json.dumps(real).lower())
+
+    def test_el_admin_url_de_flash_next_es_el_del_par_no_el_del_head(self):
+        # Existen los DOS Services (`qwen38-flash-next` y
+        # `qwen38-flash-next-head`) y los dos contestan. Pero el panel ancla la
+        # chapa por igualdad EXACTA contra el nombre que deriva de la fila de la
+        # flota, y esa fila es el par TP: tpBase('...-head') -> '...'. Con el
+        # Service del head, `_refusal_fleet_name` devolveria
+        # `qwen38-flash-next-head` y la chapa no anclaria en ninguna fila —
+        # sin un solo error, que es como se pierden estas cosas.
+        by = {r["key"]: r for r in ns["REFUSAL_RUNTIMES_DEFAULT"]}
+        rt = by["qwen38-flash-next"]
+        self.assertNotIn("-head.", rt["admin_url"])
+        self.assertEqual(ns["_refusal_fleet_name"](rt), "qwen38-flash-next")
 
     def test_env_override_valido_se_respeta(self):
         os.environ["LITELLM_REFUSAL_RUNTIMES"] = json.dumps([
