@@ -1,8 +1,7 @@
 """Contrato del desvio de VISION (2026-08-11).
 
-DeepSeek es solo texto. Mientras sea el residente, una peticion con imagen a un
-nombre de CAPACIDAD se manda al unico modelo del gateway que ve: la cuenta
-ChatGPT Pro por codex-bridge (`cloudblue/gpt-5.6-luna`).
+Una peticion con imagen a un nombre de CAPACIDAD se manda al fallback de vision
+local cuando el backend servido declara que no ve.
 
 Lo que este contrato fija, que es lo que se puede romper sin darse cuenta:
 
@@ -31,8 +30,8 @@ WANT_FN = {"_vision_target", "_has_part_type", "_message_entries",
            # sondas por defecto: tienen que existir para que la firma de
            # _vision_target ligue en el `def`. Los tests inyectan stubs.
            "_alias_supports_vision", "_alias_has_deployments"}
-WANT_CONST = {"VISION_FALLBACK_MODEL", "VISION_DIVERTIBLE", "AUTO_ROUTED_MODELS",
-              "CAPABILITY_CHAINS", "IMAGE_PART_TYPES"}
+WANT_CONST = {"VISION_FALLBACK_MODEL", "VISION_DIVERTIBLE",
+              "CAPABILITY_CHAINS", "IMAGE_PART_TYPES", "TOOLING_FALLBACKS"}
 
 
 @pytest.fixture(scope="module")
@@ -97,7 +96,7 @@ def test_nombre_de_modelo_sin_veredicto_no_se_desvia(hook):
     """Un nombre de MODELO que no dice si ve se sirve tal cual.
 
     Si esto cae, una medida contra `ornith-1.0` puede acabar respondida por
-    ChatGPT sin que nadie lo pida.
+    el fallback de vision sin que nadie lo pida.
     """
     for alias in ("ornith-1.0", "dense-uncensored", "qwen36-35b"):
         assert hook._vision_target(
@@ -108,8 +107,14 @@ def test_nombre_de_modelo_sin_veredicto_no_se_desvia(hook):
 
 
 def test_nombre_de_modelo_que_declara_que_NO_ve_si_se_desvia(hook):
-    """Sabemos que iba a fallar seguro: desviar no puede estropear ninguna medida."""
-    assert _target(hook, _con_imagen(), "deepseek-v4-flash-0731", "deepseek-v4-flash-0731",
+    """Sabemos que iba a fallar seguro: desviar no puede estropear ninguna medida.
+
+    2026-08-21: el ejemplo pasa a `qwen35-4b`, que es el unico del catalogo que
+    declara `supports_vision: false`. Antes usaba `deepseek-v4-flash-0731`, que
+    desde la retirada del puente externo es el PROPIO destino de la desviacion: pedirle
+    que se desvie a si mismo es un no-op, no un fallo del contrato.
+    """
+    assert _target(hook, _con_imagen(), "qwen35-4b", "qwen35-4b",
                    ve=False) == hook.VISION_FALLBACK_MODEL
 
 
@@ -121,18 +126,18 @@ def test_sin_imagen_no_se_desvia(hook):
 def test_backend_que_ve_se_queda_la_peticion(hook):
     """Un residente multimodal (Ornith, el 27B, el nvidia-qwen36) recupera lo suyo
     sin tocar nada: el desvio se apaga solo."""
-    assert _target(hook, _con_imagen(), "router", "dense", ve=True) is None
+    assert _target(hook, _con_imagen(), "high", "qwen38-27b", ve=True) is None
     for alias in sorted(hook.VISION_DIVERTIBLE):
         assert _target(hook, _con_imagen(), alias, "tooling", ve=True) is None, alias
 
 
 def test_no_se_desvia_si_el_modelo_de_vision_no_esta_registrado(hook):
-    assert _target(hook, _con_imagen(), "router", "tooling", sol_viva=False) is None
+    assert _target(hook, _con_imagen(), "high", "tooling", sol_viva=False) is None
 
 
 def test_no_se_desvia_a_si_mismo(hook):
     """Pedir el propio modelo de vision no puede reentrar en el desvio."""
-    assert _target(hook, _con_imagen(), "router", hook.VISION_FALLBACK_MODEL) is None
+    assert _target(hook, _con_imagen(), "high", hook.VISION_FALLBACK_MODEL) is None
 
 
 def test_el_destino_es_un_modelo_del_model_list(hook):

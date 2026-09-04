@@ -78,7 +78,7 @@ def test_gate_is_wired_into_local_vllm_requests():
     _is_local_vllm_request), nunca para modelos de terceros.
 
     2026-08-11: la guarda lleva ademas `not vision_diverted`. Una peticion con
-    imagen desviada a ChatGPT sigue teniendo proxy_model=`tooling`, asi que sin
+    imagen desviada sigue teniendo proxy_model=`tooling`, asi que sin
     esa condicion _is_local_vllm_request diria True y se le marcarian las tools
     como strict para una gramatica de vLLM que no la va a servir.
     """
@@ -87,6 +87,28 @@ def test_gate_is_wired_into_local_vllm_requests():
         "if not vision_diverted and _is_local_vllm_request(model, proxy_model, api_base):"):]
     block = block[:block.index("tracking_id = str(uuid.uuid4())")]
     assert "_enforce_tool_strict(data" in block
+
+
+def test_local_request_detection_uses_local_aliases_and_runtime_mapping():
+    """La admision local reconoce alias locales y deja fuera modelos ajenos."""
+    docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+    src = next(d["data"]["litellm_strip_params.py"] for d in docs
+               if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
+    tree = ast.parse(src)
+    keep = [n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "_is_local_vllm_request"]
+    mod = types.ModuleType("localrequestpure")
+    mod.__dict__.update({
+        "LOCAL_VLLM_ALIASES": {"tooling"},
+        "resolve_server_id": lambda model, api_base: None,
+    })
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "<local-request>", "exec"),
+         mod.__dict__)
+
+    assert mod._is_local_vllm_request("tooling", "tooling", "")
+    assert not mod._is_local_vllm_request(
+        "openai/remote-model", "openai/remote-model", ""
+    )
 
 
 def test_gate_has_an_env_kill_switch():

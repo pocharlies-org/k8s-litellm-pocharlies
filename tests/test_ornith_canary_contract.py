@@ -3,7 +3,7 @@
 HISTORIA (2026-08-13, ventana RHO backend-sync)
 -----------------------------------------------
 Este fichero afirmaba que `ornith-dgx1` era el unico backend de DGX1 y dueño de
-`tooling`/`router`/`auto` mas sus dos nombres de canary. Dejo de ser cierto por
+el perfil local mas sus dos nombres de canary. Dejo de ser cierto por
 partes y en fechas distintas:
 
   - 10-08-2026: se BORRAN los pesos de Ornith del disco por decision del operador.
@@ -69,13 +69,20 @@ def test_los_alias_de_ornith_ya_no_los_declara_nadie():
 def test_los_alias_de_capacidad_siguen_teniendo_dueno():
     """La retirada no puede dejar `tooling` y compania sin backend declarado."""
     texto = MANIFEST.read_text()
-    assert "TOOLING_RESIDENT_ALIASES = QWEN36_COMPAT_ALIASES" in texto
+    assert "TOOLING_RESIDENT_ALIASES = TOOLING_COMPAT_ALIASES" in texto
     backends = _bloque_backends(texto)
     assert backends.count('"aliases": TOOLING_RESIDENT_ALIASES') == 1, (
         "los alias de capacidad tienen que tener exactamente UN dueño declarado"
     )
-    ds = backends[backends.index('"name": "deepseek-v4-flash-tp2"'):]
-    assert '"aliases": TOOLING_RESIDENT_ALIASES' in ds, (
-        "el dueño tiene que ser DeepSeek: es el unico backend vivo y su TP=2 "
-        "excluye a cualquier otro por hardware en los dos nodos"
+    # 26-08: el asiento pasa a qwen38-flash-next (residente llm-tp).
+    # 01-09: al retirarse DeepSeek-V4-Flash desaparece la frontera que cerraba
+    # este slice, asi que se corta en el SIGUIENTE "name" que haya -- o al final
+    # del bloque si es el ultimo. Cortar por un nombre concreto ataba el test a
+    # que ese vecino siguiera existiendo.
+    ini = backends.index('"name": "qwen38-flash-next"')
+    sig = backends.find('"name": "', ini + 10)
+    qn = backends[ini:sig if sig != -1 else len(backends)]
+    assert '"aliases": TOOLING_RESIDENT_ALIASES' in qn, (
+        "el dueño tiene que ser el residente llm-tp vivo (qwen38-flash-next): "
+        "su TP=2 excluye a cualquier otro por hardware en los dos nodos"
     )

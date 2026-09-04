@@ -51,7 +51,16 @@ def test_qwen_backend_uses_its_ready_clusterip_and_one_slot():
 def test_qwen_backend_exposes_only_verified_capabilities():
     backend = _qwen_backend()
     assert backend["supports_function_calling"] is True
-    assert backend["supports_reasoning"] is False
+    # 2026-08-15: era False. El test pide capacidades VERIFICADAS, y esta se
+    # verifico contra el motor vivo: con reasoning_effort=high devuelve 1231 chars
+    # de reasoning_content y con max 1405; none/low/medium no piensan. Declararlo
+    # False mientras el modelo si razonaba es lo que hacia que los clientes que
+    # leen /model/info nunca ofrecieran la opcion.
+    assert backend["supports_reasoning"] is True
+    # 2026-08-19: `low` y `medium` fuera. El propio comentario de arriba ya decia
+    # que no piensan, y el hook tampoco los traduce: un nivel anunciado y no
+    # honrado deja al cliente parado en el creyendo que piensa.
+    assert list(backend["supported_reasoning_efforts"]) == ["none", "high", "max"]
     assert backend["supports_vision"] is False
 
 

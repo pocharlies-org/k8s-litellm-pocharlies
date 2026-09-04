@@ -16,7 +16,7 @@ de los que puede.
 Lo que se fija aqui:
   1. los nombres de los campos son los de litellm, y `context_window` no vuelve
   2. ningun limite se hereda: todo backend declara los suyos
-  3. el router automatico ya no depende del 27B ni necesita un escape especial
+  3. `tooling` publica limites compatibles con ambos residentes
 """
 import ast
 import os
@@ -30,8 +30,8 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 # La ventana que sirve de verdad cada checkpoint. Si alguien cambia un
 # --max-model-len, este numero y el del sync tienen que moverse juntos.
-DGX2_UNCENSORED_27B = "qwen36-27b-uncensored-dgx2"
-DEEPSEEK_V4_FLASH = "deepseek-v4-flash-tp2"
+DGX2_UNCENSORED_27B = "qwen38-27b"
+QWEN38_FLASH_NEXT = "qwen38-flash-next"
 QWEN35_4B = "qwen35-4b-int4"
 
 
@@ -53,12 +53,18 @@ def cms():
 def backends(cms):
     """BACKENDS del sync, evaluado de verdad (no por regex sobre el texto)."""
     tree = ast.parse(cms["sync"])
-    wanted = {"ORNITH_CANARY_ALIASES", "QWEN36_COMPAT_ALIASES", "ORNITH_ALIASES",
+    wanted = {"ORNITH_CANARY_ALIASES", "TOOLING_COMPAT_ALIASES", "ORNITH_ALIASES",
               "THINKING_TIER_ALIASES",
-              "TOOLING_RESIDENT_ALIASES", "DEEPSEEK_V4_FLASH_DIRECT_ALIASES",
+              "TOOLING_RESIDENT_ALIASES",
+              # 26-08: nombre directo del residente llm-tp nuevo (Qwen3.8-Flash-Next).
+              "QWEN38_FLASH_NEXT_DIRECT_ALIASES",
               "QWEN35_4B_ALIASES",
               "QWEN3CODER_ALIASES",
-              "QWEN36_27B_UNCENSORED_ALIASES", "QWEN36_REPEAT_GUARD_PARAMS",
+              "QWEN38_27B_ALIASES", "QWEN38_REPEAT_GUARD_PARAMS",
+              # 19-08-2026: el alias de capacidad abliterado. Lo comparten los DOS
+              # residentes, asi que sin el aqui BACKENDS no evalua y los cinco
+              # tests de este modulo dan NameError en el setup.
+              "UNCENSORED_RESIDENT_ALIASES",
               "BACKENDS"}
     keep = [n for n in tree.body
             if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in wanted
@@ -82,7 +88,7 @@ def test_el_model_info_usa_los_nombres_de_litellm(cms):
     """`context_window` era un campo inventado. Los que litellm lee de verdad son
     `max_input_tokens` y `max_output_tokens`; `max_tokens` es el legacy y se
     mantiene con el valor de salida, que es la convencion que aplica litellm a los
-    modelos que si conoce (gpt-5.6-sol: max_tokens == max_output_tokens)."""
+    modelos que si conoce (max_tokens == max_output_tokens)."""
     block = cms["sync"]
     block = block[block.index("def desired_deployments"):block.index("def current_model_ids")]
     for field in ('"max_input_tokens": backend["max_input_tokens"]',
@@ -115,23 +121,34 @@ def test_ningun_backend_hereda_sus_limites(cms, backends):
     assert "raise SystemExit" in cms["sync"]
 
 
-def test_el_27b_declara_su_ventana_mas_estrecha(backends):
+def test_el_27b_declara_la_ventana_que_sirve(backends):
     """El catalogo debe seguir publicando la ventana real del 27B.
 
-    El router automatico ya no lo usa ni depende de este limite.
+    2026-08-15: el 27B paso de 65536 a 262144 (k8s-ai-pocharlies@32e2b2f, que es
+    el nativo del checkpoint). Este numero se habia quedado atras y era LO QUE
+    VEIAN LOS CLIENTES en /model/info, o sea que todo el estate creia que el
+    modelo tenia 64K. El test deja de preguntar "cual es mas estrecho" —esa
+    pregunta perdio sentido cuando el 27B alcanzo al resto— y pasa a comprobar
+    lo unico que importaba de verdad: que el limite declarado sea el que sirve
+    el motor. Si alguien mueve --max-model-len, este numero se mueve con el.
     """
+    assert backends[DGX2_UNCENSORED_27B]["max_input_tokens"] == 262144
+
     estrechos = {n: b["max_input_tokens"] for n, b in backends.items()
                  if b["max_input_tokens"] < 262144}
-    assert estrechos == {
-        DGX2_UNCENSORED_27B: 65536,
-        QWEN35_4B: 32768,
-    }, estrechos
+    assert estrechos == {QWEN35_4B: 32768}, estrechos
 
 
-def test_deepseek_publica_la_ventana_operativa_de_384k(backends):
-    """El catalogo solo puede anunciar el max_model_len que sirve vLLM."""
-    assert backends[DEEPSEEK_V4_FLASH]["max_input_tokens"] == 393216
-    assert backends[DEEPSEEK_V4_FLASH]["max_output_tokens"] == 16384
+def test_qwen38_flash_next_publica_la_ventana_operativa_de_256k(backends):
+    """El catalogo solo puede anunciar el max_model_len que sirve vLLM.
+
+    01-09-2026: era el contrato de DeepSeek-V4-Flash (384K). Al retirarlo, el
+    residente de `llm-tp` pasa a ser Qwen3.8-Flash-Next, que arranca con
+    --max-model-len 262144. La propiedad protegida es la misma: el catalogo no
+    puede anunciar mas contexto del que sirve el motor.
+    """
+    assert backends[QWEN38_FLASH_NEXT]["max_input_tokens"] == 262144
+    assert backends[QWEN38_FLASH_NEXT]["max_output_tokens"] == 16384
 
 
 def test_qwen35_4b_publica_el_contexto_real_de_llama_cpp(backends):
@@ -139,11 +156,11 @@ def test_qwen35_4b_publica_el_contexto_real_de_llama_cpp(backends):
     assert backends[QWEN35_4B]["max_output_tokens"] == 8192
 
 
-def test_deepseek_publica_su_nombre_directo_solo_en_su_backend(backends):
+def test_qwen38_flash_next_publica_su_nombre_directo_solo_en_su_backend(backends):
     """El nombre concreto no puede resolver silenciosamente a otro residente."""
-    alias = "deepseek-v4-flash-0731"
+    alias = "qwen38-flash-next"
     owners = [name for name, backend in backends.items() if alias in backend["aliases"]]
-    assert owners == [DEEPSEEK_V4_FLASH]
+    assert owners == [QWEN38_FLASH_NEXT]
 
 
 def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
@@ -158,10 +175,10 @@ def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
     exec(compile(ast.Module(body=[function], type_ignores=[]), "<sync>", "exec"), namespace)
     contract = namespace["managed_model_contract"]
     current = {
-        "model_name": "agent",
+        "model_name": "tooling",
         "litellm_params": {
-            "model": "openai/deepseek-v4-flash-0731",
-            "api_base": "http://deepseek/v1",
+            "model": "openai/qwen38-flash-next",
+            "api_base": "http://qwen38/v1",
             "max_parallel_requests": 6,
         },
         "model_info": {
@@ -172,7 +189,7 @@ def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
             "supports_vision": False,
             "backend": "dgx1+dgx2",
             "k8s_namespace": "llm",
-            "k8s_service": "deepseek-v4-flash-0731",
+            "k8s_service": "qwen38-flash-next",
         },
     }
     desired = {**current, "model_info": {**current["model_info"], "max_input_tokens": 393216}}
@@ -184,15 +201,18 @@ def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
     assert "delete_model(model_id)" in reconcile
 
 
-def test_router_automatico_no_depende_del_dense(cms):
-    """Los limites del 27B no pueden volver a condicionar el perfil automatico."""
+def test_tooling_dinamico_no_incluye_aliases_dense(cms):
+    """El perfil local dinamico solo contiene nombres de capacidad vigentes."""
     tree = ast.parse(cms["hook"])
-    route = _const(cms["hook"], "ROUTE")
-    assert {entry["model"] for entry in route.values()} == {
-        "tooling", "agent", "high", "max"}
-    assert all(not alias.startswith("dense")
-               for entry in route.values()
-               for alias in (entry["model"], *entry.get("fallbacks", ())))
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(getattr(target, "id", "") == "CAPABILITY_CHAINS"
+                for target in node.targets)
+    )
+    aliases = {ast.literal_eval(key) for key in assignment.value.keys}
+    assert aliases == {"tooling", "high", "max", "tooling-uncensored"}
+    assert all(not alias.startswith("dense") for alias in aliases)
     assert not any(isinstance(node, ast.Assign) and any(
         getattr(target, "id", "") == "DENSE_CTX_ESCAPE" for target in node.targets)
         for node in tree.body)

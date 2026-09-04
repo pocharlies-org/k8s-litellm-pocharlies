@@ -5,13 +5,12 @@
 # ---------------------------
 # LiteLLM se cayo dos veces esta tarde (OOMKilled, exit 137, limite de 3Gi) y NADIE
 # aviso: se entero el humano por su cuenta. Y LiteLLM no es un servicio mas — por el
-# pasan Codex, OpenClaw, el brain, el panel y los MCP. Si muere de madrugada, muere
+# pasan OpenClaw, el brain, el panel y los MCP. Si muere de madrugada, muere
 # todo lo que habla con un modelo.
 #
-# La cadena de aquel dia, para que se entienda que hay que vigilar:
-#   codex-bridge-edani entra en CrashLoopBackOff (12 reinicios en 18 h)
-#     -> LiteLLM acumula reintentos contra un host caido
-#       -> OOMKilled, dos veces
+# La cadena de aquel día fue una salida externa inestable, reintentos acumulados
+# y dos OOMKilled. Esa salida ya está retirada; el watchdog sigue siendo necesario
+# para detectar fallos propios de LiteLLM y de los backends locales.
 #
 # NO se avisa por el webhook de synapse. Comprobado el mismo dia:
 # https://synapse.e-dani.com/webhooks/brain-audit devuelve 404, y su propio contrato
@@ -67,11 +66,38 @@ spec:
     spec:
       backoffLimit: 0
       activeDeadlineSeconds: 300
-      ttlSecondsAfterFinished: 86400
+      # 3600, no 86400. ArgoCD agrega los Jobs hijos de un CronJob a la salud de
+      # la Application, asi que un Job fallido deja la app —y la tarjeta— en
+      # Degraded mientras el objeto exista. Con 24 h, un corte de inferencia de
+      # VEINTE MINUTOS pintaba LiteLLM en rojo durante todo el dia siguiente,
+      # mucho despues de haberse recuperado.
+      #
+      # Paso el 21-08-2026 a las 22:06 UTC: el cluster cambio a perfil `creative`
+      # y qwen38-27b (quien sirve `tooling` ahi) tardo 21 min en escalar; el
+      # watchdog fallo dos veces, aviso por Telegram —que es el canal de verdad—
+      # y a las 22:45 ya volvia a dar `ok`. La app seguia Degraded.
+      #
+      # 1 h deja evidencia suficiente para mirar el fallo y no miente el resto
+      # del dia. Mismo valor y misma razon que los crons del brain.
+      ttlSecondsAfterFinished: 3600
       template:
         metadata:
           labels: { app: litellm-watchdog }
         spec:
+          # 2026-08-21: todo litellm corre EXCLUSIVAMENTE en `ubuntu` (el x86 de la
+          # RTX). Estos Jobs no tenian restriccion y caian en cualquier ks5. Aqui no se
+          # pierde HA: son tareas puntuales, no servicio. Se tolera el taint blando
+          # pool=dev:PreferNoSchedule del nodo para no penalizarlo en la puntuacion.
+          tolerations:
+            - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values: [ubuntu]
           restartPolicy: Never
           serviceAccountName: litellm-watchdog
           containers:
@@ -79,12 +105,17 @@ spec:
               image: python:3.12-slim
               command:
                 - python3
+                - -I
                 - -c
                 - |
-                  import json, os, ssl, time, urllib.error, urllib.parse, urllib.request
+                  import json, os, ssl, sys, time, urllib.error, urllib.parse, urllib.request
 
                   BASE = "http://litellm.litellm.svc.cluster.local:4000"
                   KEY = os.environ.get("LITELLM_MASTER_KEY", "")
+                  # L1: el Service de POOL del residente (llm), no LiteLLM. Ver el
+                  # comentario de capas arriba: el catalogo de LiteLLM sale aunque el
+                  # residente este a 0 replicas; aqui solo contesta quien sirve.
+                  RESIDENTE = "http://tooling.llm.svc.cluster.local:8000"
 
                   # --- memoria entre corridas: un ConfigMap del namespace ------------
                   SA = "/var/run/secrets/kubernetes.io/serviceaccount"
@@ -139,170 +170,341 @@ spec:
                           print("[litellm-watchdog] crear estado:", str(exc)[:110])
 
                   # --- comprobaciones ------------------------------------------------
-                  def pide(path, payload=None, timeout=45):
+                  def pide(path, payload=None, timeout=45, base=BASE, auth=True):
                       d = json.dumps(payload).encode() if payload else None
-                      r = urllib.request.Request(
-                          BASE + path, data=d,
-                          headers={"content-type": "application/json",
-                                   "authorization": "Bearer " + KEY})
+                      cabecera = {"content-type": "application/json"}
+                      if auth:
+                          cabecera["authorization"] = "Bearer " + KEY
+                      r = urllib.request.Request(base + path, data=d, headers=cabecera)
                       t = time.time()
                       with urllib.request.urlopen(r, timeout=timeout) as resp:
                           return json.loads(resp.read()), (time.time() - t) * 1000
 
-                  fallos = []
-                  modelos = None
-                  latencia = None
-                  vuelve = None      # epoch de reset si el upstream lo dice
-
-                  # 1. ¿Publica catalogo? Si esto falla, ni arranco.
-                  try:
-                      d, _ = pide("/v1/models")
-                      modelos = len(d.get("data", []))
-                      if modelos == 0:
-                          fallos.append("/v1/models devuelve CERO modelos")
-                  except Exception as exc:
-                      fallos.append("/v1/models: %s" % str(exc)[:110])
-
-                  # 2. Una inferencia DE VERDAD contra el alias que mas se usa.
-                  #    max_tokens generoso a proposito: con un modelo de razonamiento,
-                  #    un limite corto se lo come el pensamiento y devuelve content
-                  #    vacio con HTTP 200. Eso paso de verdad y parecia un fallo del
-                  #    servidor cuando era del test.
-                  if modelos:
+                  def cuerpo_error(exc):
                       try:
-                          d, latencia = pide("/v1/chat/completions", {
-                              "model": "agent",
-                              "messages": [{"role": "user",
-                                            "content": "Responde SOLO el numero: 17*23"}],
-                              "max_tokens": 400,
-                          }, timeout=120)
-                          txt = (d["choices"][0]["message"].get("content") or "").strip()
-                          if not txt:
-                              fallos.append("inferencia: HTTP 200 con contenido VACIO")
-                          elif "391" not in txt:
-                              fallos.append("inferencia: respuesta incorrecta %r" % txt[:40])
-                      except urllib.error.HTTPError as exc:
-                          # El cuerpo del 429 trae el motivo y el reset; sin leerlo,
-                          # "Too Many Requests" no distingue cuota agotada de
-                          # rate-limit por rafaga.
-                          try:
-                              crudo = exc.read().decode("utf-8", "replace")
-                          except Exception:
-                              crudo = ""
-                          if exc.code == 429 and "usage_limit_reached" in crudo:
-                              for trozo in crudo.split("resets_at"):
-                                  digitos = "".join(
-                                      c for c in trozo[:24] if c.isdigit())
-                                  if len(digitos) >= 10:
-                                      vuelve = int(digitos[:10])
-                                      break
-                              fallos.append("cuota del plan agotada (429 "
-                                            "usage_limit_reached)")
-                          else:
-                              fallos.append("inferencia: HTTP %d %s"
-                                            % (exc.code, crudo[:90]))
-                      except Exception as exc:
-                          fallos.append("inferencia: %s" % str(exc)[:110])
+                          return exc.read().decode("utf-8", "replace")
+                      except Exception:
+                          return ""
 
-                  # --- clase del incidente -------------------------------------------
-                  # "cuota" no es "caido": el cluster esta bien y no hay nada que tocar,
-                  # solo esperar. Mezclarlos fue el error del aviso del 15-08.
-                  if not fallos:
-                      clase = "ok"
-                  elif vuelve or any("cuota del plan" in f for f in fallos):
-                      clase = "cuota"
-                  else:
-                      clase = "caido"
-
-                  ahora = int(time.time())
-                  antes = lee_estado()
-                  clase_antes = antes.get("clase")
-                  ultimo = antes.get("ultimo_aviso", 0)
-
-                  print("[litellm-watchdog]", json.dumps(
-                      {"clase": clase, "antes": clase_antes, "modelos": modelos,
-                       "latencia_ms": round(latencia or 0), "fallos": fallos,
-                       "vuelve": vuelve}))
-
-                  # Se avisa al CAMBIAR de clase. Si sigue caido, se insiste cada hora
-                  # (no cada 10 min: 6 mensajes/hora de lo mismo se ignoran solos). Si
-                  # es cuota, ni se insiste — ya sabes la hora a la que vuelve.
-                  RECORDAR = 3600
-                  if clase == clase_antes:
-                      avisar = clase == "caido" and (ahora - ultimo) >= RECORDAR
-                  else:
-                      avisar = clase != "ok" or clase_antes in ("caido", "cuota")
-
-                  # Solo "caido" hace fallar el Job. Con la cuota agotada el Job
-                  # correría a rojo cada 10 min durante dias y dejaria la Application
-                  # de Argo en Degraded — justo mientras el aviso dice que el cluster
-                  # esta bien, y tapando un Degraded de verdad. El aviso es la señal.
-                  SALIDA = 1 if clase == "caido" else 0
-                  desde = antes.get("desde", ahora) if clase == clase_antes else ahora
-
-                  def apunta(enviado):
-                      # ultimo_aviso solo se mueve si el mensaje SALIO. Si Telegram
-                      # falla, la proxima corrida vuelve a intentarlo en vez de dar
-                      # el aviso por dado.
-                      guarda_estado({"clase": clase, "desde": desde,
-                                     "ultimo_aviso": ahora if enviado else ultimo,
-                                     "vuelve": vuelve})
-
-                  if not avisar:
-                      apunta(False)
-                      raise SystemExit(SALIDA)
-
-                  if clase == "caido":
-                      titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
-                      intro = "No esta sirviendo."
-                      cuerpo = ["· " + f for f in fallos]
-                      quehacer = ("Lo usa TODO: Codex, OpenClaw, el brain, el panel.\n"
-                                  "Mira <code>kubectl get pods -n litellm</code>.\n"
-                                  "Si pone OOMKilled, el limite esta en el manifiesto.\n"
-                                  "Si un pod reinicia en bucle, mira SUS logs antes de\n"
-                                  "culpar a nadie — el aviso no sabe quien es.")
-                  elif clase == "cuota":
-                      cuando = (time.strftime("%a %d-%m a las %H:%M",
-                                              time.localtime(vuelve))
-                                if vuelve else "sin fecha en la respuesta")
-                      titulo = "\U0001F7E0 <b>LiteLLM SIN CUOTA</b>"
-                      intro = "El cluster esta bien; el plan de arriba agoto el limite."
-                      cuerpo = ["· %d modelos publicados, el catalogo sirve" % (modelos or 0),
-                                "· la inferencia da 429 usage_limit_reached",
-                                "· vuelve: <b>%s</b>" % cuando]
-                      quehacer = ("Nada en el cluster. No hay fallback local desde el\n"
-                                  "10-08, asi que ningun alias contesta hasta el reset.")
-                  else:
-                      titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
-                      intro = "Vuelve a servir."
-                      cuerpo = ["· %d modelos · inferencia en %d ms" % (
-                          modelos or 0, round(latencia or 0))]
-                      quehacer = "Nada. El aviso anterior queda desmentido."
-
-                  texto = "\n".join([titulo, "", intro, ""] + cuerpo +
-                                    ["", "<b>Qué hacer</b>", quehacer])
-                  tok = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-                  chat = os.environ.get("TELEGRAM_CHAT_ID", "")
-                  if not tok or not chat:
-                      print("[litellm-watchdog] sin token/chat: no puedo avisar")
-                      apunta(False)
-                      raise SystemExit(SALIDA)
-                  enviado = False
+                  # EL CONTRATO DE SALIDA. `caido` es la unica clase que pone el Job
+                  # en Failed. Todo lo que termina el script pasa por aqui, SIEMPRE:
+                  # ver el bloque "salida" al final del fichero para el bug que esto
+                  # cierra (Job Failed con clase caido y el proceso saliendo con 0).
+                  #
+                  # `SALIDA` es la UNICA fuente del exit code. `SIN_CLASE` es el valor
+                  # con el que termina el script si muere antes de poder clasificar:
+                  # vale 1 a proposito, porque un watchdog que no sabe decir que pasa
+                  # no puede decir que todo va bien. Si alguien anade un final corto,
+                  # sale con SALIDA — nunca con un literal.
+                  SALIDA = 0
+                  SIN_CLASE = 1
                   try:
-                      body = urllib.parse.urlencode({
-                          "chat_id": chat, "parse_mode": "HTML",
-                          "disable_web_page_preview": "true", "text": texto}).encode()
-                      req = urllib.request.Request(
-                          "https://api.telegram.org/bot%s/sendMessage" % tok,
-                          data=body, method="POST")
-                      with urllib.request.urlopen(req, timeout=20) as r:
-                          enviado = bool(json.loads(r.read()).get("ok"))
-                          print("[litellm-watchdog] telegram:", enviado)
-                  except Exception as exc:
-                      print("[litellm-watchdog] telegram fallo:", str(exc)[:150])
-                  apunta(enviado)
+                      fallos = []
+                      modelos = None
+                      latencia = None
+                      vuelve = None      # epoch de reset si el upstream lo dice
+                      capa = "L0"        # donde se rompio, para el aviso
+
+                      # ── L0. ¿Vive el proxy? 0 tokens ────────────────────────────────
+                      # /health/liveliness: 200 mientras el bucle del servidor esta vivo,
+                      # sin tocar el LLM ni postgres. ES LA UNICA CONDENATORIA de esta
+                      # capa. /health/readiness NO condena: hace un round-trip de DB y
+                      # el proxy sirve con postgres caido a proposito
+                      # (allow_requests_on_db_unavailable); pintarlo de rojo fue justo el
+                      # error del 20-07, cuando readiness dejo a LiteLLM fuera del
+                      # Service 9 h con la inferencia intacta. Aqui se lee y se reporta
+                      # en el log, pero un fallo suyo es informativo.
+                      listo = ""
+                      try:
+                          r = urllib.request.Request(BASE + "/health/readiness")
+                          with urllib.request.urlopen(r, timeout=10) as resp:
+                              listo = str(json.loads(resp.read()).get("db", ""))[:24]
+                      except Exception as exc:
+                          listo = "readiness-fallida"
+                      try:
+                          r = urllib.request.Request(BASE + "/health/liveliness")
+                          with urllib.request.urlopen(r, timeout=10) as resp:
+                              # 200 con "I'm alive!"; NO se parsea como JSON: la respuesta
+                              # real es una cadena JSON, no un objeto.
+                              resp.read()
+                      except Exception as exc:
+                          capa = "L0 liveliness"
+                          fallos.append("liveliness: %s" % str(exc)[:110])
+
+                      # ── L1. ¿El residente tooling contesta? 0 tokens ───────────────
+                      # Directo al Service del residente. El 503 "tooling profile target
+                      # is unavailable" del incidente que abrio STA-7 moraba aqui: era
+                      # enrutado, no inferencia, y se ve sin gastar un token.
+                      if not fallos:
+                          capa = "L1 residente"
+                          try:
+                              d, _ = pide("/v1/models", timeout=15,
+                                          base=RESIDENTE, auth=False)
+                              modelos = len(d.get("data", []))
+                              if modelos == 0:
+                                  fallos.append("residente tooling publica CERO modelos")
+                          except urllib.error.HTTPError as exc:
+                              # El cuerpo dice el porque (503 sin endpoints, 401,
+                              # ...) y `str(exc)` no lo lleva: mismo criterio que en
+                              # L2. Un "HTTP Error 503" a secas no dice si el
+                              # residente no existe o si lo estamos bloqueando
+                              # nosotros.
+                              fallos.append("residente tooling /v1/models: HTTP %d %s"
+                                            % (exc.code, cuerpo_error(exc)[:90]))
+                          except Exception as exc:
+                              fallos.append("residente tooling /v1/models: %s"
+                                            % str(exc)[:110])
+
+                      # ── L2. La UNICA comprobacion que gasta tokens ─────────────────
+                      # Solo si L0 y L1 estan verdes. max_tokens generoso a proposito:
+                      # con un modelo de razonamiento, un limite corto se lo come el
+                      # pensamiento y devuelve content vacio con HTTP 200. Eso paso de
+                      # verdad y parecia un fallo del servidor cuando era del test — y
+                      # es EXACTAMENTE lo que el health-check de fondo de LiteLLM sigue
+                      # haciendo con su max_tokens de 16 (por eso los residentes locales
+                      # llevan disable_background_health_check en el config, STA-9).
+                      if not fallos:
+                          capa = "L2 inferencia"
+                          try:
+                              d, latencia = pide("/v1/chat/completions", {
+                                  "model": "tooling",
+                                  "messages": [{"role": "user",
+                                                "content": "Responde SOLO el numero: 17*23"}],
+                                  "max_tokens": 400,
+                              }, timeout=120)
+                              txt = (d["choices"][0]["message"].get("content") or "").strip()
+                              if not txt:
+                                  fallos.append("inferencia: HTTP 200 con contenido VACIO")
+                              elif "391" not in txt:
+                                  fallos.append("inferencia: respuesta incorrecta %r"
+                                                % txt[:40])
+                          except urllib.error.HTTPError as exc:
+                              # El cuerpo del 429 trae el motivo y el reset; sin leerlo,
+                              # "Too Many Requests" no distingue cuota agotada de
+                              # rate-limit por rafaga.
+                              crudo = cuerpo_error(exc)
+                              if exc.code == 429 and "usage_limit_reached" in crudo:
+                                  for trozo in crudo.split("resets_at"):
+                                      digitos = "".join(
+                                          c for c in trozo[:24] if c.isdigit())
+                                      if len(digitos) >= 10:
+                                          vuelve = int(digitos[:10])
+                                          break
+                                  fallos.append("cuota del plan agotada (429 "
+                                                "usage_limit_reached)")
+                              else:
+                                  fallos.append("inferencia: HTTP %d %s"
+                                                % (exc.code, crudo[:90]))
+                          except Exception as exc:
+                              fallos.append("inferencia: %s" % str(exc)[:110])
+
+                      # 3. El DIAL GLOBAL de abliteracion. Anadido 19-08 tras una auditoria.
+                      #
+                      # POR QUE ESTA AQUI Y NO EN UNA NETPOL. `/admin/refusal_lambda` cambia
+                      # el comportamiento del modelo en caliente, NO tiene autenticacion, y
+                      # las NetworkPolicies de este cluster NO se aplican: se comprobo el
+                      # 19-08 contra cuatro namespaces con `default-deny-ingress` y los
+                      # cuatro conectaban. O sea que cualquier pod puede moverlo y no hay
+                      # nada que lo impida. Si no se puede PREVENIR, al menos se DETECTA.
+                      #
+                      # Paso de verdad: el dial quedo en 2.5 durante horas afectando a TODO
+                      # el trafico. Lo unico que lo devolvio a 0 fue un reinicio del pod
+                      # (VLLM_REFUSAL_LAMBDA_INIT=0.0), o sea suerte estructural.
+                      #
+                      # Un head que NO contesta aqui NO es un fallo: los dos perfiles de
+                      # computo son exclusivos, asi que uno de los dos backends esta siempre
+                      # a 0 replicas. Solo se reporta un lambda LEIDO y distinto de 0.
+                      DIALES = {
+                          "deepseek-v4-flash-0731":
+                              "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000",
+                          "qwen38-27b":
+                              "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000",
+                      }
+                      dial_alto = []
+                      dial_leido = {}
+                      for nombre, base in DIALES.items():
+                          try:
+                              r = urllib.request.Request(base + "/admin/refusal_lambda")
+                              with urllib.request.urlopen(r, timeout=8) as resp:
+                                  lam = json.loads(resp.read()).get("lambda")
+                          except Exception:
+                              continue          # residente del otro perfil: normal
+                          if lam is None:
+                              continue
+                          dial_leido[nombre] = lam
+                          if abs(float(lam)) > 1e-9:
+                              dial_alto.append("%s sirve con lambda=%s (abliteracion GLOBAL "
+                                               "activa para todo el trafico)" % (nombre, lam))
+
+                      # --- clase del incidente -------------------------------------------
+                      # "cuota" no es "caido": el cluster esta bien y no hay nada que tocar,
+                      # solo esperar. Mezclarlos fue el error del aviso del 15-08.
+                      #
+                      # "abliterado" tampoco es "caido": sirve perfectamente, y eso es justo
+                      # el problema — no se nota. Va DESPUES de caido/cuota porque si no
+                      # sirve, el dial es lo de menos.
+                      if fallos:
+                          clase = ("cuota" if (vuelve or any("cuota del plan" in f for f in fallos))
+                                   else "caido")
+                      elif dial_alto:
+                          clase = "abliterado"
+                      else:
+                          clase = "ok"
+
+                      ahora = int(time.time())
+                      antes = lee_estado()
+                      clase_antes = antes.get("clase")
+                      ultimo = antes.get("ultimo_aviso", 0)
+
+                      print("[litellm-watchdog]", json.dumps(
+                          {"clase": clase, "antes": clase_antes, "capa": capa,
+                           "modelos": modelos, "listo": listo,
+                           "latencia_ms": round(latencia or 0), "fallos": fallos,
+                           "vuelve": vuelve, "dial": dial_leido}))
+
+                      # Se avisa al CAMBIAR de clase. Si sigue caido, se insiste cada hora
+                      # (no cada 10 min: 6 mensajes/hora de lo mismo se ignoran solos). Si
+                      # es cuota, ni se insiste — ya sabes la hora a la que vuelve.
+                      RECORDAR = 3600
+                      if clase == clase_antes:
+                          # `abliterado` insiste como `caido`: el fallo de este aviso es
+                          # precisamente que pasen horas sin que nadie se entere, y a
+                          # diferencia de la cuota aqui no hay una hora de reset que
+                          # esperar — hay algo que alguien tiene que devolver a 0.
+                          avisar = clase in ("caido", "abliterado") and (ahora - ultimo) >= RECORDAR
+                      else:
+                          avisar = clase != "ok" or clase_antes in ("caido", "cuota", "abliterado")
+
+                      # Solo "caido" hace fallar el Job. Con la cuota agotada el Job
+                      # correría a rojo cada 10 min durante dias y dejaria la Application
+                      # de Argo en Degraded — justo mientras el aviso dice que el cluster
+                      # esta bien, y tapando un Degraded de verdad. El aviso es la señal.
+                      # `abliterado` NO hace fallar el Job: LiteLLM sirve, y dejar la
+                      # Application en Degraded cada 10 min taparia un Degraded de verdad.
+                      # Mismo razonamiento que con la cuota. El aviso es la señal.
+                      SALIDA = 1 if clase == "caido" else 0
+                      desde = antes.get("desde", ahora) if clase == clase_antes else ahora
+
+                      def apunta(enviado):
+                          # ultimo_aviso solo se mueve si el mensaje SALIO. Si Telegram
+                          # falla, la proxima corrida vuelve a intentarlo en vez de dar
+                          # el aviso por dado.
+                          #
+                          # `visto` es la HORA DE ESTA CORRIDA, avise o no avise. El
+                          # panel lo usa para decir "la ultima sonda es de hace X":
+                          # sin el, un CronJob muerto deja el ultimo aviso de hace
+                          # dias y el panel sigue diciendo `ok`. Ese es justo el fallo
+                          # del que viene esta issue: un semaforo del que no se sabe
+                          # cuando se miro.
+                          guarda_estado({"clase": clase, "desde": desde,
+                                         "ultimo_aviso": ahora if enviado else ultimo,
+                                         "visto": ahora, "capa": capa,
+                                         "latencia_ms": round(latencia or 0),
+                                         "fallos": fallos,
+                                         "vuelve": vuelve})
+
+                      if not avisar:
+                          apunta(False)
+                          raise SystemExit(SALIDA)
+
+                      if clase == "caido":
+                          titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
+                          intro = "No esta sirviendo."
+                          cuerpo = ["· " + f for f in fallos]
+                          quehacer = ("Lo usa TODO: OpenClaw, el brain, el panel.\n"
+                                      "Mira <code>kubectl get pods -n litellm</code>.\n"
+                                      "Si pone OOMKilled, el limite esta en el manifiesto.\n"
+                                      "Si un pod reinicia en bucle, mira SUS logs antes de\n"
+                                      "culpar a nadie — el aviso no sabe quien es.")
+                      elif clase == "cuota":
+                          cuando = (time.strftime("%a %d-%m a las %H:%M",
+                                                  time.localtime(vuelve))
+                                    if vuelve else "sin fecha en la respuesta")
+                          titulo = "\U0001F7E0 <b>LiteLLM SIN CUOTA</b>"
+                          intro = "El cluster esta bien; el plan de arriba agoto el limite."
+                          cuerpo = ["· %d modelos publicados, el catalogo sirve" % (modelos or 0),
+                                    "· la inferencia da 429 usage_limit_reached",
+                                    "· vuelve: <b>%s</b>" % cuando]
+                          quehacer = ("Nada en el cluster. No hay fallback local desde el\n"
+                                      "10-08, asi que ningun alias contesta hasta el reset.")
+                      elif clase == "abliterado":
+                          titulo = "\U0001F7E1 <b>LiteLLM SIN CENSURA (dial global)</b>"
+                          intro = ("Sirve bien, y por eso no se nota: el dial de abliteracion "
+                                   "esta activo para TODO el trafico, no solo para los alias "
+                                   "-uncensored.")
+                          cuerpo = ["· " + d for d in dial_alto] + [
+                              "· %d modelos · inferencia en %d ms" % (
+                                  modelos or 0, round(latencia or 0))]
+                          quehacer = ("Devuelvelo a 0 si no lo pusiste tu:\n"
+                                      "<code>POST /admin/refusal_lambda {\"lambda\": 0}</code>\n"
+                                      "contra el head del residente vivo.\n"
+                                      "Un reinicio del pod tambien lo devuelve a 0\n"
+                                      "(VLLM_REFUSAL_LAMBDA_INIT=0.0), pero eso es suerte,\n"
+                                      "no un control.\n"
+                                      "Para pedir SIN censura por peticion existe el alias\n"
+                                      "<code>tooling-uncensored</code>, que no toca a nadie mas.\n"
+                                      "OJO con lambda>1: no libera mas, EMPUJA el estado\n"
+                                      "fuera de donde el modelo aprendio.")
+                      else:
+                          titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
+                          intro = "Vuelve a servir."
+                          cuerpo = ["· %d modelos · inferencia en %d ms" % (
+                              modelos or 0, round(latencia or 0))]
+                          quehacer = "Nada. El aviso anterior queda desmentido."
+
+                      texto = "\n".join([titulo, "", intro, ""] + cuerpo +
+                                        ["", "<b>Qué hacer</b>", quehacer])
+                      tok = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                      chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+                      if not tok or not chat:
+                          print("[litellm-watchdog] sin token/chat: no puedo avisar")
+                          apunta(False)
+                          raise SystemExit(SALIDA)
+                      enviado = False
+                      try:
+                          body = urllib.parse.urlencode({
+                              "chat_id": chat, "parse_mode": "HTML",
+                              "disable_web_page_preview": "true", "text": texto}).encode()
+                          req = urllib.request.Request(
+                              "https://api.telegram.org/bot%s/sendMessage" % tok,
+                              data=body, method="POST")
+                          with urllib.request.urlopen(req, timeout=20) as r:
+                              enviado = bool(json.loads(r.read()).get("ok"))
+                              print("[litellm-watchdog] telegram:", enviado)
+                      except Exception as exc:
+                          print("[litellm-watchdog] telegram fallo:", str(exc)[:150])
+                      apunta(enviado)
+                  # ── SALIDA: el unico final del script, para TODAS las ramas ──────
+                  #
+                  # EL BUG QUE CIERRA ESTE BLOQUE (STA-9, 02-09-2026). Antes, el
+                  # `raise SystemExit(SALIDA)` del final estaba DENTRO de la rama de
+                  # aviso: con `not avisar` salia por el suyo, y cualquier excepcion
+                  # del propio script (el k8s API caido, una KeyError, el Telegram
+                  # roto) se iba por la pila por defecto — exit 1 por accidente, sin
+                  # escribir el estado, y con `activeDeadlineSeconds: 300` superado
+                  # como en el Job litellm-watchdog-29805960 (Failed, 53 min). El
+                  # exit code del Job no era el de la clase: era lo que tocara.
+                  # Ahora:
+                  #   - excepcion no prevista -> exit 1 y ADEMAS se intenta escribir
+                  #     el estado, porque un watchdog que muere sin avisar es peor
+                  #     que uno que miente;
+                  #   - `SystemExit` sale con SALIDA, que vale 1 solo si la clase es
+                  #     `caido`.
                   # El Job solo falla si LiteLLM esta CAIDO, para que quede en los
                   # Jobs fallidos del namespace aunque Telegram no llegue.
+                  except SystemExit:
+                      raise
+                  except BaseException as exc:
+                      print("[litellm-watchdog] ERROR del propio watchdog: %r" % exc)
+                      try:
+                          guarda_estado({"clase": "error-watchdog",
+                                         "desde": int(time.time()),
+                                         "visto": int(time.time()),
+                                         "ultimo_aviso": 0, "vuelve": None})
+                      except Exception as exc2:
+                          print("[litellm-watchdog] ni el estado pude escribir: %r"
+                                % exc2)
+                      raise SystemExit(SIN_CLASE)
                   raise SystemExit(SALIDA)
               env:
                 - name: LITELLM_MASTER_KEY

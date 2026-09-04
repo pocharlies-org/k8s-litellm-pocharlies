@@ -38,7 +38,10 @@ def test_openclaw_team_has_canary_and_explicit_operational_routes():
     # for a model that cannot exist.
     assert "qwen36-27b-nvfp4-v024-f2-dgx1" not in required
     assert {
-        "ornith-canary", "ornith-1.0", "dense-uncensored",
-        "router", "agent", "high", "max",
+        "ornith-canary", "ornith-1.0", "qwen38-27b", "tooling",
     } <= required
+    # 24-08-2026: `high` y `max` se retiran del model_list. El reconciler es
+    # ADITIVO, asi que mientras esten aqui se le vuelven a escribir al equipo en
+    # cada ciclo — una allowlist para dos modelos que ya no existen.
+    assert {"high", "max"} & required == set()
     assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
