@@ -8,13 +8,17 @@ nombre del alias.
 
 Lo que se fija aqui, y por que cada cosa:
 
-* Solo cuentan los efforts DELIBERADOS (high/max, y none para apagar). Los
-  clientes agente adjuntan un effort a todas las llamadas, asi que un `low` es
-  ambiente, no una orden: si mandara, `tooling` -- "sin pensar" -- pensaria en
-  cada turno. Misma regla que REASONING_EFFORT_SIGNAL.
-* `medium` no se traduce nunca. DeepSeek no tiene ese nivel y el tokenizer
-  parcheado hace caer lo desconocido a "low", asi que seria un nombre que
-  miente. Por eso tampoco esta en el menu del cliente.
+* 05-09-2026 (SC-203): la regla de "solo los deliberados" se RETIRA para
+  `low`/`medium`. Su premisa era que `tooling` estaba etiquetado "sin pensar" y
+  un `low` ambiente lo pondria a pensar en cada turno; hoy el default del
+  residente es `low` (THINKING_TIERS), asi que ambiente y pedido son el mismo
+  nivel y traducir no cambia nada. `none`/`off` siguen pudiendo apagar, y un
+  effort deliberado gana al alias igual que antes.
+* `medium` entra con el menu oficial de Qwen3.8 (xhigh/medium/low): anunciarlo
+  y no traducirlo es el fallo de las 56 fugas del 19-08. Sobre el 27B del
+  perfil creative (misma familia qwen a efectos del hook) el motor lo resuelve
+  como "no piensa" -- medido 15-08: reasoning_content 0 --, igual que hacia
+  antes al caer fuera de la tabla.
 * La salida estructurada gana incluso a un effort explicito. Medido 3/3 el
   2026-08-10: con thinking activo se cuela una llave del razonamiento delante
   del JSON guiado y el parse revienta.
@@ -96,6 +100,20 @@ def ctk(hook, body, alias, backend="openai/qwen38-flash-next"):
     return (data.get("extra_body") or {}).get("chat_template_kwargs") or {}
 
 
+# 05-09-2026 (SC-203): sonda para los casos de "effort desconocido". Ya no
+# puede ser `tooling` — su default es `low`, asi que un desconocido (cae al
+# default) y un `low` deliberado dan el MISMO resultado y el test no
+# distinguiria "manda el alias" de "manda low". `max` tampoco vale: el alias
+# resuelto tiene que ser qwen-shaped para que la traduccion exista, y `max` ya
+# no es un alias servible. Se construye un alias con tier propio y backend
+# qwen: mismo papel que jugaba `tooling` cuando su tier era "off".
+DESCONOCIDO_ALIAS = "alias-de-sonda-con-tier-max"
+
+
+def ctk_sonda(hook, body):
+    return ctk(hook, {**body, "model": DESCONOCIDO_ALIAS}, DESCONOCIDO_ALIAS)
+
+
 @pytest.mark.parametrize("alias,effort,esperado", [
     # El alias dice off y el cliente pide el maximo: manda el cliente. Es el
     # caso que justifica todo esto -- subir el nivel sin cambiar de modelo.
@@ -104,6 +122,11 @@ def ctk(hook, body, alias, backend="openai/qwen38-flash-next"):
     # mano un dialecto que aun puede ganar la traduccion de reasoning_effort.
     ("tooling", "max", "max"),
     ("tooling", "high", "high"),
+    # 05-09-2026 (SC-203): `low` y `medium` son ya niveles DELIBERADOS del menu
+    # oficial, no ambiente. Un `medium` sobre un alias cuyo default es `low`
+    # sube de nivel: eso es justo lo que el cliente pide por /effort.
+    ("tooling", "low", "low"),
+    ("tooling", "medium", "medium"),
     # Bajar tambien: `none` apaga aunque el alias sea el mas caro.
     ("max", "none", "off"),
 ])
@@ -115,15 +138,26 @@ def test_un_effort_deliberado_gana_al_nombre_del_alias(hook, alias, effort, espe
 @pytest.mark.parametrize("alias,esperado", [
     # LA REGRESION QUE ESTE TEST EXISTE PARA CAZAR. OpenClaw manda un effort en
     # TODAS las llamadas y a falta de eleccion resuelve a "high" (y los agentes
-    # traen thinkingDefault=low). Si un effort ambiente contara como orden,
-    # `tooling` -- "sin pensar", primary de culturismo e image-cloud -- pensaria
-    # en cada turno y la etiqueta del selector mentiria.
-    ("tooling", "off"),
+    # traen thinkingDefault=low). Si un effort NO TRADUCIBLE contara como orden,
+    # el alias decidiria. 05-09-2026 (SC-203): `low` ya NO es ambiente — es
+    # nivel deliberado del menu oficial y su default, asi que se va al test de
+    # arriba. Lo que sigue cayendo fuera de la tabla es lo desconocido, y la
+    # sonda es un alias con tier propio (ver `ctk_sonda`): con `tooling` un
+    # desconocido y su default `low` dan el mismo resultado y no se distingue
+    # "manda el alias" de "manda low".
+    (DESCONOCIDO_ALIAS, "max"),
 ])
-@pytest.mark.parametrize("ambiente", ["low", "minimal"])
+@pytest.mark.parametrize("ambiente", ["minimal", "ultra"])
 def test_un_effort_ambiente_NO_pisa_al_alias(hook, alias, esperado, ambiente):
-    quiere = hook.THINKING_KWARGS["qwen"][esperado]
-    assert ctk(hook, {"model": alias, "reasoning_effort": ambiente}, alias) == quiere
+    # El alias de la sonda se inyecta en THINKING_TIERS dentro del test: la
+    # tabla del hook es la del manifest y alli solo viven alias REALES; una
+    # sonda con tier propio no puede entrar en produccion.
+    hook.THINKING_TIERS[alias] = esperado
+    try:
+        quiere = hook.THINKING_KWARGS["qwen"][esperado]
+        assert ctk_sonda(hook, {"reasoning_effort": ambiente}) == quiere
+    finally:
+        hook.THINKING_TIERS.pop(alias, None)
 
 
 def test_tambien_lee_la_forma_de_la_responses_api(hook):
@@ -133,13 +167,19 @@ def test_tambien_lee_la_forma_de_la_responses_api(hook):
 
 
 @pytest.mark.parametrize("effort,alias,esperado", [
-    # `medium` no se traduce por su cuenta: con un alias que no piensa, no lo
-    # enciende. Es el nivel que el template valida pero deja sin instruccion.
-    ("medium", "tooling", "off"),
+    # 05-09-2026 (SC-203): `medium` ya SE traduce — es nivel oficial del menu y
+    # enciende el pensamiento sobre un alias cuyo default es `low`. Lo que no se
+    # adivina es lo que NO esta en la tabla: un nombre que el backend no tiene.
+    # Sonda con tier propio por el mismo motivo que el test de arriba.
+    ("ultra", DESCONOCIDO_ALIAS, "max"),
 ])
 def test_un_effort_sin_traduccion_no_se_adivina(hook, effort, alias, esperado):
-    quiere = hook.THINKING_KWARGS["qwen"][esperado]
-    assert ctk(hook, {"model": alias, "reasoning_effort": effort}, alias) == quiere
+    hook.THINKING_TIERS[alias] = esperado
+    try:
+        quiere = hook.THINKING_KWARGS["qwen"][esperado]
+        assert ctk_sonda(hook, {"reasoning_effort": effort}) == quiere
+    finally:
+        hook.THINKING_TIERS.pop(alias, None)
 
 
 def test_la_salida_estructurada_gana_a_un_effort_explicito(hook):
@@ -159,7 +199,7 @@ def test_quien_ya_opino_en_chat_template_kwargs_sigue_mandando(hook):
 def test_qwen_no_gradua_y_el_effort_solo_lo_enciende(hook):
     """Qwen enciende, apaga y ACOTA, pero no inventa niveles que no existen.
 
-    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. Solo hay DOS niveles utiles: `medium` pasa la validacion pero cae en un elif inexistente y deja las instrucciones vacias (medido: medium 2721 chars vs low 2993, indistinguibles), por eso `high` mapea a `low`."""
+    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. `medium` cae en una rama elif de la plantilla sin `reasoning_instructions` propio (hecho de la plantilla, sigue en pie). CORREGIDO 05-09-2026 (SC-203): el corolario "medium 2721 vs low 2993, indistinguibles" esta refutado — medido hoy via proxy con el razonamiento encendido, medium da reasoning real por encima de low; `high` mapea a `low` porque el backend no tiene nivel `high` (400), no porque medium sea silencio."""
     data = {"model": "tooling", "reasoning_effort": "max"}
     assert ctk(hook, data, "tooling", backend="openai/qwen38-27b") == {
         "enable_thinking": True,
@@ -191,14 +231,31 @@ def test_xhigh_es_sinonimo_de_max_para_el_picker_del_cliente(hook):
 
 
 def test_el_menu_publicado_y_la_tabla_del_hook_no_se_separan(hook):
-    """`medium` fuera de la tabla es la mitad del contrato; la otra mitad es que
-    los tres niveles que SI se ofrecen esten aqui. Si alguien mete `medium`, este
-    test cae antes de que el nombre empiece a mentir en produccion."""
-    assert set(hook.CLIENT_EFFORT_TIERS) == {"none", "off", "high", "max", "xhigh"}
-    assert set(hook.THINKING_KWARGS["qwen"]) == {"off", "low", "high", "max"}
-    for nivel in ("high", "max"):
+    """El menu publicado y la tabla del hook son UNA sola verdad, y desde
+    05-09-2026 (SC-203) esa verdad es la receta oficial de Qwen3.8.
+
+    La asercion vieja excluia `low`/`medium` de la tabla. Su decision queda
+    documentada en el PR del SC-203 y en el comentario de CLIENT_EFFORT_TIERS:
+    se RETIRA porque su premisa ("tooling = sin pensar", un `low` ambiente
+    pensaria en cada turno) ya no existe — el default efectivo del residente
+    es `low` (THINKING_TIERS), asi que ambiente y pedido son el mismo nivel.
+    `medium` entra porque el menu oficial lo anuncia y un nivel anunciado y no
+    traducido es el fallo de las 56 fugas del 19-08.
+
+    Lo que el contrato SIGUE fijando, que es lo que siempre fue lo importante:
+    cada nivel anunciado tiene traduccion en la tabla, y cada nivel de la tabla
+    es un nivel del menu. Si alguien anuncia uno sin traducir —o traduce uno
+    que nadie ofrece— esto cae antes de que el nombre mienta en produccion."""
+    assert set(hook.CLIENT_EFFORT_TIERS) >= {"none", "off", "low", "medium",
+                                             "high", "max", "xhigh"}
+    assert set(hook.THINKING_KWARGS["qwen"]) == {"off", "low", "medium",
+                                                 "high", "max"}
+    for nivel in ("low", "medium", "high", "max"):
         assert hook.CLIENT_EFFORT_TIERS[nivel] == nivel
-    # `low` fuera es la mitad del contrato: es el valor ambiente y no puede
-    # convertirse en una orden. `medium` fuera es la otra mitad.
-    assert "low" not in hook.CLIENT_EFFORT_TIERS
-    assert "medium" not in hook.CLIENT_EFFORT_TIERS
+    # `high`/`max` son alias DEPRECADOS del vocabulario del cliente: siguen
+    # traduciendo (high->low, max->xhigh) y por eso siguen anunciados.
+    assert hook.CLIENT_EFFORT_TIERS["high"] == "high"
+    assert hook.CLIENT_EFFORT_TIERS["max"] == "max"
+    # Y el default efectivo de los dos alias del objetivo es `low`.
+    assert hook.THINKING_TIERS["tooling"] == "low"
+    assert hook.THINKING_TIERS["qwen38-flash-next"] == "low"
