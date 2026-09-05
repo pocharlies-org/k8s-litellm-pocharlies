@@ -936,6 +936,12 @@ data:
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
   litellm_strip_params.py: |
+    # 2026-09-05: rollout forzado por incidencia -- litellm dejo de responder
+    # a /health/liveliness sin recuperarse solo (no hay livenessProbe todavia;
+    # es decision de arquitectura pendiente, ver diagnostico de sre). Este
+    # comentario no cambia ninguna linea de logica: solo bumpea el hash del
+    # ConfigMap para que el contrato de tests/test_configmap_revision_bump_contract.py
+    # dispare el rollout del pod.
     import asyncio
     import json
     import logging
@@ -5900,7 +5906,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-643f5e2bd299
+        config.k8s.e-dani.com/revision: config-67f0431c3934
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
