@@ -258,42 +258,43 @@ spec:
                       # enrutado, no inferencia, y se ve sin gastar un token.
                       if not fallos:
                           capa = "L1 residente"
-                          try:
-                              vivos = []
-                              errores = []
-                              for nombre, base in RESIDENTES.items():
-                                  try:
-                                      d, _ = pide("/v1/models", timeout=15,
-                                                  base=base, auth=False)
-                                      vivos.append((nombre,
-                                                    len(d.get("data", []))))
-                                  except Exception as exc:
-                                      errores.append(
-                                          "%s: %s" % (nombre, str(exc)[:60]))
-                              if not vivos:
-                                  # Ningun perfil contesta. Los dos perfiles son
-                                  # exclusivos, pero los DOS a 0 replicas SI es un
-                                  # fallo: no hay quien sirva.
+                          vivos = []
+                          errores = []
+                          for nombre, base in RESIDENTES.items():
+                              try:
+                                  d, _ = pide("/v1/models", timeout=15,
+                                              base=base, auth=False)
+                                  vivos.append((nombre,
+                                                len(d.get("data", []))))
+                              except urllib.error.HTTPError as exc:
+                                  # El cuerpo dice el porque (503 sin endpoints,
+                                  # 401, ...) y `str(exc)` no lo lleva: mismo
+                                  # criterio que en L2. Un "HTTP Error 503" a
+                                  # secas no dice si el residente no existe o si
+                                  # lo estamos bloqueando nosotros. El truncado
+                                  # es sobre el CUERPO, no sobre el mensaje
+                                  # entero: con los dos residentes caidos los
+                                  # dos cuerpos tienen que caber en el aviso.
+                                  errores.append(
+                                      "%s: HTTP %d %s"
+                                      % (nombre, exc.code,
+                                         cuerpo_error(exc)[:200]))
+                              except Exception as exc:
+                                  errores.append(
+                                      "%s: %s" % (nombre, str(exc)[:110]))
+                          if not vivos:
+                              # Ningun perfil contesta. Los dos perfiles son
+                              # exclusivos, pero los DOS a 0 replicas SI es un
+                              # fallo: no hay quien sirva.
+                              fallos.append(
+                                  "ningun residente contesta (%s)"
+                                  % "; ".join(errores))
+                          else:
+                              modelos = vivos[0][1]
+                              if modelos == 0:
                                   fallos.append(
-                                      "ningun residente contesta (%s)"
-                                      % "; ".join(errores))
-                              else:
-                                  modelos = vivos[0][1]
-                                  if modelos == 0:
-                                      fallos.append(
-                                          "residente %s publica CERO modelos"
-                                          % vivos[0][0])
-                          except urllib.error.HTTPError as exc:
-                              # El cuerpo dice el porque (503 sin endpoints, 401,
-                              # ...) y `str(exc)` no lo lleva: mismo criterio que en
-                              # L2. Un "HTTP Error 503" a secas no dice si el
-                              # residente no existe o si lo estamos bloqueando
-                              # nosotros.
-                              fallos.append("residente tooling /v1/models: HTTP %d %s"
-                                            % (exc.code, cuerpo_error(exc)[:90]))
-                          except Exception as exc:
-                              fallos.append("residente tooling /v1/models: %s"
-                                            % str(exc)[:110])
+                                      "residente %s publica CERO modelos"
+                                      % vivos[0][0])
 
                       # ── L2. La UNICA comprobacion que gasta tokens ─────────────────
                       # Solo si L0 y L1 estan verdes. max_tokens generoso a proposito:
