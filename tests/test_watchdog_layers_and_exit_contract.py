@@ -201,17 +201,16 @@ def test_L1_un_solo_residente_caido_no_es_caido():
 def test_L1_dice_el_cuerpo_del_error_no_solo_el_codigo():
     """`str(HTTPError)` es "HTTP Error 503: Service Unavailable": no dice si el
     residente no tiene endpoints o si lo estamos bloqueando nosotros, y esas dos
-    cosas se arreglan en sitios distintos. El cuerpo tenia que llegar al log.
+    cosas se arreglan en sitios distintos. El cuerpo tiene que llegar al log.
 
-    DESDE #56 ESTE CONTRATO ESTA ROTO EN L1 y el test lo afirma FALLANDO a
-    proposito (xfail estricto): el bucle nuevo atrapa el error de CADA residente
-    con un `except Exception` interno que guarda `str(exc)` - "HTTP Error 503:
-    Service Unavailable", sin cuerpo - y el `except HTTPError` exterior que si
-    propagaba `cuerpo_error(exc)` quedo inalcanzable. Medido con este mismo
-    arnes: el log sale "ningun residente contesta (llm-tp: HTTP Error 503: ...)".
-    El codigo de produccion NO se toca (qa y tech-lead lo dieron por bueno); el
-    xfail se levanta cuando alguien repare la propagacion del cuerpo en el bucle.
-    En L2 el contrato sigue vivo y verde: ver test_inferencia_vacia_con_200...
+    Desde #56 el bucle de RESIDENTES atrapaba el error de CADA residente con un
+    `except Exception` interno que guardaba `str(exc)` - sin cuerpo - y dejaba
+    inalcanzable el `except HTTPError` exterior que si propagaba
+    `cuerpo_error(exc)`. Quedo documentado aqui con un xfail estricto; se reparo
+    en el bucle (el HTTPError se captura en el propio bucle y el truncado es
+    sobre el CUERPO, no sobre el mensaje entero) y este test afirma la
+    reparacion: el cuerpo del 503 en el aviso, no solo el codigo.
+    En L2 el mismo contrato sigue vivo: ver test_inferencia_vacia_con_200...
     """
     def handler(url):
         if RESIDENTE_LLM_TP in url:
@@ -226,13 +225,15 @@ def test_L1_dice_el_cuerpo_del_error_no_solo_el_codigo():
         "con los dos residentes caidos el Job tiene que ponerse rojo pase lo que "
         "pase con el cuerpo del error")
     log = "\n".join(str(a) for c in salida.call_args_list for a in c.args)
-    assert "HTTP Error 503" in log, (
+    assert "HTTP Error 503" not in log, (
+        "el aviso lleva el mensaje generico de str(HTTPError): el except "
+        "interno ha vuelto a tragarse el HTTPError antes de extraer el cuerpo")
+    assert "HTTP 503" in log, (
         "L1 ni siquiera reporta el codigo: el aviso no dice que capa del "
         "enrutado fallo")
-    pytest.xfail(
-        "L1 perdio la propagacion del cuerpo con el bucle de RESIDENTES de #56: "
-        "el except interno guarda str(exc) y el except HTTPError exterior es "
-        "inalcanzable; hay que repararlo en el script, no aqui")
+    assert "tooling profile target is unavailable" in log, (
+        "el cuerpo del error HTTP no llega al log: con solo el codigo no se "
+        "distingue un residente sin endpoints de un bloqueo nuestro")
 
 
 def test_L1_pregunta_al_residente_no_al_catalogo_de_litellm():
