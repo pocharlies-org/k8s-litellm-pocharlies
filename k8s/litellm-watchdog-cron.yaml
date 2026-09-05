@@ -112,10 +112,31 @@ spec:
 
                   BASE = "http://litellm.litellm.svc.cluster.local:4000"
                   KEY = os.environ.get("LITELLM_MASTER_KEY", "")
-                  # L1: el Service de POOL del residente (llm), no LiteLLM. Ver el
+                  # L1: el residente del perfil ACTIVO, no LiteLLM. Ver el
                   # comentario de capas arriba: el catalogo de LiteLLM sale aunque el
                   # residente este a 0 replicas; aqui solo contesta quien sirve.
-                  RESIDENTE = "http://tooling.llm.svc.cluster.local:8000"
+                  #
+                  # 03-09-2026: esto apuntaba al Service de POOL `tooling`, que no
+                  # publica 8000 -- sus endpoints publican 8888. Daba Connection
+                  # refused y el Job salia Failed cada 10 min con el residente
+                  # perfectamente sano:
+                  #   kubectl get endpoints -n llm tooling
+                  #     -> ports:[{name:http, port:8888}]
+                  #   curl http://tooling.llm.svc.cluster.local:8000/v1/models
+                  #     -> [Errno 111] Connection refused
+                  # Se comprueba el Service del DEPLOYMENT, que es el que LiteLLM
+                  # usa para despachar y el que si publica 8000.
+                  #
+                  # Los dos perfiles de computo son exclusivos: uno de los dos
+                  # esta siempre a 0 replicas. Se prueban los DOS y condena solo
+                  # si NINGUNO contesta.
+                  RESIDENTES = {
+                      "llm-tp":
+                          "http://qwen38-flash-next.llm.svc.cluster.local:8000",
+                      "creative":
+                          "http://vllm-qwen38-27b-uncensored"
+                          ".llm.svc.cluster.local:8000",
+                  }
 
                   # --- memoria entre corridas: un ConfigMap del namespace ------------
                   SA = "/var/run/secrets/kubernetes.io/serviceaccount"
@@ -237,23 +258,43 @@ spec:
                       # enrutado, no inferencia, y se ve sin gastar un token.
                       if not fallos:
                           capa = "L1 residente"
-                          try:
-                              d, _ = pide("/v1/models", timeout=15,
-                                          base=RESIDENTE, auth=False)
-                              modelos = len(d.get("data", []))
+                          vivos = []
+                          errores = []
+                          for nombre, base in RESIDENTES.items():
+                              try:
+                                  d, _ = pide("/v1/models", timeout=15,
+                                              base=base, auth=False)
+                                  vivos.append((nombre,
+                                                len(d.get("data", []))))
+                              except urllib.error.HTTPError as exc:
+                                  # El cuerpo dice el porque (503 sin endpoints,
+                                  # 401, ...) y `str(exc)` no lo lleva: mismo
+                                  # criterio que en L2. Un "HTTP Error 503" a
+                                  # secas no dice si el residente no existe o si
+                                  # lo estamos bloqueando nosotros. El truncado
+                                  # es sobre el CUERPO, no sobre el mensaje
+                                  # entero: con los dos residentes caidos los
+                                  # dos cuerpos tienen que caber en el aviso.
+                                  errores.append(
+                                      "%s: HTTP %d %s"
+                                      % (nombre, exc.code,
+                                         cuerpo_error(exc)[:200]))
+                              except Exception as exc:
+                                  errores.append(
+                                      "%s: %s" % (nombre, str(exc)[:110]))
+                          if not vivos:
+                              # Ningun perfil contesta. Los dos perfiles son
+                              # exclusivos, pero los DOS a 0 replicas SI es un
+                              # fallo: no hay quien sirva.
+                              fallos.append(
+                                  "ningun residente contesta (%s)"
+                                  % "; ".join(errores))
+                          else:
+                              modelos = vivos[0][1]
                               if modelos == 0:
-                                  fallos.append("residente tooling publica CERO modelos")
-                          except urllib.error.HTTPError as exc:
-                              # El cuerpo dice el porque (503 sin endpoints, 401,
-                              # ...) y `str(exc)` no lo lleva: mismo criterio que en
-                              # L2. Un "HTTP Error 503" a secas no dice si el
-                              # residente no existe o si lo estamos bloqueando
-                              # nosotros.
-                              fallos.append("residente tooling /v1/models: HTTP %d %s"
-                                            % (exc.code, cuerpo_error(exc)[:90]))
-                          except Exception as exc:
-                              fallos.append("residente tooling /v1/models: %s"
-                                            % str(exc)[:110])
+                                  fallos.append(
+                                      "residente %s publica CERO modelos"
+                                      % vivos[0][0])
 
                       # ── L2. La UNICA comprobacion que gasta tokens ─────────────────
                       # Solo si L0 y L1 estan verdes. max_tokens generoso a proposito:
@@ -311,18 +352,41 @@ spec:
                       # el trafico. Lo unico que lo devolvio a 0 fue un reinicio del pod
                       # (VLLM_REFUSAL_LAMBDA_INIT=0.0), o sea suerte estructural.
                       #
+                      # 03-09-2026: EL CRITERIO DE ESTE BLOQUE QUEDO OBSOLETO.
+                      # Asumia que lambda!=0 significaba "alguien movio el dial en
+                      # caliente y hay que devolverlo a 0". Desde #38 el punto de
+                      # trabajo del residente llm-tp ES 1.0, fijado en git y
+                      # aguantado por ArgoCD. Avisar de eso cada 10 min es ruido, y
+                      # el "que hacer" que proponia (devolverlo a 0) era justo lo
+                      # contrario de lo que hay que hacer.
+                      #
+                      # Lo que si es una anomalia: un lambda DISTINTO del declarado
+                      # en el manifiesto. Eso significa que alguien lo movio por el
+                      # endpoint y se perdera al reiniciar.
+                      #
+                      # Ademas faltaba el residente llm-tp: solo se miraba deepseek
+                      # y el 27B, o sea el ablado de verdad estaba ciego.
+                      #   kubectl get deploy -n llm qwen38-flash-next -o jsonpath=...
+                      #     VLLM_REFUSAL_LAMBDA = "1.0"
+                      #
                       # Un head que NO contesta aqui NO es un fallo: los dos perfiles de
                       # computo son exclusivos, asi que uno de los dos backends esta siempre
                       # a 0 replicas. Solo se reporta un lambda LEIDO y distinto de 0.
+                      # (base, lambda ESPERADO segun el manifiesto)
                       DIALES = {
-                          "deepseek-v4-flash-0731":
-                              "http://deepseek-v4-flash-0731.llm.svc.cluster.local:8000",
-                          "qwen38-27b":
-                              "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000",
+                          "qwen38-flash-next": (
+                              "http://qwen38-flash-next"
+                              ".llm.svc.cluster.local:8000", 1.0),
+                          "deepseek-v4-flash-0731": (
+                              "http://deepseek-v4-flash-0731"
+                              ".llm.svc.cluster.local:8000", 0.0),
+                          "qwen38-27b": (
+                              "http://vllm-qwen38-27b-uncensored"
+                              ".llm.svc.cluster.local:8000", 0.0),
                       }
                       dial_alto = []
                       dial_leido = {}
-                      for nombre, base in DIALES.items():
+                      for nombre, (base, esperado) in DIALES.items():
                           try:
                               r = urllib.request.Request(base + "/admin/refusal_lambda")
                               with urllib.request.urlopen(r, timeout=8) as resp:
@@ -332,9 +396,11 @@ spec:
                           if lam is None:
                               continue
                           dial_leido[nombre] = lam
-                          if abs(float(lam)) > 1e-9:
-                              dial_alto.append("%s sirve con lambda=%s (abliteracion GLOBAL "
-                                               "activa para todo el trafico)" % (nombre, lam))
+                          if abs(float(lam) - esperado) > 1e-9:
+                              dial_alto.append(
+                                  "%s sirve con lambda=%s, el manifiesto declara "
+                                  "%s: alguien lo movio por el endpoint y se pierde "
+                                  "al reiniciar" % (nombre, lam, esperado))
 
                       # --- clase del incidente -------------------------------------------
                       # "cuota" no es "caido": el cluster esta bien y no hay nada que tocar,
@@ -435,12 +501,15 @@ spec:
                           cuerpo = ["· " + d for d in dial_alto] + [
                               "· %d modelos · inferencia en %d ms" % (
                                   modelos or 0, round(latencia or 0))]
-                          quehacer = ("Devuelvelo a 0 si no lo pusiste tu:\n"
-                                      "<code>POST /admin/refusal_lambda {\"lambda\": 0}</code>\n"
+                          quehacer = ("El valor NO es el que declara el manifiesto.\n"
+                                      "Si fue un cambio querido, fijalo en git\n"
+                                      "(VLLM_REFUSAL_LAMBDA en k8s-ai) y ArgoCD lo\n"
+                                      "aguanta; si no, devuelvelo al valor declarado:\n"
+                                      "<code>POST /admin/refusal_lambda {\"lambda\": N}</code>\n"
                                       "contra el head del residente vivo.\n"
-                                      "Un reinicio del pod tambien lo devuelve a 0\n"
-                                      "(VLLM_REFUSAL_LAMBDA_INIT=0.0), pero eso es suerte,\n"
-                                      "no un control.\n"
+                                      "Un reinicio del pod lo devuelve al valor del\n"
+                                      "manifiesto: lo que avisa de esto es de que el\n"
+                                      "cambio en caliente SE VA A PERDER.\n"
                                       "Para pedir SIN censura por peticion existe el alias\n"
                                       "<code>tooling-uncensored</code>, que no toca a nadie mas.\n"
                                       "OJO con lambda>1: no libera mas, EMPUJA el estado\n"

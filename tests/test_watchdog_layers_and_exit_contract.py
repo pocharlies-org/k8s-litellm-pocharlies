@@ -32,12 +32,21 @@ import urllib.error
 import urllib.request
 from unittest import mock
 
+import pytest
 import yaml
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WATCHDOG = ROOT / "k8s" / "litellm-watchdog-cron.yaml"
 SA = "/tmp/paperclip-sta9-sa"
+
+# L1 pregunta a los Services del DEPLOYMENT de cada perfil de computo (fix #56):
+# el Service de POOL `tooling` no publica 8000 (sus endpoints publican 8888) y
+# daba Connection refused con el residente sano. Son los DOS a la vez porque los
+# perfiles son exclusivos: uno esta siempre a 0 replicas, y un refused en UNO es
+# el estado normal. Condena solo si NINGUNO contesta.
+RESIDENTE_LLM_TP = "qwen38-flash-next.llm.svc.cluster.local"
+RESIDENTE_CREATIVE = "vllm-qwen38-27b-uncensored.llm.svc.cluster.local"
 
 
 def _watchdog_script():
@@ -76,7 +85,7 @@ def _verde(url):
         return _Resp(b'"I\'m alive!"')
     if "readiness" in url:
         return _Resp({"status": "healthy", "db": "connected"})
-    if "tooling.llm.svc" in url:
+    if RESIDENTE_LLM_TP in url or RESIDENTE_CREATIVE in url:
         return _Resp({"data": [{"id": "qwen38-flash-next"}]})
     if "chat/completions" in url:
         return _Resp({"choices": [{"message": {"content": "391"}}]})
@@ -154,10 +163,15 @@ def test_L0_roto_es_caido_sin_gastar_la_inferencia():
     assert not any("chat/completions" in u for u in llamadas)
 
 
-def test_L1_roto_es_caido_sin_gastar_la_inferencia():
-    """El 503 del incidente que abrio STA-7, reproducido en la capa que lo ve."""
+def test_L1_los_dos_residentes_caidos_es_caido_sin_gastar_la_inferencia():
+    """El 503 del incidente que abrio STA-7, reproducido en la capa que lo ve.
+
+    Desde #56 hay DOS residentes y solo condena si NINGUNO contesta, asi que el
+    503 se le echa a los dos: es el estado "ambos perfiles a 0 replicas", lo
+    unico de L1 que es un fallo.
+    """
     def handler(url):
-        if "tooling.llm.svc" in url:
+        if RESIDENTE_LLM_TP in url or RESIDENTE_CREATIVE in url:
             raise _http_error(
                 url, 503, b'{"error": "tooling profile target is unavailable"}')
         return _verde(url)
@@ -167,29 +181,74 @@ def test_L1_roto_es_caido_sin_gastar_la_inferencia():
         "si el residente no publica, la inferencia no se paga: L1 existe para eso")
 
 
+def test_L1_un_solo_residente_caido_no_es_caido():
+    """Los perfiles de computo son EXCLUSIVOS: el inactivo esta siempre a 0
+    replicas y su connection refused es el estado normal, no un fallo. Condenar
+    con uno solo caido es exactamente el falso positivo que cerraba #56 (Job
+    Failed cada 10 min con el residente sano, tapando un Degraded de verdad)."""
+    def handler(url):
+        if RESIDENTE_CREATIVE in url:
+            return None
+        return _verde(url)
+    exito, llamadas = _run(handler)
+    assert exito == 0, (
+        "condena con un solo residente caido: vuelve el bug del Service de pool "
+        "muerto; solo NINGUN residente contestando es un fallo")
+    assert any("chat/completions" in u for u in llamadas), (
+        "con el residente del perfil activo vivo, L2 es la comprobacion que toca")
+
+
 def test_L1_dice_el_cuerpo_del_error_no_solo_el_codigo():
     """`str(HTTPError)` es "HTTP Error 503: Service Unavailable": no dice si el
     residente no tiene endpoints o si lo estamos bloqueando nosotros, y esas dos
-    cosas se arreglan en sitios distintos. El cuerpo tenia que llegar al log."""
+    cosas se arreglan en sitios distintos. El cuerpo tiene que llegar al log.
+
+    Desde #56 el bucle de RESIDENTES atrapaba el error de CADA residente con un
+    `except Exception` interno que guardaba `str(exc)` - sin cuerpo - y dejaba
+    inalcanzable el `except HTTPError` exterior que si propagaba
+    `cuerpo_error(exc)`. Quedo documentado aqui con un xfail estricto; se reparo
+    en el bucle (el HTTPError se captura en el propio bucle y el truncado es
+    sobre el CUERPO, no sobre el mensaje entero) y este test afirma la
+    reparacion: el cuerpo del 503 en el aviso, no solo el codigo.
+    En L2 el mismo contrato sigue vivo: ver test_inferencia_vacia_con_200...
+    """
     def handler(url):
-        if "tooling.llm.svc" in url:
+        if RESIDENTE_LLM_TP in url:
             raise _http_error(
                 url, 503, b'{"error": "tooling profile target is unavailable"}')
+        if RESIDENTE_CREATIVE in url:
+            return None
         return _verde(url)
     with mock.patch("builtins.print") as salida:
-        _run(handler)
+        exito, _ = _run(handler)
+    assert exito == 1, (
+        "con los dos residentes caidos el Job tiene que ponerse rojo pase lo que "
+        "pase con el cuerpo del error")
     log = "\n".join(str(a) for c in salida.call_args_list for a in c.args)
+    assert "HTTP Error 503" not in log, (
+        "el aviso lleva el mensaje generico de str(HTTPError): el except "
+        "interno ha vuelto a tragarse el HTTPError antes de extraer el cuerpo")
+    assert "HTTP 503" in log, (
+        "L1 ni siquiera reporta el codigo: el aviso no dice que capa del "
+        "enrutado fallo")
     assert "tooling profile target is unavailable" in log, (
-        "el fallo de L1 se reporto sin el cuerpo: en el aviso solo se veria "
-        "'HTTP Error 503' y hay que adivinar de que capa del enrutado es")
+        "el cuerpo del error HTTP no llega al log: con solo el codigo no se "
+        "distingue un residente sin endpoints de un bloqueo nuestro")
 
 
 def test_L1_pregunta_al_residente_no_al_catalogo_de_litellm():
     """El catalogo de LiteLLM sale del ConfigMap y se publica aunque el residente
     este a 0 replicas (auditoria del 19-08 con los alias -uncensored). Preguntarle
-    a LiteLLM por sus modelos diria "si" justo cuando no hay nadie detras."""
+    a LiteLLM por sus modelos diria "si" justo cuando no hay nadie detras.
+
+    Desde #56 ademas NO es el Service de pool `tooling` (publica 8888, no 8000):
+    pregunta al Service del DEPLOYMENT de cada perfil, a los dos."""
     _, llamadas = _run(_verde)
-    assert any("tooling.llm.svc" in u and "/v1/models" in u for u in llamadas)
+    modelos = [u for u in llamadas if "/v1/models" in u]
+    assert any(RESIDENTE_LLM_TP in u for u in modelos)
+    assert any(RESIDENTE_CREATIVE in u for u in modelos)
+    assert not any("tooling.llm.svc" in u for u in llamadas), (
+        "L1 ha vuelto a preguntar al Service de pool, que no publica 8000")
 
 
 def test_readiness_rota_no_es_caido():

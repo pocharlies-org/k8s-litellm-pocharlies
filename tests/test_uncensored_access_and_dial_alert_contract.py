@@ -129,9 +129,15 @@ def test_the_watchdog_reads_the_global_dial():
     src = _watchdog_script()
     assert "/admin/refusal_lambda" in src
     assert "DIALES" in src
-    # Los dos heads que pueden llevar la proyeccion.
-    assert "deepseek-v4-flash-0731.llm.svc.cluster.local" in src
-    assert "vllm-qwen38-27b-uncensored.llm.svc.cluster.local" in src
+    # Los runtimes que pueden llevar la proyeccion. Se ancla a la CLAVE de cada
+    # entrada de DIALES, no al hostname: el watchdog parte el host en dos lineas
+    # para no pasar del ancho YAML, y un literal contiguo dejaria de casar sin
+    # que el watchdog hubiera cambiado (fue justo como este test se quedo viejo).
+    bloque = src[src.index("DIALES = {"):src.index("dial_alto = []")]
+    for nombre in ("qwen38-flash-next",
+                   "deepseek-v4-flash-0731",
+                   "qwen38-27b"):
+        assert '"%s"' % nombre in bloque, nombre
 
 
 def test_a_head_that_does_not_answer_is_NOT_a_failure():
