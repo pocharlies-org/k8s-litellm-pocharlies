@@ -5985,7 +5985,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-851234f3c7d1
+        config.k8s.e-dani.com/revision: config-b727a17a5e89
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
