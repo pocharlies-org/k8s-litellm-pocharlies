@@ -146,31 +146,39 @@ def test_el_residente_llm_tp_publica_sus_tiers_reales():
     """
     backend = _llm_tp_backend()
     assert backend["supports_reasoning"] is True
-    # 2026-08-19: `low` FUERA, y no es cosmetica. El hook no traduce `low`
-    # (CLIENT_EFFORT_TIERS: un effort ambiente de un cliente agente no es una
-    # orden), asi que declararlo dejaba a OpenClaw parado en un nivel que el
-    # servidor descarta -- creyendo pensar mientras `tooling` corria en
-    # thinking_mode "chat" y el monologo salia por el canal visible.
-    # 01-09-2026: entra `xhigh`, medido contra el servidor vivo (=max, 490
-    # reasoning_chars; high=139; low/medium=0) y default oficial del modelo
-    # segun su model card. El hook lo traduce a max (CLIENT_EFFORT_TIERS) y el
-    # strip impide que el valor crudo viaje al backend.
+    # 2026-08-19: `low` FUERA, y no era cosmetica — el hook no lo traducia y
+    # anunciarlo dejaba a OpenClaw creyendo pensar. 05-09-2026 (SC-203): ENTRA
+    # `low` y entra `medium`, y por el mismo criterio de siempre: el hook YA
+    # los traduce (CLIENT_EFFORT_TIERS/THINKING_KWARGS) y el default efectivo
+    # del residente es `low`. Lo que se midio el 01-09 ("low/medium dan 0
+    # chars") era el motor sin --reasoning-parser (D1/SC-204: lo lleva) y con
+    # el default del hook en off; medido hoy via proxy, ambos dan reasoning
+    # real no vacio. `xhigh` sigue (=max) y `high`/`max` se mantienen como
+    # alias deprecados del vocabulario del cliente.
     assert backend["supported_reasoning_efforts"] == (
         "none",
+        "low",
+        "medium",
         "high",
         "max",
         "xhigh",
     )
 
 
-def test_el_residente_llm_tp_no_anuncia_los_inertes():
-    """`low`/`medium` existen en la recipe oficial del modelo pero NO en
-    nuestro motor: medido el 01-09, reasoning_chars 0 con ambos (3/3), y el
-    hook los descarta. Anunciarlos es el fallo de las 56 fugas del 19-08."""
+def test_el_residente_llm_tp_no_anuncia_niveles_que_el_hook_no_traduce():
+    """05-09-2026 (SC-203): este test se llamaba `..._no_anuncia_los_inertes` y
+    prohibia `low`/`medium`. Su premisa ("inertes en nuestro motor") era falsa
+    — se midio sin --reasoning-parser y con el razonamiento apagado por el
+    propio hook — y hoy esta refutada por medicion via proxy. El contrato que
+    queda es el que siempre fue el verdadero: lo que se anuncia tiene que
+    traducirlo el hook. `ultra`/`high`-crudo no estan en la tabla del hook,
+    luego no se anuncian."""
     backend = _llm_tp_backend()
     efforts = set(backend["supported_reasoning_efforts"])
-    assert "low" not in efforts
-    assert "medium" not in efforts
+    honrados = set(_client_effort_tiers())
+    assert efforts <= honrados, f"anuncia {sorted(efforts - honrados)}"
+    # Y el menu oficial esta completo: none/low/medium/xhigh.
+    assert {"none", "low", "medium", "xhigh"} <= efforts
 
 
 def test_el_reconciler_refresca_reasoning_y_efforts():

@@ -238,16 +238,27 @@ data:
         # 01-09-2026: entra `xhigh`. La recipe oficial de Qwen (model card de
         # HuggingFace y recipes.vllm.ai/Qwen/Qwen3.8-Flash-Next) dice que este
         # modelo gradua con `reasoning_effort` en niveles [low, medium, xhigh] y
-        # que su DEFAULT es xhigh. Contra NUESTRO servidor, medido el 01-09 en
-        # chat completions sin tools (reasoning_chars): low=0, medium=0 -- inertes
-        # en este motor, que no lleva --reasoning-parser --; high=139, max=455,
-        # xhigh=490. El hook traduce xhigh->max (CLIENT_EFFORT_TIERS) y el strip
-        # impide que el valor crudo viaje al backend. Con tools todos siguen a 0
-        # (sglang#36537). `low`/`medium` NO se anuncian: dan 0 chars aqui, y un
-        # nivel anunciado y no honrado es el fallo de las 56 fugas del 19-08.
-        # El resto de la familia (tooling, 27B, 4B) sigue con [none, high, max]:
-        # ahi xhigh no esta medido.
-        supported_reasoning_efforts: [none, high, max, xhigh]
+        # que su DEFAULT de fabrica es xhigh.
+        # CORREGIDO 05-09-2026 (SC-203): el comentario de arriba afirmaba que el
+        # motor "no lleva --reasoning-parser" y que low/medium daban 0 chars.
+        # FALSO en las dos mitades. (a) El motor SI lo lleva: el Deployment del
+        # head arranca con `--reasoning-parser qwen3` y `--tool-call-parser
+        # qwen3_coder` — verificado en vivo hoy (SC-204, D1). Lo que pasaba es
+        # que el default del hook era off y NINGUN nivel llegaba a traducirse.
+        # (b) Medido hoy 05-09 a traves del PROXY (no del motor directo), prompt
+        # fijo, sin tools: `low` y `medium` devuelven reasoning_content NO vacio
+        # (decenas a cientos de tokens de razonamiento, `medium` por encima de
+        # `low` en el mismo prompt). Los numeros viejos (high=139, max=455)
+        # medían el motor sin el parser puesto y ya no significan nada.
+        # Menu = la receta oficial: none/low/medium/xhigh, con `low` de default
+        # en ESTE proxy (THINKING_TIERS) — el xhigh de fabrica se queda para
+        # quien lo pida. `high`/`max` siguen anunciados como alias DEPRECADOS
+        # del vocabulario del cliente (high->low, max->xhigh via
+        # CLIENT_EFFORT_TIERS; medido hoy: ambos devuelven 200 con la traduccion
+        # correcta) y el strip impide que el valor crudo viaje al backend.
+        # El resto de la familia (27B, 4B) sigue con [none, high, max]: ahi no
+        # hay medicion nueva.
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
         # 02-09-2026 (STA-9): callado el bucle de fondo. Medido: `/health` decia
         # `healthy_count: 0` MIENTRAS una inferencia real respondia 391 en 5 s. La
         # sonda de fondo no es el watchdog: usa `max_tokens` 16 (el default de
@@ -461,7 +472,17 @@ data:
         # descarta: cualquier nivel guardado que no este aqui se recorta al mas
         # cercano y el effort que llega es DELIBERADO. Ver el alias directo de
         # DeepSeek para el fallo que arregla.
-        supported_reasoning_efforts: [none, high, max]
+        # 05-09-2026 (SC-203): el menu se abre a la receta oficial de Qwen3.8
+        # (none/low/medium/xhigh) y el default del alias pasa de "off" a "low"
+        # (THINKING_TIERS): "el residente del perfil, sin pensar" ya no es
+        # verdad — pensar en `low` es el default nuevo. En `creative` el
+        # residente detras de este alias es el 27B, que no honra low/medium
+        # (medido 15-08: reasoning_content 0): ahi el motor resuelve esos
+        # niveles como "no piensa" — el mismo resultado que daba antes, cuando
+        # caian fuera de la tabla — y `none`/`high`/`max` siguen honrados igual
+        # que antes. `high`/`max` se mantienen anunciados como alias
+        # deprecados (high->low, max->xhigh).
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
         # 02-09-2026 (STA-9): el alias de capacidad apunta al MISMO Service de pool
         # que el nombre directo del residente vivo, y el bucle de fondo deduplica
         # por model_info.id y no por api_base (ver bge-m3-embedding): sondear los
@@ -2761,12 +2782,36 @@ data:
             data["messages"] = out
 
     def _reasoning_effort_value(data):
+        # 05-09-2026 (SC-203): D6 — con
+        # LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES=true,
+        # /v1/messages (Anthropic) se traduce a chat completions ANTES de que
+        # corra este hook, y el `thinking` de Anthropic llega aqui como
+        # `reasoning_effort` ya traducido por LiteLLM: low -> "low", y un
+        # thinking budget numerico -> "budget:<tokens>". Sin leer el segundo,
+        # un /effort de Claude Code caeria fuera de la tabla y decidiria el
+        # alias — el effort del cliente se perderia en la ruta Anthropic.
+        # El budget NO es un nivel del menu, asi que no viaja crudo al backend:
+        # se traduce al nivel mas cercano (<=1024 -> low, <=8192 -> medium,
+        # mas -> max/xhigh), que es lo que puede prometer este motor.
         effort = data.get("reasoning_effort")
         if not effort:
             r = data.get("reasoning")
             if isinstance(r, dict):
                 effort = r.get("effort")
-        return str(effort).lower() if effort else ""
+        if not effort:
+            return ""
+        texto = str(effort).lower()
+        if texto.startswith("budget:"):
+            try:
+                presupuesto = int(texto.split(":", 1)[1])
+            except ValueError:
+                return ""
+            if presupuesto <= 1024:
+                return "low"
+            if presupuesto <= 8192:
+                return "medium"
+            return "max"
+        return texto
 
     def _has_part_type(data, names):
         for entry in _message_entries(data):
@@ -2871,7 +2916,12 @@ data:
     #
     # En una llamada explicita manda el alias que pidio el cliente.
     THINKING_TIERS = {
-        "tooling": "off",
+        # 05-09-2026 (SC-203): "off" -> "low". El objetivo funcional del owner
+        # es que el residente piense con `low` por defecto. Consecuencia que
+        # hay que tener presente: la etiqueta historica de `tooling` era "sin
+        # pensar", y deja de serlo. El que quiera al modelo sin pensar pide
+        # `reasoning_effort: none` (o `off`), que sigue ganando.
+        "tooling": "low",
         # 25-08-2026: entra el nombre DIRECTO de DeepSeek, con el mismo "off"
         # que `tooling`. Hasta hoy no estaba, y la consecuencia no era neutra:
         # un alias fuera de esta tabla devuelve tier=None y `_apply_thinking_tier`
@@ -2895,7 +2945,12 @@ data:
         # trato que el de DeepSeek y por el mismo motivo del 25-08: fuera de
         # esta tabla el default seria el del SERVIDOR, y el chat template de
         # Qwen3.8-Flash-Next arranca con thinking ON.
-        "qwen38-flash-next": "off",
+        # 05-09-2026 (SC-203): "off" -> "low". Mismo cambio que `tooling` — hoy
+        # son el MISMO residente (el service `tooling` apunta al head de
+        # qwen38-flash-next), y el default efectivo que pide el owner es `low`.
+        # Sin esta linea el default seria el del servidor, que segun la model
+        # card es el xhigh de fabrica: pensar al maximo sin que nadie lo pida.
+        "qwen38-flash-next": "low",
         # 24-08-2026: `high` y `max` se retiran como NOMBRES. El nivel se pide
         # con `reasoning_effort`, que es la via que ya usaba todo el mundo.
         # `tooling-uncensored` no entra aqui: la ablacion es una capacidad
@@ -2903,21 +2958,29 @@ data:
     }
     # `/effort` de OpenClaw, que viaja como `reasoning_effort` de primer nivel.
     #
-    # SOLO ESTAN LOS DELIBERADOS, y es la parte que importa. Vale la misma regla
-    # que los clientes adjuntan un
-    # effort a TODAS las llamadas, asi que un `low` no significa "quiero low",
-    # significa "no he tocado nada". Meterlo aqui convertiria el ambiente en una
-    # orden y `tooling` -- etiquetado "sin pensar" -- se pondria a pensar en cada
-    # turno. Un effort ambiente cae fuera de la tabla, devuelve None, y manda
-    # el alias solicitado.
+    # 05-09-2026 (SC-203): LA REGLA DE "SOLO LOS DELIBERADOS" SE RETIRA para
+    # `low`, y hay que decir por que se puede hacer sin romper lo que protegia.
+    # El motivo de excluir `low` era: los clientes agente adjuntan un effort a
+    # TODAS las llamadas, un `low` ambiente convertiria "no he tocado nada" en
+    # una orden, y `tooling` — etiquetado "sin pensar" — se pondria a pensar en
+    # cada turno. El peligro ERA la etiqueta, no el esfuerzo. Hoy el owner pide
+    # explicitamente que el default del residente SEA `low` (THINKING_TIERS), o
+    # sea que la premisa "tooling = sin pensar" ya no existe: un `low` ambiente
+    # y el default nuevo son el MISMO nivel, y traducir deja de cambiar nada.
+    # La proteccion que queda en pie es la de siempre: un effort DELIBERADO
+    # gana al alias, y `none`/`off` siguen pudiendo apagar.
     #
-    # `medium` tampoco esta, por otro motivo: DeepSeek no tiene ese nivel y el
-    # tokenizer parcheado del launch.sh hace caer lo desconocido a "low", asi que
-    # traducirlo seria un nombre que miente. Por eso se quita del menu que
-    # publica OpenClaw.
+    # `medium` entra por el mismo sitio: es nivel OFICIAL de Qwen3.8-Flash-Next
+    # (model card: xhigh/medium/low) y el menu publicado lo anuncia, asi que
+    # dejarlo fuera de la tabla seria el fallo viejo — un nivel anunciado y no
+    # traducido. Para el 27B/4B (familia deepseek) NO existe: ahi se traduce a
+    # "off", que es lo que ya hacia caer fuera de la tabla (None -> alias off),
+    # comportamiento idéntico y ahora explicito.
     CLIENT_EFFORT_TIERS = {
         "none": "off",
         "off": "off",
+        "low": "low",
+        "medium": "medium",
         "high": "high",
         "max": "max",
         # 27-08: `xhigh` es SINONIMO de `max`, no un nivel nuevo. Existe porque el
@@ -2940,13 +3003,24 @@ data:
         "xhigh": "max",
     }
     # Cada familia dice lo mismo con otras palabras. DeepSeek lee `thinking` (bool)
-    # + `reasoning_effort`; Qwen solo tiene `enable_thinking`, no gradua, asi que
-    # low/high/max colapsan a "piensa". Un alias sin traduccion para la familia viva
-    # se queda sin tocar y manda el default del servidor.
+    # + `reasoning_effort`; Qwen lee `enable_thinking` + `reasoning_effort` del
+    # chat template. Un alias sin traduccion para la familia viva se queda sin
+    # tocar y manda el default del servidor.
     #
-    # Valores que acepta DeepSeek: low / high / max. El tokenizer viene parcheado en
-    # el launch.sh para que lo desconocido caiga a "low" en vez de a "high", asi que
-    # NO metas "medium" aqui: se comportaria como low y el nombre mentiria.
+    # 05-09-2026 (SC-203): `low` y `medium` entran en la tabla qwen. El menu
+    # publicado es la receta oficial (none/low/medium/xhigh) y un nivel anunciado
+    # y no traducido es el fallo de las 56 fugas del 19-08, asi que o se ofrece
+    # o se traduce: ahora se hace la dos.
+    #
+    # Consecuencia que hay que tener presente: en el perfil `creative` el
+    # residente detras de `tooling` es el 27B denso, y su familia sigue siendo
+    # `qwen` (FAMILY_SAMPLING/_family_of_alias la deducen del nombre del
+    # backend). Un tier low/medium sobre el 27B NO cae ya en el `return` de
+    # _apply_thinking_tier: viaja `enable_thinking: true` + el effort, y el
+    # motor lo resuelve como "no piensa" — medido 15-08 contra el 27B vivo:
+    # none/low/medium -> reasoning_content 0. Comportamiento igual al de antes
+    # (fuera de la tabla el alias era off), solo que ahora explicito y sin
+    # effort crudo de por medio.
     THINKING_KWARGS = {
         "qwen": {
             # 31-08-2026: los niveles SI existen en qwen38-flash-next y hasta hoy
@@ -2962,18 +3036,27 @@ data:
             # pensando y devuelve content VACIO con finish_reason=length, que es
             # la firma exacta de sglang#36537 (bucle de token 0 / "!!!!!").
             #
-            # SOLO HAY DOS NIVELES UTILES. El template valida ('xhigh','medium',
-            # 'low') pero solo emite instruccion para xhigh y low; `medium` cae en
-            # un `elif` que no existe y deja `reasoning_instructions` VACIO. No es
-            # un punto medio, es el silencio -- medido: medium 2721 chars, low
-            # 2993, indistinguibles. Por eso `high` mapea a `low` y no a `medium`:
-            # prometer "alto" y mandar "sin instruccion" seria mentir, que es lo
-            # que protege test_ningun_tier_dice_medium.
+            # HECHO DE LA PLANTILLA (sigue en pie, no depende de numeros): el
+            # template valida ('xhigh','medium','low') pero solo emite bloque
+            # `reasoning_instructions` propio para xhigh y low; `medium` cae en
+            # una rama `elif` que no existe y se queda con las instrucciones
+            # vacias. Es un hecho del chat template, no un bug nuestro.
+            # CORREGIDO 05-09-2026 (SC-203): el corolario que se sacaba de ahi
+            # ("medium es el silencio, indistinguible de low: 2721 vs 2993")
+            # esta refutado por la medicion de HOY a traves del PROXY: con el
+            # razonamiento realmente encendido (default low, guard de tools ya
+            # retirado), `medium` produce reasoning_content NO vacio y por
+            # encima de `low` en el mismo prompt — orden de magnitud decenas a
+            # cientos de tokens, no un numero puntual nuevo. `medium` se ofrece
+            # como nivel oficial de la model card; la nota de la rama `elif` se
+            # queda porque describe la plantilla.
             #
             # `high` del backend NO existe: devuelve 400 "Unexpected reasoning
             # effort high. Supported types are xhigh (default), medium, and low."
+            # Por eso `high` (alias deprecado del cliente) mapea a `low`.
             "off": {"enable_thinking": False},
             "low": {"enable_thinking": True, "reasoning_effort": "low"},
+            "medium": {"enable_thinking": True, "reasoning_effort": "medium"},
             "high": {"enable_thinking": True, "reasoning_effort": "low"},
             "max": {"enable_thinking": True, "reasoning_effort": "xhigh"},
         },
@@ -3120,8 +3203,15 @@ data:
         None NO es False: significa que no lo sabemos, y quien pregunta se
         queda con el perfil por defecto en vez de inventarse el otro.
         """
-        if _is_structured_output(data) or _has_tools(data):
-            return False       # los dos apagan el pensamiento; ver _apply_thinking_tier
+        if _is_structured_output(data):
+            return False       # el esquema apaga el pensamiento; ver _apply_thinking_tier
+        # 05-09-2026 (SC-203): la linea que havia (`or _has_tools(data)`) tenia
+        # que decir lo mismo que la rama tools de _apply_thinking_tier (el guard
+        # sglang#36537). Con el guard retirado, quitarla de aqui es OBLIGATORIO:
+        # si no, tools seguiria apagando el perfil de sampling mientras el tier
+        # piensa, y las dos mitades volverian a contradecirse.
+        # `_has_tools` sigue definida: es API publica de este hook (la importan
+        # los contratos) y describe un hecho de la peticion, no una decision.
         body = data.get("extra_body")
         ctk = body.get("chat_template_kwargs") if isinstance(body, dict) else None
         if isinstance(ctk, dict):
@@ -3279,33 +3369,16 @@ data:
                 # y un json_schema a la vez sigue siendo una contradiccion, no
                 # una peticion de mas pensamiento (medido 3/3 el 2026-08-10).
                 tier = "off"
-            elif _has_tools(data) and fam == "qwen":
-                # 28-08-2026: sglang#36537, `high priority` y sin arreglar. Con
-                # las TRES cosas a la vez -- thinking, tools en la peticion y el
-                # servidor arrancado con `--tool-call-parser qwen3_coder` (que es
-                # como corre qwen38-flash-next: TOOL_CALL_PARSER=qwen3_coder) --
-                # el modelo entra en un bucle DETERMINISTA de token id 0. Con
-                # este tokenizer el 0 decodifica como `!`, asi que la respuesta
-                # sale como `El usuario quiere...!!!!!!!!!!` hasta agotar
-                # max_tokens, con `tool_calls: null` y finish_reason `length`.
-                #
-                # El propio issue da el control que funciona y es exactamente
-                # esto: con `enable_thinking: false` la misma peticion devuelve
-                # su tool_call bien formado. Quitar el parser tambien lo evita,
-                # pero entonces el bloque `<tool_call>` vuelve como texto en
-                # `content` y el cliente se queda sin `tool_calls`: cambia un
-                # bucle por un tool-calling roto.
-                #
-                # Se limita a la familia `qwen` porque el bug es del parser
-                # qwen3_coder; DeepSeek piensa con tools sin problema y no hay
-                # motivo para quitarle el razonamiento a un agente.
-                #
-                # NO pisa un chat_template_kwargs explicito del cliente (regla 1
-                # de esta funcion, la que deja probar niveles desde el
-                # playground). Quien lo ponga a mano con tools vera el bucle.
-                sampling_log.info(
-                    "thinking: off por tools (sglang#36537) alias=%s", requested_alias)
-                tier = "off"
+            # 28-08-2026: aqui vivia una rama `elif _has_tools(data) and fam ==
+            # "qwen":` que forzaba tier="off" con tools, por sglang#36537 (bucle
+            # determinista de token id 0 con thinking + tools + qwen3_coder).
+            # RETIRADA el 05-09-2026 (SC-203): la reproduccion limpia de QA de
+            # hoy, herramientas + thinking en qwen38-flash-next, CON y SIN el
+            # guard activo, dio `tool_calls` bien formados en ambos casos y
+            # ningun bucle de token-id-0 — el guard ya no esta justificado. La
+            # suite de este repo reproduce el caso (tools + effort alto ->
+            # tool_calls, sin off forzado) para que si el bucle vuelve, sea un
+            # test rojo y no una nota de chat.
             kwargs = (THINKING_KWARGS.get(fam) or {}).get(tier)
             if not kwargs:
                 return
@@ -4993,13 +5066,19 @@ data:
             # con True roto, _vision_target manda imagenes a un backend que
             # error, con False de mas las desvia sin preguntar.
             "supports_vision": True,
-            # 01-09-2026: xhigh medido (=max, 490 reasoning_chars) y declarado en
-            # la entrada estatica de este mismo backend; el sync registra por
-            # /model/new lo MISMO que el config — si aqui queda [none, high, max]
-            # la mentira del menu vuelve por la via dinamica (test_local_backend_
-            # reasoning_contract). low/medium siguen fuera: inertes en este motor.
+            # 01-09-2026: xhigh medido y declarado en la entrada estatica de este
+            # mismo backend; el sync registra por /model/new lo MISMO que el
+            # config — si aqui queda [none, high, max] la mentira del menu vuelve
+            # por la via dinamica (test_local_backend_reasoning_contract).
+            # CORREGIDO 05-09-2026 (SC-203): "low/medium inertes en este motor"
+            # era FALSO — se midio contra el motor sin --reasoning-parser (D1/
+            # SC-204: el motor lo lleva desde siempre) y con el default del hook
+            # en off, o sea sin que el razonamiento estuviera encendido. Medido
+            # hoy via proxy: ambos devuelven reasoning real no vacio, medium por
+            # encima de low en el mismo prompt. Menu = receta oficial + alias
+            # deprecados, igual que la entrada estatica.
             "supports_reasoning": True,
-            "supported_reasoning_efforts": ("none", "high", "max", "xhigh"),
+            "supported_reasoning_efforts": ("none", "low", "medium", "high", "max", "xhigh"),
         },
         {
             # Small latency-oriented text resident on the x86 RTX 3080 Ti.
@@ -5731,7 +5810,7 @@ spec:
         # el rollout solo. Lo vigila
         # tests/test_configmap_revision_bump_contract.py, y se recalcula con
         #     python3 tests/test_configmap_revision_bump_contract.py --fix
-        config.k8s.e-dani.com/revision: sync-592dbe5a0492
+        config.k8s.e-dani.com/revision: sync-65bf6b54626b
     spec:
       serviceAccountName: litellm-dgx-backend-sync
       enableServiceLinks: false
@@ -5906,7 +5985,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-67f0431c3934
+        config.k8s.e-dani.com/revision: config-b727a17a5e89
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -5983,6 +6062,19 @@ spec:
             - { name: http, containerPort: 4000 }
           env:
             - { name: LITELLM_LOG, value: INFO }
+            # 05-09-2026 (SC-203): que /v1/messages (formato Anthropic) se
+            # sirva por la ruta de chat completions y no por la de responses.
+            # Con la ruta de responses, el razonamiento del residente no
+            # llegaba como bloques `thinking` al cliente Claude Code — el
+            # flag es lo que hace que el razonamiento traducido por el hook
+            # (THINKING_TIERS/THINKING_KWARGS) salga en el canal thinking de
+            # Anthropic. Documentado en litellm/__init__.py de la libreria
+            # (imagen v1.96.0).
+            # OJO: es GLOBAL — cambia la ruta de /v1/messages para TODOS los
+            # modelos del proxy, no solo qwen38-flash-next/tooling; los
+            # residentes de otras companies (SC-188/SC-189/SC-196) consumen
+            # ese endpoint.
+            - { name: LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES, value: "true" }
             - { name: PYTHONPATH, value: /app }
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
             - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
