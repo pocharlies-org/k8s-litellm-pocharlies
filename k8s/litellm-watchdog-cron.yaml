@@ -354,20 +354,23 @@ spec:
                       #
                       # 03-09-2026: EL CRITERIO DE ESTE BLOQUE QUEDO OBSOLETO.
                       # Asumia que lambda!=0 significaba "alguien movio el dial en
-                      # caliente y hay que devolverlo a 0". Desde #38 el punto de
-                      # trabajo del residente llm-tp ES 1.0, fijado en git y
-                      # aguantado por ArgoCD. Avisar de eso cada 10 min es ruido, y
-                      # el "que hacer" que proponia (devolverlo a 0) era justo lo
-                      # contrario de lo que hay que hacer.
+                      # caliente y hay que devolverlo a 0". El criterio bueno es
+                      # comparar contra lo que DECLARA el manifiesto de k8s-ai:
+                      # un lambda DISTINTO del declarado significa que alguien lo
+                      # movio por el endpoint y se perdera al reiniciar.
                       #
-                      # Lo que si es una anomalia: un lambda DISTINTO del declarado
-                      # en el manifiesto. Eso significa que alguien lo movio por el
-                      # endpoint y se perdera al reiniciar.
+                      # 05-09-2026: el esperado de flash-next era 1.0 (lo que fijó
+                      # #38) y k8s-ai #42 lo volvio a 0 el 04-09: el global en 1.0
+                      # ablaba al residente PARA TODO LO QUE NO SELLE (Codex,
+                      # OpenClaw, brain, panel). Con el 1.0 viejo aqui, el aviso
+                      # salto cada hora mintiendo ("el manifiesto declara 1.0")
+                      # sobre un servidor que estaba exactamente como git. Si se
+                      # cambia el default ALLI, se cambia el esperado AQUI.
                       #
                       # Ademas faltaba el residente llm-tp: solo se miraba deepseek
                       # y el 27B, o sea el ablado de verdad estaba ciego.
                       #   kubectl get deploy -n llm qwen38-flash-next -o jsonpath=...
-                      #     VLLM_REFUSAL_LAMBDA = "1.0"
+                      #     VLLM_REFUSAL_LAMBDA = "0"
                       #
                       # Un head que NO contesta aqui NO es un fallo: los dos perfiles de
                       # computo son exclusivos, asi que uno de los dos backends esta siempre
@@ -376,7 +379,7 @@ spec:
                       DIALES = {
                           "qwen38-flash-next": (
                               "http://qwen38-flash-next"
-                              ".llm.svc.cluster.local:8000", 1.0),
+                              ".llm.svc.cluster.local:8000", 0.0),
                           "deepseek-v4-flash-0731": (
                               "http://deepseek-v4-flash-0731"
                               ".llm.svc.cluster.local:8000", 0.0),
