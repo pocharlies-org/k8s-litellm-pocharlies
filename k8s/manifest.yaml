@@ -3174,6 +3174,179 @@ data:
             return None
         return VISION_FALLBACK_MODEL
 
+    # ── Omision de imagen para backends SIN vision (SC-173, 2026-09-05) ────────
+    #
+    # RED FINAL, no camino paralelo. `_vision_target` intenta DESVIAR la imagen a
+    # un backend que ve; cuando no hay a donde desviar (VISION_FALLBACK_MODEL
+    # vacio, o apunta al MISMO backend ciego -- el estado actual, ver el comentario
+    # de VISION_FALLBACK_MODEL arriba), la peticion llega al backend que DECLARA
+    # que no ve y ese turno muere con un 400 del motor para SIEMPRE en esa sesion
+    # (la imagen queda pegada en el historial).
+    #
+    # La regla de la epica (opcion 2, tras descartar la 1 con motivo): si el
+    # backend resuelto DECLARA `supports_vision: False` EXPLICITO, se SUSTITUYE
+    # cada bloque de imagen por un texto, y el turno sigue. Se aplica SOLO con el
+    # False explicito -- con None ("no se sabe") NO se toca nada, por el mismo
+    # motivo que `_vision_target` respeta un nombre de MODELO sin veredicto: no se
+    # le quita al cliente una imagen que el backend podria si procesar.
+    #
+    # Se aplica DESPUES del desvio: si `_vision_target` ya movio la peticion a un
+    # backend que ve, aqui no queda nada que omitir (el backend resuelto ve). Por
+    # eso la funcion mira el backend QUE VA A ATENDER, no el que pidio el cliente.
+    IMAGE_OMITTED_TEXT = "[imagen omitida: el modelo local no procesa imagenes]"
+
+    def _omit_images_for_blind_backends(data, served,
+                                        supports_vision=_alias_supports_vision):
+        """Sustituye los bloques de imagen por texto si el backend resuelto no ve.
+
+        Devuelve True si toc algo (para loggear), False en caso contrario. Es
+        puramente estructural: no llama al router salvo a traves de la sonda
+        inyectable `supports_vision`, igual que `_vision_target`, para poder
+        probarla sin internals de litellm.
+
+        Cubre las tres formas de parte de imagen (IMAGE_PART_TYPES): la de
+        Anthropic (`image` con `source`), la de Chat Completions (`image_url`) y
+        la de Responses (`input_image`), en `messages` y en `input`.
+        """
+        if supports_vision(served) is not False:
+            return False
+        changed = False
+
+        def _scrub(content):
+            nonlocal changed
+            if not isinstance(content, list):
+                return content
+            out = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in IMAGE_PART_TYPES:
+                    out.append({"type": "text", "text": IMAGE_OMITTED_TEXT})
+                    changed = True
+                else:
+                    out.append(part)
+            return out
+
+        for entry in _message_entries(data):
+            c = entry.get("content")
+            if isinstance(c, list):
+                entry["content"] = _scrub(c)
+
+        # `input` de Responses puede venir como lista de items sin `role` (no la
+        # cubre _message_entries); se barren tambien sus partes de imagen.
+        inp = data.get("input")
+        if isinstance(inp, list):
+            for item in inp:
+                if isinstance(item, dict):
+                    item["content"] = _scrub(item.get("content"))
+
+        return changed
+
+    # ── Motivo del error de upstream (SC-174, 2026-09-05) ──────────────────────
+    #
+    # LITELLM pierde el cuerpo del error al traducir OpenAI->Anthropic. En
+    # v1.96.0 (la imagen desplegada) `get_error_message`
+    # (litellm/litellm_core_utils/exception_mapping_utils.py:124-167) SOLO mira
+    # `body["message"]` y `body["error"]["message"]`. Un 400 de validacion de
+    # vLLM/FastAPI viene como `{"detail": [...]}` (o `{"detail": "..."}`), que esa
+    # funcion NO reconoce: devuelve None, y el fallback
+    # (`message = str(original_exception)`, linea 268) es inconsistente -- para
+    # algunas excepciones sale el repr y para otras una cadena vacia, de ahi el
+    # `OpenAIException - .` que veia el cliente.
+    #
+    # El cuerpo original NO se pierde del todo: `BadRequestError` se construye con
+    # `body=getattr(original_exception, "body", None)` (linea 342 del mismo
+    # fichero), o sea que la excepcion que llega a este hook conserva `.body`. Lo
+    # que falta es un lector que sepa leer la forma FastAPI. Eso es esta funcion:
+    # se llama desde `async_post_call_failure_hook` y, si el mensaje que litellm
+    # ya puso esta vacio o es el `OpenAIException - .` degenerado, lo reconstruye
+    # con el motivo real de upstream.
+    def _extract_upstream_reason(exc):
+        """Motivo legible del cuerpo de upstream, o None si no hay ninguno.
+
+        Cubre las formas que `get_error_message` de v1.96.0 NO cubre:
+        FastAPI `{"detail": "..."}` y `{"detail": [ {...}, ... ]}` (pydantic),
+        ademas de las OpenAI/Anthropic que si conocia. Nunca lanza: si algo no
+        se puede leer, devuelve None y el flujo queda como estaba.
+        """
+        body = getattr(exc, "body", None)
+        parts = []
+
+        def _from_detail(detail):
+            if isinstance(detail, str):
+                return detail
+            if isinstance(detail, list):
+                msgs = []
+                for item in detail:
+                    if isinstance(item, dict):
+                        loc = item.get("loc")
+                        msg = item.get("msg") or item.get("message")
+                        if msg and isinstance(loc, (list, tuple)):
+                            msgs.append(f"{'.'.join(str(x) for x in loc)}: {msg}")
+                        elif msg:
+                            msgs.append(str(msg))
+                    elif item:
+                        msgs.append(str(item))
+                return "; ".join(msgs)
+            if isinstance(detail, dict):
+                return detail.get("message") or detail.get("msg")
+            return None
+
+        if isinstance(body, dict):
+            if "detail" in body:
+                got = _from_detail(body.get("detail"))
+                if got:
+                    parts.append(str(got))
+            err = body.get("error")
+            if isinstance(err, dict):
+                m = err.get("message") or err.get("msg")
+                if m:
+                    parts.append(str(m))
+            m = body.get("message") or body.get("msg")
+            if m:
+                parts.append(str(m))
+
+        if not parts:
+            # Sin cuerpo utilizable: el str() de la excepcion, si dice algo.
+            texto = str(exc).strip() if exc is not None else ""
+            if texto and texto not in ("", "."):
+                parts.append(texto)
+
+        if not parts:
+            return None
+        # Unir sin duplicar el prefijo `OpenAIException - .` degenerado.
+        reason = " | ".join(dict.fromkeys(parts))
+        return reason.strip() or None
+
+    # Sufijo que el router anade al mensaje de la excepcion YA mapeada
+    # (litellm/router.py:6340 en v1.96.0): ". Received Model Group=...\nAvailable
+    # Model Group Fallbacks=...". Hay que recortarlo ANTES de decidir si el mensaje
+    # es degenerado, porque el `OpenAIException - .` real llega con este sufijo
+    # pegado, no desnudo.
+    _ROUTER_ERROR_SUFFIX = ". Received Model Group="
+
+    def _is_degenerate_error_message(message):
+        """True si el mensaje que puso litellm no dice nada util.
+
+        Es el caso que hay que arreglar: `OpenAIException - .` (provider + ' - '
+        + mensaje vacio), que en la practica llega como
+        `litellm.BadRequestError: OpenAIException - . Received Model Group=...`.
+        Cualquier cadena con contenido real se respeta tal cual -- no se pisa un
+        motivo que litellm ya traduzco bien (los 400 cuyo cuerpo venia en forma
+        OpenAI, p. ej. `max_tokens=... cannot be greater than max_model_len`, ya
+        salen con motivo y no se tocan).
+        """
+        if not message:
+            return True
+        texto = str(message).strip()
+        # Se recorta el sufijo del router: lo que decide es la parte de delante.
+        if _ROUTER_ERROR_SUFFIX in texto:
+            texto = texto.split(_ROUTER_ERROR_SUFFIX, 1)[0].strip()
+        if len(texto) <= 3:
+            return True
+        # `XxxException - ` con nada detras, o `XxxException - .`
+        if texto.endswith(" -") or texto.endswith(" - .") or texto.endswith("Exception"):
+            return True
+        return False
+
     def _is_structured_output(data):
         """La peticion exige una forma de salida (json_schema / json_object)."""
         rf = data.get("response_format")
@@ -3831,6 +4004,22 @@ data:
                     _resolve_key_label(user_api_key_dict),
                 )
 
+            # RED FINAL de vision (SC-173): si despues del desvio el backend que va
+            # a atender DECLARA que no ve (no habia a donde desviar), se omite la
+            # imagen a texto para que el turno SIGA en vez de morir con un 400 del
+            # motor para siempre. Va DESPUES del desvio a proposito: si ya salto a
+            # un backend que ve, aqui no queda nada que omitir.
+            if _omit_images_for_blind_backends(data, data.get("model", "")):
+                data.setdefault("metadata", {})
+                data["metadata"]["_vision_images_omitted"] = True
+                router_log.warning(
+                    "vision: %r no ve y no hay destino de desvio; imagen(es) "
+                    "omitida(s) a texto (pedido=%r, key=%s)",
+                    data.get("model", ""),
+                    proxy_model or requested_model,
+                    _resolve_key_label(user_api_key_dict),
+                )
+
             # Sampling por FAMILIA del backend, con el modelo YA resuelto: aqui
             # data["model"] es el alias que de verdad va a atender (tras el salto
             # de CAPABILITY_CHAINS), no el que pidio el
@@ -4019,6 +4208,33 @@ data:
             traceback_str=None,
         ):
             _track_end_from_payload(request_data, "proxy_failure")
+            # SC-174: si el mensaje que litellm puso es el `OpenAIException - .`
+            # degenerado (cuerpo de upstream en forma FastAPI que get_error_message
+            # de v1.96.0 no sabe leer), se RECONSTRUYE con el motivo real de
+            # upstream MUTANDO la excepcion. Se muta y no se devuelve un
+            # HTTPException porque el `except Exception` de /v1/messages
+            # (litellm/proxy/anthropic_endpoints/endpoints.py:188-213) DESCARTA el
+            # retorno del hook y hace `raise ProxyException(message=getattr(e,
+            # "message", ...))` sobre el MISMO objeto -- o sea que lo que ve el
+            # cliente es `original_exception.message`, no lo que este hook devuelva.
+            # No se pisa un mensaje que ya traiga motivo (los 400 cuyo cuerpo venia
+            # en forma OpenAI salen bien y quedan intactos).
+            try:
+                current = getattr(original_exception, "message", None)
+                if _is_degenerate_error_message(current):
+                    reason = _extract_upstream_reason(original_exception)
+                    if reason:
+                        original_exception.message = reason
+                        router_log.warning(
+                            "error-body: mensaje vacio reconstruido con el motivo "
+                            "de upstream (key=%s): %.200s",
+                            _resolve_key_label(user_api_key_dict),
+                            reason,
+                        )
+            except Exception as e:
+                # Jamas rompe el flujo de error: si algo falla aqui, el cliente se
+                # queda con lo que habria dado sin este hook (el viejo mensaje).
+                log.debug("error-body reconstruct error: %s", e)
             return None
 
         async def async_post_call_success_deployment_hook(
@@ -6001,7 +6217,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-660e07e5f511
+        config.k8s.e-dani.com/revision: config-2255301ae88a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
