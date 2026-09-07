@@ -1,9 +1,15 @@
-"""Reasoning metadata published for the live DeepSeek backend.
+"""Reasoning metadata publicada para el residente llm-tp vivo.
 
-DeepSeek's capability aliases (tooling/high/max) remain available for
-clients that can only choose a model name. OpenCode and OpenChamber can send a
-reasoning effort, so the direct model must advertise its real tiers and let the
-client render one model with variants instead of four apparent checkpoints.
+Los alias de capacidad (tooling/high/max) siguen disponibles para clientes que
+solo saben elegir un nombre de modelo. OpenCode y OpenChamber si pueden mandar un
+reasoning effort, asi que el alias directo tiene que anunciar sus tiers REALES y
+dejar que el cliente pinte un modelo con variantes en vez de cuatro checkpoints
+aparentes.
+
+07-09-2026: este fichero leia el `BACKENDS` del ConfigMap de
+`litellm-dgx-backend-sync` como segunda fuente de model_info. Ese controlador se
+borro del repo — llevaba muerto desde el 18-08 —, asi que la unica fuente es el
+`model_list` estatico y aqui no hay ya nada que reconciliar entre dos sitios.
 """
 
 import ast
@@ -13,17 +19,6 @@ import yaml
 
 
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
-
-
-def _sync_code() -> str:
-    docs = [doc for doc in yaml.safe_load_all(MANIFEST.read_text()) if doc]
-    for doc in docs:
-        if doc.get("kind") != "ConfigMap":
-            continue
-        for content in (doc.get("data") or {}).values():
-            if "BACKENDS = (" in content and "managed_model_contract" in content:
-                return content
-    raise AssertionError("no encuentro el codigo del backend-sync en el manifiesto")
 
 
 def _configmap_value(marker: str) -> str:
@@ -87,55 +82,12 @@ def test_ningun_alias_local_anuncia_un_effort_que_el_hook_descarta():
         assert not sobran, f"{alias} anuncia {sorted(sobran)}, que el hook descarta"
 
 
-def test_los_backends_del_sync_declaran_lo_mismo_que_el_config():
-    """El controlador es la otra fuente de model_info: registra por /model/new los
-    alias que no estan en el config estatico (los `dense*` del perfil creative).
-    Si su tabla se queda con `low`, la mentira vuelve por ahi."""
-    honrados = set(_client_effort_tiers())
-    tree = ast.parse(_sync_code())
-    vistos = 0
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(getattr(t, "id", "") == "BACKENDS" for t in node.targets):
-            continue
-        for element in node.value.elts:
-            entry = {}
-            for key, value in zip(element.keys, element.values):
-                if not isinstance(key, ast.Constant):
-                    continue
-                try:
-                    entry[key.value] = ast.literal_eval(value)
-                except ValueError:
-                    entry[key.value] = "<dinamico>"
-            efforts = entry.get("supported_reasoning_efforts")
-            if not efforts:
-                continue
-            vistos += 1
-            sobran = set(efforts) - honrados
-            assert not sobran, f"{entry.get('name')} declara {sorted(sobran)}"
-    assert vistos, "no he encontrado backends con efforts declarados"
-
-
 def _llm_tp_backend() -> dict:
-    tree = ast.parse(_sync_code())
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(getattr(target, "id", "") == "BACKENDS" for target in node.targets):
-            continue
-        for element in node.value.elts:
-            entry = {}
-            for key, value in zip(element.keys, element.values):
-                if not isinstance(key, ast.Constant):
-                    continue
-                try:
-                    entry[key.value] = ast.literal_eval(value)
-                except ValueError:
-                    entry[key.value] = "<dinamico>"
-            if entry.get("name") == "qwen38-flash-next":
-                return entry
-    raise AssertionError("no encuentro qwen38-flash-next en BACKENDS")
+    config = yaml.safe_load(_configmap_value("model_list:"))
+    for entry in config["model_list"]:
+        if entry["model_name"] == "qwen38-flash-next":
+            return entry.get("model_info") or {}
+    raise AssertionError("no encuentro qwen38-flash-next en el model_list")
 
 
 def test_el_residente_llm_tp_publica_sus_tiers_reales():
@@ -155,14 +107,14 @@ def test_el_residente_llm_tp_publica_sus_tiers_reales():
     # el default del hook en off; medido hoy via proxy, ambos dan reasoning
     # real no vacio. `xhigh` sigue (=max) y `high`/`max` se mantienen como
     # alias deprecados del vocabulario del cliente.
-    assert backend["supported_reasoning_efforts"] == (
+    assert list(backend["supported_reasoning_efforts"]) == [
         "none",
         "low",
         "medium",
         "high",
         "max",
         "xhigh",
-    )
+    ]
 
 
 def test_el_residente_llm_tp_no_anuncia_niveles_que_el_hook_no_traduce():
@@ -179,16 +131,3 @@ def test_el_residente_llm_tp_no_anuncia_niveles_que_el_hook_no_traduce():
     assert efforts <= honrados, f"anuncia {sorted(efforts - honrados)}"
     # Y el menu oficial esta completo: none/low/medium/xhigh.
     assert {"none", "low", "medium", "xhigh"} <= efforts
-
-
-def test_el_reconciler_refresca_reasoning_y_efforts():
-    code = _sync_code()
-    desired_start = code.index("def desired_deployments")
-    desired = code[desired_start:code.index("def current_models_by_id")]
-    assert '"supports_reasoning": bool(backend.get("supports_reasoning", False))' in desired
-    assert 'backend.get("supported_reasoning_efforts", ())' in desired
-
-    contract_start = code.index("def managed_model_contract")
-    contract = code[contract_start:code.index("def add_model")]
-    assert '"supports_reasoning": bool(info.get("supports_reasoning", False))' in contract
-    assert 'info.get("supported_reasoning_efforts") or ()' in contract

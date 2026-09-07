@@ -1,4 +1,17 @@
-import re
+"""Quien es dueno de cada alias local, y contra que servicio resuelve.
+
+07-09-2026: este fichero leia el `BACKENDS` del ConfigMap de
+`litellm-dgx-backend-sync` — id_prefix, RETIRED_MANAGED_ID_PREFIXES,
+conflicting_managed_ids, el orden de expulsion dentro de reconcile_backend. Todo
+eso describia el registro por HTTP contra /model/new, que dejo de existir el
+18-08 y se borro del repo hoy. Las invariantes que quedan son las que siguen
+siendo ciertas sin controlador, expresadas contra el `model_list` estatico.
+
+En particular, la unicidad de `tooling` ya no la impone nadie a base de expulsar
+registros: `tooling` es UNA entrada que apunta al Service de pool de Kubernetes, y
+quien esta detras lo decide el perfil activo. La exclusion es fisica, no de
+config.
+"""
 from pathlib import Path
 
 import yaml
@@ -7,202 +20,108 @@ import yaml
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 
-def _sync_block(text, start, end):
+def _texto() -> str:
+    return MANIFEST.read_text()
+
+
+def _bloque(text, start, end):
     return text[text.index(start):text.index(end)]
 
 
+def _config() -> dict:
+    for doc in yaml.safe_load_all(_texto()):
+        if (doc and doc.get("kind") == "ConfigMap"
+                and doc["metadata"]["name"] == "litellm-config"):
+            return yaml.safe_load(doc["data"]["config.yaml"])
+    raise AssertionError("no encuentro el ConfigMap litellm-config")
+
+
+def _entradas() -> dict[str, dict]:
+    return {e["model_name"]: e for e in _config()["model_list"]}
+
+
 def test_uncensored_is_the_creative_backend_owning_tooling_and_dense_aliases():
-    """Since the censored 27B F2 deployments were deleted (2026-07-26) the
-    uncensored 27B is the cluster's ONLY dense model, so it owns every
-    sus DOS alias: `tooling` (capacidad) y `qwen38-27b` (modelo concreto). Los
+    """Desde que se borraron los deployments censurados del 27B (2026-07-26), el
+    27B abliterado es el UNICO modelo denso del cluster, y por eso se queda con
+    sus dos alias: `tooling` (capacidad) y `qwen38-27b` (modelo concreto). Los
     cuatro dense-shaped (`dense`, `dense-reasoning`, `dense-uncensored`,
-    `taxonomy`) se retiraron el 15-08 tras migrar sus consumidores. Antes:
-    the deleted deployments and survived only because the hook rewrote it."""
-    text = MANIFEST.read_text()
+    `taxonomy`) se retiraron el 15-08 tras migrar sus consumidores."""
+    entradas = _entradas()
 
-    assert "QWEN38_27B_ALIASES = (" in text
-    aliases = _sync_block(text, "QWEN38_27B_ALIASES = (", "QWEN38_REPEAT_GUARD_PARAMS")
-    # UN SOLO alias (15-08): `tooling`. Los cuatro dense-shaped se retiraron y se
-    # descarto registrar tambien el nombre del modelo.
-    for name in ('"tooling"',):
-        assert name in aliases, f"{name} debe registrarlo el uncensored"
+    # El nombre directo va SIEMPRE al servidor del 27B.
+    directo = entradas["qwen38-27b"]["litellm_params"]["api_base"]
+    assert "vllm-qwen38-27b-uncensored.llm.svc.cluster.local" in directo
 
-    assert text.count('"aliases": QWEN38_27B_ALIASES') == 1
-    assert '"id_prefix": "qwen38-27b"' in text
-    # 01-09: la frontera era deepseek-v4-flash-tp2, que ya no existe. Se corta en
-    # el siguiente "name" del bloque, sea cual sea.
-    _bk = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    _ini = _bk.index('"name": "qwen38-27b"')
-    _sig = _bk.find('"name": "', _ini + 10)
-    assert '"backend": "dgx1"' in _bk[_ini:_sig if _sig != -1 else len(_bk)]
+    # El alias de capacidad va al Service de POOL: quien esta detras lo decide el
+    # perfil activo, no este fichero.
+    for capacidad in ("tooling", "tooling-uncensored"):
+        base = entradas[capacidad]["litellm_params"]["api_base"]
+        assert "tooling.llm.svc.cluster.local" in base, capacidad
 
-    # Los backends de los modelos borrados no deben volver.
-    for dead in ("QWEN36_27B_DENSE_ALIASES", "QWEN36_35B_DGX1_ALIASES",
-                 "QWEN36_35B_DGX2_ALIASES", "GEMMA_ALIASES"):
-        assert dead not in text, f"{dead} apunta a un deployment borrado"
+    for muerto in ("dense", "dense-reasoning", "dense-uncensored", "taxonomy"):
+        assert muerto not in entradas, f"{muerto} volvio al model_list"
 
 
 def test_qwen_direct_name_is_not_a_capability_alias():
     """Un nombre concreto falla si su backend cae; no se cambia silenciosamente."""
-    text = MANIFEST.read_text()
-    capabilities = _sync_block(text, "CAPABILITY_CHAINS = {", "# ── Desvio de VISION")
+    text = _texto()
+    capabilities = _bloque(text, "CAPABILITY_CHAINS = {", "# ── Desvio de VISION")
     assert '"qwen38-27b"' not in capabilities
     assert '"dense"' not in capabilities
 
 
-def test_openclaw_team_permission_is_reconciled_without_removing_models():
-    text = MANIFEST.read_text()
-    assert 'OPENCLAW_TEAM_ID, value: "openclaw"' in text
-    assert 'OPENCLAW_KEY_ALIAS, value: "openclaw-qwen36-prod"' in text
-    assert 'SAUVAGE_KEY_ALIAS, value: "sauvage-shield"' in text
-    assert 'SAUVAGE_KEY_REQUIRED_MODELS, value: "tooling,qwen35-4b"' in text
-    # La lista crece (union aditiva), asi que se comprueba pertenencia y no el
-    # literal: lo que importa aqui es que `qwen38-27b` siga concedido.
-    match = re.search(r'OPENCLAW_TEAM_REQUIRED_MODELS, value: "([^"]*)"', text)
-    assert match, "el manifest ya no declara OPENCLAW_TEAM_REQUIRED_MODELS"
-    required = {name.strip() for name in match.group(1).split(",") if name.strip()}
-    assert "qwen38-27b" in required
-    # v024-f2-dgx1 fuera: su deployment se borro el 2026-07-26.
-    assert "qwen36-27b-nvfp4-v024-f2-dgx1" not in required
-    block = text[
-        text.index("def reconcile_required_team_models"):
-        text.index("def managed_model_id")
-    ]
-    assert 'f"{LITELLM_BASE_URL}/team/info?{query}"' in block
-    assert 'f"{LITELLM_BASE_URL}/team/update"' in block
-    assert 'desired = list(current)' in block
-    assert 'payload={"team_id": OPENCLAW_TEAM_ID, "models": desired}' in block
-    assert 'candidate.get("key_alias") == key_alias' in block
-    assert 'f"{LITELLM_BASE_URL}/key/update"' in block
-    assert 'payload={"key": key_token, "models": key_desired}' in block
-    assert 'SAUVAGE_KEY_ALIAS' in block
-    assert "/team/new" not in block
-
-
-def test_backends_cubren_las_formas_de_exclusion():
-    """3 backends declarados; los dos Spark conservan su exclusion y el RTX es independiente.
+def test_los_tres_backends_locales_y_sus_formas_de_exclusion():
+    """3 backends locales; los dos Spark conservan su exclusion y el RTX es independiente.
 
     Actualizado 2026-08-13 (ventana RHO backend-sync): eran 4. Se retiraron
     `ornith-dgx1` y `nvidia-qwen36-dgx1`, los dos candidatos al asiento de DGX1:
-    estaban a replicas 0 en el overlay Y SIN PESOS EN DISCO (Ornith borrado el
-    10-08; la carpeta nvidia-qwen36-35b-a3b-nvfp4 no existe en dgx1), asi que
-    ninguno podia arrancar. El asiento en si caduco el 08-08, cuando DeepSeek TP=2
-    paso a ocupar los DOS Sparks: mientras corre no cabe residente en DGX1, no por
-    politica sino por memoria.
-
-    (Nota historica que sigue valiendo: este test estuvo ROJO desde el 10-08 sin
-    que nadie lo viera, porque CI solo corre el contrato de red.)
-
-    DGX2: desde el 2026-08-10 solo queda el 27B denso. Habia co-residencia (2
-    replicas de GPU por time-slicing) con Qwen3-Coder, que se retiro del cluster
-    entero. La regla sigue en pie para quien meta otro co-residente: no comparte nodo
-    con DGX1, asi que no hay exclusion fisica y NO puede declarar alias de tooling.
-
-    LOS DOS A LA VEZ: DeepSeek-V4-Flash en TP=2 pide ~104 GiB de CADA Spark, asi
-    que su exclusion es fisica igual que la de DGX1 pero abarca los dos nodos. Por
-    eso SI comparte los alias del residente de tooling: mientras corre no puede
-    haber residente de DGX1 ni co-residente de DGX2.
+    estaban a replicas 0 Y SIN PESOS EN DISCO (Ornith borrado el 10-08; la carpeta
+    nvidia-qwen36-35b-a3b-nvfp4 no existe en dgx1), asi que ninguno podia arrancar.
+    El asiento en si caduco el 08-08, cuando el residente TP=2 paso a ocupar los
+    DOS Sparks: mientras corre no cabe residente en DGX1, no por politica sino por
+    memoria — y por eso el residente SI comparte los alias de tooling.
     """
-    text = MANIFEST.read_text()
-    backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    # 26-08: entra qwen38-flash-next (residente llm-tp, TP=2).
-    # 01-09: sale deepseek-v4-flash-tp2 con la retirada de DeepSeek; quedan 3.
-    assert backends.count('"name": "') == 3
-    for name in (
-        "qwen38-27b",
-        "qwen38-flash-next",
-        "qwen35-4b-int4",
-    ):
-        assert f'"name": "{name}"' in backends
-    # Los de TP=2 tienen que decir que viven en los dos nodos: es lo que
-    # justifica que el residente comparta los alias de tooling sin romper la
-    # unicidad.
-    # El slice se cierra en el SIGUIENTE "name", no en un vecino concreto: atarlo
-    # a deepseek-v4-flash-tp2 es lo que rompio al retirarlo.
-    ini = backends.index('"name": "qwen38-flash-next"')
-    sig = backends.find('"name": "', ini + 10)
-    qn = backends[ini:sig if sig != -1 else len(backends)]
-    assert '"backend": "dgx1+dgx2"' in qn
+    entradas = _entradas()
+    por_backend = {
+        n: e["model_info"]["backend"]
+        for n, e in entradas.items()
+        if ".llm.svc.cluster.local" in str((e.get("litellm_params") or {}).get("api_base") or "")
+        and (e.get("model_info") or {}).get("mode") == "chat"
+    }
+    assert set(por_backend.values()) == {"dgx1", "dgx1+dgx2", "rtx", "profile-resident"}
+    assert por_backend["qwen38-27b"] == "dgx1"
+    assert por_backend["qwen38-flash-next"] == "dgx1+dgx2"
+    assert por_backend["qwen35-4b"] == "rtx"
+    # El alias de capacidad no nombra un nodo a proposito: lo resuelve el perfil.
+    assert por_backend["tooling"] == "profile-resident"
+
+    texto = _texto()
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",
                  "qwen36-27b-dense-dgx1", "qwen36-27b-dense-dgx2",
                  # retirado del cluster entero el 2026-08-10
                  "qwen3coder-dgx2", "qwen3coder-dgx1",
                  # 2026-08-13: sin pesos en disco, no podian arrancar
                  "ornith-dgx1", "nvidia-qwen36-dgx1"):
-        assert f'"name": "{dead}"' not in backends
-
-    # El backend conserva su identidad estable, pero Creative lo sirve en DGX1
-    # con la ventana real de 64K en vez de heredar 256K.
-    dense = backends[backends.index('"name": "qwen38-27b"'):
-                     backends.index('"name": "qwen38-flash-next"')]
-    assert '"backend": "dgx1"' in dense
-    assert '"max_input_tokens": 262144' in dense
-    assert '"supports_function_calling": True' in dense
-
-    # Ninguno de los id_prefix nuevos puede caer bajo un prefijo retirado, que
-    # cleanup_retired_models() purga en cada ciclo.
-    retired = _sync_block(text, "RETIRED_MANAGED_ID_PREFIXES = (", "TOKEN_PATH =")
-    dead_prefixes = re.findall(r'"(dgx\d-[a-z0-9-]+-)"', retired)
-    for prefix in ("dgx1-nvidia-qwen36-35b-nvfp4-", "ds4-flash-0731-tp2-",
-                   "qwen38-flash-next-tp2-",
-                   "qwen38-27b-"):
-        for dead in dead_prefixes:
-            assert not prefix.startswith(dead), f"{prefix} seria purgado por {dead}"
-    # 2026-08-15: la lista pasa de 8 tumbas a 1. Las siete que se van (gemma4 x2,
-    # qwen36-35b x2, qwen36-27b-dense x2, qwen3coder) eran de modelos borrados del
-    # cluster entre el 26-07 y el 10-08. Se comprobo contra /model/info que las
-    # OCHO tienen 0 filas vivas: la purga ya se completo hace semanas y no queda
-    # backend capaz de recrearlas. Una tumba solo hace falta mientras quede algo
-    # que enterrar; recorrerlas cada 10 s no protegia de nada.
-    #
-    # La unica que se conserva es la del rename de HOY, porque es la reciente y es
-    # la que podria tener carrera con una replica rezagada.
-    assert dead_prefixes == ["dgx2-qwen36-27b-uncensored-nvfp4-"], dead_prefixes
+        assert f'"{dead}"' not in texto, f"{dead} volvio al manifiesto"
 
 
-def test_shared_tooling_alias_is_guarded_against_double_registration():
-    """LiteLLM no impone unicidad de alias: si dos backends de Spark quedaran
-    registrados a la vez sobre `tooling`, el router balancearia contra un
-    api_base muerto. La exclusion por hardware NO es una invariante de este
-    controlador (endpoint_ready devuelve None y se SALTA el backend), asi que
-    habilitar un backend debe expulsar explicitamente a sus hermanos."""
-    text = MANIFEST.read_text()
-    # 2026-08-15: hay dos dueños deliberados de `tooling`, pero nunca coexisten:
-    # DeepSeek TP=2 ocupa ambos Sparks en llm-tp; Qwen3.6 27B ocupa DGX1 en
-    # creative. El controlador de perfil hace la exclusion fisica y el sync
-    # expulsa cualquier registro saliente antes de dar de alta el entrante.
-    assert "TOOLING_RESIDENT_ALIASES = TOOLING_COMPAT_ALIASES" in text
-    assert "ORNITH_ALIASES" not in _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS"), (
-        "ORNITH_ALIASES volvio a BACKENDS: sus dos duenos estan retirados"
-    )
+def test_tooling_tiene_un_solo_dueno_y_lo_resuelve_kubernetes():
+    """LiteLLM no impone unicidad de alias: dos entradas sobre `tooling` harian que
+    el router balanceara contra un api_base muerto.
 
-    backends = _sync_block(text, "BACKENDS = (", "RETIRED_MANAGED_IDS")
-    comparten = [n for n, a in re.findall(r'"name":\s*"([a-z0-9-]+)".*?"aliases":\s*(\w+)',
-                                          backends, re.S)
-                 if a in ("QWEN38_27B_ALIASES", "TOOLING_RESIDENT_ALIASES")]
-    assert sorted(comparten) == [
-        "qwen38-27b",
-        "qwen38-flash-next",
-    ], comparten
-
-    dense = backends[backends.index('"name": "qwen38-27b"'):
-                     backends.index('"name": "qwen38-flash-next"')]
-    assert '"aliases": QWEN38_27B_ALIASES' in dense
-    aliases = _sync_block(
-        text, "QWEN38_27B_ALIASES = (", "QWEN38_REPEAT_GUARD_PARAMS"
-    )
-    assert '"tooling"' in aliases
+    Hasta el 18-08 esto lo garantizaba el controlador expulsando registros ajenos
+    antes de dar de alta el entrante. Hoy se garantiza por construccion: hay UNA
+    entrada, y a quien sirve lo decide el Service de pool `tooling` — que
+    selecciona por la etiqueta `llm.dgx-infra/pool: tooling-resident` — segun el
+    perfil activo. Sin endpoints el alias no responde, que es el fallo VISIBLE que
+    se buscaba.
+    """
+    nombres = [e["model_name"] for e in _config()["model_list"]]
+    assert nombres.count("tooling") == 1, "hay dos dueños de `tooling` en el model_list"
+    assert nombres.count("tooling-uncensored") == 1
     # Y los alias del coder retirado no vuelven por la puerta de atras.
-    assert "QWEN3CODER_ALIASES" not in text
-
-    guard = _sync_block(text, "def conflicting_managed_ids", "def reconcile_backend")
-    assert 'own_aliases & set(other["aliases"])' in guard
-    assert "managed_model_id(other, alias)" in guard
-
-    reconcile = _sync_block(text, "def reconcile_backend", "def main()")
-    # La expulsion ocurre ANTES del alta, no despues.
-    assert reconcile.index("conflicting_managed_ids(backend)") < reconcile.index("add_model(deployment)")
+    assert "QWEN3CODER_ALIASES" not in _texto()
 
 
 def test_manifest_stays_valid_yaml():
-    list(yaml.safe_load_all(MANIFEST.read_text()))
+    list(yaml.safe_load_all(_texto()))

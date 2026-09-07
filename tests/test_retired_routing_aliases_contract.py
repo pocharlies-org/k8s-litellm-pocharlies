@@ -40,9 +40,11 @@ def test_retired_names_are_not_published_or_fallback_targets():
 
 
 def test_retired_names_are_not_registered_by_runtime_code():
+    # 07-09-2026: era una tupla de dos. El segundo, el `sync.py` de
+    # `litellm-dgx-backend-sync`, se borro del repo: llevaba muerto desde el 18-08
+    # y grepearlo daba la falsa sensacion de cubrir codigo que corre.
     for name, key in (
         ("litellm-config", "litellm_strip_params.py"),
-        ("litellm-dgx-backend-sync", "sync.py"),
     ):
         source = _configmap_source(name, key)
         exact_literals = {
