@@ -13,14 +13,17 @@ Y el 27B denso no declaraba NINGUNO de los dos limites, asi que heredaba los
 defaults de `desired_deployments()` y anunciaba 262144 cuando sirve 229376: 32k mas
 de los que puede.
 
-Lo que se fija aqui:
+07-09-2026: `desired_deployments()` era del ConfigMap de
+`litellm-dgx-backend-sync`, borrado por llevar muerto desde el 18-08. Los limites
+se declaran hoy uno a uno en el `model_list` estatico, que es lo que carga el
+proxy, y ahi no hay defaults que heredar: o el alias declara sus numeros o no los
+publica. Lo que se fija aqui es lo mismo de siempre, contra la fuente que corre.
+
+Lo que se fija:
   1. los nombres de los campos son los de litellm, y `context_window` no vuelve
-  2. ningun limite se hereda: todo backend declara los suyos
-  3. `tooling` publica limites compatibles con ambos residentes
+  2. ningun limite se hereda: todo alias local declara los suyos
+  3. cada residente publica la ventana que sirve de verdad
 """
-import ast
-import os
-import types
 from pathlib import Path
 
 import pytest
@@ -29,190 +32,105 @@ import yaml
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 # La ventana que sirve de verdad cada checkpoint. Si alguien cambia un
-# --max-model-len, este numero y el del sync tienen que moverse juntos.
-DGX2_UNCENSORED_27B = "qwen38-27b"
+# --max-model-len, este numero y el del model_list tienen que moverse juntos.
+DENSO_27B = "qwen38-27b"
 QWEN38_FLASH_NEXT = "qwen38-flash-next"
-QWEN35_4B = "qwen35-4b-int4"
+QWEN35_4B = "qwen35-4b"
 
 
 @pytest.fixture(scope="module")
-def cms():
-    docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
-
-    def data(name, key):
-        return next(d["data"][key] for d in docs
-                    if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == name)
-
-    return {
-        "sync": data("litellm-dgx-backend-sync", "sync.py"),
-        "hook": data("litellm-config", "litellm_strip_params.py"),
-    }
+def config():
+    for doc in yaml.safe_load_all(MANIFEST.read_text()):
+        if (doc and doc.get("kind") == "ConfigMap"
+                and doc["metadata"]["name"] == "litellm-config"):
+            return yaml.safe_load(doc["data"]["config.yaml"])
+    raise AssertionError("no encuentro el ConfigMap litellm-config")
 
 
 @pytest.fixture(scope="module")
-def backends(cms):
-    """BACKENDS del sync, evaluado de verdad (no por regex sobre el texto)."""
-    tree = ast.parse(cms["sync"])
-    wanted = {"ORNITH_CANARY_ALIASES", "TOOLING_COMPAT_ALIASES", "ORNITH_ALIASES",
-              "THINKING_TIER_ALIASES",
-              "TOOLING_RESIDENT_ALIASES",
-              # 26-08: nombre directo del residente llm-tp nuevo (Qwen3.8-Flash-Next).
-              "QWEN38_FLASH_NEXT_DIRECT_ALIASES",
-              "QWEN35_4B_ALIASES",
-              "QWEN3CODER_ALIASES",
-              "QWEN38_27B_ALIASES", "QWEN38_REPEAT_GUARD_PARAMS",
-              # 19-08-2026: el alias de capacidad abliterado. Lo comparten los DOS
-              # residentes, asi que sin el aqui BACKENDS no evalua y los cinco
-              # tests de este modulo dan NameError en el setup.
-              "UNCENSORED_RESIDENT_ALIASES",
-              "BACKENDS"}
-    keep = [n for n in tree.body
-            if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in wanted
-                                                 for t in n.targets)]
-    mod = types.ModuleType("syncpure")
-    mod.os = os
-    exec(compile(ast.Module(body=keep, type_ignores=[]), "<sync>", "exec"), mod.__dict__)
-    return {b["name"]: b for b in mod.BACKENDS}
+def locales(config):
+    """{model_name: entrada} de los alias de CHAT servidos en el cluster."""
+    salida = {}
+    for entrada in config["model_list"]:
+        params = entrada.get("litellm_params") or {}
+        info = entrada.get("model_info") or {}
+        if ".llm.svc.cluster.local" not in str(params.get("api_base") or ""):
+            continue
+        if info.get("mode") != "chat":
+            continue
+        salida[entrada["model_name"]] = entrada
+    return salida
 
 
-def _const(src, name):
-    """Valor de una constante de modulo, sin ejecutar el resto del fichero."""
-    for node in ast.parse(src).body:
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == name
-                                                for t in node.targets):
-            return ast.literal_eval(node.value)
-    raise AssertionError(f"{name} ya no se define")
-
-
-def test_el_model_info_usa_los_nombres_de_litellm(cms):
+def test_el_model_info_usa_los_nombres_de_litellm(config, locales):
     """`context_window` era un campo inventado. Los que litellm lee de verdad son
-    `max_input_tokens` y `max_output_tokens`; `max_tokens` es el legacy y se
-    mantiene con el valor de salida, que es la convencion que aplica litellm a los
-    modelos que si conoce (max_tokens == max_output_tokens)."""
-    block = cms["sync"]
-    block = block[block.index("def desired_deployments"):block.index("def current_model_ids")]
-    for field in ('"max_input_tokens": backend["max_input_tokens"]',
-                  '"max_output_tokens": backend["max_output_tokens"]',
-                  '"max_tokens": backend["max_output_tokens"]'):
-        assert field in block, f"falta {field} en el model_info publicado"
-    assert '"context_window"' not in block, (
-        "context_window no es un campo de litellm: nada lo lee y hace invisible la "
-        "ventana real del modelo")
+    `max_input_tokens` y `max_output_tokens`."""
+    for nombre, entrada in locales.items():
+        info = entrada["model_info"]
+        assert "max_input_tokens" in info, nombre
+        assert "max_output_tokens" in info, nombre
+        assert "context_window" not in info, (
+            f"{nombre}: context_window no es un campo de litellm, nada lo lee y "
+            "hace invisible la ventana real del modelo")
+    assert "context_window" not in yaml.dump(config)
 
 
-def test_ningun_backend_hereda_sus_limites(cms, backends):
-    """Un default en un campo que describe al HARDWARE deja que un backend nuevo
-    publique los numeros de otro. Asi es como el 27B anuncio 262144."""
-    block = cms["sync"]
-    block = block[block.index("def desired_deployments"):block.index("def current_model_ids")]
-    assert 'backend.get("max_tokens"' not in block
-    assert 'backend.get("context_window"' not in block
-    assert 'backend.get("max_input_tokens"' not in block
-    assert 'backend.get("max_output_tokens"' not in block
+def test_ningun_alias_hereda_sus_limites(locales):
+    """Un default en un campo que describe al HARDWARE deja que un alias nuevo
+    publique los numeros de otro. Asi es como el 27B anuncio 262144.
 
-    for name, b in backends.items():
-        for field in ("max_input_tokens", "max_output_tokens"):
-            assert b.get(field), f"{name} no declara {field}"
-
-    # Y que el guard de arranque exista: sin el, olvidarse de un limite en un
-    # backend nuevo revienta con KeyError a mitad de un ciclo en vez de morir al
-    # importar.
-    assert 'REQUIRED_BACKEND_LIMITS = ("max_input_tokens", "max_output_tokens")' in cms["sync"]
-    assert "raise SystemExit" in cms["sync"]
-
-
-def test_el_27b_declara_la_ventana_que_sirve(backends):
-    """El catalogo debe seguir publicando la ventana real del 27B.
-
-    2026-08-15: el 27B paso de 65536 a 262144 (k8s-ai-pocharlies@32e2b2f, que es
-    el nativo del checkpoint). Este numero se habia quedado atras y era LO QUE
-    VEIAN LOS CLIENTES en /model/info, o sea que todo el estate creia que el
-    modelo tenia 64K. El test deja de preguntar "cual es mas estrecho" —esa
-    pregunta perdio sentido cuando el 27B alcanzo al resto— y pasa a comprobar
-    lo unico que importaba de verdad: que el limite declarado sea el que sirve
-    el motor. Si alguien mueve --max-model-len, este numero se mueve con el.
+    En el model_list estatico esto se cumple por construccion —no hay funcion que
+    rellene huecos— y este test lo mantiene asi: un alias sin numeros propios los
+    publicaria vacios, no ajenos, pero seguiria mintiendo por omision.
     """
-    assert backends[DGX2_UNCENSORED_27B]["max_input_tokens"] == 262144
+    sin_limites = [
+        n for n, e in locales.items()
+        if not e["model_info"].get("max_input_tokens")
+        or not e["model_info"].get("max_output_tokens")
+    ]
+    assert not sin_limites, f"alias locales sin limites propios: {sin_limites}"
 
-    estrechos = {n: b["max_input_tokens"] for n, b in backends.items()
-                 if b["max_input_tokens"] < 262144}
-    assert estrechos == {QWEN35_4B: 32768}, estrechos
+
+def test_el_27b_declara_la_ventana_que_sirve(locales):
+    info = locales[DENSO_27B]["model_info"]
+    assert info["max_input_tokens"] == 262144
+    assert info["max_output_tokens"] == 16384
 
 
-def test_qwen38_flash_next_publica_la_ventana_operativa_de_256k(backends):
-    """El catalogo solo puede anunciar el max_model_len que sirve vLLM.
+def test_qwen38_flash_next_publica_la_ventana_operativa_de_256k(locales):
+    info = locales[QWEN38_FLASH_NEXT]["model_info"]
+    assert info["max_input_tokens"] == 262144
+    assert info["max_output_tokens"] == 16384
 
-    01-09-2026: era el contrato de DeepSeek-V4-Flash (384K). Al retirarlo, el
-    residente de `llm-tp` pasa a ser Qwen3.8-Flash-Next, que arranca con
-    --max-model-len 262144. La propiedad protegida es la misma: el catalogo no
-    puede anunciar mas contexto del que sirve el motor.
+
+def test_qwen35_4b_publica_el_contexto_real_de_llama_cpp(locales):
+    info = locales[QWEN35_4B]["model_info"]
+    assert info["max_input_tokens"] == 32768
+    assert info["max_output_tokens"] == 8192
+
+
+def test_qwen38_flash_next_publica_su_nombre_directo_solo_en_su_backend(locales):
+    """El nombre directo de un modelo no puede resolver a otro checkpoint.
+
+    `tooling` es el alias de CAPACIDAD y puede cambiar de dueño con el perfil;
+    `qwen38-flash-next` nombra un modelo concreto y tiene que ir a ese servidor o
+    fallar en duro.
     """
-    assert backends[QWEN38_FLASH_NEXT]["max_input_tokens"] == 262144
-    assert backends[QWEN38_FLASH_NEXT]["max_output_tokens"] == 16384
-
-
-def test_qwen35_4b_publica_el_contexto_real_de_llama_cpp(backends):
-    assert backends[QWEN35_4B]["max_input_tokens"] == 32768
-    assert backends[QWEN35_4B]["max_output_tokens"] == 8192
-
-
-def test_qwen38_flash_next_publica_su_nombre_directo_solo_en_su_backend(backends):
-    """El nombre concreto no puede resolver silenciosamente a otro residente."""
-    alias = "qwen38-flash-next"
-    owners = [name for name, backend in backends.items() if alias in backend["aliases"]]
-    assert owners == [QWEN38_FLASH_NEXT]
-
-
-def test_el_reconcile_refresca_metadatos_aunque_el_id_sea_estable(cms):
-    """Cambiar 256K -> 384K debe reemplazar el registro ya existente."""
-    tree = ast.parse(cms["sync"])
-    function = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "managed_model_contract"
-    )
-    namespace = {"Any": object}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), "<sync>", "exec"), namespace)
-    contract = namespace["managed_model_contract"]
-    current = {
-        "model_name": "tooling",
-        "litellm_params": {
-            "model": "openai/qwen38-flash-next",
-            "api_base": "http://qwen38/v1",
-            "max_parallel_requests": 6,
-        },
-        "model_info": {
-            "max_tokens": 16384,
-            "max_output_tokens": 16384,
-            "max_input_tokens": 262144,
-            "supports_function_calling": True,
-            "supports_vision": False,
-            "backend": "dgx1+dgx2",
-            "k8s_namespace": "llm",
-            "k8s_service": "qwen38-flash-next",
-        },
+    directo = locales[QWEN38_FLASH_NEXT]["litellm_params"]["api_base"]
+    assert "qwen38-flash-next.llm.svc.cluster.local" in directo
+    otros = {
+        n: e["litellm_params"]["api_base"]
+        for n, e in locales.items()
+        if n.startswith("qwen38-flash-next")
     }
-    desired = {**current, "model_info": {**current["model_info"], "max_input_tokens": 393216}}
-    assert contract(current) != contract(desired)
-
-    reconcile = cms["sync"]
-    reconcile = reconcile[reconcile.index("def reconcile_backend"):reconcile.index("def main()")]
-    assert 'log.info("refreshing changed model contract %s", model_id)' in reconcile
-    assert "delete_model(model_id)" in reconcile
+    assert all("qwen38-flash-next" in base for base in otros.values()), otros
 
 
-def test_tooling_dinamico_no_incluye_aliases_dense(cms):
-    """El perfil local dinamico solo contiene nombres de capacidad vigentes."""
-    tree = ast.parse(cms["hook"])
-    assignment = next(
-        node for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(getattr(target, "id", "") == "CAPABILITY_CHAINS"
-                for target in node.targets)
-    )
-    aliases = {ast.literal_eval(key) for key in assignment.value.keys}
-    assert aliases == {"tooling", "high", "max", "tooling-uncensored"}
-    assert all(not alias.startswith("dense") for alias in aliases)
-    assert not any(isinstance(node, ast.Assign) and any(
-        getattr(target, "id", "") == "DENSE_CTX_ESCAPE" for target in node.targets)
-        for node in tree.body)
+def test_los_nombres_dense_retirados_no_vuelven(config):
+    """`dense`, `dense-reasoning`, `dense-uncensored` y `taxonomy` se retiraron el
+    15-08 tras migrar sus consumidores. Eran alias del 27B; hoy ese backend se
+    sirve por `tooling` (capacidad) y `qwen38-27b` (nombre directo)."""
+    publicados = {e["model_name"] for e in config["model_list"]}
+    for muerto in ("dense", "dense-reasoning", "dense-uncensored", "taxonomy"):
+        assert muerto not in publicados, f"{muerto} volvio al model_list"
+    assert {"tooling", "qwen38-27b"} <= publicados

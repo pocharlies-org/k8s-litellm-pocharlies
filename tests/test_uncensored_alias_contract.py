@@ -2,11 +2,12 @@
 
 POR QUE SE REESCRIBIO ESTE FICHERO (19-08-2026). La version anterior extraia
 `extra_litellm_params` del ConfigMap de `litellm-dgx-backend-sync` y la ejecutaba.
-Ese controlador esta a **0 replicas declaradas en git** desde be9e2b1: los alias
-ya no se registran por HTTP contra /model/new, se declaran en el `model_list`
-estatico con `store_model_in_db: false`. O sea que el test pasaba en verde
-validando codigo que nada ejecuta, y el mismo error se repitio al anadir el alias
-de capacidad: el cambio fue a `sync.py` y no habria registrado nada.
+Ese controlador estuvo a **0 replicas declaradas en git** desde be9e2b1 y se
+BORRO entero el 07-09-2026: los alias no se registran por HTTP contra /model/new,
+se declaran en el `model_list` estatico con `store_model_in_db: false`. O sea que
+el test pasaba en verde validando codigo que nada ejecuta, y el mismo error se
+repitio al anadir el alias de capacidad: el cambio fue a `sync.py` y no habria
+registrado nada.
 
 Asi que aqui NO se toca el sync. Se comprueban las dos piezas vivas:
 
@@ -335,25 +336,36 @@ def test_cache_salt_is_not_stripped_by_the_family_sampling_hook():
 
 # ── 3. el guard que se me escapo ────────────────────────────────────────────────
 
-def test_the_retired_sync_controller_stays_at_zero_replicas():
-    """Este test existe porque el alias de capacidad se anadio primero a `sync.py`
-    y no habria registrado NADA.
+def test_el_controlador_de_sync_no_ha_vuelto():
+    """Lapida. Este test existe porque el alias de capacidad se anadio primero a
+    `sync.py` y no habria registrado NADA.
 
-    `litellm-dgx-backend-sync` se conservo a 0 replicas en be9e2b1 (la Application
-    lleva prune: false), asi que su `sync.py` sigue en el repo, se sigue leyendo
-    como si fuera el sitio donde viven los alias, y no ejecuta una linea. Si algun
-    dia vuelve a 1, este test se pone rojo y toca decidir a proposito quien es la
-    fuente de la verdad — no descubrirlo por un alias que no aparece.
+    `litellm-dgx-backend-sync` se retiro a 0 replicas el 18-08-2026 (be9e2b1) y se
+    conservo en el repo "a la vista". Salio mal: el bloque muerto se siguio
+    editando once veces, la ultima el 05-09, y cada edicion creaba un ReplicaSet
+    de un Deployment que no arranca. El 07-09 se borro del manifiesto y del
+    cluster. Si vuelve a aparecer, este test se pone rojo y toca decidir a
+    proposito quien es la fuente de la verdad del model_list — no descubrirlo por
+    un alias que no aparece.
     """
-    for doc in _docs():
-        if (doc.get("kind") == "Deployment"
-                and doc["metadata"]["name"] == "litellm-dgx-backend-sync"):
-            assert doc["spec"].get("replicas") == 0, (
-                "el controlador de alias volvio a estar arriba: hay dos fuentes de "
-                "verdad para el model_list"
-            )
-            return
-    raise AssertionError("ya no existe el Deployment litellm-dgx-backend-sync")
+    reaparecidos = [
+        doc["metadata"]["name"]
+        for doc in _docs()
+        if doc.get("metadata", {}).get("name") == "litellm-dgx-backend-sync"
+    ]
+    assert not reaparecidos, (
+        "volvio el controlador de alias: hay dos fuentes de verdad para el "
+        "model_list, y la que corre es este YAML"
+    )
+    claves = [
+        clave
+        for doc in _docs()
+        if doc.get("kind") == "ConfigMap"
+        for clave in (doc.get("data") or {})
+    ]
+    assert "sync.py" not in claves, (
+        "vuelve a haber un sync.py en el manifiesto: los alias se declaran aqui"
+    )
 
 
 # ── 3. el sello sobrevive a un extra_body ajeno ─────────────────────────────────

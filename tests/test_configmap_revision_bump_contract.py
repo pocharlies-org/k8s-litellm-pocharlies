@@ -39,8 +39,11 @@ import yaml
 MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 # ConfigMap cuyo contenido gobierna un Deployment que NO lo relee en caliente.
+#
+# 07-09-2026: eran dos. El del sync se fue con `litellm-dgx-backend-sync`, pero el
+# mecanismo sigue haciendo falta para `litellm-config`, que monta el hook
+# `litellm_strip_params.py` en un proceso que tampoco lo relee.
 VIGILADOS = {
-    "litellm-dgx-backend-sync": ("litellm-dgx-backend-sync", "sync-"),
     "litellm-config": ("litellm", "config-"),
 }
 
@@ -83,23 +86,23 @@ def test_la_anotacion_lleva_el_hash_del_configmap_que_monta():
         )
 
 
-def test_el_sync_sigue_sin_recargar_en_caliente():
-    """Si algun dia el sync releyera su fichero, este contrato sobra.
+def test_el_proxy_sigue_sin_recargar_en_caliente():
+    """Si algun dia el proxy releyera su config, este contrato sobra.
 
     Se comprueba de forma explicita para que, si alguien anade recarga en
     caliente, este test le recuerde que puede retirar la anotacion en vez de
     dejarla como ceremonia perpetua.
     """
     for doc in _docs():
-        if doc.get("kind") == "ConfigMap" and doc["metadata"]["name"] == "litellm-dgx-backend-sync":
+        if doc.get("kind") == "ConfigMap" and doc["metadata"]["name"] == "litellm-config":
             codigo = "".join((doc.get("data") or {}).values())
             break
     else:
-        raise AssertionError("no encuentro el ConfigMap del sync")
+        raise AssertionError("no encuentro el ConfigMap litellm-config")
 
     recarga = [m for m in ("importlib.reload", "inotify", "watchdog.observers") if m in codigo]
     assert not recarga, (
-        f"el sync ya recarga en caliente ({recarga}): revisa si la anotacion "
+        f"el proxy ya recarga en caliente ({recarga}): revisa si la anotacion "
         "config.k8s.e-dani.com/revision y este test siguen haciendo falta"
     )
 

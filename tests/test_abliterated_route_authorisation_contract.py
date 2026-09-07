@@ -54,26 +54,12 @@ def _sin_comentarios(text):
     )
 
 
-def _team_required_models():
-    text = MANIFEST.read_text()
-    match = re.search(
-        r'OPENCLAW_TEAM_REQUIRED_MODELS,\s*value:\s*"([^"]*)"', text
-    ) or re.search(r'name:\s*OPENCLAW_TEAM_REQUIRED_MODELS[^}]*?value:\s*"([^"]*)"', text)
-    assert match, "no encuentro OPENCLAW_TEAM_REQUIRED_MODELS en el manifiesto"
-    return [m.strip() for m in match.group(1).split(",") if m.strip()]
-
-
-def test_the_team_allowlist_never_grants_the_abliterated_route():
-    """La lista que ensancha el equipo `openclaw` no puede incluirla.
-
-    Ensanchar el equipo es lo contrario de aislar: daria la ruta abliterada a
-    TODAS las keys del equipo de una vez, incluida la del agente con escritura.
-    """
-    granted = set(_team_required_models())
-    assert not (granted & ABLITERATED), sorted(granted & ABLITERATED)
-    # Guarda de cordura: la lista existe y concede lo normal, o el test de arriba
-    # pasaria por estar vacia.
-    assert "tooling" in granted
+# 07-09-2026: aqui vivia `_team_required_models()` y el test que impedia que la
+# lista OPENCLAW_TEAM_REQUIRED_MODELS concediera la ruta abliterada. Esa lista era
+# del reconciliador de `litellm-dgx-backend-sync`, que se retiro el 18-08 y se
+# borro hoy: el allowlist del equipo quedo VACIO = todos, a proposito. Lo que
+# protege hoy la ruta abliterada son los tres tests de abajo — no se resuelve sin
+# nombrarla, no es seleccionable por el router y no es destino de ningun fallback.
 
 
 def test_no_abliterated_alias_is_reachable_without_naming_it():

@@ -1,4 +1,4 @@
-"""Los backends locales declaran supports_vision, y el residente llm-tp en particular.
+"""Los alias locales declaran supports_vision, y el residente llm-tp en particular.
 
 POR QUE EXISTE ESTE TEST (2026-08-13)
 ------------------------------------
@@ -21,27 +21,17 @@ False sea un fallo de CI y no un descubrimiento por sorpresa dentro de un mes.
 LITELLM_VISION_FALLBACK_MODEL. El riesgo es el mismo pero mas agudo: si su flag
 miente, el desvio de imagenes apunta AL MISMO backend y no hay a donde caer.
 
-ALCANCE: este test ancla SOLO al residente llm-tp vivo.
+07-09-2026: hasta hoy este test leia el `BACKENDS` del ConfigMap de
+`litellm-dgx-backend-sync`. Ese controlador llevaba muerto desde el 18-08 y se
+borro del repo, asi que el test validaba una tabla que nada ejecutaba. La unidad
+pasa a ser el ALIAS del `model_list` estatico, que es donde vive el flag que leen
+de verdad `_alias_supports_vision`, OpenClaw y OpenChamber.
 
-Los otros tres backends declarados (ornith-dgx1, nvidia-qwen36-dgx1,
-qwen38-27b) tambien tienen supports_vision=True, pero NO se fijan
-aqui, por dos razones comprobadas el 2026-08-13:
-
-  - Los tres estan MUERTOS. `vllm-ornith-35b-nvfp4-mtp-dgx1` y
-    `vllm-nvidia-qwen36-35b-dgx1` ni siquiera existen como Deployment (Ornith se
-    retiro el 10-08), y `vllm-qwen38-27b-uncensored` esta a 0 replicas.
-    Ninguno aparece registrado en LiteLLM: de los backends locales solo responde
-    `deepseek-v4-flash-0731`, con sus 13 alias.
-  - Sus valores no estan igual de justificados. El de NVIDIA lleva su razon en el
-    codigo ("qwen3_5_moe MULTIMODAL"), pero el del 27B DENSO viene copiado del
-    bloque anterior en mayo, sin comprobacion propia y sin comentario. Fijarlo
-    seria convertir en invariante algo que nadie midio.
-
-Cuando alguno vuelva a estar vivo, lo correcto es MEDIR si ve — mandarle una
-imagen — y entonces anclarlo. Un test que fija un valor no verificado no protege
-nada: solo hace mas dificil corregirlo.
+ALCANCE: se fija el valor SOLO del residente llm-tp vivo. De los demas se exige
+que declaren el campo, no un valor concreto: fijar un booleano que nadie ha
+medido no protege nada, solo hace mas dificil corregirlo. Cuando alguno se mida
+—mandarle una imagen— es el momento de anclarlo aqui.
 """
-import ast
 import pathlib
 
 import yaml
@@ -49,68 +39,49 @@ import yaml
 
 MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
-# Todo backend LOCAL declarado en el controlador. Si se anade uno nuevo hay que
+# Todo alias de CHAT servido dentro del cluster. Si se anade uno nuevo hay que
 # tocar esta lista a proposito: es justo el momento de decidir si ve o no.
-# 2026-08-13: retirados `ornith-dgx1` y `nvidia-qwen36-dgx1`. Estaban a replicas 0
-# Y SIN PESOS EN DISCO (Ornith borrado el 10-08; la carpeta
-# nvidia-qwen36-35b-a3b-nvfp4 no existe en dgx1), o sea que no podian arrancar.
-# `qwen38-27b` se CONSERVA aunque su checkpoint tampoco este:
-# es el unico dueño declarado de dense/dense-reasoning/dense-uncensored/taxonomy,
-# y es preferible que la config diga "este backend deberia servir dense y esta
-# caido" a que esos nombres no tengan dueño en ningun sitio.
-BACKENDS_LOCALES = {
-    "qwen38-27b",
-    # 26-08: residente llm-tp nuevo. Declara supports_vision=True (checkpoint
-    # multimodal nativo, vision encoder BF16) — PROVISIONAL hasta el smoke de
-    # vision del primer arranque contra SGLang (fase 3).
+ALIAS_LOCALES = {
     "qwen38-flash-next",
-    "qwen35-4b-int4",
+    "qwen38-flash-next-uncensored",
+    "qwen38-27b",
+    "qwen38-27b-uncensored",
+    "qwen35-4b",
+    "qwen35-4b-fast",
+    "tooling",
+    "tooling-uncensored",
 }
 
 
-def _codigo_del_sync() -> str:
-    docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
-    for doc in docs:
-        if doc.get("kind") != "ConfigMap":
-            continue
-        for nombre, contenido in (doc.get("data") or {}).items():
-            if "BACKENDS = (" in contenido and "managed_model_contract" in contenido:
-                return contenido
-    raise AssertionError("no encuentro el codigo del backend-sync en el manifiesto")
+def _config() -> dict:
+    for doc in yaml.safe_load_all(MANIFEST.read_text()):
+        if doc and doc.get("kind") == "ConfigMap" and doc["metadata"]["name"] == "litellm-config":
+            return yaml.safe_load(doc["data"]["config.yaml"])
+    raise AssertionError("no encuentro el ConfigMap litellm-config")
 
 
-def _backends() -> dict[str, dict]:
-    """Extrae BACKENDS parseando el AST, sin ejecutar el modulo.
+def _alias_locales() -> dict[str, dict]:
+    """{model_name: model_info} de los alias de chat servidos en el cluster.
 
-    Los valores que vienen de os.getenv() no se resuelven (no hacen falta aqui);
-    solo interesan los literales como supports_vision.
+    El discriminador es el `api_base`: los alias de nube no pasan por nuestros
+    backends y su capacidad la declara el upstream.
     """
-    arbol = ast.parse(_codigo_del_sync())
-    for nodo in ast.walk(arbol):
-        if not isinstance(nodo, ast.Assign):
+    salida = {}
+    for entrada in _config()["model_list"]:
+        params = entrada.get("litellm_params") or {}
+        info = entrada.get("model_info") or {}
+        if ".llm.svc.cluster.local" not in str(params.get("api_base") or ""):
             continue
-        destinos = [t.id for t in nodo.targets if isinstance(t, ast.Name)]
-        if "BACKENDS" not in destinos:
+        if info.get("mode") != "chat":
             continue
-        salida = {}
-        for elemento in nodo.value.elts:
-            entrada = {}
-            for clave, valor in zip(elemento.keys, elemento.values):
-                if not isinstance(clave, ast.Constant):
-                    continue
-                try:
-                    entrada[clave.value] = ast.literal_eval(valor)
-                except ValueError:
-                    entrada[clave.value] = "<dinamico>"
-            salida[entrada["name"]] = entrada
-        return salida
-    raise AssertionError("BACKENDS no es una asignacion literal en el sync")
+        salida[entrada["model_name"]] = info
+    return salida
 
 
-def test_estan_todos_los_backends_locales_esperados():
-    assert set(_backends()) == BACKENDS_LOCALES, (
-        "cambio la lista de backends locales: revisa si el nuevo ve o no antes "
-        "de tocar BACKENDS_LOCALES"
+def test_estan_todos_los_alias_locales_esperados():
+    assert set(_alias_locales()) == ALIAS_LOCALES, (
+        "cambio la lista de alias locales de chat: revisa si el nuevo ve o no "
+        "antes de tocar ALIAS_LOCALES"
     )
 
 
@@ -126,41 +97,25 @@ def test_qwen38_flash_next_declara_que_ve():
 
     Comprobado contra el pod: describe correctamente una imagen de prueba.
     """
-    qn = _backends()["qwen38-flash-next"]
-    assert qn["supports_vision"] is True, (
-        "qwen38-flash-next es el backend de vision desde que se retiro DeepSeek. "
-        "Con False, _vision_target desvia toda imagen al fallback -- que es EL "
-        "MISMO backend -- y los clientes responden 'no admite imagenes' sin "
-        "preguntar al modelo."
-    )
+    for alias in ("qwen38-flash-next", "qwen38-flash-next-uncensored"):
+        assert _alias_locales()[alias]["supports_vision"] is True, (
+            f"{alias} es el backend de vision desde que se retiro DeepSeek. Con "
+            "False, _vision_target desvia toda imagen al fallback -- que es EL "
+            "MISMO backend -- y los clientes responden 'no admite imagenes' sin "
+            "preguntar al modelo."
+        )
 
 
-def test_todo_backend_local_declara_vision_explicitamente():
+def test_todo_alias_local_declara_vision_explicitamente():
     """El campo tiene que ESTAR, con el valor que sea.
 
-    No se fija el valor de los backends que no son DeepSeek: ver el ALCANCE del
+    No se fija el valor de los que no son el residente llm-tp: ver el ALCANCE del
     docstring del modulo. Lo que si es invariante es que ninguno se quede sin
-    declararlo, porque un backend sin el campo deja `_alias_supports_vision` en
+    declararlo, porque un alias sin el campo deja `_alias_supports_vision` en
     None y el desvio de imagenes pasa a depender de si el alias esta vivo.
     """
-    sin_campo = [n for n, b in _backends().items() if "supports_vision" not in b]
+    sin_campo = [n for n, i in _alias_locales().items() if "supports_vision" not in i]
     assert not sin_campo, (
-        f"backends locales sin declarar supports_vision: {sin_campo}. Declara el "
+        f"alias locales sin declarar supports_vision: {sin_campo}. Declara el "
         "valor a proposito: True solo si se ha COMPROBADO que el modelo ve."
-    )
-
-
-def test_el_reconciler_refresca_el_flag_al_cambiarlo():
-    """supports_vision tiene que estar en managed_model_contract.
-
-    `/model/new` de LiteLLM es create-only: si el campo no esta en el contrato,
-    un ID ya existente conserva el valor viejo PARA SIEMPRE y cambiar el
-    manifiesto no surte efecto hasta borrar el deployment a mano.
-    """
-    codigo = _codigo_del_sync()
-    inicio = codigo.index("def managed_model_contract")
-    contrato = codigo[inicio:codigo.index("def add_model")]
-    assert '"supports_vision": info.get("supports_vision")' in contrato, (
-        "supports_vision fuera del contrato gestionado: el flag se quedaria "
-        "pegado al valor con el que se registro por primera vez"
     )
