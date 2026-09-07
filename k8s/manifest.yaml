@@ -4962,8 +4962,12 @@ spec:
 #   - El allowlist quedo VACIO = todos, a proposito: habia acumulado 48 nombres,
 #     ~12 de modelos inexistentes, y a la vez daba 403 a los alias nuevos.
 #
-# Los objetos se borraron del cluster A MANO en el mismo cambio: esta Application
-# lleva `prune: false`, asi que quitarlos de git no los habria tocado.
+# Los objetos los purgo ArgoCD solo, al aplicar este cambio. OJO con el `prune:
+# false` que se lee por todo este fichero: era cierto en agosto —y es la razon por
+# la que el bloque se conservo entonces en vez de borrarlo—, pero la Application
+# `litellm` lleva HOY `automated: {prune: true, selfHeal: true}`, comprobado en
+# vivo el 07-09-2026. Antes de fiarte de esa frase, mira la Application:
+#   kubectl get app litellm -n argocd -o jsonpath='{.spec.syncPolicy}'
 # ─────────────────────────────────────────────────────────────────────────────
 ---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
