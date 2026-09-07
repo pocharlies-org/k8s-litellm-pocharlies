@@ -839,6 +839,19 @@ data:
       callbacks:
       - litellm_strip_params.proxy_handler_instance
       - langfuse_otel
+      # 07-09-2026: WebSearch de Claude Code contra residentes locales. Claude Code
+      # manda la server tool nativa (type web_search_20250305); LiteLLM la traduce a
+      # function tool (litellm_web_search), el residente la invoca como tool_use
+      # normal y el proxy ejecuta la busqueda (loop agentico, max 3 rondas) contra el
+      # search_tool de abajo y devuelve la respuesta final. Sin esto el traductor
+      # OpenAI dejaba tool_choice sin tools -> 400 "When using `tool_choice`, `tools`
+      # must be set" (Model Group=qwen38-flash-next). El default del callback es
+      # ["bedrock"]; hay que nombrar "openai" explicitamente (todos los locales son
+      # openai/...). Caveat: las peticiones interceptadas pierden el streaming.
+      - websearch_interception
+      websearch_interception_params:
+        enabled_providers: ["openai"]
+        search_tool_name: searxng-local
       drop_params: true
       set_verbose: false
       require_auth_for_metrics_endpoint: false
@@ -961,6 +974,15 @@ data:
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
+    # Proveedores de busqueda para websearch_interception (arriba en
+    # litellm_settings.callbacks). SearXNG self-hosted del ns chat: sin API key,
+    # sin salida a terceros. El formato json de /search esta activo en la
+    # instancia (verificado 07-09). LiteLLM hace GET api_base/search?q=..&format=json.
+    search_tools:
+    - search_tool_name: searxng-local
+      litellm_params:
+        search_provider: searxng
+        api_base: http://searxng.chat.svc.cluster.local:8080
   litellm_strip_params.py: |
     # 2026-09-05: rollout forzado por incidencia -- litellm dejo de responder
     # a /health/liveliness sin recuperarse solo (no hay livenessProbe todavia;
@@ -5075,7 +5097,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdb3d753b350
+        config.k8s.e-dani.com/revision: config-2db19cba914e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
