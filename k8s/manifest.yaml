@@ -5173,6 +5173,18 @@ spec:
           ports:
             - { name: http, containerPort: 4000 }
           env:
+            # 09-09-2026 (SC-352): tope de arenas del asignador de glibc.
+            # HIPOTESIS, no causa raiz — la linea de diagnostica esta cerrada
+            # (dictamen VP 07-09: el sintoma no es reproducible). Lo que la
+            # sostiene son dos medidas: (a) el 04-09, con el trafico parado 4 h,
+            # el working set no bajo de 6,5 GiB — memoria adquirida y no
+            # devuelta; (b) tras el reinicio, prompts 2,4x mayores quedaron
+            # contenidos. Crecimiento que depende del camino recorrido y no de
+            # la carga instantanea = firma de fragmentacion de arenas.
+            # Criterio de la historia: SIN REGRESION (banda observada 1,10-1,61
+            # GiB, 24 h, sin reinicios), no "explica el OOM". Mitigacion barata
+            # y reversible: revert = un commit.
+            - { name: MALLOC_ARENA_MAX, value: "2" }
             - { name: LITELLM_LOG, value: INFO }
             # 05-09-2026 (SC-203): que /v1/messages (formato Anthropic) se
             # sirva por la ruta de chat completions y no por la de responses.
