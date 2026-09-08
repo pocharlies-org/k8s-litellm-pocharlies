@@ -5254,6 +5254,46 @@ spec:
             preStop:
               exec:
                 command: ["python", "/config/litellm_drain.py"]
+          startupProbe:
+            # SC-294 (08-09). Arranque MEDIDO en el ultimo rollout (RS
+            # litellm-6999f45cbc, 07-09 17:14-17:15Z, kubectl logs --timestamps):
+            # primer "GET /health/liveliness 200" a los ~34s (pod 8tgbv) y ~41s
+            # (pod 7gzt4) desde el arranque del contenedor. Presupuesto aqui:
+            # 5s x 60 fallos = 300s, ~7x el peor caso medido (la historia pedía
+            # >=3x). Mientras la startup no pasa, kubelet NO evalua liveness
+            # (docs kubernetes.io pod-lifecycle), asi que un arranque lento no
+            # se come un reinicio. Si la startup nunca pasa, el contenedor se
+            # mata a los 300s y entra en restartPolicy -- deseable: un proxy que
+            # no llega a servir nunca debe quedarse Pending de Ready para siempre.
+            httpGet: { path: /health/liveliness, port: 4000 }
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            # SC-294 (08-09). El hueco que cego el 05-09 a las 00:04Z: litellm
+            # dejo de responder a /health/liveliness y NO se recupero solo -- no
+            # habia livenessProbe y hubo que sacarlo a mano con un commit que
+            # bumpeaba el hash del ConfigMap. Desde aqui, un event loop colgado
+            # se reinicia SOLO.
+            # /health/liveliness (docs.litellm.ai/docs/proxy/health): "I'm
+            # alive!" mientras el event loop responde; "No dependencies are
+            # checked" -- jamas /health, que "probes every model on each call"
+            # y gastaria tokens cada sonda.
+            # Umbrales conservadores a proposito (la doc de k8s advierte de las
+            # tormentas de reinicios bajo carga): 4 fallos x 15s + timeout 5s
+            # = deteccion en ~65s. Suficiente para el caso del 05-09 (el proxy
+            # llevo horas colgado), demasiado lento para un pico de latencia
+            # puntual.
+            # Convive con el preStop de 660s SIN tormenta: durante el drenaje el
+            # pod ya tiene DeletionTimestamp y el kubelet fuerza Success en
+            # liveness/startup y deja de sondear (pkg/kubelet/prober/worker.go,
+            # rama v1.36.0), aunque /health/liveliness empiece a devolver 503
+            # con {"status": "shutting_down"}. El watchdog de SC-223 sigue
+            # siendo el unico que avisa; este es el unico que reinicia.
+            httpGet: { path: /health/liveliness, port: 4000 }
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
           readinessProbe:
             # /health/liveliness (always 200 while the server loop is alive), NOT
             # /health/readiness: readiness does a DB round-trip and returns 503
