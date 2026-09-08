@@ -5174,19 +5174,6 @@ spec:
             - { name: http, containerPort: 4000 }
           env:
             - { name: LITELLM_LOG, value: INFO }
-            # 05-09-2026 (SC-203): que /v1/messages (formato Anthropic) se
-            # sirva por la ruta de chat completions y no por la de responses.
-            # Con la ruta de responses, el razonamiento del residente no
-            # llegaba como bloques `thinking` al cliente Claude Code — el
-            # flag es lo que hace que el razonamiento traducido por el hook
-            # (THINKING_TIERS/THINKING_KWARGS) salga en el canal thinking de
-            # Anthropic. Documentado en litellm/__init__.py de la libreria
-            # (imagen v1.96.0).
-            # OJO: es GLOBAL — cambia la ruta de /v1/messages para TODOS los
-            # modelos del proxy, no solo qwen38-flash-next/tooling; los
-            # residentes de otras companies (SC-188/SC-189/SC-196) consumen
-            # ese endpoint.
-            - { name: LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES, value: "true" }
             - { name: PYTHONPATH, value: /app }
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
             - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
