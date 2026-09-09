@@ -2772,7 +2772,15 @@ data:
     # y las reglas como entradas separadas: moria en el primer turno, sin
     # conversacion donde inyectar nada. Por eso el bloque inicial ya no se
     # respeta tal cual: se funde en uno.
-    STRICT_LEADING_SYSTEM_MODELS = frozenset({"qwen38-flash-next"})
+    # 09-09-2026: entra `qwen38-flash-next-uncensored`. Es el MISMO backend y el
+    # MISMO chat template que `qwen38-flash-next` (mismo api_base, solo cambia el
+    # sello cache_salt), y medido directo contra el vLLM rechaza el system fuera
+    # de la posicion 0 con ambos sellos. Al no estar aqui, opencode moria con
+    # "System message must be at the beginning" (400) en cada turno: la
+    # normalizacion se saltaba el alias. Mismo template => mismo trato.
+    STRICT_LEADING_SYSTEM_MODELS = frozenset(
+        {"qwen38-flash-next", "qwen38-flash-next-uncensored"}
+    )
 
     def _merge_system_contents(messages):
         """Funde el contenido de varios `system` en uno solo.
