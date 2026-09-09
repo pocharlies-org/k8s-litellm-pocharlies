@@ -241,3 +241,48 @@ def test_startup_budget_covers_measured_boot_three_times(deploy):
         f"presupuesto de arranque {budget}s < 3x el peor arranque medido "
         f"({MEASURED_STARTUP_SECONDS}s): un rollout con el nodo cargado entraria "
         "en bucle de reinicios antes de terminar de arrancar")
+
+
+# --------------------------------------------------------------------------
+# SC-404 (09-09): el anclaje a `ubuntu`, vuelto a considerar y reafirmado.
+#
+# La historia pedia ensanchar el nodeAffinity para repartir las 2 replicas. Con
+# los 7 nodos medidos ese dia (tabla y descartes en doc/node-affinity-ubuntu.md)
+# no hay segundo nodo honesto, y la historia contempla ese resultado como exito:
+# cerrarla con el motivo escrito. Este test es lo que evita que el "todavia no"
+# se convierta en un "si" por despiste: quien amplie la lista sin el segundo
+# nodo real que falta se cae aqui y tiene que pegar la evidencia.
+# --------------------------------------------------------------------------
+
+
+def test_the_ubuntu_anchor_is_a_decision_not_an_accidente(deploy):
+    """Un unico dominio elegible, y sin tolerar el taint del pool de GPU.
+
+    Las dos aserciones van juntas porque son las que hacen que ensanchar el
+    nodeAffinity SOLO no mueva nada: los dos Sparks llevan taint duro
+    `dedicated=llm:NoSchedule` y este pod no lo tolera, asi que con la lista
+    ampliada el scheduler sigue eligiendo `ubuntu` (el PR prometeria reparto y
+    el `kubectl get pods -o wide` seria el mismo de hoy). Y anadir la toleracion
+    mete al router en el pool dedicado de GPU -- memoria unificada, radio del
+    SystemOOM del 19-08, y decision del owner del pool, no de este manifiesto.
+    Cualquiera de los dos caminos tiene que venir a caer aqui a por todas.
+    """
+    sp = deploy["spec"]["template"]["spec"]
+    expr = (
+        sp["affinity"]["nodeAffinity"]
+        ["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"][0]
+        ["matchExpressions"][0]
+    )
+    assert expr["key"] == "kubernetes.io/hostname"
+    assert expr["operator"] == "In"
+    assert expr["values"] == ["ubuntu"], (
+        f"nodeAffinity ampliado a {expr['values']}: SC-404 cerro con el criterio "
+        "5 (doc/node-affinity-ubuntu.md). Solo se amplia con un segundo worker "
+        "general sin taint duro, o con decision del owner del pool GPU mas su "
+        "toleracion; en ambos casos re-mediando el reparto y la suma de "
+        "/internal/active-requests entre nodos (criterios 1-3 de SC-404)")
+    dedicated = [t for t in sp.get("tolerations", []) if t.get("key") == "dedicated"]
+    assert not dedicated, (
+        "tolerar dedicated=llm:NoSchedule mete al router en el pool dedicado de "
+        "GPU (nvidia-dgx / gx10-ec3d, memoria unificada, SystemOOM del 19-08). "
+        "No es decision de este manifiesto: ver doc/node-affinity-ubuntu.md")
