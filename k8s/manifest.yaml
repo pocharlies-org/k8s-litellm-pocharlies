@@ -828,6 +828,26 @@ data:
         max_input_tokens: 196608
         max_output_tokens: 176947
     # <<< openrouter-free — FIN DEL BLOQUE DE ALIAS `or-*` (mantenido a mano en este fichero)
+    # ── Grok Imagine — generacion de imagenes con CUENTA Grok (OAuth) ──────────
+    # 2026-09-09. Sin API key: el hook `xai_oauth_images` inyecta el access token
+    # OAuth de la cuenta (autorefrescado por el XAIOAuthAuthenticator de litellm)
+    # en cada llamada. El token vive en vault secret/litellm#XAI_OAUTH_AUTH_JSON,
+    # sembrado con `litellm xai-oauth login` (cuenta me@e-dani.com), y llega al pod
+    # via ESO litellm-xai-oauth + initContainer (ver el Deployment).
+    # xAI ROTAR el refresh token pero NO invalida el viejo (medido 09-09): con 2
+    # replicas cada una con su copia, y con re-seed en cada reinicio, es seguro.
+    # Entitlements: la cuenta necesita creditos o SuperGrok; sin ellos xAI
+    # responde 402/403 `personal-team-blocked:spending-limit` (verificado con el
+    # token el 09-09). El montaje es independiente de ese pago.
+    - model_name: grok-imagine
+      litellm_params:
+        model: xai/grok-imagine-image-2.0
+        api_base: https://api.x.ai/v1
+      model_info:
+        name: Grok Imagine 2.0 · generacion de imagenes (cuenta Grok)
+        description: Grok Imagine 2.0 - texto-a-imagen via cuenta Grok (OAuth, sin API key)
+        input_cost_per_image: 0
+        output_cost_per_image: 0
     litellm_settings:
       success_callback:
       - db
@@ -838,6 +858,9 @@ data:
       - prometheus_system
       callbacks:
       - litellm_strip_params.proxy_handler_instance
+      # Inyecta el token OAuth de la cuenta Grok en los `grok-imagine` (ver el
+      # modulo xai_oauth_images.py mas abajo y el alias en el model_list).
+      - xai_oauth_images.proxy_handler_instance
       - langfuse_otel
       # 07-09-2026: WebSearch de Claude Code contra residentes locales. Claude Code
       # manda la server tool nativa (type web_search_20250305); LiteLLM la traduce a
@@ -5221,6 +5244,48 @@ data:
         server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
         print(f"active-requests-api listening on :{PORT}", flush=True)
         server.serve_forever()
+  xai_oauth_images.py: |
+    # Hook: generacion de imagenes con CUENTA Grok (OAuth), no con API key de xAI.
+    #
+    # POR QUE UN HOOK (2026-09-09): litellm v1.100.0 cablea `use_xai_oauth` en
+    # chat/responses, pero NO en /v1/images/generations — el handler de imagenes
+    # solo admite una api_key estatica, y el access token OAuth caduca al hora.
+    # El hook inyecta en `data` el token VIGENTE en cada llamada: route_request()
+    # ve "api_key" en data y la pasa como kwarg, y el router da prioridad a los
+    # kwargs de la peticion sobre los litellm_params del deployment
+    # (router._aimage_generation: {**data, **kwargs}).
+    #
+    # El token vive en XAI_OAUTH_TOKEN_DIR (env del Deployment): un initContainer
+    # siembra auth.json desde el secret de vault y el propio XAIOAuthAuthenticator
+    # lo refresca y reescribe ahi. xAI rota el refresh token pero NO invalida el
+    # anterior (medido 09-09), asi que cada replica puede tener su copia sin
+    # pisarse, y el re-seed del seed original tras un reinicio es valido.
+    #
+    # Falla CERRADO: sin auth.json, o si la cadena queda revocada,
+    # XAIOAuthLoginRequiredError aborta la peticion con "login required".
+    import asyncio
+
+    from litellm.integrations.custom_logger import CustomLogger
+    from litellm.llms.xai.oauth import XAIOAuthAuthenticator
+
+    # Alias que van por CUENTA (OAuth), no por API key.
+    XAI_ACCOUNT_ALIASES = {"grok-imagine"}
+
+    _authenticator = XAIOAuthAuthenticator()
+
+
+    class XAIOAuthImages(CustomLogger):
+        async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+            if call_type != "image_generation" or data.get("model") not in XAI_ACCOUNT_ALIASES:
+                return data
+            # get_access_token() es sincrono (httpx + refresh + escritura del
+            # fichero): va a un hilo para no bloquear el event loop.
+            data["api_key"] = await asyncio.to_thread(_authenticator.get_access_token)
+            data["api_base"] = _authenticator.get_api_base()
+            return data
+
+
+    proxy_handler_instance = XAIOAuthImages()
 ---
 # Secrets via ExternalSecret (Vault path: secret/litellm)
 # vault kv put secret/litellm \
@@ -5291,6 +5356,34 @@ spec:
 # vivo el 07-09-2026. Antes de fiarte de esa frase, mira la Application:
 #   kubectl get app litellm -n argocd -o jsonpath='{.spec.syncPolicy}'
 # ─────────────────────────────────────────────────────────────────────────────
+---
+# Token OAuth de la cuenta Grok para el alias `grok-imagine`. El valor es el
+# auth.json que escribe `litellm xai-oauth login`. Sembrar/rotar:
+#   litellm xai-oauth login                       # en una maquina con navegador
+#   vault kv patch secret/litellm XAI_OAUTH_AUTH_JSON=@~/.config/litellm/xai_oauth/auth.json
+# NUNCA `kv put`: en secret/litellm vive tambien LITELLM_MASTER_KEY y un put la
+# borraria (ver el aviso en el ExternalSecret litellm-secrets).
+# sync-wave -1: el initContainer seed-xai-oauth necesita el secret ANTES de que
+# el Deployment cree el pod nuevo en el mismo sync.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-xai-oauth
+  namespace: litellm
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: litellm-xai-oauth
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: auth.json
+      remoteRef: { key: secret/litellm, property: XAI_OAUTH_AUTH_JSON }
 ---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.
@@ -5406,7 +5499,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-ee28bbd4cfaa
+        config.k8s.e-dani.com/revision: config-80abb4bc3111
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -5491,6 +5584,23 @@ spec:
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector: { matchLabels: { app: litellm } }
+      initContainers:
+        # Siembra el token de la cuenta Grok en un emptyDir escribible: el secret
+        # montado es de solo lectura y el XAIOAuthAuthenticator necesita escribir
+        # (refresca y reescribe auth.json). El seed esta en vault y xAI no
+        # invalida el refresh token viejo (medido 09-09), asi que re-sear en cada
+        # arranque es seguro. Sin secret el pod NO arranca: falla ruidoso en el
+        # initContainer, no en silencio pidiendo imagenes.
+        - name: seed-xai-oauth
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "install -m 600 /seed/auth.json /var/run/xai-oauth/auth.json"]
+          volumeMounts:
+            - { name: xai-oauth-seed, mountPath: /seed, readOnly: true }
+            - { name: xai-oauth, mountPath: /var/run/xai-oauth }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
       containers:
         - name: litellm
           image: ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa
@@ -5567,6 +5677,10 @@ spec:
             # Keys autorizadas a pedir `qwen35-4b-fast` (lane barato del review de
             # Hermes). Falla cerrado si se vacia. SC-131.
             - { name: LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS, value: "openclaw-qwen36-prod" }
+            # Directorio del token OAuth de la cuenta Grok (alias grok-imagine,
+            # hook xai_oauth_images). emptyDir escribible que siembra el
+            # initContainer seed-xai-oauth; el hook refresca y reescribe ahi.
+            - { name: XAI_OAUTH_TOKEN_DIR, value: /var/run/xai-oauth }
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS
@@ -5577,6 +5691,8 @@ spec:
             - { name: config, mountPath: /config }
             - { name: config, mountPath: /app/litellm_strip_params.py, subPath: litellm_strip_params.py, readOnly: true }
             - { name: config, mountPath: /app/active_request_tracking.py, subPath: active_request_tracking.py, readOnly: true }
+            - { name: config, mountPath: /app/xai_oauth_images.py, subPath: xai_oauth_images.py, readOnly: true }
+            - { name: xai-oauth, mountPath: /var/run/xai-oauth }
             - { name: tracking, mountPath: /shared/tracking }
           resources:
             # 2026-08-14: 512Mi/3Gi eran de la era singleton y el OOM lo probo.
@@ -5692,6 +5808,10 @@ spec:
       volumes:
         - name: config
           configMap: { name: litellm-config }
+        - name: xai-oauth-seed
+          secret: { secretName: litellm-xai-oauth }
+        - name: xai-oauth
+          emptyDir: { medium: Memory }
         - name: tracking
           # SC-403 (09-09): antes era un directorio del nodo montado tal cual
           # (con type: DirectoryOrCreate), y eso era lo que anclaba el pod a
