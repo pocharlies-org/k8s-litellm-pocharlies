@@ -5422,6 +5422,27 @@ spec:
       # Pending, y el PDB (maxUnavailable 1) bloquea el desalojo del segundo. El
       # drain se cuelga. Es inherente a fijar a un nodo, no un fallo de config.
       #
+      # 2026-09-09, SC-404: se vuelve a considerar el reparto y el anclaje se
+      # REAFIRMA con los 7 nodos medidos ese dia. La tabla completa y el motivo
+      # de cada descarte viven en doc/node-affinity-ubuntu.md. Dos hechos
+      # medidos en esa comprobacion cambian como hay que leer este pin:
+      #   - La imagen NO es el motivo: el digest fijado (c8756e7b...) es un OCI
+      #     index con linux/amd64 Y linux/arm64 (`docker manifest inspect`), o
+      #     sea que un Spark PODRIA ejecutar el binario.
+      #   - Los dos Sparks llevan taint DURO `dedicated=llm:NoSchedule` y este
+      #     pod solo tolera `pool=dev:PreferNoSchedule`. Ensanchar el
+      #     nodeAffinity sin tocar tolerations no mueve nada: los unicos
+      #     candidatos sin taint son `ubuntu` y los vetados por la epica
+      #     (ks5-cp-1/2/3 con etcd, `sauvage` al otro lado de la WAN), asi que
+      #     el scheduler seguiria eligiendo `ubuntu` igual que hoy. Colocar de
+      #     verdad una replica en `nvidia-dgx` exige ademas meter al router en
+      #     el pool dedicado de GPU -- decision del dueno del pool, no de este
+      #     manifiesto, y dentro del radio del SystemOOM del 19-08 en memoria
+      #     unificada.
+      # Mientras no haya un segundo worker general sin taint, esto es decision
+      # consciente y no accidente; tests/test_litellm_rollout_shape_contract.py
+      # ::test_the_ubuntu_anchor_is_a_decision_not_an_accidente lo mantiene.
+      #
       # `ubuntu` lleva un taint BLANDO pool=dev:PreferNoSchedule. Se sigue
       # tolerando: con un unico nodo elegible no puede bloquear, pero sin la
       # toleracion el scheduler lo penaliza en la puntuacion sin necesidad.
