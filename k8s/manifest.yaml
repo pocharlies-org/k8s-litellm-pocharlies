@@ -5522,12 +5522,17 @@ spec:
       #   - La imagen NO es el motivo: el digest fijado (c8756e7b...) es un OCI
       #     index con linux/amd64 Y linux/arm64 (`docker manifest inspect`), o
       #     sea que un Spark PODRIA ejecutar el binario.
-      #   - Los dos Sparks llevan taint DURO `dedicated=llm:NoSchedule` y este
-      #     pod solo tolera `pool=dev:PreferNoSchedule`. Ensanchar el
-      #     nodeAffinity sin tocar tolerations no mueve nada: los unicos
-      #     candidatos sin taint son `ubuntu` y los vetados por la epica
-      #     (ks5-cp-1/2/3 con etcd, `sauvage` al otro lado de la WAN), asi que
-      #     el scheduler seguiria eligiendo `ubuntu` igual que hoy. Colocar de
+      #   - Lo que decide es QUE TOLERA el pod, no quien esta limpio: "sin
+      #     taint" no describe bien a ninguno de los 7. Medidos: `gx10-ec3d` y
+      #     `nvidia-dgx` llevan taint DURO `dedicated=llm:NoSchedule`; `sauvage`
+      #     lleva `role=edge:NoSchedule` (y esta al otro lado de la WAN, en
+      #     OVH); `ks5-cp-1/2/3` no llevan NINGUN taint pero son plano de
+      #     control con etcd, vetados por la epica; `ubuntu` lleva
+      #     `pool=dev:PreferNoSchedule`, que es blando y este pod SI lo tolera.
+      #     El pod solo tolera `pool=dev:PreferNoSchedule`, y por eso `ubuntu`
+      #     es el unico nodo viable. Ensanchar el nodeAffinity sin tocar
+      #     tolerations no mueve nada: el scheduler seguiria eligiendo `ubuntu`
+      #     igual que hoy. Colocar de
       #     verdad una replica en `nvidia-dgx` exige ademas meter al router en
       #     el pool dedicado de GPU -- decision del dueno del pool, no de este
       #     manifiesto, y dentro del radio del SystemOOM del 19-08 en memoria

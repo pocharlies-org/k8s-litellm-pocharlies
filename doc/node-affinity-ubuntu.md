@@ -19,8 +19,8 @@ motivo medido; el pin esta en `k8s/manifest.yaml` (comentario sobre
 | `ubuntu` | amd64 | 40% mem (25.9/62.7 GiB), 61% CPU pedida | `pool=dev:PreferNoSchedule` (blando, tolerado) | **elegido** — unico worker general sin taint duro |
 | `nvidia-dgx` | arm64 | 7% mem (8.7/119.6 GiB) | `dedicated=llm:NoSchedule` | descartado (abajo) |
 | `gx10-ec3d` | arm64 | 11% mem (14.1/119.5 GiB) | `dedicated=llm:NoSchedule` | descartado (abajo) |
-| `ks5-cp-1/2/3` | amd64 | 57% / 39% / 25% mem | plano de control + etcd | excluidos por la epica SC-381 |
-| `sauvage` | amd64 | 21% mem | — | excluido por la epica: OVH, al otro lado de la WAN de los backends vLLM |
+| `ks5-cp-1/2/3` | amd64 | 57% / 39% / 25% mem | ninguno | excluidos por la epica SC-381: plano de control + etcd |
+| `sauvage` | amd64 | 21% mem | `role=edge:NoSchedule` (duro, no tolerado) | excluido por la epica: OVH, al otro lado de la WAN de los backends vLLM; y el pod de litellm no tolera ese taint |
 
 Los dos hechos que no son evidentes:
 
