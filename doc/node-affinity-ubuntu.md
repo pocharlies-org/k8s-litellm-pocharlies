@@ -62,5 +62,5 @@ Los dos hechos que no son evidentes:
   `/internal/active-requests` entre nodos (criterios 1-3 de SC-404).
 
 Lo que NO cambia en ninguno de los dos casos: `limits.memory: 6Gi`, las sondas
-sobre `/health/liveliness` (SC-294), `replicas: 2`, el drenaje de 720 s y el PDB
+sobre `/health/liveliness` (SC-294), `replicas: 2`, el drenaje de 660 s (grace period 720 s) y el PDB
 con `maxUnavailable: 1`.
