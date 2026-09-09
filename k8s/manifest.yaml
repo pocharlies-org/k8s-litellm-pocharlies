@@ -562,7 +562,7 @@ data:
     # Deployment y su ConfigMap (su manifiesto se borra en este mismo commit), el
     # gate de keys que los cerraba y la credencial de Vault.
     #
-    # POR QUE AHORA: el Deployment llevaba dias a 0 replicas y el hostPath de
+    # POR QUE AHORA: el Deployment llevaba dias a 0 replicas y su volumen de
     # credenciales no existia en el nodo, asi que lo unico que seguia publicado era
     # el alias — apuntando a un Service sin backends. Eso no da «modelo
     # desconocido», da un fallo de conexion, que es peor de diagnosticar.
@@ -1013,6 +1013,7 @@ data:
     from active_request_tracking import (
         ActiveRequestTracker,
         enable_continuous_usage,
+        resolve_active_file,
         resolve_server_id,
         usage_from_response,
     )
@@ -1852,7 +1853,10 @@ data:
     InfinityRerankConfig.transform_rerank_request = _tei_transform_rerank_request
     InfinityRerankConfig.transform_rerank_response = _tei_transform_rerank_response
 
-    ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
+    # SC-403: la ruta efectiva lleva el nombre del pod dentro (emptyDir local +
+    # un escritor por fichero). LITELLM_ACTIVE_FILE sigue siendo la base de
+    # siempre; ver resolve_active_file en active_request_tracking.py.
+    ACTIVE_FILE = resolve_active_file()
     STALE_THRESHOLD = int(os.environ.get("LITELLM_ACTIVE_STALE_AFTER_SEC", "900"))
     request_tracker = ActiveRequestTracker(
         ACTIVE_FILE,
@@ -4426,6 +4430,37 @@ data:
         )
 
 
+    def resolve_active_file(base: Optional[str] = None) -> str:
+        """Ruta del fichero de peticiones en vuelo de ESTE pod (SC-403).
+
+        El volumen `tracking` es un emptyDir, o sea local al pod, y aun asi el
+        nombre del pod va DENTRO del nombre del fichero. Motivo: que «un escritor
+        por fichero» se lea en el propio nombre y no dependa de que nadie vuelva a
+        montar ahi un volumen de nodo. Con un volumen compartido, dos pods
+        escribirian la misma ruta y el tracker -- que reescribe el dict ENTERO sin
+        leer nunca el fichero previo -- volveria a dejar en disco la foto de la
+        ultima replica que volco. Eso no es hipotetico: es exactamente lo que
+        pasaba antes del 09-09 y es el motivo por el que el conteo global estaba
+        mal.
+
+        Sin POD_NAME (fuera de k8s: tests unitarios, ejecuciones a mano) la ruta
+        es la de siempre, `LITELLM_ACTIVE_FILE` tal cual.
+        """
+        path = (
+            base
+            if base is not None
+            else os.environ.get(
+                "LITELLM_ACTIVE_FILE",
+                "/shared/tracking/active_requests.json",
+            )
+        )
+        pod = (os.environ.get("POD_NAME") or "").strip()
+        if not pod:
+            return path
+        root, ext = os.path.splitext(path)
+        return "{}_{}{}".format(root, pod, ext)
+
+
     class ActiveRequestTracker:
         """Thread-safe active-request registry persisted as atomic JSON."""
 
@@ -4662,7 +4697,28 @@ data:
     from datetime import datetime, timezone
     from typing import Any
 
-    ACTIVE_FILE = os.environ.get("LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json")
+    def _resolve_active_file(base: str) -> str:
+        """Mismo calculo que `resolve_active_file` en active_request_tracking.py.
+
+        Duplicado a proposito: este script corre en el preStop del contenedor
+        `litellm` y no va a importar el modulo del hook, que lo edita trabajo de
+        enrutado y puede acabar dependiendo de litellm. Que se mantengan iguales
+        lo comprueba tests/test_active_requests_pod_scoping_contract.py.
+        """
+        pod = (os.environ.get("POD_NAME") or "").strip()
+        if not pod:
+            return base
+        root, ext = os.path.splitext(base)
+        return "{}_{}{}".format(root, pod, ext)
+
+
+    ACTIVE_FILE_BASE = os.environ.get(
+        "LITELLM_ACTIVE_FILE", "/shared/tracking/active_requests.json"
+    )
+    # SC-403: el drenaje espera SUS peticiones. Con el volumen ya local al pod,
+    # leer la ruta con el nombre del pod dentro es lo que hace que "las suyas"
+    # sea comprobable y no dependa del montaje.
+    ACTIVE_FILE = _resolve_active_file(ACTIVE_FILE_BASE)
     STALE_AFTER_SEC = int(os.environ.get("LITELLM_ACTIVE_STALE_AFTER_SEC", "900"))
     DRAIN_TIMEOUT_SEC = int(os.environ.get("LITELLM_DRAIN_TIMEOUT_SEC", "660"))
     POLL_SEC = int(os.environ.get("LITELLM_DRAIN_POLL_SEC", "5"))
@@ -4703,14 +4759,15 @@ data:
         return []
 
 
-    def active_count() -> int:
+    def active_count(path: str | None = None) -> int:
+        target = ACTIVE_FILE if path is None else path
         try:
-            with open(ACTIVE_FILE, "r", encoding="utf-8") as f:
+            with open(target, "r", encoding="utf-8") as f:
                 payload = json.load(f)
         except FileNotFoundError:
             return 0
         except Exception as exc:
-            print(f"litellm drain: could not read {ACTIVE_FILE}: {exc}; continuing shutdown", flush=True)
+            print(f"litellm drain: could not read {target}: {exc}; continuing shutdown", flush=True)
             return 0
 
         now = time.time()
@@ -4722,27 +4779,61 @@ data:
         return count
 
 
-    deadline = time.time() + DRAIN_TIMEOUT_SEC
-    while True:
-        active = active_count()
-        if active <= 0:
-            print("litellm drain: no active requests; shutdown can continue", flush=True)
-            break
-        remaining = int(deadline - time.time())
-        if remaining <= 0:
-            print(f"litellm drain: timed out with {active} active request(s); shutdown continuing", flush=True)
-            break
-        print(f"litellm drain: waiting for {active} active request(s), {remaining}s left", flush=True)
-        time.sleep(min(POLL_SEC, max(1, remaining)))
+    def main() -> None:
+        print(f"litellm drain: watching {ACTIVE_FILE}", flush=True)
+        deadline = time.time() + DRAIN_TIMEOUT_SEC
+        while True:
+            active = active_count()
+            if active <= 0:
+                print("litellm drain: no active requests; shutdown can continue", flush=True)
+                break
+            remaining = int(deadline - time.time())
+            if remaining <= 0:
+                print(f"litellm drain: timed out with {active} active request(s); shutdown continuing", flush=True)
+                break
+            print(f"litellm drain: waiting for {active} active request(s), {remaining}s left", flush=True)
+            time.sleep(min(POLL_SEC, max(1, remaining)))
 
-    if FINAL_SLEEP_SEC > 0:
-        time.sleep(FINAL_SLEEP_SEC)
+        if FINAL_SLEEP_SEC > 0:
+            time.sleep(FINAL_SLEEP_SEC)
+
+
+    if __name__ == "__main__":
+        main()
   active_requests_api.py: |
+    """Superficie HTTP de peticiones en vuelo de los pods de LiteLLM (SC-403).
+
+    Dos URLs, dos fuentes:
+
+      GET /internal/active-requests        -> suma de ESTE pod + la de sus pares
+      GET /internal/active-requests/local  -> solo ESTE pod (endpoint hoja)
+
+    La primera es el contrato que consume el dashboard de dgx-infra
+    (`api/litellm_active.py`, `api/routes_hud.py`) y, a traves de ellos, el
+    arbitro de perfiles (`compute_mode.py`). Mantiene URL y forma EXACTAS; lo
+    unico que cambia es que por fin devuelve la suma real. Antes cada pod servia
+    su propio fichero y el tracker reescribia el dict entero sin leerlo nunca,
+    asi que el numero global era la foto de la ultima replica que volco.
+
+    Los pares se descubren por DNS del Service headless `litellm-active-peers`
+    (clusterIP: None + publishNotReadyAddresses: true). Lo de not-ready no es un
+    detalle: un pod en drenaje esta not-ready y tiene justo las peticiones que su
+    preStop esta esperando; si no saliera en el descubrimiento, la suma se las
+    comeria y el arbitro podria conmutar perfil en mitad del drenaje.
+
+    A los pares se llama SIEMPRE al endpoint hoja `/local`, jamas al agregado:
+    si un par contestara con su propia suma habria recursion y N^2 llamadas.
+    """
     from __future__ import annotations
 
     import json
     import os
+    import socket
+    import sys
     import time
+    import urllib.error
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timezone
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from typing import Any
@@ -4760,7 +4851,53 @@ data:
             return default
 
 
+    def _env_float(name: str, default: float) -> float:
+        # Un valor mal escrito no puede tumbar el sidecar: su readinessProbe esta
+        # en /healthz y un crashloop pondria el pod not-ready, y el pod not-ready
+        # deja de recibir trafico de inferencia por el Service `litellm`.
+        try:
+            return float(os.environ.get(name, str(default)))
+        except ValueError:
+            return default
+
+
     STALE_AFTER_SEC = _env_int("LITELLM_ACTIVE_STALE_AFTER_SEC", 900)
+
+    # ── Agregacion entre replicas (SC-403) ──────────────────────────────────────
+    #
+    # `LITELLM_ACTIVE_PEER_SERVICE` es el DNS del Service headless. Vacio = no
+    # agregar (tiles locales, tests fuera de cluster): la URL vieja sigue
+    # respondiendo con lo suyo, que es lo que hacia antes de este cambio.
+    POD_NAME = (os.environ.get("POD_NAME") or "").strip()
+    POD_IP = (os.environ.get("POD_IP") or "").strip()
+    PEER_SERVICE = (os.environ.get("LITELLM_ACTIVE_PEER_SERVICE") or "").strip()
+    PEER_PORT = _env_int("LITELLM_ACTIVE_PEER_PORT", 4001)
+    # 1,0 s y no 2: quien llama a esta URL es el dashboard con un timeout de
+    # 2,0 s (httpx.Timeout(2.0, connect=1.0) en api/litellm_active.py). Un par
+    # colgado tiene que degradar DENTRO del presupuesto del consumidor, no
+    # hacerle expirar la llamada y mandarlo al fallback de fichero rancio.
+    PEER_TIMEOUT_SEC = _env_float("LITELLM_ACTIVE_PEER_TIMEOUT_SEC", 1.0)
+    PEER_MAX_WORKERS = _env_int("LITELLM_ACTIVE_PEER_MAX_WORKERS", 8)
+
+
+    def _resolve_active_file(base: str) -> str:
+        """Mismo calculo que `resolve_active_file` en active_request_tracking.py.
+
+        Duplicado a proposito: este sidecar corre en python:3.12-slim y no va a
+        importar el modulo del hook, que lo edita trabajo de enrutado y puede
+        acabar dependiendo de litellm. Que se mantengan iguales lo comprueba
+        tests/test_active_requests_pod_scoping_contract.py.
+        """
+        pod = (os.environ.get("POD_NAME") or "").strip()
+        if not pod:
+            return base
+        root, ext = os.path.splitext(base)
+        return "{}_{}{}".format(root, pod, ext)
+
+
+    # El fichero que lee ESTE pod es el que escribio ESTE pod (mismo POD_NAME,
+    # mismo emptyDir). Con dos replicas ya no hay un fichero comun que pisar.
+    LOCAL_ACTIVE_FILE = _resolve_active_file(ACTIVE_FILE)
 
 
     def _parse_started_at(value: Any) -> tuple[float | None, str | None]:
@@ -4859,6 +4996,155 @@ data:
         return items
 
 
+    def read_local_payload(path: str | None = None) -> tuple[Any, str | None]:
+        """Contenido en bruto del fichero de ESTE pod. (payload, error)."""
+        target = LOCAL_ACTIVE_FILE if path is None else path
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                return json.load(f), None
+        except FileNotFoundError:
+            return {}, None
+        except Exception as exc:
+            return {}, str(exc)
+
+
+    def local_rows(path: str | None = None) -> tuple[list[dict[str, Any]], str | None]:
+        payload, error = read_local_payload(path)
+        return _normalize(payload), error
+
+
+    def discover_peer_addresses() -> list[str]:
+        """IPs de los pods litellm via DNS del Service headless, sin la nuestra.
+
+        Un Service headless (clusterIP: None) responde con UN registro por pod, y
+        con publishNotReadyAddresses: true tambien las de los pods en drenaje. Se
+        devuelven IPs y no nombres porque el DNS del service ya las resuelve y
+        asi la llamada al par no depende de que el reverse funcione.
+        """
+        if not PEER_SERVICE:
+            return []
+        try:
+            infos = socket.getaddrinfo(PEER_SERVICE, PEER_PORT, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            print(
+                f"active-requests-api: peer discovery failed for {PEER_SERVICE}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return []
+        addresses: list[str] = []
+        for info in infos:
+            address = info[4][0]
+            if address != POD_IP and address not in addresses:
+                addresses.append(address)
+        return addresses
+
+
+    def _discover_peer_addresses_bounded() -> list[str]:
+        """getaddrinfo no respeta timeouts de socket: lo acotamos nosotros.
+
+        El consumidor (dashboard) expira su llamada a los 2 s. Una resolucion DNS
+        colgada no puede comernos ese presupuesto, asi que si descubrir pares no
+        cabe en PEER_TIMEOUT_SEC se degrada a «sin pares» y se loguea.
+        """
+        if not PEER_SERVICE:
+            return []
+        # Sin `with`: salir del context manager hace shutdown(wait=True) y eso
+        # esperaria IGUAL a la resolucion colgada. wait=False devuelve ya; el
+        # hilo rezagado se muere cuando el resolver falla por su cuenta.
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            return list(pool.submit(discover_peer_addresses).result(timeout=PEER_TIMEOUT_SEC))
+        except TimeoutError:
+            print(
+                f"active-requests-api: peer discovery for {PEER_SERVICE} "
+                f"exceeded {PEER_TIMEOUT_SEC}s; serving local only",
+                file=sys.stderr,
+                flush=True,
+            )
+            return []
+        except Exception as exc:
+            print(
+                f"active-requests-api: peer discovery error: {exc}; serving local only",
+                file=sys.stderr,
+                flush=True,
+            )
+            return []
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+
+    def fetch_peer_local(address: str) -> tuple[str, list[dict[str, Any]], str | None]:
+        """Una sola llamada, al endpoint HOJA. (address, filas, error)."""
+        url = f"http://{address}:{PEER_PORT}/internal/active-requests/local"
+        headers = {"Accept": "application/json"}
+        if MASTER_KEY:
+            headers["Authorization"] = f"Bearer {MASTER_KEY}"
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=PEER_TIMEOUT_SEC) as response:
+                payload = json.load(response)
+        except Exception as exc:
+            return address, [], f"{type(exc).__name__}: {exc}"
+        # Se re-normaliza con sus claves y nuestro reloj: el filtro de antiguedad
+        # se aplica una sola vez, aqui, y no depende de cuando contesto el par.
+        return address, _normalize(payload), None
+
+
+    def aggregate_active() -> dict[str, Any]:
+        """Suma real: lo de este pod mas lo de cada par, dedupe por request_id.
+
+        Exactamente UNA llamada de par por ciclo: las direcciones salen de un
+        conjunto ya deduplicado y cada una se llama una vez, en paralelo. Llamar
+        al agregado del par daria recursion y N^2; por eso el URL es /local.
+
+        Un par que no contesta NO rompe nada: se degrada a la suma parcial de los
+        vivos, se loguea y se hace visible en `peers_failed`. La ruta de
+        inferencia (4000) es otro proceso y no se toca aqui.
+        """
+        own_rows, own_error = local_rows()
+        rows: dict[str, dict[str, Any]] = {
+            row["request_id"]: row for row in own_rows
+        }
+        peers_failed: list[dict[str, str]] = []
+
+        peers = _discover_peer_addresses_bounded()
+        if peers:
+            workers = max(1, min(len(peers), PEER_MAX_WORKERS))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for address, peer_rows, error in pool.map(fetch_peer_local, peers):
+                    if error is not None:
+                        peers_failed.append({"peer": address, "error": error})
+                        print(
+                            f"active-requests-api: peer {address} unavailable "
+                            f"({error}); serving partial sum of "
+                            f"{len(rows)} request(s)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        continue
+                    for row in peer_rows:
+                        # setdefault: el request_id manda, y lo local gana porque
+                        # se inserta primero. Dos pods no comparten request_id.
+                        rows.setdefault(row["request_id"], row)
+
+        payload: dict[str, Any] = {
+            "active": list(rows.values()),
+            "source": "litellm-active-api",
+            "stale_after_sec": STALE_AFTER_SEC,
+        }
+        if own_error is not None:
+            payload["error"] = own_error
+        if peers_failed:
+            # Clave ADITIVA y solo cuando hay degradacion: la forma de la
+            # respuesta sana es identica a la de antes. Los dos consumidores
+            # leen data.get("active") y desconocen el resto, asi que esto no
+            # rompe el contrato (verificado en dgx-infra
+            # api/litellm_active.py::_iter_raw_requests y api/routes_hud.py).
+            payload["peers_failed"] = peers_failed
+        return payload
+
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "LiteLLMActiveRequests/1.0"
 
@@ -4883,6 +5169,24 @@ data:
             if path == "/healthz":
                 self._send_json(200, {"ok": True})
                 return
+            # Endpoint hoja: SOLO lo de este pod. Es la URL a la que llaman los
+            # pares; la vieja es la agregada y nunca se llama entre replicas.
+            if path == "/internal/active-requests/local":
+                if not self._authorized():
+                    self._send_json(401, {"error": "unauthorized"})
+                    return
+                rows, error = local_rows()
+                payload: dict[str, Any] = {
+                    "active": rows,
+                    "source": "litellm-active-api",
+                    "stale_after_sec": STALE_AFTER_SEC,
+                    "pod": POD_NAME or None,
+                }
+                if error is not None:
+                    payload["error"] = error
+                self._send_json(200, payload)
+                return
+
             if path != "/internal/active-requests":
                 self._send_json(404, {"error": "not_found"})
                 return
@@ -4891,30 +5195,26 @@ data:
                 return
 
             try:
-                with open(ACTIVE_FILE, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-            except FileNotFoundError:
-                payload = {}
+                self._send_json(200, aggregate_active())
             except Exception as exc:
-                self._send_json(
-                    200,
-                    {
-                        "active": [],
-                        "source": "litellm-active-api",
-                        "stale_after_sec": STALE_AFTER_SEC,
-                        "error": str(exc),
-                    },
+                # Cualquier fallo inesperado agregando degrada a lo local con el
+                # error logueado y visible; NUNCA un 500. Un 500 aqui haria que
+                # el dashboard diera la llamada por fallida y cayera al fallback
+                # de fichero, que es justo el dato rancio que venimos a quitar.
+                print(
+                    f"active-requests-api: aggregation failed ({type(exc).__name__}: {exc}); "
+                    "serving local only",
+                    file=sys.stderr,
+                    flush=True,
                 )
-                return
-
-            self._send_json(
-                200,
-                {
-                    "active": _normalize(payload),
+                rows, local_error = local_rows()
+                degraded: dict[str, Any] = {
+                    "active": rows,
                     "source": "litellm-active-api",
                     "stale_after_sec": STALE_AFTER_SEC,
-                },
-            )
+                    "error": local_error or f"aggregation failed: {exc}",
+                }
+                self._send_json(200, degraded)
 
 
     if __name__ == "__main__":
@@ -5023,6 +5323,15 @@ spec:
   # estado en proceso (cooldowns del router, active-requests) pasa a ser por-pod
   # y se asume: es telemetria y proteccion local, no correctness.
   #
+  # 09-09-2026 (SC-403), y esto es lo que se cumplio de lo que aqui se
+  # anticipaba: active-requests es por-pod de ESCRITURA -- cada pod con su
+  # fichero en su emptyDir, un solo escritor por fichero -- pero deja de ser
+  # por-pod de LECTURA, porque el sidecar agrega a los pares por HTTP y
+  # /internal/active-requests devuelve la suma real. Antes de esto «por-pod»
+  # queria decir que el numero global era la foto de la ultima replica que
+  # volco. Los cooldowns del router siguen siendo por-pod y sin agregar, como
+  # se asume aqui.
+  #
   # 2026-08-19: de 4 a 2. Las 4 eran sobre-arquitectura y su precio era un rollout
   # de ~50 min (ver la aritmetica en progressDeadlineSeconds mas abajo). Medido
   # sobre 89.672 peticiones de 48h y `kubectl top`:
@@ -5097,7 +5406,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2db19cba914e
+        config.k8s.e-dani.com/revision: config-ee28bbd4cfaa
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -5200,7 +5509,14 @@ spec:
             # ese endpoint.
             - { name: LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES, value: "true" }
             - { name: PYTHONPATH, value: /app }
+            # SC-403: base de la ruta del fichero de peticiones en vuelo. El
+            # nombre efectivo lleva el pod dentro (resolve_active_file), y como
+            # el volumen es emptyDir, cada pod escribe y drena el SUYO.
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
+            # downward API: el nombre del pod es lo que hace unico el fichero.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
             - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
             - { name: LITELLM_DRAIN_TIMEOUT_SEC, value: "660" }
             - { name: COMPUTE_MODE_URL, value: "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/compute/mode" }
@@ -5326,7 +5642,19 @@ spec:
           ports:
             - { name: active, containerPort: 4001 }
           env:
+            # SC-403: el sidecar ya no sirve su fichero, sirve la SUMA. Lee el
+            # fichero de su pod (mismo POD_NAME -> misma ruta) y pide el resto a
+            # los pares por HTTP, llamando siempre al endpoint hoja /local.
             - { name: LITELLM_ACTIVE_FILE, value: /shared/tracking/active_requests.json }
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            - name: POD_IP
+              valueFrom:
+                fieldRef: { fieldPath: status.podIP }
+            # Service headless de descubrimiento (mas abajo en este manifiesto).
+            # Vacio, el sidecar no agrega y se comporta como antes del cambio.
+            - { name: LITELLM_ACTIVE_PEER_SERVICE, value: litellm-active-peers.litellm.svc.cluster.local }
             - { name: LITELLM_ACTIVE_STALE_AFTER_SEC, value: "900" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
@@ -5344,9 +5672,23 @@ spec:
         - name: config
           configMap: { name: litellm-config }
         - name: tracking
-          hostPath:
-            path: /home/dibanez/dgx-tracking
-            type: DirectoryOrCreate
+          # SC-403 (09-09): antes era un directorio del nodo montado tal cual
+          # (con type: DirectoryOrCreate), y eso era lo que anclaba el pod a
+          # `ubuntu` por nodeAffinity. Pasa a emptyDir: el fichero de peticiones
+          # en vuelo es local al pod y deja de ser estado de nodo.
+          #
+          # No se pone almacenamiento compartido en su sitio, ni NFS ni un RWX de
+          # Longhorn, a proposito (fallo del CTO, comentario 11410 de SC-381): el
+          # tracker escribe en el arranque y al final de CADA peticion desde el
+          # event loop del proxy, y un montaje colgado pararia LiteLLM -- que es
+          # el router de TODO el trafico LLM. Con emptyDir el riesgo se mueve de
+          # la ruta de escritura del router a la de lectura del observador: si un
+          # par no contesta se degrada un numero de un panel, no se cae la
+          # inferencia.
+          #
+          # La suma global la hace el sidecar por HTTP entre replicas
+          # (active_requests_api.py), no el sistema de ficheros.
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -5357,6 +5699,34 @@ spec:
   selector: { app: litellm }
   ports:
     - { name: http, port: 4000, targetPort: 4000 }
+    - { name: active, port: 4001, targetPort: 4001 }
+---
+# SC-403: descubrimiento de replicas para que el sidecar sume peticiones en
+# vuelo. headless (clusterIP: None) porque lo que necesita el sidecar son las
+# IPs de cada pod, no un VIP que rebote a una: si resolviera por el Service de
+# siempre, cada agregacion caeria en una replica al azar y volveria a verse una
+# foto parcial.
+#
+# publishNotReadyAddresses: true es OBLIGATORIO, no un detalle. Un pod en
+# drenaje esta not-ready durante los 660 s de su preStop y tiene justo las
+# peticiones que ese preStop esta esperando. Si no saliera en el descubrimiento,
+# la suma se comeria esas peticiones y el arbitro de perfiles (compute_mode.py,
+# que usa este numero como bloqueador) podria conmutar perfil en mitad del
+# drenaje -- el mismo fallo de siempre, disfrazado.
+#
+# Solo el lado 4001 (el del sidecar). El trafico de inferencia sigue por el
+# Service `litellm` de arriba, que NO publica not-ready: ahi si que no hay que
+# mandar peticiones a un pod que se esta vaciando.
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-active-peers
+  namespace: litellm
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: litellm }
+  ports:
     - { name: active, port: 4001, targetPort: 4001 }
 ---
 # Internal access only: LAN and Tailscale clients use the LAN Traefik instance
