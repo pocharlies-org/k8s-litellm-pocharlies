@@ -26,7 +26,6 @@ que se monta en el pod, no una copia.
 import contextlib
 import json
 import os
-import subprocess
 import tempfile
 import threading
 import urllib.error
@@ -57,14 +56,18 @@ def _config_data():
     raise AssertionError("litellm-config ConfigMap not found")
 
 
-def _module(name, env=None, overrides=None):
-    """Ejecuta un modulo embebido con `env` puesto y despues lo limpia.
+def _exec_source(source, name, env=None, overrides=None):
+    """Ejecuta un fuente dado con `env` puesto y despues lo limpia.
+
+    El `env` hace falta DURANTE el `exec` porque los modulos calculan sus
+    rutas al importar (`LOCAL_ACTIVE_FILE` a partir de `LITELLM_ACTIVE_FILE` y
+    `POD_NAME`); escribir la ruta DESPUES en el namespace no vale si el modulo
+    ya la derivo — es justo el bug que dio el rojo de AC5 en CI del 09-09.
 
     `overrides` se escribe DESPUES en el namespace: sirve para sustituir
     globales del modulo (rutas, service de pares, stubs de red) sin depender de
     variables de entorno del proceso que corre pytest.
     """
-    source = _config_data()[name]
     saved = dict(os.environ)
     try:
         os.environ.update(env or {})
@@ -76,6 +79,11 @@ def _module(name, env=None, overrides=None):
     for key, value in (overrides or {}).items():
         namespace[key] = value
     return namespace
+
+
+def _module(name, env=None, overrides=None):
+    """Ejecuta un modulo embebido del manifiesto actual (ver `_exec_source`)."""
+    return _exec_source(_config_data()[name], name, env, overrides)
 
 
 @contextlib.contextmanager
@@ -547,59 +555,62 @@ def _shape(value):
     return type(value).__name__
 
 
+OLD_SIDECAR_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "active_requests_api_pre-sc403.py"
+
+
 def _old_sidecar_source():
-    """El codigo de ANTES del cambio, leido de git, no de memoria."""
-    previous = subprocess.run(
-        ["git", "show", f"{_base_ref()}:k8s/manifest.yaml"],
-        cwd=str(MANIFEST.parent.parent),
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    for document in yaml.safe_load_all(previous):
-        if (
-            isinstance(document, dict)
-            and document.get("kind") == "ConfigMap"
-            and document.get("metadata", {}).get("name") == "litellm-config"
-        ):
-            return document["data"]["active_requests_api.py"]
-    raise AssertionError("no encuentro litellm-config en la version anterior")
+    """El codigo de ANTES del cambio, fijado en un fixture, no leido de git.
 
+    Leyendolo de `origin/main`/`main` el test era dependiente del entorno del
+    runner, y en dos direcciones:
 
-def _base_ref():
-    for ref in ("origin/main", "main"):
-        probe = subprocess.run(
-            ["git", "rev-parse", "--verify", ref],
-            cwd=str(MANIFEST.parent.parent),
-            capture_output=True,
-            text=True,
-        )
-        if probe.returncode == 0:
-            return ref
-    return "HEAD"
+      * El checkout de CI (`actions/checkout`, `fetch-depth: 1`, solo la ref de
+        la PR) no tiene NI `origin/main` NI `main`; el fallback a `HEAD`
+        devolvia el codigo NUEVO disfrazado de viejo — que ademas ya habia
+        calculado `LOCAL_ACTIVE_FILE` al importar, asi que el override de
+        `ACTIVE_FILE` no se enteraba y servia `active: []`. Rojo en CI y verde
+        en local (donde `origin/main` si existe). Reproducido tal cual en un
+        clone `--depth 1 --branch` de esta rama.
+      * Fusionado SC-403, `origin/main` YA es el codigo nuevo: el test se
+        quedaba comparando nuevo contra nuevo para siempre.
+
+    El contrato de AC5 es contra la forma que consumia el dashboard ANTES de
+    SC-403, y esa forma es fija. El fixture es el blob exacto de
+    `git show origin/main:k8s/manifest.yaml` en la base de la rama (f225a18),
+    extraido con yaml del ConfigMap y no a mano. Si algun dia la forma cambia a
+    proposito, se actualiza el fixture JUNTO con los consumidores (dgx-infra
+    `api/litellm_active.py` y `api/routes_hud.py`), nunca por separado.
+    """
+    return OLD_SIDECAR_FIXTURE.read_text(encoding="utf-8")
 
 
 def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
     """Misma URL, mismas claves, mismos tipos. Lo unico que cambia es el numero."""
     now = __import__("time").time()
     with tempfile.TemporaryDirectory() as temp_dir:
-        payload_path = _write_active_file(
-            temp_dir,
-            "active_requests.json",
-            [_record("req-1", now - 3)],
-        )
+        records = [_record("req-1", now - 3)]
+        # El MISMO contenido en las dos rutas que lee cada lado, y cada lado
+        # puesto en su ruta via su propia variable de entorno al importar: el
+        # viejo lee la base; el nuevo, con POD_NAME, la sufijada — la que
+        # calcula `_resolve_active_file` de verdad, no un override a mano
+        # despues de importar (que era como se colaba el `active: []` de CI).
+        base_path = _write_active_file(temp_dir, "active_requests.json", records)
+        _write_active_file(temp_dir, "active_requests_pod-a.json", records)
 
         # La forma de referencia es el codigo de la version anterior ejecutado
         # tal cual, no lo que yo recuerde del diff.
-        old_source = _old_sidecar_source()
-        old_ns = {"__name__": "sc403_old_sidecar"}
-        exec(compile(old_source, "active_requests_api.py", "exec"), old_ns)
-        old_ns["ACTIVE_FILE"] = payload_path
-
-        old_server, old_url = _serve(old_ns)
-        new = _module("active_requests_api.py", {"POD_NAME": "pod-a"})
-        new["LOCAL_ACTIVE_FILE"] = payload_path
-        new["PEER_SERVICE"] = ""
+        old = _exec_source(
+            _old_sidecar_source(),
+            "active_requests_api.py",
+            env={"LITELLM_ACTIVE_FILE": base_path},
+        )
+        old_server, old_url = _serve(old)
+        new = _module(
+            "active_requests_api.py",
+            {"POD_NAME": "pod-a", "LITELLM_ACTIVE_FILE": base_path},
+            {"PEER_SERVICE": ""},
+        )
+        assert new["LOCAL_ACTIVE_FILE"] == str(Path(temp_dir) / "active_requests_pod-a.json")
         new_server, new_url = _serve(new)
 
         try:
@@ -610,6 +621,12 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
             new_server.shutdown()
 
         assert status_old == status_new == 200
+        # Las dos bandejas tienen que venir LLENAS y sin error de lectura: un
+        # lado que no recibe el fixture cae en el FileNotFoundError y sirve
+        # `active: []` SIN clave `error`, y la comparacion de formas pasaria
+        # comparando una lista vacia contra una fila.
+        assert body_old["active"] and body_new["active"], "un lado no recibio el fixture"
+        assert "error" not in body_old and "error" not in body_new
         assert _shape(body_old) == _shape(body_new), (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
             f"ahora: {json.dumps(_shape(body_new))}"
