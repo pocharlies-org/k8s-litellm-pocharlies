@@ -52,6 +52,15 @@ def test_el_modelo_estricto_esta_declarado(hook):
     assert "qwen38-flash-next" in hook["STRICT_LEADING_SYSTEM_MODELS"]
 
 
+def test_el_alias_uncensored_comparte_template_estricto(hook):
+    """`qwen38-flash-next-uncensored` es el mismo backend y template que el
+    censurado (mismo api_base, solo cambia el sello), y medido directo contra el
+    vLLM rechaza el system fuera de la posicion 0. Si no esta en el conjunto,
+    opencode muere con 400 en cada turno del perfil uncensored. Regresion del
+    09-09-2026."""
+    assert "qwen38-flash-next-uncensored" in hook["STRICT_LEADING_SYSTEM_MODELS"]
+
+
 def test_conversacion_sin_system_intermedios_queda_intacta(hook):
     msgs = [
         {"role": "system", "content": "eres util"},
