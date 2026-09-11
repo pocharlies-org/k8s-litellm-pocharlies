@@ -640,7 +640,7 @@ subjects:
     namespace: litellm
 ---
 # Token de @oppocharliesllmbot, el bot con el que el humano habla en privado.
-# Se lee de Vault, del mismo sitio del que lo saca el telegram-router de
+# Se lee de 1Password, del mismo sitio del que lo saca el telegram-router de
 # openclaw-qwen36, para que rote a la vez que el original.
 #
 # OJO: ese bot tiene un WEBHOOK activo (el router). No llamar a getUpdates ni a
@@ -652,14 +652,13 @@ metadata:
   name: litellm-watchdog-telegram
   namespace: litellm
 spec:
-  refreshInterval: 1h
+  refreshInterval: 6h
   secretStoreRef:
     kind: ClusterSecretStore
-    name: vault-backend
+    name: onepassword
   target:
     name: litellm-watchdog-telegram
   data:
     - secretKey: bot_token
       remoteRef:
-        key: openclaw-qwen36/social
-        property: TELEGRAM_BOT_TOKEN
+        key: openclaw-qwen36-social/TELEGRAM_BOT_TOKEN
