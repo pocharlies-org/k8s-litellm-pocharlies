@@ -11,9 +11,9 @@ metadata:
   name: litellm-postgres-creds
   namespace: litellm
 spec:
-  refreshInterval: 1h
+  refreshInterval: 6h
   secretStoreRef:
-    name: vault-backend
+    name: onepassword
     kind: ClusterSecretStore
   target:
     name: litellm-postgres-creds
@@ -21,9 +21,9 @@ spec:
     deletionPolicy: Retain
   data:
     - secretKey: username
-      remoteRef: { key: secret/litellm, property: DB_USER }
+      remoteRef: { key: litellm/DB_USER }
     - secretKey: password
-      remoteRef: { key: secret/litellm, property: DB_PASSWORD }
+      remoteRef: { key: litellm/DB_PASSWORD }
 ---
 # LiteLLM Router — unified LLM API gateway
 # Image: ghcr.io/berriai/litellm:main-stable (amd64/arm64)
@@ -830,7 +830,7 @@ data:
     # <<< openrouter-free — FIN DEL BLOQUE DE ALIAS `or-*` (mantenido a mano en este fichero)
     # ── Grok (xAI) por CUENTA (OAuth): imagen, video y sonda ──────────────────
     # 2026-09-09/10. Sin API key de console.x.ai: el token OAuth de la cuenta
-    # (me@e-dani.com) vive en vault secret/litellm#XAI_OAUTH_AUTH_JSON, sembrado con
+    # (me@e-dani.com) vive en 1Password (item litellm, campo XAI_OAUTH_AUTH_JSON), sembrado con
     # `litellm xai-oauth login`, y llega al pod via ESO litellm-xai-oauth +
     # initContainer seed-xai-oauth; el XAIOAuthAuthenticator de litellm lo refresca.
     # xAI rota el refresh token pero NO invalida el viejo (medido 09-09): con 2
@@ -1402,7 +1402,7 @@ data:
     #
     # QUE APORTA Y POR QUE VIVE AQUI. El saldo se puede leer a mano con la key del
     # secret (`GET https://openrouter.ai/api/v1/credits`), pero eso obliga a sacar la
-    # key de Vault para mirar un numero. Esta ruta la lee desde el entorno del propio
+    # key de 1Password para mirar un numero. Esta ruta la lee desde el entorno del propio
     # proceso — la key ya esta ahi porque el model_list la usa como
     # `os.environ/OPENROUTER_API_KEY` — y devuelve SOLO cifras. La key no sale nunca
     # de aqui: ni en el cuerpo, ni en el log, ni en el detalle de un fallo.
@@ -5334,7 +5334,7 @@ data:
     # Cubre los tres alias de cuenta: `grok-imagine` (imagen), `grok-imagine-video`
     # (video) y `grok-probe` (chat minimo para sondear si la cuenta paga). El token
     # vive en XAI_OAUTH_TOKEN_DIR (env del Deployment): un initContainer siembra
-    # auth.json desde el secret de vault y el propio XAIOAuthAuthenticator de litellm
+    # auth.json desde el secret de 1Password y el propio XAIOAuthAuthenticator de litellm
     # lo refresca y reescribe. xAI rota el refresh token pero NO invalida el anterior
     # (medido 09-09-2026), asi que cada replica puede tener su copia sin pisarse.
     #
@@ -5614,8 +5614,8 @@ data:
 
     proxy_handler_instance = XAIAccountProvider()
 ---
-# Secrets via ExternalSecret (Vault path: secret/litellm)
-# vault kv put secret/litellm \
+# Secrets via ExternalSecret (1Password item: litellm)
+# op item edit litellm \
 #   LITELLM_MASTER_KEY=<random-32-char> \
 #   DATABASE_URL="postgresql://litellm:<pwd>@postgres-shared-rw.databases.svc.cluster.local:5432/litellm"
 apiVersion: external-secrets.io/v1
@@ -5624,9 +5624,9 @@ metadata:
   name: litellm-secrets
   namespace: litellm
 spec:
-  refreshInterval: 1h
+  refreshInterval: 6h
   secretStoreRef:
-    name: vault-backend
+    name: onepassword
     kind: ClusterSecretStore
   target:
     name: litellm-secrets
@@ -5634,26 +5634,27 @@ spec:
     deletionPolicy: Retain
   data:
     - secretKey: LITELLM_MASTER_KEY
-      remoteRef: { key: secret/litellm, property: LITELLM_MASTER_KEY }
+      remoteRef: { key: litellm/LITELLM_MASTER_KEY }
     - secretKey: DATABASE_URL
-      remoteRef: { key: secret/litellm, property: DATABASE_URL }
+      remoteRef: { key: litellm/DATABASE_URL }
     # Langfuse project keys (pk-lf-/sk-lf-) — the SAME pair Langfuse bootstraps
-    # head-lessly (secret/langfuse INIT_PROJECT_*). Add to Vault: vault kv patch
-    # secret/litellm LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-...
+    # head-lessly (item langfuse, campos INIT_PROJECT_*). Add to 1Password: op
+    # item edit litellm LANGFUSE_PUBLIC_KEY=pk-lf-... LANGFUSE_SECRET_KEY=sk-lf-...
     - secretKey: LANGFUSE_PUBLIC_KEY
-      remoteRef: { key: secret/litellm, property: LANGFUSE_PUBLIC_KEY }
+      remoteRef: { key: litellm/LANGFUSE_PUBLIC_KEY }
     - secretKey: LANGFUSE_SECRET_KEY
-      remoteRef: { key: secret/litellm, property: LANGFUSE_SECRET_KEY }
-    # Key de la cuenta de OpenRouter (sk-or-...). Añadir SIEMPRE con `vault kv
-    # patch`, NUNCA `kv put`: en secret/litellm vive tambien LITELLM_MASTER_KEY y un
-    # put la borraria, tumbando a todos los consumidores. Y aqui
-    # importa el ORDEN: si esta entrada llega al cluster ANTES de que la propiedad
-    # exista en Vault, el ExternalSecret entero pasa a SecretSyncedError y deja de
-    # refrescar el resto — incluida LITELLM_MASTER_KEY. Primero el patch, despues
-    # el merge.
-    #   vault kv patch secret/litellm OPENROUTER_API_KEY=sk-or-...
+      remoteRef: { key: litellm/LANGFUSE_SECRET_KEY }
+    # Key de la cuenta de OpenRouter (sk-or-...). Añadir SIEMPRE con `op item
+    # edit litellm OPENROUTER_API_KEY=sk-or-...` (edita solo ese campo), NUNCA
+    # con `--template`: el template JSON REEMPLAZA la lista de campos del item y
+    # borraria LITELLM_MASTER_KEY, tumbando a todos los consumidores. Y aqui
+    # importa el ORDEN: si esta entrada llega al cluster ANTES de que el campo
+    # exista en 1Password, el ExternalSecret entero pasa a SecretSyncedError y deja
+    # de refrescar el resto — incluida LITELLM_MASTER_KEY. Primero el edit,
+    # despues el merge.
+    #   op item edit litellm OPENROUTER_API_KEY=sk-or-...
     - secretKey: OPENROUTER_API_KEY
-      remoteRef: { key: secret/litellm, property: OPENROUTER_API_KEY }
+      remoteRef: { key: litellm/OPENROUTER_API_KEY }
 # ── litellm-dgx-backend-sync: BORRADO 2026-09-07 ─────────────────────────────
 #
 # Aqui vivian su ServiceAccount, su Role/RoleBinding en el ns `llm`, el ConfigMap
@@ -5687,9 +5688,10 @@ spec:
 # Token OAuth de la cuenta Grok para los alias `grok-*`. El valor es el
 # auth.json que escribe `litellm xai-oauth login`. Sembrar/rotar:
 #   litellm xai-oauth login                       # en una maquina con navegador
-#   vault kv patch secret/litellm XAI_OAUTH_AUTH_JSON=@~/.config/litellm/xai_oauth/auth.json
-# NUNCA `kv put`: en secret/litellm vive tambien LITELLM_MASTER_KEY y un put la
-# borraria (ver el aviso en el ExternalSecret litellm-secrets).
+#   op item edit litellm XAI_OAUTH_AUTH_JSON="$(cat ~/.config/litellm/xai_oauth/auth.json)"
+# NUNCA `op item edit --template`: el template JSON reemplaza la lista de campos
+# del item y borraria LITELLM_MASTER_KEY (ver el aviso en el ExternalSecret
+# litellm-secrets).
 # sync-wave -1: el initContainer seed-xai-oauth necesita el secret ANTES de que
 # el Deployment cree el pod nuevo en el mismo sync.
 apiVersion: external-secrets.io/v1
@@ -5700,9 +5702,9 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
-  refreshInterval: 1h
+  refreshInterval: 6h
   secretStoreRef:
-    name: vault-backend
+    name: onepassword
     kind: ClusterSecretStore
   target:
     name: litellm-xai-oauth
@@ -5710,7 +5712,7 @@ spec:
     deletionPolicy: Retain
   data:
     - secretKey: auth.json
-      remoteRef: { key: secret/litellm, property: XAI_OAUTH_AUTH_JSON }
+      remoteRef: { key: litellm/XAI_OAUTH_AUTH_JSON }
 ---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.
@@ -5919,7 +5921,7 @@ spec:
       initContainers:
         # Siembra el token de la cuenta Grok en un emptyDir escribible: el secret
         # montado es de solo lectura y el XAIOAuthAuthenticator necesita escribir
-        # (refresca y reescribe auth.json). El seed esta en vault y xAI no
+        # (refresca y reescribe auth.json). El seed esta en 1Password y xAI no
         # invalida el refresh token viejo (medido 09-09), asi que re-sear en cada
         # arranque es seguro. Sin secret el pod NO arranca: falla ruidoso en el
         # initContainer, no en silencio pidiendo imagenes.
