@@ -141,7 +141,11 @@ def test_the_api_key_comes_from_the_external_secret_not_from_a_literal():
         if d.get("kind") == "ExternalSecret" and d["metadata"]["name"] == "litellm-secrets"
     )
     entry = next(e for e in es["spec"]["data"] if e["secretKey"] == "OPENROUTER_API_KEY")
-    assert entry["remoteRef"] == {"key": "secret/litellm", "property": "OPENROUTER_API_KEY"}
+    # Formato 1Password (SC-496): un `remoteRef.key` por campo, `litellm/<CAMPO>`.
+    # El viejo {key: secret/litellm, property: ...} era del store de Vault.
+    assert entry["remoteRef"] == {"key": "litellm/OPENROUTER_API_KEY"}
+    assert "value" not in entry, "la key literal en el manifiesto es un secreto en git"
+    assert es["spec"]["secretStoreRef"] == {"name": "onepassword", "kind": "ClusterSecretStore"}
 
 
 def _openrouter_entries():
