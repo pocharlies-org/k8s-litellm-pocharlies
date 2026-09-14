@@ -88,10 +88,10 @@ def test_los_tres_backends_locales_y_sus_formas_de_exclusion():
         if ".llm.svc.cluster.local" in str((e.get("litellm_params") or {}).get("api_base") or "")
         and (e.get("model_info") or {}).get("mode") == "chat"
     }
-    assert set(por_backend.values()) == {"dgx1", "dgx1+dgx2", "rtx", "profile-resident"}
+    assert set(por_backend.values()) == {"dgx1", "dgx1+dgx2", "profile-resident"}
     assert por_backend["qwen38-27b"] == "dgx1"
     assert por_backend["qwen38-flash-next"] == "dgx1+dgx2"
-    assert por_backend["qwen35-4b"] == "rtx"
+    # (SC-384) `qwen35-4b` retirado: era el unico chat en la RTX.
     # El alias de capacidad no nombra un nodo a proposito: lo resuelve el perfil.
     assert por_backend["tooling"] == "profile-resident"
 

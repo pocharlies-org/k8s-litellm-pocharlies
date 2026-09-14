@@ -35,7 +35,6 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 # --max-model-len, este numero y el del model_list tienen que moverse juntos.
 DENSO_27B = "qwen38-27b"
 QWEN38_FLASH_NEXT = "qwen38-flash-next"
-QWEN35_4B = "qwen35-4b"
 
 
 @pytest.fixture(scope="module")
@@ -101,12 +100,6 @@ def test_qwen38_flash_next_publica_la_ventana_operativa_de_256k(locales):
     info = locales[QWEN38_FLASH_NEXT]["model_info"]
     assert info["max_input_tokens"] == 262144
     assert info["max_output_tokens"] == 16384
-
-
-def test_qwen35_4b_publica_el_contexto_real_de_llama_cpp(locales):
-    info = locales[QWEN35_4B]["model_info"]
-    assert info["max_input_tokens"] == 32768
-    assert info["max_output_tokens"] == 8192
 
 
 def test_qwen38_flash_next_publica_su_nombre_directo_solo_en_su_backend(locales):
