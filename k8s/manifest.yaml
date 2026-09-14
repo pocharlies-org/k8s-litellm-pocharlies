@@ -2944,6 +2944,10 @@ data:
     # arregla esto: reenvia justo el nombre que vLLM ya no lee. Y aqui no aplica
     # de todas formas -- ningun modelo de este proxy usa el adaptador
     # hosted_vllm/, todos los vLLM locales van por openai/, que ya lo conserva.
+    #
+    # Este renombrado es lo UNICO que hace falta. El `preserve_thinking` se deja
+    # al default del modelo (= preservar todo el historial), que es lo que
+    # recomienda el model card de Flash-Next; ver el docstring de abajo.
     FORWARD_REASONING_MODELS = frozenset(
         {"qwen38-flash-next", "qwen38-flash-next-uncensored"}
     )
@@ -2951,21 +2955,27 @@ data:
     def _forward_reasoning_to_vllm(data):
         """Renombra `reasoning_content` -> `reasoning` en los assistant del historial.
 
-        Acotado al turno EN CURSO con `preserve_thinking: False`, que es lo que
-        recomienda Qwen: el template (chat_template.jinja:116) solo emite el
-        <think> de los mensajes posteriores al ultimo `user`, o sea la secuencia
-        de herramientas en marcha. Sin ese kwarg preservaria el thinking de toda
-        la conversacion, y entonces el contexto de una sesion agentica larga
-        crece sin tope.
+        NO toca `preserve_thinking`: se deja el DEFAULT del modelo, que preserva
+        el thinking de TODOS los mensajes historicos. Es lo que pide el model
+        card de Qwen3.8-Flash-Next, literalmente: preserved thinking "is
+        especially beneficial for agent scenarios where decision consistency and
+        reduced redundant reasoning are critical. It also improves KV cache
+        utilization". `preserve_thinking: False` esta ahi como preferencia del
+        que quiera solo el ultimo turno, no como recomendacion.
 
-        El precio de acotarlo esta MEDIDO y es el prefix cache: al llegar un
-        mensaje nuevo del usuario, el thinking del turno anterior desaparece del
-        prompt y el prefijo compartido cae al 30% (recomputa ~666 tok en la
-        secuencia de prueba) en vez del 100% de hoy. Se paga una vez por turno
-        de usuario, no por paso de herramienta -- dentro del turno el prefijo
-        sigue creciendo de forma monotona y la cache funciona igual.
+        Ojo, que es contraintuitivo y ya se hizo mal una vez (14-09-2026): poner
+        `False` para "acotar al turno en curso" parece que ahorra contexto y en
+        realidad TIRA la cache. Medido: con el default el prefijo compartido
+        entre turnos es del 100% (recomputa 1 token); con `False` cae al 30%
+        (~666 tokens a recomputar) porque el thinking de los turnos anteriores
+        desaparece del prompt RETROACTIVAMENTE y rompe el prefijo. Los tokens
+        extra de un prefijo estable salen de la cache; los de un prefijo roto
+        hay que recomputarlos. Y este backend arrastra ~81.000 tokens de prompt
+        por peticion, asi que la cache no es un detalle.
 
-        Respeta al cliente: si ya mando `preserve_thinking`, no se pisa.
+        En el 27B la recomendacion es la contraria, pero ese modelo lo sirve
+        SGLang y no esta en FORWARD_REASONING_MODELS: no mezclar las dos.
+
         `thinking_blocks` se retira porque es el MISMO contenido duplicado por
         la traduccion de /v1/messages y vLLM no lo lee: solo es peso en el JSON.
         """
@@ -2987,15 +2997,6 @@ data:
             moved += 1
         if not moved:
             return False
-        body = data.get("extra_body")
-        if not isinstance(body, dict):
-            body = {}
-            data["extra_body"] = body
-        kwargs = body.get("chat_template_kwargs")
-        if not isinstance(kwargs, dict):
-            kwargs = {}
-            body["chat_template_kwargs"] = kwargs
-        kwargs.setdefault("preserve_thinking", False)
         router_log.info(
             "forward_reasoning: %d mensaje(s) con thinking historico -> campo `reasoning` (modelo %s)",
             moved, data.get("model"),
@@ -4261,8 +4262,8 @@ data:
             # Mismo motivo para estar aqui abajo que los dos de arriba: el
             # renombrado de `reasoning_content` -> `reasoning` depende del
             # BACKEND que va a atender, no del alias que pidio el cliente, y
-            # solo aqui data["model"] es el resuelto. Va ANTES del sello porque
-            # escribe en extra_body (chat_template_kwargs.preserve_thinking).
+            # solo aqui data["model"] es el resuelto. Solo toca `messages`: el
+            # `preserve_thinking` se deja al DEFAULT del modelo a proposito.
             if data.get("model") in FORWARD_REASONING_MODELS:
                 _forward_reasoning_to_vllm(data)
             # DESPUES de todo lo que escribe en extra_body, y por eso va aqui: si
@@ -5913,7 +5914,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-37c66a4ac723
+        config.k8s.e-dani.com/revision: config-c6d4d316ba54
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
