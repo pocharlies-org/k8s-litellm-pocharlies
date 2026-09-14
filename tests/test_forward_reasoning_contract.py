@@ -109,11 +109,20 @@ def test_renombra_reasoning_content_al_campo_que_vllm_lee():
     assert data["messages"][1]["reasoning"] == "PENSADO ANTES"
 
 
-def test_acota_el_thinking_al_turno_en_curso():
-    """`preserve_thinking: False` = solo el thinking posterior al ultimo `user`.
+def test_no_toca_preserve_thinking_deja_el_default_del_modelo():
+    """El default de Flash-Next preserva el thinking de TODO el historial.
 
-    Es lo que recomienda Qwen y lo que impide que el contexto de una sesion
-    agentica larga crezca sin tope acumulando el razonamiento de cada turno.
+    El model card lo dice expresamente: preserved thinking "is especially
+    beneficial for agent scenarios where decision consistency and reduced
+    redundant reasoning are critical. It also improves KV cache utilization".
+    `preserve_thinking: False` es una preferencia para quien solo quiera el
+    ultimo turno, no la recomendacion.
+
+    El 14-09-2026 este hook mandaba `False` creyendo que "acotar al turno en
+    curso" ahorraba contexto. Lo que hace es TIRAR la cache: el thinking de los
+    turnos anteriores desaparece del prompt retroactivamente y el prefijo
+    compartido cae del 100% al 30%. Con ~81.000 tokens de prompt por peticion en
+    este backend, eso es mucho mas caro que los tokens que ahorra.
     """
     forward = _load_forwarder()
     data = _data(
@@ -122,18 +131,19 @@ def test_acota_el_thinking_al_turno_en_curso():
         {"role": "tool", "tool_call_id": "c1", "content": "ok"},
     )
     forward(data)
-    assert data["extra_body"]["chat_template_kwargs"]["preserve_thinking"] is False
+    assert "extra_body" not in data
 
 
-def test_no_pisa_el_preserve_thinking_del_cliente():
+def test_no_pisa_los_chat_template_kwargs_del_cliente():
+    """Si el cliente los mando, salen intactos: el hook solo toca `messages`."""
     forward = _load_forwarder()
     data = _data(
         {"role": "user", "content": "haz algo"},
         _assistant(reasoning_content="PENSADO ANTES"),
     )
-    data["extra_body"] = {"chat_template_kwargs": {"preserve_thinking": True}}
+    data["extra_body"] = {"chat_template_kwargs": {"preserve_thinking": False}}
     forward(data)
-    assert data["extra_body"]["chat_template_kwargs"]["preserve_thinking"] is True
+    assert data["extra_body"] == {"chat_template_kwargs": {"preserve_thinking": False}}
 
 
 def test_retira_los_thinking_blocks_duplicados():
@@ -155,7 +165,7 @@ def test_retira_los_thinking_blocks_duplicados():
 
 
 def test_es_noop_sin_thinking_en_el_historial():
-    """Sin razonamiento previo no se toca extra_body: ni kwarg, ni cambio de prompt."""
+    """Sin razonamiento previo no se toca nada."""
     forward = _load_forwarder()
     data = _data(
         {"role": "user", "content": "haz algo"},
