@@ -2924,6 +2924,84 @@ data:
         if changed:
             data["messages"] = out
 
+
+    # 14-09-2026: vLLM lee el razonamiento del historial del campo `reasoning` y
+    # NO de `reasoning_content`. En su ConversationMessage, `reasoning_content`
+    # esta marcado "Deprecated" y solo se ESCRIBE en la salida (compatibilidad):
+    # de la entrada se lee `message.get("reasoning")` y punto
+    # (vllm/entrypoints/chat_utils.py). LiteLLM emite `reasoning_content` -- lo
+    # hace el adaptador openai/ y tambien la traduccion de /v1/messages, que
+    # ademas duplica el contenido en `thinking_blocks`. Resultado: el
+    # razonamiento que el cliente SI conserva llega al backend y se descarta en
+    # silencio, antes de la plantilla y sin error.
+    #
+    # Medido con /tokenize sobre una secuencia de tools: 321 tokens sin thinking
+    # == 321 con `reasoning_content` -> 472 con `reasoning`. El template SI lo
+    # usa (chat_template.jinja:111-117 emite <think>...</think> en cuanto el
+    # campo llega con el nombre bueno); el eslabon roto era solo el nombre.
+    #
+    # El PR 41050 de upstream (`forward_reasoning_content` para hosted_vllm) no
+    # arregla esto: reenvia justo el nombre que vLLM ya no lee. Y aqui no aplica
+    # de todas formas -- ningun modelo de este proxy usa el adaptador
+    # hosted_vllm/, todos los vLLM locales van por openai/, que ya lo conserva.
+    FORWARD_REASONING_MODELS = frozenset(
+        {"qwen38-flash-next", "qwen38-flash-next-uncensored"}
+    )
+
+    def _forward_reasoning_to_vllm(data):
+        """Renombra `reasoning_content` -> `reasoning` en los assistant del historial.
+
+        Acotado al turno EN CURSO con `preserve_thinking: False`, que es lo que
+        recomienda Qwen: el template (chat_template.jinja:116) solo emite el
+        <think> de los mensajes posteriores al ultimo `user`, o sea la secuencia
+        de herramientas en marcha. Sin ese kwarg preservaria el thinking de toda
+        la conversacion, y entonces el contexto de una sesion agentica larga
+        crece sin tope.
+
+        El precio de acotarlo esta MEDIDO y es el prefix cache: al llegar un
+        mensaje nuevo del usuario, el thinking del turno anterior desaparece del
+        prompt y el prefijo compartido cae al 30% (recomputa ~666 tok en la
+        secuencia de prueba) en vez del 100% de hoy. Se paga una vez por turno
+        de usuario, no por paso de herramienta -- dentro del turno el prefijo
+        sigue creciendo de forma monotona y la cache funciona igual.
+
+        Respeta al cliente: si ya mando `preserve_thinking`, no se pisa.
+        `thinking_blocks` se retira porque es el MISMO contenido duplicado por
+        la traduccion de /v1/messages y vLLM no lo lee: solo es peso en el JSON.
+        """
+        msgs = data.get("messages")
+        if not isinstance(msgs, list):
+            return False
+        moved = 0
+        for m in msgs:
+            if not isinstance(m, dict) or m.get("role") != "assistant":
+                continue
+            m.pop("thinking_blocks", None)
+            rc = m.get("reasoning_content")
+            if not isinstance(rc, str) or not rc.strip():
+                m.pop("reasoning_content", None)
+                continue
+            # `reasoning` es lo que lee vLLM; `reasoning_content` se queda por si
+            # alguna capa intermedia lo relee, y porque vLLM lo ignora sin quejarse.
+            m["reasoning"] = rc
+            moved += 1
+        if not moved:
+            return False
+        body = data.get("extra_body")
+        if not isinstance(body, dict):
+            body = {}
+            data["extra_body"] = body
+        kwargs = body.get("chat_template_kwargs")
+        if not isinstance(kwargs, dict):
+            kwargs = {}
+            body["chat_template_kwargs"] = kwargs
+        kwargs.setdefault("preserve_thinking", False)
+        router_log.info(
+            "forward_reasoning: %d mensaje(s) con thinking historico -> campo `reasoning` (modelo %s)",
+            moved, data.get("model"),
+        )
+        return True
+
     def _reasoning_effort_value(data):
         # 05-09-2026 (SC-203): D6 — con
         # LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES=true,
@@ -4180,6 +4258,13 @@ data:
             # el modelo resuelto sabemos si el backend real lo exige.
             if data.get("model") in STRICT_LEADING_SYSTEM_MODELS:
                 _normalize_leading_system_messages(data)
+            # Mismo motivo para estar aqui abajo que los dos de arriba: el
+            # renombrado de `reasoning_content` -> `reasoning` depende del
+            # BACKEND que va a atender, no del alias que pidio el cliente, y
+            # solo aqui data["model"] es el resuelto. Va ANTES del sello porque
+            # escribe en extra_body (chat_template_kwargs.preserve_thinking).
+            if data.get("model") in FORWARD_REASONING_MODELS:
+                _forward_reasoning_to_vllm(data)
             # DESPUES de todo lo que escribe en extra_body, y por eso va aqui: si
             # alguno de los de arriba lo creo, se llevo por delante el sello de la
             # deployment. Esto lo devuelve.
@@ -5828,7 +5913,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b5653ee74d33
+        config.k8s.e-dani.com/revision: config-37c66a4ac723
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
