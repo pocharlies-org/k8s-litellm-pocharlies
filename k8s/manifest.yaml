@@ -3445,6 +3445,93 @@ data:
 
         return changed
 
+    # ── PDFs colados como imagen (15-09-2026) ──────────────────────────────────
+    #
+    # Claude Code lee un PDF y lo manda como bloque `document` (Anthropic). El
+    # adaptador Anthropic->OpenAI de litellm (transformation.py:427 en la
+    # v1.100.0 desplegada) lo convierte en un `image_url` con los bytes del PDF
+    # TAL CUAL — no lo renderiza a PNG. El motor lo pasa a PIL y contesta
+    # `400 Failed to load image: cannot identify image file <_io.BytesIO
+    # object>` (medido 15-09 sobre qwen38-flash-next leyendo un PDF bancario).
+    # Y el turno muere PARA SIEMPRE en esa sesion: el PDF viaja pegado en el
+    # historial y cada reintento vuelve al mismo 400, con `Fallbacks=None`.
+    #
+    # Ni el desvio de vision ni `_omit_images_for_blind_backends` lo interceptan:
+    # el alias declara `supports_vision: true` y para el router ese backend VE —
+    # lo que no puede es DECODIFICAR un PDF, que es otra cosa. Ningun backend
+    # del cluster decodifica PDFs (ni los motores ni la imagen de litellm traen
+    # librerias de render, comprobado en el pod), asi que el reemplazo va
+    # INCONDICIONAL: convierte un 400 terminal en un turno recuperable — el
+    # texto le dice al modelo como sacarse el contenido el solo (pdftotext /
+    # pdftoppm), que es lo que habria hecho con un archivo que no puede leer.
+    PDF_OMITTED_TEXT = (
+        "[PDF adjunto no legible: los motores locales solo decodifican imagenes "
+        "(PNG/JPEG), no PDFs. No reintentes leer este PDF: extrae tu el "
+        "contenido con `pdftotext <fichero>` o renderiza paginas con "
+        "`pdftoppm -png <fichero> /tmp/pag` y lee los PNG resultantes.]"
+    )
+
+    def _is_pdf_part(part):
+        """Parte de imagen que lleva un PDF dentro, en cualquiera de las formas.
+
+        Cubre la forma Anthropic (`image`/`document` con `source.media_type`),
+        la de Chat Completions (`image_url` con data URI) y la de Responses
+        (`input_image`), porque segun la ruta el hook puede ver el payload antes
+        o despues de la conversion del adaptador.
+        """
+        if not isinstance(part, dict):
+            return False
+        ptype = part.get("type")
+        if ptype in ("image", "document"):
+            source = part.get("source")
+            return isinstance(source, dict) and source.get("media_type") == "application/pdf"
+        if ptype in ("image_url", "input_image"):
+            iu = part.get("image_url")
+            url = iu.get("url", "") if isinstance(iu, dict) else (iu or "")
+            return str(url).startswith("data:application/pdf")
+        return False
+
+    def _scrub_pdf_documents(data):
+        """Sustituye los PDFs colados como imagen por texto instructivo.
+
+        Devuelve True si toco algo. Incondicional a proposito (ver el bloque de
+        arriba): no depende del modelo resuelto porque ningun backend del
+        cluster decodifica PDFs. Barre `messages`, `input` y el contenido
+        ANIDADO de partes tipo `tool_result` — ahi es donde Claude Code
+        engancha el PDF que devuelve el Read.
+        """
+        changed = False
+
+        def _scrub(content):
+            nonlocal changed
+            if not isinstance(content, list):
+                return content
+            out = []
+            for part in content:
+                if _is_pdf_part(part):
+                    out.append({"type": "text", "text": PDF_OMITTED_TEXT})
+                    changed = True
+                    continue
+                if isinstance(part, dict) and isinstance(part.get("content"), list):
+                    part = dict(part)
+                    part["content"] = _scrub(part["content"])
+                out.append(part)
+            return out
+
+        for entry in _message_entries(data):
+            c = entry.get("content")
+            if isinstance(c, list):
+                entry["content"] = _scrub(c)
+
+        # `input` de Responses puede venir como lista de items sin `role`.
+        inp = data.get("input")
+        if isinstance(inp, list):
+            for item in inp:
+                if isinstance(item, dict):
+                    item["content"] = _scrub(item.get("content"))
+
+        return changed
+
     # ── Motivo del error de upstream (SC-174, 2026-09-05) ──────────────────────
     #
     # LITELLM pierde el cuerpo del error al traducir OpenAI->Anthropic. En
@@ -4197,6 +4284,23 @@ data:
                     data["metadata"]["_router_route_state"] = cap_state
 
             thinking_alias = requested_model
+
+            # PDFs colados como imagen (15-09-2026): ANTES del desvio de vision,
+            # porque un PDF no es una imagen y no debe provocar que la peticion
+            # se desvie a un destino de vision (que tampoco lo decodifica). Se
+            # sustituyen por texto instructivo y el turno sigue; sin esto la
+            # sesion muere en cada reintento con el 400 de PIL del motor
+            # (historia en la definicion de `_scrub_pdf_documents`).
+            if _scrub_pdf_documents(data):
+                data.setdefault("metadata", {})
+                data["metadata"]["_pdf_documents_scrubbed"] = True
+                router_log.warning(
+                    "pdf: documento(s) PDF colados como imagen sustituidos a "
+                    "texto (pedido=%r, resuelto=%r, key=%s)",
+                    proxy_model or requested_model,
+                    data.get("model", ""),
+                    _resolve_key_label(user_api_key_dict),
+                )
 
             # Desvio de VISION, DESPUES de resolver: la pregunta no es que pidio el
             # cliente sino si el alias que ha quedado ve. Va aqui y no antes para no
@@ -5914,7 +6018,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c6d4d316ba54
+        config.k8s.e-dani.com/revision: config-959d70bf0e19
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
