@@ -1270,12 +1270,18 @@ data:
     # key de opencode, y sin ella opencode se comia "this key may not request the
     # abliterated route" al pedir qwen38-27b-uncensored. Ya estaba en los gates de
     # openrouter (mas abajo), asi que esto solo cierra la simetria.
+    # `claude-local` entra (2026-09-15, pedido explicito del owner): es la key del
+    # Claude Code CLI del owner (metadata `purpose: Claude Code CLI -> modelos
+    # locales`), y su allowlist de la BD ya lista modelos concretos — no es una key
+    # con `models: []`, o sea que aqui no se abre una superficie accidental: entra
+    # exactamente el `qwen38-flash-next-uncensored` que el owner pidio, y nada mas.
     # Vacio = sin restriccion, y es DELIBERADO que el default NO sea vacio.
     UNCENSORED_ALLOWED_KEY_ALIASES = frozenset(
         alias.strip()
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
-            "openclaw-qwen36-prod,master,playground,open-webui-v3,opencode-20260630-local",
+            "openclaw-qwen36-prod,master,playground,open-webui-v3,"
+            "opencode-20260630-local,claude-local",
         ).split(",")
         if alias.strip()
     )
@@ -6018,7 +6024,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-959d70bf0e19
+        config.k8s.e-dani.com/revision: config-ebe12081b1af
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
