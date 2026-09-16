@@ -946,6 +946,66 @@ data:
       maximum_spend_logs_retention_period: 30d
       maximum_spend_logs_retention_interval: 1d
       proxy_batch_write_at: 60
+      # 2026-09-16: WebSearch de Claude Code caia a Perplexity con
+      # `litellm.APIConnectionError: PerplexityException - PERPLEXITYAI_API_KEY is
+      # not set` teniendo `search_tools: searxng-local` (ver abajo) configurado.
+      #
+      # MECANISMO. Con `store_model_in_db: false` el proxy programa
+      # `reload_search_tools_from_db` (arranque + cada 30 s) y esa funcion
+      # RECONSTRUYE `router.search_tools` desde el config QUE TIENE EN MEMORIA
+      # (`parse_search_tools(self.get_config_state())`, proxy_server.py:7774 en
+      # v1.100.0), no desde el fichero. El estado en memoria no lleva el bloque
+      # top-level `search_tools` — `load_config` si lo ve al arrancar (el log
+      # imprime "Proxy initialized with Search Tools: searxng-local" y el Router
+      # nace con la herramienta), pero en los ciclos de recarga sale
+      # "Loading 0 search tool(s) into router (0 from config, 0 from database)"
+      # y esa lista VACIA se asigna al Router, borrando la del arranque.
+      # Sin herramienta en el router, el callback `websearch_interception` cae
+      # al provider por defecto: `search_provider = "perplexity"`
+      # (integrations/websearch_interception/handler.py:1399-1405) => el error de
+      # arriba. Prueba en vivo: `GET /v1/search/tools` devolvia `{"data":[]}` en
+      # las dos replicas; tras un `GET /search_tools/list` —que si relee el
+      # fichero porque llama a `get_config()`, no a `get_config_state()`— el
+      # siguiente ciclo carga "1 from config" y la misma peticion de WebSearch
+      # responde por SearXNG en 3 s.
+      #
+      # EL ARREGLO es la allowlist que el propio upstream documenta para esto
+      # ("an admin who excluded search_tools from supported_db_objects opts out",
+      # proxy_server.py:7807): si el reconcile de search_tools no corre, nadie
+      # escribe `router.search_tools` despues de `load_config` y la herramienta
+      # del ConfigMap sobrevive. Es la via que no depende de por que el estado en
+      # memoria pierde la clave.
+      #
+      # OJO con la forma: es una allowlist de CADENAS EXACTAS
+      # (proxy_server.py:4400), no un extra sobre un default. Lo que no se
+      # enumerate deja de cargarse de la base de datos. Por eso se listan TODOS
+      # los tipos que el paquete consulta con `should_load_db_object(...)`, menos
+      # `search_tools`, que queda solo en el ConfigMap. Los seis que no estan en
+      # el enum `SupportedDBObjectType` (agents, anthropic_beta_headers,
+      # cache_settings, semantic_filter_settings, sso_settings,
+      # vector_store_indexes) son validos para el gate —que compara strings— pero
+      # NO para el modelo `ConfigGeneralSettings`, que solo se aplica al editar
+      # el campo desde el panel (`/config/field/update`), no al arrancar.
+      # AL SUBIR DE VERSION de litellm: rehacer la lista contra los
+      # `should_load_db_object(object_type=...)` del paquete; un tipo nuevo que
+      # falte aqui se carga a false en silencio.
+      supported_db_objects:
+      - models
+      - mcp
+      - guardrails
+      - policies
+      - vector_stores
+      - vector_store_indexes
+      - pass_through_endpoints
+      - prompts
+      - model_cost_map
+      - tools
+      - config_overrides
+      - agents
+      - anthropic_beta_headers
+      - cache_settings
+      - semantic_filter_settings
+      - sso_settings
     router_settings:
       routing_strategy: simple-shuffle
       timeout: 600
@@ -5935,7 +5995,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b44eb5697c9b
+        config.k8s.e-dani.com/revision: config-56d20dcec0f1
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
