@@ -147,7 +147,7 @@ data:
     #
     # DOS CLASES DE NOMBRE, y la diferencia importa:
     #
-    #  1. NOMBRE DIRECTO (deepseek-v4-flash-0731, qwen38-27b, qwen35-4b y sus
+    #  1. NOMBRE DIRECTO (deepseek-v4-flash-0731, qwen38-27b y sus
     #     `-uncensored`): apunta al Service PROPIO del backend. Si ese backend no
     #     esta, el alias da 400 «Invalid model name» — visible y correcto: quien
     #     nombra un modelo concreto debe recibir ese modelo o un error, nunca otro.
@@ -383,49 +383,11 @@ data:
         # solo el otro, el bucle de fondo sigue sondeando este y el bucle deduplica
         # por model_info.id, no por api_base (ver el comentario de bge-m3-embedding).
         disable_background_health_check: true
-    # Independiente del perfil: vive en la RTX del x86, no en los Sparks, asi que
-    # esta arriba en los dos modos.
-    #
-    # 24-08-2026: se retira la segunda entrada `qwen3.5-4b`. Era el MISMO backend
-    # con el nombre puntuado y ocupaba una linea propia en el picker de OpenClaw,
-    # que se siembra de /v1/models. El nombre viejo sigue contestando por
-    # `model_group_alias` (oculto), porque hay un consumidor cada ~16 min que no
-    # esta identificado y el default del asistente del video-director del panel
-    # tambien lo nombra.
-    - model_name: qwen35-4b
-      litellm_params: &qwen35_4b_params
-        model: openai/qwen3.5-4b
-        api_base: http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 1
-      model_info: &qwen35_4b_info
-        mode: chat
-        backend: rtx
-        max_input_tokens: 32768
-        max_output_tokens: 8192
-        supports_function_calling: true
-        supports_vision: false
-        supports_reasoning: true
-        # Igual que los otros locales: none/low/medium daban reasoning_content 0.
-        supported_reasoning_efforts: [none, high, max]
-        # 02-09-2026 (STA-9): residente local de razonamiento, mismo caso que los
-        # de los Sparks. Con 1 slot por replica, la sonda de fondo ademas compite
-        # por el slot con el trafico real.
-        disable_background_health_check: true
-    # 02-09-2026 (SC-131): `qwen35-4b-fast` es el MISMO backend que `qwen35-4b`
-    # con un nombre propio de lane barato. Por que hace falta un nombre aparte:
-    # el gate del hook (`_qwen35_4b_fast_access_denied`, deny-por-defecto) cierra
-    # este alias a la lista de keys de abajo, y el allowlist de la key NO puede
-    # cerrar nada (`models: []` = todos). Misma razon que or-* y -uncensored.
-    # Consumidor actual: el background review de los perfiles Hermes de
-    # k8s-openclaw-qwen36 (auxiliary.background_review.model), que traslada el
-    # fork de autoaprendizaje del residente (DGX) a este 4B en la RTX.
-    - model_name: qwen35-4b-fast
-      litellm_params:
-        <<: *qwen35_4b_params
-      model_info:
-        <<: *qwen35_4b_info
+    # 14-09-2026 (SC-384): `qwen35-4b` / `qwen35-4b-fast` / `qwen3.5-4b` RETIRADOS.
+    # El backend `qwen35-4b-int4` esta caido (todo su trafico = Connection error,
+    # 0 replicas ready) y OpenClaw ya corre sobre `tooling`. Los consumidores del
+    # panel (claude-sessions search, video-director) se repuntan a `tooling` en
+    # dgx-infra. El shutdown del Deployment `qwen35-4b-int4` (VRAM) es paso aparte.
     # ── ALIAS DE CAPACIDAD: al Service de POOL ───────────────────────────────────
     # `tooling` significa «el residente del perfil vivo, sin pensar».
     #
@@ -999,15 +961,8 @@ data:
       # este cooldown es lo UNICO que aparta a un backend colgado. No bajarlo.
       allowed_fails: 3
       cooldown_time: 120
-      # Compatibilidad del nombre puntuado del 4B sin ocupar linea en el picker:
-      # `hidden` lo deja fuera de /v1/models, que es de donde OpenClaw siembra el
-      # menu, y el router lo sigue resolviendo al grupo `qwen35-4b`. Es una
-      # deprecacion, no una entrada nueva: cuando el consumidor de cada ~16 min
-      # este identificado y repuntado, esta clave se cae.
-      model_group_alias:
-        "qwen3.5-4b":
-          model: qwen35-4b
-          hidden: true
+      # Compatibilidad del nombre puntuado del 4B: RETIRADA (SC-384). El grupo
+      # `qwen35-4b` ya no existe, asi que no hay alias oculto que resolver.
       # 07-09-2026: habia DOS modos de fallo con dos errores y dos capas. El
       # segundo — alias BORRADO del model_list por el controlador de sync al pasar
       # el Service a NotReady, que levantaba ProxyModelNotFoundError en
@@ -1378,30 +1333,8 @@ data:
             "allowed": sorted(GROK_ALLOWED_KEY_ALIASES),
         }
 
-    # 02-09-2026 (SC-131): gate del lane barato `qwen35-4b-fast`. Mismo patron
-    # que or-* y -uncensored: deny-por-defecto ANTES de resolver alias, porque el
-    # allowlist de la key no puede cerrar nada (`models: []` = todos). FALLA
-    # CERRADO: con LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS vacia no lo pide nadie.
-    QWEN35_4B_FAST_ALIAS = "qwen35-4b-fast"
-
-    QWEN35_4B_FAST_ALLOWED_KEY_ALIASES = frozenset(
-        alias.strip()
-        for alias in os.environ.get("LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS", "").split(",")
-        if alias.strip()
-    )
-
-    def _qwen35_4b_fast_access_denied(requested, key_label):
-        """(bool, detalle) si esta key NO puede pedir el lane barato 4B."""
-        if str(requested or "").strip() != QWEN35_4B_FAST_ALIAS:
-            return False, None
-        if key_label in QWEN35_4B_FAST_ALLOWED_KEY_ALIASES:
-            return False, None
-        return True, {
-            "error": "this key may not request the qwen35-4b-fast lane",
-            "requested": requested,
-            "key": key_label,
-            "allowed": sorted(QWEN35_4B_FAST_ALLOWED_KEY_ALIASES),
-        }
+    # (SC-384) El gate del lane barato `qwen35-4b-fast` se retira junto con el
+    # alias: ya no existe `qwen35-4b` al que enrutar.
 
     # ------------------------------------------------------------------
     # GET /openrouter/account — saldo y cupo de la cuenta de OpenRouter.
@@ -4186,17 +4119,7 @@ data:
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
 
-            # Gate del lane barato 4B (SC-131), cuarto de la cadena y por el mismo
-            # motivo: deny-por-defecto antes de resolver alias.
-            _denied, _detail = _qwen35_4b_fast_access_denied(
-                requested_model, _resolve_key_label(user_api_key_dict)
-            )
-            if _denied:
-                router_log.warning(
-                    "qwen35-4b-fast: key %r pidio %r y no esta en la lista",
-                    _detail["key"], _detail["requested"])
-                raise HTTPException(status_code=403, detail=_detail)
-
+            # (SC-384) Gate del lane barato 4B retirado junto con el alias.
             # Gate de la cuenta Grok, quinto de la cadena: los `grok-*` gastan
             # saldo real. Cubre tambien /v1/videos (call_type avideo_generation),
             # que pasa por este mismo pre_call_hook via base_process_llm_request.
@@ -4654,18 +4577,6 @@ data:
             "openai/qwen35-9b",
             "http://192.168.50.142:8210/v1",
         ): "vllm-9b",
-        (
-            "qwen35-4b",
-            "http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1",
-        ): "qwen35-4b-int4",
-        (
-            "qwen3.5-4b",
-            "http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1",
-        ): "qwen35-4b-int4",
-        (
-            "openai/qwen3.5-4b",
-            "http://qwen35-4b-int4.llm.svc.cluster.local:8000/v1",
-        ): "qwen35-4b-int4",
     }
 
 
@@ -6024,7 +5935,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-ebe12081b1af
+        config.k8s.e-dani.com/revision: config-b44eb5697c9b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -6204,9 +6115,8 @@ spec:
             # allowlist de la key NO puede cerrar nada — `models: []` = todos, y 7 de
             # 10 keys lo tienen asi, luego publicar el alias lo concede a ocho keys.
             - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local" }
-            # Keys autorizadas a pedir `qwen35-4b-fast` (lane barato del review de
-            # Hermes). Falla cerrado si se vacia. SC-131.
-            - { name: LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS, value: "openclaw-qwen36-prod" }
+            # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
+            # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
             # xai_account_provider). emptyDir escribible que siembra el
             # initContainer seed-xai-oauth; litellm refresca y reescribe ahi.

@@ -46,8 +46,6 @@ ALIAS_LOCALES = {
     "qwen38-flash-next-uncensored",
     "qwen38-27b",
     "qwen38-27b-uncensored",
-    "qwen35-4b",
-    "qwen35-4b-fast",
     "tooling",
     "tooling-uncensored",
 }

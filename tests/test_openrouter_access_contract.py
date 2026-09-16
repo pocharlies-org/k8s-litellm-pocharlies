@@ -119,7 +119,7 @@ def test_an_alias_that_does_not_exist_yet_is_already_closed(open_gate):
 
 
 def test_the_gate_ignores_everything_that_is_not_an_openrouter_alias(open_gate):
-    for model in ("tooling", "deepseek-v4-flash-0731", "qwen38-27b", "qwen35-4b", "", None):
+    for model in ("tooling", "deepseek-v4-flash-0731", "qwen38-27b", "", None):
         denied, _ = open_gate._openrouter_access_denied(model, "synapse")
         assert not denied, f"{model!r} no es un alias de OpenRouter y no le toca a este gate"
 
