@@ -29,6 +29,12 @@
 # Se pide una suma y se comprueba el RESULTADO. Una respuesta vacia con HTTP 200 es
 # un fallo, no un exito, y esto lo trata como tal.
 #
+# Ademas de las capas de servicio (L0 liveliness, L1 residente, L2 inferencia) mira
+# DOS cosas que se rompen sin cambiar de semaforo: el dial global de abliteracion y
+# que el Router tenga herramienta de busqueda (L3, 16-09). Las dos avisan y NINGUNA
+# de las dos pone el Job en rojo: LiteLLM sigue sirviendo, y un rojo cada 10 min
+# taparia un Degraded de verdad. El aviso es la senal.
+#
 # LA MEMORIA VA EN UN CONFIGMAP (2026-08-15)
 # ------------------------------------------
 # La primera version guardaba el estado previo en /tmp, dentro del pod del Job, que
@@ -137,6 +143,12 @@ spec:
                           "http://vllm-qwen38-27b-uncensored"
                           ".llm.svc.cluster.local:8000",
                   }
+
+                  # La herramienta de busqueda que tiene que ver el Router. El nombre
+                  # es el que declara `search_tools:` en el manifiesto; el contrato
+                  # que impide que se separen vive en
+                  # tests/test_search_tools_survive_db_reconcile_contract.py.
+                  BUSCADOR_ESPERADO = "searxng-local"
 
                   # --- memoria entre corridas: un ConfigMap del namespace ------------
                   SA = "/var/run/secrets/kubernetes.io/serviceaccount"
@@ -405,6 +417,56 @@ spec:
                                   "%s: alguien lo movio por el endpoint y se pierde "
                                   "al reiniciar" % (nombre, lam, esperado))
 
+                      # ── L3. ¿El Router tiene buscador? 0 tokens ────────────────────────
+                      # Anadido 16-09 tras el incidente de WebSearch. El sintoma no era
+                      # "LiteLLM esta caido": era Claude Code recibiendo
+                      #   litellm.APIConnectionError: PerplexityException -
+                      #   PERPLEXITYAI_API_KEY is not set
+                      # con `search_tools: searxng-local` en el ConfigMap y SearXNG
+                      # vivo. El job `reload_search_tools_from_db` (cada 30 s con
+                      # store_model_in_db:false) reconstruia `router.search_tools`
+                      # desde el config EN MEMORIA, obtenia 0 y asignaba la lista
+                      # vacia; sin herramienta, `websearch_interception` cae al
+                      # provider por defecto (perplexity). El arreglo es la allowlist
+                      # `supported_db_objects` sin `search_tools`; esto es el vigilante
+                      # de que ese arreglo siga vivo.
+                      #
+                      # Se pregunta a GET /v1/search/tools, que es la vista del ROUTER
+                      # y la unica que decide. A proposito NO se llama a
+                      # /search_tools/list: esa ruta usa get_config() (relee el
+                      # fichero) y de paso RESTAURA el estado en memoria, o sea que el
+                      # propio vigilante se curaria el fallo cada 10 min y dejaria de
+                      # ver nunca lo que vino a vigilar.
+                      #
+                      # NO es un fallo condenatorio: con el buscador roto LiteLLM
+                      # sirve perfectamente (inferencia, catalogo, todo lo demas) y
+                      # solo se rompe WebSearch. Por eso NO entra en `clase` ni en
+                      # `SALIDA` — hay dos razones, y las dos pesan:
+                      #   - un Job rojo cada 10 min taparia un Degraded de verdad
+                      #     (mismo criterio que con `cuota` y `abliterado`);
+                      #     y sobre todo
+                      #   - `~/.config/opencode/resume-watch.json` usa este ConfigMap
+                      #     como puerta de recuperacion (`clase=="ok"`) para reanudar
+                      #     turnos de opencode cortados. Convertir "sin buscador" en
+                      #     una clase distinta de `ok` habria dejado de reanudar
+                      #     sesiones por un fallo de busqueda web.
+                      # Va en una clave propia del estado, con aviso propio.
+                      buscador = None      # None = no lo lei; [] = leido y vacio
+                      if not fallos:
+                          try:
+                              d, _ = pide("/v1/search/tools", timeout=15)
+                              buscador = sorted(
+                                  t.get("search_tool_name") or t.get("name") or ""
+                                  for t in (d.get("data") or []))
+                          except Exception as exc:
+                              # Inaccesible NO es "sin buscador": si el proxy no
+                              # contesta, L0 o L2 ya lo estan diciendo y el aviso de
+                              # buscador seria ruido encima del de caido.
+                              print("[litellm-watchdog] /v1/search/tools:",
+                                    str(exc)[:110])
+                      buscador_roto = (buscador is not None
+                                       and BUSCADOR_ESPERADO not in buscador)
+
                       # --- clase del incidente -------------------------------------------
                       # "cuota" no es "caido": el cluster esta bien y no hay nada que tocar,
                       # solo esperar. Mezclarlos fue el error del aviso del 15-08.
@@ -424,25 +486,34 @@ spec:
                       antes = lee_estado()
                       clase_antes = antes.get("clase")
                       ultimo = antes.get("ultimo_aviso", 0)
+                      roto_antes = bool(antes.get("buscador_roto"))
 
                       print("[litellm-watchdog]", json.dumps(
                           {"clase": clase, "antes": clase_antes, "capa": capa,
                            "modelos": modelos, "listo": listo,
                            "latencia_ms": round(latencia or 0), "fallos": fallos,
-                           "vuelve": vuelve, "dial": dial_leido}))
+                           "vuelve": vuelve, "dial": dial_leido,
+                           "buscador": buscador}))
 
                       # Se avisa al CAMBIAR de clase. Si sigue caido, se insiste cada hora
                       # (no cada 10 min: 6 mensajes/hora de lo mismo se ignoran solos). Si
                       # es cuota, ni se insiste — ya sabes la hora a la que vuelve.
                       RECORDAR = 3600
-                      if clase == clase_antes:
+                      # Dos dimensiones, no una: la clase (sirve / no sirve / cuota /
+                      # abliterado) y el buscador. Se compara la pareja, si no una
+                      # recuperacion de `sin buscador` no tendria cuando anunciarse:
+                      # la clase no se entero porque nunca se movio de `ok`.
+                      if (clase, buscador_roto) == (clase_antes, roto_antes):
                           # `abliterado` insiste como `caido`: el fallo de este aviso es
                           # precisamente que pasen horas sin que nadie se entere, y a
                           # diferencia de la cuota aqui no hay una hora de reset que
                           # esperar — hay algo que alguien tiene que devolver a 0.
-                          avisar = clase in ("caido", "abliterado") and (ahora - ultimo) >= RECORDAR
+                          # `sin buscador` insiste igual por lo mismo.
+                          avisar = ((clase in ("caido", "abliterado") or buscador_roto)
+                                    and (ahora - ultimo) >= RECORDAR)
                       else:
-                          avisar = clase != "ok" or clase_antes in ("caido", "cuota", "abliterado")
+                          avisar = (clase != "ok" or buscador_roto or roto_antes
+                                    or clase_antes in ("caido", "cuota", "abliterado"))
 
                       # Solo "caido" hace fallar el Job. Con la cuota agotada el Job
                       # correría a rojo cada 10 min durante dias y dejaria la Application
@@ -470,7 +541,13 @@ spec:
                                          "visto": ahora, "capa": capa,
                                          "latencia_ms": round(latencia or 0),
                                          "fallos": fallos,
-                                         "vuelve": vuelve})
+                                         "vuelve": vuelve,
+                                         # Clave propia: quien lea el ConfigMap para
+                                         # saber si LiteLLM sirve (el resume-watch de
+                                         # opencode) se guia por `clase`, que NO se
+                                         # toca. El buscador es otro asunto.
+                                         "buscador": buscador,
+                                         "buscador_roto": buscador_roto})
 
                       if not avisar:
                           apunta(False)
@@ -517,6 +594,43 @@ spec:
                                       "<code>tooling-uncensored</code>, que no toca a nadie mas.\n"
                                       "OJO con lambda>1: no libera mas, EMPUJA el estado\n"
                                       "fuera de donde el modelo aprendio.")
+                      elif buscador_roto:
+                          titulo = "\U0001F7E0 <b>LiteLLM SIN BUSCADOR</b>"
+                          intro = ("LiteLLM sirve, y por eso no se nota: el Router no "
+                                   "tiene la herramienta de busqueda y WebSearch cae "
+                                   "al proveedor por defecto (Perplexity), que no "
+                                   "tiene key. Quien lo paga es Claude Code con\n"
+                                   "<code>PERPLEXITYAI_API_KEY is not set</code>.")
+                          cuerpo = ["· el Router reporta: %s"
+                                    % (", ".join(buscador) if buscador else "NADA"),
+                                    "· se esperaba <code>%s</code>" % BUSCADOR_ESPERADO,
+                                    "· %d modelos · inferencia en %d ms" % (
+                                        modelos or 0, round(latencia or 0))]
+                          quehacer = ("Comprueba las DOS vistas, solo la primera "
+                                      "decide:\n"
+                                      "<code>GET /v1/search/tools</code> (el Router) "
+                                      "y <code>GET /search_tools/list</code> (el "
+                                      "fichero).\n"
+                                      "Si el primero sale vacio y el segundo no, es "
+                                      "el reconcile de cada 30 s vaciando "
+                                      "`router.search_tools`.\n"
+                                      "El arreglo es que "
+                                      "<code>general_settings.supported_db_objects</code>"
+                                      " NO incluya <code>search_tools</code> (PR #87)."
+                                      "\n"
+                                      "Workaround de 5 s que NO arregla nada: llamar "
+                                      "a <code>/search_tools/list</code> relee el "
+                                      "fichero y restaura el estado hasta el "
+                                      "siguiente ciclo.\n"
+                                      "NO hace falta ninguna key de Perplexity: la "
+                                      "busqueda es por SearXNG self-hosted.")
+                      elif roto_antes:
+                          titulo = "\U0001F7E2 <b>LiteLLM BUSCADOR RECUPERADO</b>"
+                          intro = ("WebSearch vuelve a ver <code>%s</code> en el "
+                                   "Router." % BUSCADOR_ESPERADO)
+                          cuerpo = ["· el Router reporta: %s"
+                                    % ", ".join(buscador or [])]
+                          quehacer = "Nada. El aviso anterior queda desmentido."
                       else:
                           titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
                           intro = "Vuelve a servir."
