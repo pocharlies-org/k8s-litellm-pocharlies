@@ -52,6 +52,31 @@
 # responde 429 usage_limit_reached con el `resets_at` dentro. Son dos incidentes
 # distintos: uno se arregla en el cluster y el otro solo se espera. El upstream ya
 # dice cuando vuelve — decirlo tambien es gratis.
+#
+# EL DIA QUE ESTE VIGILANTE NO SE DEPLOYO (2026-09-17)
+# ----------------------------------------------------
+# La capa L3 de abajo (la del buscador) tardo CATORCE HORAS en llegar al clúster,
+# y no fue por el YAML: la app de ArgoCD habia intentado el sync a las 01:42
+# mientras el proveedor de secretos estaba saturado de llamadas, el ExternalSecret
+# `litellm-xai-oauth` no pudo leer, y la operacion quedo en Failed. Cuando el
+# proveedor se recupero (de 129 ExternalSecrets rotos a 2) la app SIGUIO
+# OutOfSync: ArgoCD no reintenta la misma revision. El controller lo dice textual
+# y ahi se mira, no se deduce:
+#
+#   Skipping auto-sync: failed previous sync attempt to [9c139a9…] and will not
+#   retry for [9c139a9…]
+#
+#   kubectl logs -n argocd <application-controller> | grep "Skipping auto-sync"
+#
+# Consecuencia que muerde: **`selfHeal` no salva de esto** — el auto-sync esta
+# apagado para ese SHA, asi que un clúster puede llevar horas con git por delante
+# sin que nada lo diga. `annotate application ... refresh=normal` TAMPOCO lo
+# fuerza: refresca la comparacion, no crea la operacion. Lo que lo desbloquea es
+# una operacion de sync manual o una revision nueva.
+#
+# Y el remate del dia: el arreglo de un fallo silencioso es un CronJob, y un
+# CronJob que no se despliega es exactamente el mismo fallo silencioso. Por eso
+# este fichero lleva historia arriba y no solo instrucciones.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
