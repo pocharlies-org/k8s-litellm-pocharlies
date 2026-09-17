@@ -28,7 +28,9 @@ import ast
 import json
 import os
 import pathlib
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from unittest import mock
 
@@ -89,6 +91,11 @@ def _verde(url):
         return _Resp({"data": [{"id": "qwen38-flash-next"}]})
     if "chat/completions" in url:
         return _Resp({"choices": [{"message": {"content": "391"}}]})
+    if "/v1/search/tools" in url:
+        # Forma real leida del proxy el 16-09: la clave es `search_tool_name`, no
+        # `name`. Un probe que mirase `name` daria por roto un estado sano.
+        return _Resp({"object": "list", "data": [
+            {"search_tool_name": "searxng-local", "search_provider": "searxng"}]})
     if "refusal_lambda" in url:
         raise _http_error(url, 404)
     if "api.telegram.org" in url:
@@ -96,11 +103,29 @@ def _verde(url):
     return None
 
 
-def _run(handler, estado_previo="ok", token=True):
+def _estado_escrito(cuerpos):
+    """El JSON que el Job escribio en el ConfigMap de estado (la ultima escritura)."""
+    escritos = [b for u, b in cuerpos if "configmaps" in u]
+    assert escritos, "el watchdog no escribio el estado: nadie sabra cuando se miro"
+    return json.loads(json.loads(escritos[-1])["data"]["estado"])
+
+
+def _telegram_enviado(cuerpos):
+    """El texto de los mensajes que salieron a Telegram, ya desentamados."""
+    return [urllib.parse.unquote_plus(urllib.parse.parse_qs(b).get("text", [""])[0])
+            for u, b in cuerpos if "api.telegram.org" in u]
+
+
+def _run(handler, estado_previo="ok", token=True, cuerpos=None):
     """Ejecuta el script del CronJob con urllib parcheado -> (exit_code, urls).
 
     `handler(url)` devuelve un `_Resp`, una excepcion (se lanza) o None (error de
-    conexion). El ConfigMap de estado se resuelve siempre con `estado_previo`.
+    conexion). El ConfigMap de estado se resuelve siempre con `estado_previo`: una
+    cadena es la clase (lo que usaban todos los tests hasta el 16-09) y un dict es
+    el estado completo, para probar dimensiones que no son la clase — el buscador.
+    Si se pasa `cuerpos` (una lista), se van guardando como (url, cuerpo) TODAS
+    las peticiones con cuerpo: es la unica forma de ver que escribio en el
+    ConfigMap y que mensaje mando a Telegram.
     """
     src = _watchdog_script().replace(
         "/var/run/secrets/kubernetes.io/serviceaccount", SA)
@@ -111,13 +136,18 @@ def _run(handler, estado_previo="ok", token=True):
         pathlib.Path("/etc/ssl/certs/ca-certificates.crt").read_text())
 
     llamadas = []
+    previo = (estado_previo if isinstance(estado_previo, dict)
+              else {"clase": estado_previo, "ultimo_aviso": 0})
 
     def fake_urlopen(req, timeout=None, context=None, **kw):
         url = req.full_url if hasattr(req, "full_url") else req
         llamadas.append(url)
+        if cuerpos is not None:
+            crudo = getattr(req, "data", None)
+            if crudo is not None:
+                cuerpos.append((url, crudo.decode() if isinstance(crudo, bytes) else crudo))
         if "kubernetes.default.svc" in url:
-            return _Resp({"data": {"estado": json.dumps(
-                {"clase": estado_previo, "ultimo_aviso": 0})}})
+            return _Resp({"data": {"estado": json.dumps(previo)}})
         resultado = handler(url)
         if resultado is None:
             raise urllib.error.URLError("sin backend para " + url)
@@ -324,7 +354,101 @@ def test_una_excepcion_del_propio_watchdog_sale_con_uno():
     assert _run(handler)[0] == 1
 
 
-# ── 3. el contrato de salida, leido del arbol ───────────────────────────────────
+# ── 3. el buscador del Router (L3) ──────────────────────────────────────────────
+# El 16-09 Claude Code recibio `litellm.APIConnectionError: PerplexityException -
+# PERPLEXITYAI_API_KEY is not set` con SearXNG vivo y `search_tools: searxng-local`
+# en el ConfigMap. LiteLLM estaba perfectamente: el job de cada 30 s habia vaciado
+# `router.search_tools` y el callback de intercepcion caia al provider por defecto.
+# Ninguna de las capas de servicio lo veia — servir, servia.
+
+def _sin_buscador(url):
+    if "/v1/search/tools" in url:
+        return _Resp({"object": "list", "data": []})
+    return _verde(url)
+
+
+def test_sin_buscador_no_es_caido_pero_si_es_aviso():
+    """El fallo es real y hay que contarlo; lo que NO es es "LiteLLM no sirve"."""
+    exito, llamadas = _run(_sin_buscador)
+    assert exito == 0, (
+        "`sin buscador` pone el Job en rojo: con la inferencia intacta eso es un "
+        "Degraded cada 10 min tapando un Degraded de verdad, mismo criterio que "
+        "con la cuota y con el dial de abliteracion")
+    assert any("api.telegram.org" in u for u in llamadas), (
+        "`sin buscador` no avisa: WebSearch lleva horas devolviendo "
+        "PERPLEXITYAI_API_KEY is not set y el unico que lo sabe es el que lo usa")
+
+
+def test_sin_buscador_deja_la_clase_en_ok_para_el_resume_watch():
+    """`~/.config/opencode/resume-watch.json` usa este ConfigMap como puerta de
+    recuperacion (`clase=="ok"`) para reanudar turnos de opencode cortados. Si
+    "sin buscador" fuera una clase, un fallo de busqueda web dejaria de reanudar
+    sesiones: dos cosas sin relacion acopladas por un semaforo."""
+    cuerpos = []
+    _run(_sin_buscador, cuerpos=cuerpos)
+    estado = _estado_escrito(cuerpos)
+    assert estado["clase"] == "ok", (
+        "`sin buscador` ha movido `clase`: el resume-watch de opencode dejara de "
+        "reanudar turnos por un fallo que no tiene nada que ver con la inferencia")
+    assert estado["buscador_roto"] is True, (
+        "el estado no guarda la dimension del buscador: no habra forma de saber "
+        "cuando se recupera, ni de insistir cada hora")
+
+
+def test_la_recuperacion_del_buscador_se_anuncia_aunque_la_clase_no_se_mueva():
+    """La clase nunca se movio de `ok`, asi que comparar solo `clase` hace que la
+    recuperacion sea invisible — el mismo bug de la memoria en /tmp del 15-08, que
+    dejaba el aviso de RECUPERADO escrito e inalcanzable."""
+    previo = {"clase": "ok", "ultimo_aviso": 0, "buscador_roto": True}
+    cuerpos = []
+    exito, _ = _run(_verde, estado_previo=previo, cuerpos=cuerpos)
+    assert exito == 0
+    textos = _telegram_enviado(cuerpos)
+    assert textos, "no se aviso de la recuperacion del buscador"
+    assert "BUSCADOR RECUPERADO" in textos[0], (
+        "la recuperacion del buscador se anuncia como si LiteLLM hubiera estado "
+        "caido: dice algo que nunca paso")
+    assert "SIN BUSCADOR" not in textos[0]
+
+
+def test_sin_buscador_no_insiste_cada_10_min():
+    """Misma regla que `caido` y `abliterado`: seis mensajes/hora de lo mismo se
+    ignoran solos. Se insiste cada hora."""
+    previo = {"clase": "ok", "ultimo_aviso": int(time.time()), "buscador_roto": True}
+    _, llamadas = _run(_sin_buscador, estado_previo=previo)
+    assert not any("api.telegram.org" in u for u in llamadas), (
+        "el aviso de buscador se repite cada 10 min: a la tercera nadie lo lee")
+
+
+def test_el_vigilante_no_se_cura_a_si_mismo():
+    """/search_tools/list usa get_config() (relee el fichero) y de paso RESTAURA el
+    estado en memoria: llamarla desde aqui curaria el sintoma cada 10 min y el
+    vigilante dejaria de ver nunca lo que vino a vigilar."""
+    _, llamadas = _run(_sin_buscador)
+    assert not any("search_tools/list" in u for u in llamadas), (
+        "el watchdog llama a /search_tools/list: se cura el fallo antes de "
+        "medirlo. La unica sonda que decide es GET /v1/search/tools (el Router)")
+
+
+def test_no_poder_leer_el_router_no_es_sin_buscador():
+    """Si la ruta no contesta, L0 o L2 ya lo estan diciendo. Sumar un aviso de
+    buscador encima del de caido es ruido, y un 404 de una ruta que no existe en
+    otra version del proxy seria una alarma perpetua."""
+    def handler(url):
+        if "/v1/search/tools" in url:
+            return None
+        return _verde(url)
+    cuerpos = []
+    exito, llamadas = _run(handler, cuerpos=cuerpos)
+    assert exito == 0
+    assert not any("api.telegram.org" in u for u in llamadas), (
+        "un /v1/search/tools inaccesible se reporta como buscador roto: hay que "
+        "distinguir "
+        "\"le y no esta\" de \"no pude leerlo\"")
+    assert _estado_escrito(cuerpos)["buscador_roto"] is False
+
+
+# ── 4. el contrato de salida, leido del arbol ───────────────────────────────────
 
 def test_ultimo_statement_del_script_es_un_system_exit_con_salida():
     """El bug de la linea ~291: si el ultimo statement del bloque no es un raise,
