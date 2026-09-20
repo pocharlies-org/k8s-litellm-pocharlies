@@ -849,40 +849,64 @@ data:
         description: Sonda de estado de la cuenta Grok - 200 = paga, 402/403 = sin creditos. No es para chatear.
         input_cost_per_token: 0.00000125
         output_cost_per_token: 0.0000025
-    # ── Alibaba Model Studio (DashScope) — plan Team de info@e-dani.com ───────
+    # ── Alibaba Model Studio — plan Team (token plan) de info@e-dani.com ──────
     #
-    # Alta 20-09-2026. Segundo upstream de pago que sale a Internet, despues de
-    # OpenRouter. Endpoint OpenAI-compatible de la region internacional
-    # (Singapur): `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`. La
-    # region de Pekin (`dashscope.aliyuncs.com`) sirve el mismo catalogo con otra
-    # key; no se mezclan.
+    # Alta 20-09-2026. Segundo upstream de pago que sale a Internet tras OpenRouter.
     #
-    # Por que `openai/` y no un provider `dashscope/`: el upstream HABLA
-    # OpenAI en /chat/completions, que es justo lo que este prefijo describe (el
-    # prefijo nombra al UPSTREAM, no al cliente — un cliente Anthropic sigue
-    # entrando por /v1/messages y LiteLLM traduce, igual que con el residente).
+    # EL ENDPOINT NO ES EL DE DASHSCOPE NORMAL. Una suscripcion "token plan" tiene
+    # host propio, y la key SOLO vale ahi: contra `dashscope-intl.aliyuncs.com` y
+    # `dashscope.aliyuncs.com` esta misma key da 401 `invalid_api_key` (probado el
+    # 20-09 en las dos regiones y tambien contra la API nativa /api/v1). Los dos
+    # planos, documentados en docs.modelstudio.console.alibabacloud.com (More Tools):
+    #   OpenAI    https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    #   Anthropic https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic
     #
-    # SIN LIMITES DE VENTANA DECLARADOS A PROPOSITO: no estan medidos. Este
-    # fichero tiene por norma no llevar cifras inventadas; `max_input_tokens` y
-    # `max_output_tokens` entran cuando alguien los lea del proveedor con la key
-    # buena. `test_model_limits_contract` solo los exige a los alias LOCALES.
+    # Se usa el plano OpenAI con prefijo `openai/`, como todo lo demas del fichero.
+    # El plano Anthropic EXISTE y responde (medido: `POST /apps/anthropic/v1/messages`
+    # con `x-api-key`, 200, devuelve bloques `thinking` + `text` y
+    # `cache_creation_input_tokens`/`cache_read_input_tokens`). No se adopta porque
+    # el prefijo describe al UPSTREAM, no al cliente: un cliente Anthropic ya entra
+    # por /v1/messages del proxy y LiteLLM traduce igual. Cambiarlo meteria una
+    # transformacion menos rodada justo en el camino de emergencia, que es el que
+    # menos se ejercita. Queda escrito por si algun dia se mide que compensa.
     #
-    # `disable_background_health_check` en todos: es un plan DE PAGO y la sonda
-    # de fondo son ~96 ciclos/dia por alias y replica que no informan de nada
-    # (mismo motivo documentado arriba para los residentes y los `or-*`).
+    # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Son 14 modelos y
+    # la pagina miente por los dos lados: `deepseek-v4-pro-0813`, `qwen-image-3.0-pro`,
+    # `qwen-audio-3.0-asr-flash` y los tres `happyhorse-1.1-*` que anuncia NO estan
+    # servidos, asi que no se publica ninguno (un alias a un modelo inexistente es un
+    # 404 con nuestro nombre encima). De los 14, aqui entran los 10 de chat.
     #
-    # NO ENTRAN AQUI, y no es un olvido:
-    #   - audio (`qwen-audio-3.0-asr-flash`, `-tts-plus`, `-realtime-plus`): el
-    #     STT/TTS de esta casa son `stt-turbo` y `omnivoice-tts`, arriba.
-    #   - imagen (`qwen-image-3.0-pro`, `wan2.7-image*`) y video
-    #     (`happyhorse-1.1-{t2v,i2v,r2v}`): competencia del dashboard DGX
-    #     (skills `dgx-image-apis` y `video-generation`), no del router de LLM.
-    #     Si algun dia entran, van con `mode: image_generation` / `video_generation`
-    #     como los `grok-imagine*` de arriba.
+    # `supports_vision` esta MEDIDO uno a uno el 20-09 (cuadrado de color + "di el
+    # color"), no copiado de la pagina — que tambien se equivoca ahi: da
+    # `deepseek-v4.1-flash` como solo-texto y SI ve. Y hay un modo de fallo feo que
+    # obliga a medir en vez de fiarse del HTTP: con imagen, los que no la soportan
+    # NO dan error, devuelven 200 y contestan "no se proporciono ninguna imagen"
+    # (`deepseek-v4-pro`, `deepseek-v4-flash-0731`, `glm-5.2`, `glm-5.3`). El unico
+    # que falla en limpio con 400 es `qwen3.7-max`. Marcar vision de mas aqui
+    # mandaria imagenes a un modelo que las tira en silencio.
+    #
+    # Tools: medido tambien, los 10 devuelven `tool_calls`. `qwen3.8-max` ademas
+    # RECHAZA `tool_choice: "required"` con 400 (acepta la lista de tools y llama
+    # cuando hace falta, pero no se le puede forzar).
+    #
+    # SIN LIMITES DE VENTANA DECLARADOS: no estan medidos ni los da la doc del plan.
+    # Este fichero no lleva cifras inventadas; entran cuando alguien los lea del
+    # proveedor. `test_model_limits_contract` solo los exige a los alias LOCALES.
+    #
+    # `disable_background_health_check` en todos: plan DE PAGO, y la sonda de fondo
+    # son ~96 ciclos/dia por alias y replica que no informan de nada (mismo motivo
+    # documentado arriba para los residentes y los `or-*`).
+    #
+    # NO ENTRAN, y no es un olvido: audio (`qwen-audio-3.0-tts-plus`,
+    # `-realtime-plus`) — el STT/TTS de esta casa son `stt-turbo` y `omnivoice-tts`,
+    # arriba —, e imagen (`wan2.7-image`, `wan2.7-image-pro`), competencia del
+    # dashboard DGX (skills `dgx-image-apis` y `video-generation`), no del router de
+    # LLM. Si algun dia entran, van con `mode: image_generation` como los
+    # `grok-imagine*`.
     - model_name: ali-qwen38-max
       litellm_params:
         model: openai/qwen3.8-max
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -898,7 +922,7 @@ data:
     - model_name: ali-qwen38-flash
       litellm_params:
         model: openai/qwen3.8-flash
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -914,7 +938,7 @@ data:
     - model_name: ali-qwen37-plus
       litellm_params:
         model: openai/qwen3.7-plus
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -930,7 +954,7 @@ data:
     - model_name: ali-qwen37-max
       litellm_params:
         model: openai/qwen3.7-max
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -946,7 +970,7 @@ data:
     - model_name: ali-qwen36-flash
       litellm_params:
         model: openai/qwen3.6-flash
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -962,7 +986,7 @@ data:
     - model_name: ali-deepseek-v41-flash
       litellm_params:
         model: openai/deepseek-v4.1-flash
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -972,13 +996,13 @@ data:
         mode: chat
         backend: alibaba-model-studio
         supports_function_calling: true
-        supports_vision: false
+        supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
     - model_name: ali-deepseek-v4-pro
       litellm_params:
         model: openai/deepseek-v4-pro
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -991,26 +1015,10 @@ data:
         supports_vision: false
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-deepseek-v4-pro-0813
-      litellm_params:
-        model: openai/deepseek-v4-pro-0813
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-        api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
-        num_retries: 0
-      model_info:
-        name: DeepSeek V4 Pro 0813 (Alibaba)
-        description: DeepSeek-V4-Pro snapshot 0813 - pin de version.
-        mode: chat
-        backend: alibaba-model-studio
-        supports_function_calling: true
-        supports_vision: false
-        supports_reasoning: true
-        disable_background_health_check: true
     - model_name: ali-deepseek-v4-flash-0731
       litellm_params:
         model: openai/deepseek-v4-flash-0731
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -1026,7 +1034,7 @@ data:
     - model_name: ali-glm-53
       litellm_params:
         model: openai/glm-5.3
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -1042,7 +1050,7 @@ data:
     - model_name: ali-glm-52
       litellm_params:
         model: openai/glm-5.2
-        api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
@@ -6141,7 +6149,12 @@ spec:
     deletionPolicy: Retain
   data:
     - secretKey: DASHSCOPE_API_KEY
-      remoteRef: { key: litellm/DASHSCOPE_API_KEY }
+      # Apunta al item que creo el owner, TAL CUAL, en vez de duplicar la key en un
+      # campo del item `litellm`: un secreto en dos sitios acaba rotado en uno solo.
+      # El titulo lleva espacios y una arroba y por eso va entre comillas; ojo, que
+      # el parser de referencias `op://` del CLI RECHAZA la arroba (probado), asi
+      # que para leerlo a mano hay que ir por el ID del item, no por el titulo.
+      remoteRef: { key: "alibaba plan info@e-dani.com key/password" }
 ---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.
@@ -6257,7 +6270,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e9996212b8c9
+        config.k8s.e-dani.com/revision: config-2975787dc191
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
