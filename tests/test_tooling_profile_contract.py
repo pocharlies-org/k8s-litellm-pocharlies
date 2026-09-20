@@ -148,7 +148,7 @@ def test_proxy_fallbacks_never_leave_local_models():
     # global) ni ninguna ruta `-uncensored` (el sello `cache_salt: refusal:N` es una
     # extension de nuestro vLLM; Alibaba la ignora y la ruta perderia su proposito
     # EN SILENCIO). Ampliar esta lista es una decision del owner, no del que pasa.
-    PERMITIDAS = {"qwen38-flash-next": ["alibaba-qwen38-flash"]}
+    PERMITIDAS = {"qwen38-flash-next": ["alibaba-q38-flash"]}
     assert graph == PERMITIDAS, (
         "el grafo de fallbacks solo admite la arista aprobada el 20-09-2026; "
         f"encontrado: {graph}"
@@ -193,7 +193,7 @@ def test_el_cooldown_del_residente_aparca_mas_que_el_de_su_fallback():
     por_nombre = {m["model_name"]: m for m in config["model_list"]}
 
     residente = (por_nombre["qwen38-flash-next"].get("model_info") or {}).get("cooldown_time")
-    fallback = (por_nombre["alibaba-qwen38-flash"].get("model_info") or {}).get("cooldown_time")
+    fallback = (por_nombre["alibaba-q38-flash"].get("model_info") or {}).get("cooldown_time")
     router = config["router_settings"]["cooldown_time"]
 
     assert residente is not None and fallback is not None, (
@@ -208,7 +208,36 @@ def test_el_cooldown_del_residente_aparca_mas_que_el_de_su_fallback():
     # (docstring de `_get_deployment_cooldown_policy`), asi que cooldown_time ahi
     # se filtraria a la peticion de salida. `_first_present` mira `model_info`
     # primero: ese es su sitio.
-    for nombre in ("qwen38-flash-next", "alibaba-qwen38-flash"):
+    for nombre in ("qwen38-flash-next", "alibaba-q38-flash"):
         assert "cooldown_time" not in por_nombre[nombre]["litellm_params"], (
             f"{nombre}: cooldown_time va en model_info, no en litellm_params"
         )
+
+
+def test_los_alias_de_alibaba_caben_en_un_boton_de_telegram():
+    """El id del alias ES la etiqueta del boton: si no cabe, Telegram recorta.
+
+    El picker de Hermes va por teclado inline de DOS columnas (`_rows_of_two` en
+    su adapter de Telegram, fijo, sin configuracion) y Hermes no admite etiqueta
+    por modelo — `_declared_model_ids` solo lee las claves del mapa `models:` —,
+    luego lo unico que se ve es el id. Medido en la captura de Dani (20-09):
+    `qwen38-flash-next` (17) se leia entero y `alibaba-qwen38-max` (18) salia
+    `alibaba-…38-max`. Por eso el techo aqui es 17.
+
+    No es un capricho estetico: con el recorte Dani no distinguia q37-max de
+    q37-plus y acabo eligiendo a ciegas desde el movil.
+    """
+    import yaml
+
+    docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+    cm = next(d for d in docs if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
+    config = yaml.safe_load(cm["data"]["config.yaml"])
+
+    anchos = {
+        m["model_name"]: len(m["model_name"])
+        for m in config["model_list"]
+        if str(m["model_name"]).startswith("alibaba-")
+    }
+    assert anchos, "se han ido los alias de Alibaba del model_list"
+    pasados = {n: w for n, w in anchos.items() if w > 17}
+    assert not pasados, f"no caben en un boton de 2 columnas: {pasados}"

@@ -226,7 +226,7 @@ data:
     # hueco mientras los turnos de claude mueren sin error. Dejar que el motor
     # decida con su cola significa que el CLIENTE se rinde antes que el proxy:
     # el .jsonl acaba en un tool_result, no hay fallo que dispare el fallback a
-    # `alibaba-qwen38-flash`, y la peticion se cobra entera en el residente sin
+    # `alibaba-q38-flash`, y la peticion se cobra entera en el residente sin
     # que nadie escuche la respuesta. Con el tope AQUI la peticion numero 9 se
     # rechaza al instante (MaxParallelRequests, que el Router trata como fallo
     # del deployment) y el fallback existente la rehace en Alibaba en vez de
@@ -282,7 +282,7 @@ data:
         # hay medicion nueva.
         supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
         # 20-09-2026: cooldown ASIMETRICO. Este aparca LARGO (900 s) y su gemelo
-        # `alibaba-qwen38-flash` aparca CORTO (60). No es simetria rota por
+        # `alibaba-q38-flash` aparca CORTO (60). No es simetria rota por
         # descuido, son dos riesgos distintos:
         #
         #   Este (local, gratis). Cuando cae, el trafico se va a un tercero DE PAGO
@@ -904,7 +904,7 @@ data:
     #
     # Se usa el plano OpenAI con prefijo `openai/`. El plano Anthropic EXISTE y
     # funciona, pero NO conviene con la configuracion de este proxy: el detalle,
-    # medido, esta en el comentario de `alibaba-qwen38-flash` mas abajo.
+    # medido, esta en el comentario de `alibaba-q38-flash` mas abajo.
     #
     # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Son 14 modelos y
     # la pagina miente por los dos lados: `deepseek-v4-pro-0813`, `qwen-image-3.0-pro`,
@@ -925,6 +925,15 @@ data:
     # RECHAZA `tool_choice: "required"` con 400 (acepta la lista de tools y llama
     # cuando hace falta, pero no se le puede forzar).
     #
+    # LOS NOMBRES MIDEN <= 17 CARACTERES A PROPOSITO (Dani 20-09: "no se ni que
+    # modelo es"). El picker de Hermes sale por Telegram en un teclado de DOS
+    # columnas (`_rows_of_two`, fijo, sin knob), y Telegram recorta el centro del
+    # texto del boton: medido en la captura, `qwen38-flash-next` (17) se leia
+    # ENTERO y `alibaba-qwen38-max` (18) salia como `alibaba-…38-max`. Hermes
+    # pinta el id tal cual — no admite etiqueta por modelo (`_declared_model_ids`
+    # solo lee las claves), asi que el UNICO modo de que el boton se lea es que el
+    # id quepa. Si alguien alarga estos nombres, vuelve el recorte.
+    #
     # SIN LIMITES DE VENTANA DECLARADOS: no estan medidos ni los da la doc del plan.
     # Este fichero no lleva cifras inventadas; entran cuando alguien los lea del
     # proveedor. `test_model_limits_contract` solo los exige a los alias LOCALES.
@@ -939,7 +948,7 @@ data:
     # dashboard DGX (skills `dgx-image-apis` y `video-generation`), no del router de
     # LLM. Si algun dia entran, van con `mode: image_generation` como los
     # `grok-imagine*`.
-    - model_name: alibaba-qwen38-max
+    - model_name: alibaba-q38-max
       litellm_params:
         model: openai/qwen3.8-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1000,7 +1009,7 @@ data:
     # convendria `anthropic/`. Su `/v1/messages` es un shim sobre su propio motor
     # OpenAI (`AnthropicServingMessages(OpenAIServingChat)`, leido en la imagen del
     # head), asi que la conversion ocurre igual — solo cambia quien la hace.
-    - model_name: alibaba-qwen38-flash
+    - model_name: alibaba-q38-flash
       litellm_params:
         model: openai/qwen3.8-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1024,7 +1033,7 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: alibaba-qwen37-plus
+    - model_name: alibaba-q37-plus
       litellm_params:
         model: openai/qwen3.7-plus
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1040,7 +1049,7 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: alibaba-qwen37-max
+    - model_name: alibaba-q37-max
       litellm_params:
         model: openai/qwen3.7-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1056,7 +1065,7 @@ data:
         supports_vision: false
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: alibaba-qwen36-flash
+    - model_name: alibaba-q36-flash
       litellm_params:
         model: openai/qwen3.6-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1072,7 +1081,7 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: alibaba-deepseek-v41-flash
+    - model_name: alibaba-dsv41-fl
       litellm_params:
         model: openai/deepseek-v4.1-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1088,7 +1097,7 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: alibaba-deepseek-v4-pro
+    - model_name: alibaba-dsv4-pro
       litellm_params:
         model: openai/deepseek-v4-pro
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1104,7 +1113,7 @@ data:
         supports_vision: false
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: alibaba-deepseek-v4-flash-0731
+    - model_name: alibaba-dsv4f0731
       litellm_params:
         model: openai/deepseek-v4-flash-0731
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1388,7 +1397,7 @@ data:
       # lleva fallback, porque representa al residente del perfil global y tiene
       # que fallar de forma VISIBLE. Esto es otra cosa — es el NOMBRE DIRECTO del
       # residente cayendo a su GEMELO EXACTO en la nube: `qwen38-flash-next`
-      # (Spark, TP=2) -> `alibaba-qwen38-flash` (Qwen3.8-Flash en Alibaba). Mismo
+      # (Spark, TP=2) -> `alibaba-q38-flash` (Qwen3.8-Flash en Alibaba). Mismo
       # modelo, misma familia de sampling, misma semantica de thinking; lo unico
       # que cambia es quien pone la GPU. En agosto no habia a donde caer (ver
       # `project_dgx_storage_cleanup`), y por eso no habia entrada.
@@ -1404,7 +1413,7 @@ data:
       # Alibaba. Por eso NO se pone fallback en `-uncensored`: ahi el sello es el
       # proposito de la ruta y perderlo en silencio seria peor que un error.
       fallbacks:
-        - qwen38-flash-next: ["alibaba-qwen38-flash"]
+        - qwen38-flash-next: ["alibaba-q38-flash"]
     # Proveedores de busqueda para websearch_interception (arriba en
     # litellm_settings.callbacks). SearXNG self-hosted del ns chat: sin API key,
     # sin salida a terceros. El formato json de /search esta activo en la
@@ -6410,7 +6419,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-4855b706d7f7
+        config.k8s.e-dani.com/revision: config-5b619183b15c
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
