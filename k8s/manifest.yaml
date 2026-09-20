@@ -863,7 +863,7 @@ data:
     #
     # Se usa el plano OpenAI con prefijo `openai/`. El plano Anthropic EXISTE y
     # funciona, pero NO conviene con la configuracion de este proxy: el detalle,
-    # medido, esta en el comentario de `ali-qwen38-flash` mas abajo.
+    # medido, esta en el comentario de `alibaba-qwen38-flash` mas abajo.
     #
     # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Son 14 modelos y
     # la pagina miente por los dos lados: `deepseek-v4-pro-0813`, `qwen-image-3.0-pro`,
@@ -898,7 +898,7 @@ data:
     # dashboard DGX (skills `dgx-image-apis` y `video-generation`), no del router de
     # LLM. Si algun dia entran, van con `mode: image_generation` como los
     # `grok-imagine*`.
-    - model_name: ali-qwen38-max
+    - model_name: alibaba-qwen38-max
       litellm_params:
         model: openai/qwen3.8-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -959,7 +959,7 @@ data:
     # convendria `anthropic/`. Su `/v1/messages` es un shim sobre su propio motor
     # OpenAI (`AnthropicServingMessages(OpenAIServingChat)`, leido en la imagen del
     # head), asi que la conversion ocurre igual — solo cambia quien la hace.
-    - model_name: ali-qwen38-flash
+    - model_name: alibaba-qwen38-flash
       litellm_params:
         model: openai/qwen3.8-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -975,7 +975,7 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-qwen37-plus
+    - model_name: alibaba-qwen37-plus
       litellm_params:
         model: openai/qwen3.7-plus
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -991,7 +991,7 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-qwen37-max
+    - model_name: alibaba-qwen37-max
       litellm_params:
         model: openai/qwen3.7-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1007,7 +1007,7 @@ data:
         supports_vision: false
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-qwen36-flash
+    - model_name: alibaba-qwen36-flash
       litellm_params:
         model: openai/qwen3.6-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1023,7 +1023,7 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-deepseek-v41-flash
+    - model_name: alibaba-deepseek-v41-flash
       litellm_params:
         model: openai/deepseek-v4.1-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1039,7 +1039,7 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-deepseek-v4-pro
+    - model_name: alibaba-deepseek-v4-pro
       litellm_params:
         model: openai/deepseek-v4-pro
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1055,7 +1055,7 @@ data:
         supports_vision: false
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-deepseek-v4-flash-0731
+    - model_name: alibaba-deepseek-v4-flash-0731
       litellm_params:
         model: openai/deepseek-v4-flash-0731
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1071,7 +1071,7 @@ data:
         supports_vision: false
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-glm-53
+    - model_name: alibaba-glm-53
       litellm_params:
         model: openai/glm-5.3
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1087,7 +1087,7 @@ data:
         supports_vision: false
         supports_reasoning: true
         disable_background_health_check: true
-    - model_name: ali-glm-52
+    - model_name: alibaba-glm-52
       litellm_params:
         model: openai/glm-5.2
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
@@ -1278,7 +1278,36 @@ data:
       # cubrir esa ventana. Retirado el controlador, el alias no se retira nunca:
       # este cooldown es lo UNICO que aparta a un backend colgado. No bajarlo.
       allowed_fails: 3
-      cooldown_time: 120
+      # 20-09-2026: 120 -> 300. Este valor dejo de ser solo "cuanto tarda en
+      # volver un backend colgado": desde que `qwen38-flash-next` tiene fallback a
+      # Alibaba (abajo), es LA PALANCA DE STICKINESS, y el unico mecanismo de
+      # afinidad que LiteLLM ofrece aqui.
+      #
+      # Verificado leyendo el codigo que corre (v1.96.0, en el pod), no de memoria:
+      # con `allowed_fails` puesto en el router, `_should_cooldown_deployment` se va
+      # por `should_cooldown_based_on_allowed_fails_policy`, que NO consulta la
+      # exencion de "grupo con un solo deployment" (esa solo aplica cuando
+      # `allowed_fails` NO esta puesto). O sea que el residente SI entra en cooldown
+      # al 4o fallo y, mientras dura, TODO el trafico se queda en el fallback sin
+      # volver a probarlo. Sin eso, cada peticion reintentaria el residente muerto y
+      # el salto seria constante.
+      #
+      # Por que subirlo y no bajarlo: cada vez que caemos de NUEVO a Alibaba, su
+      # prefix cache esta frio para esa conversacion y se paga el prompt entero — y
+      # este proxy arrastra ~81.000 tokens por peticion. Menos saltos = menos
+      # prompts facturados. 300 s tapa ademas el reinicio del watchdog de vLLM
+      # (~4 min) que el comentario de arriba describe, que 120 dejaba justo.
+      #
+      # El coste de subirlo: hasta 5 min de trafico de pago despues de que el
+      # residente ya este sano. Es la unica variable del trade-off; si se quiere
+      # volver antes a la GPU local, se baja — pero no de 240, o se reabre la
+      # ventana del watchdog.
+      #
+      # Ojo, NO hay afinidad por conversacion: el cooldown es del deployment, asi
+      # que todas las sesiones saltan juntas. Para la cache eso es BUENO (comparten
+      # backend y por tanto prefijo); solo significa que no se puede dejar a una
+      # sesion en local y otra en Alibaba.
+      cooldown_time: 300
       # Compatibilidad del nombre puntuado del 4B: RETIRADA (SC-384). El grupo
       # `qwen35-4b` ya no existe, asi que no hay alias oculto que resolver.
       # 07-09-2026: habia DOS modos de fallo con dos errores y dos capas. El
@@ -1310,7 +1339,7 @@ data:
       # lleva fallback, porque representa al residente del perfil global y tiene
       # que fallar de forma VISIBLE. Esto es otra cosa — es el NOMBRE DIRECTO del
       # residente cayendo a su GEMELO EXACTO en la nube: `qwen38-flash-next`
-      # (Spark, TP=2) -> `ali-qwen38-flash` (Qwen3.8-Flash en Alibaba). Mismo
+      # (Spark, TP=2) -> `alibaba-qwen38-flash` (Qwen3.8-Flash en Alibaba). Mismo
       # modelo, misma familia de sampling, misma semantica de thinking; lo unico
       # que cambia es quien pone la GPU. En agosto no habia a donde caer (ver
       # `project_dgx_storage_cleanup`), y por eso no habia entrada.
@@ -1326,7 +1355,7 @@ data:
       # Alibaba. Por eso NO se pone fallback en `-uncensored`: ahi el sello es el
       # proposito de la ruta y perderlo en silencio seria peor que un error.
       fallbacks:
-        - qwen38-flash-next: ["ali-qwen38-flash"]
+        - qwen38-flash-next: ["alibaba-qwen38-flash"]
     # Proveedores de busqueda para websearch_interception (arriba en
     # litellm_settings.callbacks). SearXNG self-hosted del ns chat: sin API key,
     # sin salida a terceros. El formato json de /search esta activo en la
@@ -6310,7 +6339,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-fcf80b94582c
+        config.k8s.e-dani.com/revision: config-80e2926fed21
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
