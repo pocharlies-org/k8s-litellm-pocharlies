@@ -148,7 +148,7 @@ def test_proxy_fallbacks_never_leave_local_models():
     # global) ni ninguna ruta `-uncensored` (el sello `cache_salt: refusal:N` es una
     # extension de nuestro vLLM; Alibaba la ignora y la ruta perderia su proposito
     # EN SILENCIO). Ampliar esta lista es una decision del owner, no del que pasa.
-    PERMITIDAS = {"qwen38-flash-next": ["ali-qwen38-flash"]}
+    PERMITIDAS = {"qwen38-flash-next": ["alibaba-qwen38-flash"]}
     assert graph == PERMITIDAS, (
         "el grafo de fallbacks solo admite la arista aprobada el 20-09-2026; "
         f"encontrado: {graph}"
