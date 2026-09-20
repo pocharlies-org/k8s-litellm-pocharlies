@@ -861,14 +861,9 @@ data:
     #   OpenAI    https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
     #   Anthropic https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic
     #
-    # Se usa el plano OpenAI con prefijo `openai/`, como todo lo demas del fichero.
-    # El plano Anthropic EXISTE y responde (medido: `POST /apps/anthropic/v1/messages`
-    # con `x-api-key`, 200, devuelve bloques `thinking` + `text` y
-    # `cache_creation_input_tokens`/`cache_read_input_tokens`). No se adopta porque
-    # el prefijo describe al UPSTREAM, no al cliente: un cliente Anthropic ya entra
-    # por /v1/messages del proxy y LiteLLM traduce igual. Cambiarlo meteria una
-    # transformacion menos rodada justo en el camino de emergencia, que es el que
-    # menos se ejercita. Queda escrito por si algun dia se mide que compensa.
+    # Se usa el plano OpenAI con prefijo `openai/`. El plano Anthropic EXISTE y
+    # funciona, pero NO conviene con la configuracion de este proxy: el detalle,
+    # medido, esta en el comentario de `ali-qwen38-flash` mas abajo.
     #
     # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Son 14 modelos y
     # la pagina miente por los dos lados: `deepseek-v4-pro-0813`, `qwen-image-3.0-pro`,
@@ -919,6 +914,51 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
+    # ── El gemelo cloud del residente. UN alias, y por el plano OpenAI ───────
+    #
+    # Alibaba publica este modelo en DOS planos y la pregunta legitima es por que
+    # no se usa el Anthropic para el Claude CLI, que entra por `/v1/messages` y se
+    # ahorraria la traduccion. Se midieron los dos el 20-09-2026 y la respuesta NO
+    # esta en el proveedor: esta en la configuracion de ESTE proxy.
+    #
+    # LOS DOS PLANOS SON EQUIVALENTES. Ninguno tiene una capacidad que al otro le
+    # falte (medido, mismo modelo, mismo dia):
+    #   cache     openai: implicita — 22528 de 22785 cacheados en la 2a llamada.
+    #             anthropic: explicita con `cache_control` ephemeral — create
+    #             22772, read 22772 en la 2a. Las dos van; NO es el criterio.
+    #   thinking  openai: `reasoning_content`. anthropic: bloques `thinking`, y el
+    #             round-trip funciona aunque la `signature` venga VACIA (Anthropic
+    #             de verdad lo rechazaria; este shim no valida la firma).
+    #   tools     los dos; el plano Anthropic devuelve `tool_use` nativo.
+    #   stream    los dos. OJO: el SSE del plano Anthropic escribe `event:ping`
+    #             SIN espacio tras los dos puntos — un grep de `^event: ` no ve
+    #             nada y parece que no hay streaming. Lo hay.
+    #
+    # LO QUE LO DECIDE: mas abajo, el Deployment exporta
+    # `LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES=true` y ese flag es
+    # GLOBAL (ver su comentario, SC-203): TODA peticion que entra por `/v1/messages`
+    # se traduce a chat completions ANTES de enrutar — antes incluso del hook, que
+    # cuenta con ello para leer el `reasoning_effort` ya traducido. Con eso puesto,
+    # la cuenta de transformaciones se INVIERTE respecto a la intuicion:
+    #
+    #   alias `openai/`     CC -> [flag: anthropic->openai] -> Alibaba openai   = 1
+    #   alias `anthropic/`  CC -> [flag: anthropic->openai] -> [LiteLLM
+    #                                    openai->anthropic] -> Alibaba anthropic = 2
+    #
+    # O sea que un alias `anthropic/` aqui NO quita la traduccion: añade una
+    # segunda. Y el flag no se puede apagar solo para este modelo — es global, y
+    # apagarlo rompe los bloques `thinking` del residente local hacia Claude Code
+    # (es justo el bug que SC-203 arreglo poniendolo).
+    #
+    # Asi que un solo alias, por el plano OpenAI, que es optimo para las DOS
+    # puertas del proxy: `/v1/chat/completions` (Hermes, OpenClaw, opencode) entra
+    # sin traduccion, y `/v1/messages` (Claude CLI) paga la unica que el flag ya
+    # impone a todo el proxy. Si algun dia cae el flag, reconsiderar esto.
+    #
+    # Nota aparte, porque se pregunta sola: al RESIDENTE LOCAL tampoco le
+    # convendria `anthropic/`. Su `/v1/messages` es un shim sobre su propio motor
+    # OpenAI (`AnthropicServingMessages(OpenAIServingChat)`, leido en la imagen del
+    # head), asi que la conversion ocurre igual — solo cambia quien la hace.
     - model_name: ali-qwen38-flash
       litellm_params:
         model: openai/qwen3.8-flash
@@ -6270,7 +6310,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2975787dc191
+        config.k8s.e-dani.com/revision: config-fcf80b94582c
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
