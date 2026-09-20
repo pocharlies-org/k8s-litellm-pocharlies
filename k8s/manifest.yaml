@@ -227,16 +227,30 @@ data:
     # decida con su cola significa que el CLIENTE se rinde antes que el proxy:
     # el .jsonl acaba en un tool_result, no hay fallo que dispare el fallback a
     # `alibaba-q38-flash`, y la peticion se cobra entera en el residente sin
-    # que nadie escuche la respuesta. Con el tope AQUI la peticion numero 9 se
-    # rechaza al instante (MaxParallelRequests, que el Router trata como fallo
-    # del deployment) y el fallback existente la rehace en Alibaba en vez de
-    # encolar. 8 = la zona donde la latencia medida sigue siendo usable; el
+    # que nadie escuche la respuesta.
+    #
+    # Semantica VERIFICADA en vivo (20-09, tras desplegar #98): el
+    # `max_parallel_requests` NO rechaza — ENCOLA. Este LiteLLM lo implementa
+    # como un semaphore asyncio por deployment y por POD (router.py:
+    # `_get_client(client_type="max_parallel_requests")` + `async with`), y sin
+    # Redis el tope es 8 por replica: 16 efectivos entre las dos. El hook del
+    # proxy no aplica topes por modelo (parallel_request_limiter.py: "TODO:
+    # Support max parallel requests for a model"). El excedente espera hueco
+    # sin que ningun timeout le cuente: esa espera solo la cubre la paciencia
+    # del cliente (600 s via API_TIMEOUT_MS en las units de la compania), y
+    # muere con error visible que el supervisor reintenta — no en silencio.
+    # `timeout: 240` es lo que de verdad corta y dispara el fallback, y aplica
+    # a la llamada ya admitida: medido el mismo dia del rollout — 4
+    # `APITimeoutError ... timeout value=240.0` → 3 `Falling back to
+    # model_group = alibaba-qwen38-flash` (nombre previo al rename del #102)
+    # en los primeros 40 min (antes del cambio: 0 fallbacks en 3 h). Por
+    # debajo de la paciencia del CLI (600 s) a proposito. Ojo con el caso
+    # pesado: en un turno de prefijo ~81k en frio el rebote a Alibaba TAMBIEN
+    # es lento (uno medido: 240 s residente + 600 s Alibaba → error explicito
+    # a los 840 s); el cooldown asimetrico de arriba (900 s/60 s) amortigua
+    # las repeticiones, no abarata el primer rebote.
+    # 8 = la zona donde la latencia medida sigue siendo usable; el
     # tope de KV real del motor sigue sin medir, esto es admision, no fisica.
-    # `timeout: 240` por el mismo motivo: por debajo de la paciencia del CLI
-    # (que subimos a 600 s con API_TIMEOUT_MS en las units de la compania) para
-    # que lo lento se convierta en APITimeoutError y caiga a Alibaba EN VEZ de
-    # dejar al cliente colgado. Lo caro del rebote (prefijo de ~81k tokens en
-    # frio) ya lo amortigua el cooldown asimetrico de arriba (900 s/60 s).
     - model_name: qwen38-flash-next
       litellm_params:
         model: openai/qwen38-flash-next
@@ -6479,7 +6493,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cbbf24a1a1ea
+        config.k8s.e-dani.com/revision: config-d6b9423a5d57
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
