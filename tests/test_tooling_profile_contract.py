@@ -241,3 +241,29 @@ def test_los_alias_de_alibaba_caben_en_un_boton_de_telegram():
     assert anchos, "se han ido los alias de Alibaba del model_list"
     pasados = {n: w for n, w in anchos.items() if w > 17}
     assert not pasados, f"no caben en un boton de 2 columnas: {pasados}"
+
+
+def test_el_puente_de_renombrado_no_apunta_a_la_nada():
+    """Cada nombre viejo del puente tiene que seguir siendo un grupo publicado.
+
+    `model_group_alias` resuelve ANTES de enrutar, asi que un destino mal escrito
+    no da error de config: da un 400 en runtime con el nombre del cliente
+    delante — el mismo fallo que este puente vino a curar. Y el puente tampoco
+    puede quedarse para siempre: si el destino se renombra otra vez y el puente
+    sigue, el nombre viejo apunta a un grupo que ya no existe.
+    """
+    import yaml
+
+    docs = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+    cm = next(d for d in docs if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
+    config = yaml.safe_load(cm["data"]["config.yaml"])
+
+    puente = (config.get("router_settings") or {}).get("model_group_alias") or {}
+    publicados = {m["model_name"] for m in config["model_list"]}
+
+    viejos = {k for k in puente if k.startswith("alibaba-")}
+    assert viejos, "el puente del renombrado de Alibaba ha desaparecido sin avisar"
+    colgados = {viejo: dest for viejo, dest in puente.items() if dest not in publicados}
+    assert not colgados, f"alias viejos apuntando a un grupo inexistente: {colgados}"
+    # y el destino corto es el que de verdad se sirve (no un tercer nombre)
+    assert all(dest.startswith("alibaba-") for dest in puente.values())
