@@ -264,6 +264,30 @@ data:
         # El resto de la familia (27B, 4B) sigue con [none, high, max]: ahi no
         # hay medicion nueva.
         supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        # 20-09-2026: cooldown ASIMETRICO. Este aparca LARGO (900 s) y su gemelo
+        # `alibaba-qwen38-flash` aparca CORTO (60). No es simetria rota por
+        # descuido, son dos riesgos distintos:
+        #
+        #   Este (local, gratis). Cuando cae, el trafico se va a un tercero DE PAGO
+        #   y con la cache fria para esa conversacion — y este proxy arrastra
+        #   ~81.000 tokens por peticion. Lo caro NO es estar en Alibaba, es LLEGAR
+        #   a Alibaba: cada caida NUEVA vuelve a facturar el prompt entero. Con un
+        #   residente que flapea (head en CrashLoop, rollout del TP=2) un cooldown
+        #   corto rebota cada pocos minutos y paga el prefijo en cada rebote. 900 s
+        #   compra el silencio: se cae una vez, se amortiza alli, y se vuelve.
+        #
+        # Va en `model_info` y NO en `litellm_params` A PROPOSITO: el docstring de
+        # `_get_deployment_cooldown_policy` avisa de que `litellm_params` se copia
+        # ENTERO en los kwargs de la llamada al proveedor, asi que un campo puesto
+        # ahi se filtraria a la peticion de salida. `_first_present` mira
+        # `model_info` primero, que es router-internal.
+        #
+        # Ojo al reparto de papeles, que son DOS relojes distintos:
+        #   - este `cooldown_time`      = cuanto dura la EXPULSION del deployment.
+        #   - el del router (300, abajo) = TTL del contador de fallos, o sea la
+        #     ventana en la que tienen que caber los 4 fallos para disparar.
+        # Y por encima de los dos manda un `Retry-After` del upstream, si lo manda.
+        cooldown_time: 900
         # 02-09-2026 (STA-9): callado el bucle de fondo. Medido: `/health` decia
         # `healthy_count: 0` MIENTRAS una inferencia real respondia 391 en 5 s. La
         # sonda de fondo no es el watchdog: usa `max_tokens` 16 (el default de
@@ -971,6 +995,14 @@ data:
         description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
         mode: chat
         backend: alibaba-model-studio
+        # 20-09-2026: la otra mitad del cooldown asimetrico (ver `qwen38-flash-next`).
+        # Este aparca CORTO porque es el ULTIMO recurso: si se expulsa a este y el
+        # residente sigue caido, no queda a donde ir y la peticion muere. Un 429 o un
+        # corte de red de Alibaba no debe dejarnos 15 min sin red de seguridad. 60 s
+        # basta para no martillear a un upstream que dice que no, y es lo bastante
+        # corto para que la red vuelva enseguida.
+        # (Un `Retry-After` suyo manda sobre esto: si Alibaba pide mas, se le da.)
+        cooldown_time: 60
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
@@ -6355,7 +6387,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1fb550f05cf2
+        config.k8s.e-dani.com/revision: config-b155d8bb672a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
