@@ -253,3 +253,25 @@ def test_openrouter_is_never_the_silent_destination_of_a_degradation():
         if isinstance(k, ast.Constant) and isinstance(k.value, str)
     }
     assert not (names & declared), f"alias de OpenRouter en CAPABILITY_CHAINS: {names & declared}"
+
+
+def test_todos_los_alias_or_apuntan_a_un_modelo_free():
+    """Dani 20-09: "los modelos de openrouter, solo los gratuitos en hermes".
+
+    La fila `OpenRouter` del picker de Hermes lista los `or-*` del manifest, asi
+    que la regla de "solo gratis" se cumple (o se rompe) aqui, no en el chart.
+    Los 16 apuntan a `...:free` de OpenRouter, que son gratis porque el proveedor
+    se queda el dato — por eso el gate por key, y por eso un `or-*` de pago
+    colandose aqui se pagaria con la suscripcion de cualquiera que lo elija en el
+    movil.
+
+    Ojo: `:free` no es "sin limite". Medido 20-09: elegir `or-glm` con la key de
+    Hermes devolvio 429 del upstream. Gratis, y con cuota de ellos.
+    """
+    arios = {
+        m["model_name"]: m["litellm_params"]["model"]
+        for m in _openrouter_entries()
+    }
+    assert arios, "el bloque or-* ha desaparecido del model_list"
+    de_pago = {n: mod for n, mod in arios.items() if not str(mod).endswith(":free")}
+    assert not de_pago, f"alias de OpenRouter que NO son :free: {de_pago}"
