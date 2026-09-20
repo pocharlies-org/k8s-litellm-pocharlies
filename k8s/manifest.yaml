@@ -1690,6 +1690,32 @@ data:
             "allowed": sorted(UNCENSORED_ALLOWED_KEY_ALIASES),
         }
 
+    def _apply_uncensored_fallback_policy(data, *names):
+        """Una peticion abliterada NUNCA degrada: el sello no viaja a Alibaba.
+
+        Hoy el mapa `router_settings.fallbacks` ya va por nombre de grupo EXACTO
+        (`item.keys()[0] == model_group`, leido en el Router de v1.100.0), asi que
+        `qwen38-flash-next-uncensored` no cae a ninguna parte: la entrada existe
+        solo para `qwen38-flash-next`. Esto es el SEGURO, no la puerta: cubre el
+        dia que alguien anada una entrada para el grupo abliterado, o un
+        `default_fallbacks` con "*", que se aplica a TODOS los grupos sin preguntar.
+
+        Importa porque el fallback NO hereda el `cache_salt`: el sello `refusal:N`
+        es una extension de NUESTRO vLLM y Alibaba no la conoce. Una peticion que
+        pidio explicitamente «sin rechazo» acabaria contestada por el modelo base
+        de Alibaba, sin avisar. Un 500/503 visible es la respuesta correcta; un
+        ablative silenciosamente ignorado es la peor.
+
+        Se SOBRESCRIBE, no `setdefault`: un body del cliente con
+        `disable_fallbacks: false` no puede quitar la politica. Mismo mecanismo
+        que `_apply_key_fallback_policy` (aurora/synapse), que el Router consume
+        en `async_function_with_fallbacks_common_utils` -> `if disable_fallbacks
+        is True: raise e`, antes de mirar el mapa.
+        """
+        if any(name in UNCENSORED_GATED_ALIASES for name in names if name):
+            data["disable_fallbacks"] = True
+            return True
+        return data.get("disable_fallbacks") is True
     # Alias de OpenRouter. Se reconocen por PREFIJO, no por un frozenset literal, y
     # eso es deliberado: el bloque `or-*` del model_list esta pensado para crecer, y
     # CRECE A MANO — aqui mismo, en un commit. No hay panel que lo alimente
@@ -4851,6 +4877,11 @@ data:
             except Exception as e:
                 log.debug("track_start error: %s", e)
 
+            # Ya resuelto el modelo de destino: cubre las dos vias de llegar a la
+            # ruta abliterada, el nombre directo pedido y la reescritura del alias
+            # de capacidad (`tooling-uncensored` -> el residente del perfil vivo).
+            _apply_uncensored_fallback_policy(data, requested_model, model)
+
             return data
 
         def pre_call_hook(self, user_api_key_dict, cache, data, call_type):
@@ -6419,7 +6450,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-5b619183b15c
+        config.k8s.e-dani.com/revision: config-2efafd3bc7e6
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
