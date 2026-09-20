@@ -202,7 +202,7 @@ data:
     # acotando una fuga. Quien debe decidir la saturacion es el motor con su
     # cola, el unico que sabe cuanta KV le queda; el proxy no tiene esa
     # informacion y no deberia estar decidiendo con ella.
-    # ── Residente llm-tp desde el 27-08: Qwen3.8-Flash-Next (SGLang TP=2) ────
+    # ── Residente llm-tp desde el 27-08: Qwen3.8-Flash-Next (vLLM TP=2) ──────
     #
     # 27-08: PR #34 declaro este residente SOLO en sync.py — el controlador
     # RETIRADO el 18-08 (0 replicas) — asi que el router nunca lo cargo y
@@ -213,9 +213,13 @@ data:
     # nombre, familia de sampling qwen y thinking off por defecto.
     #
     # ctx 262144 (256K nativo sin YaRN) y salida 16384 como el resto de la
-    # familia. El paralelismo real lo capa hoy el servidor en 8 (mamba cache
-    # con mem-fraction 0.78); 32 aqui sigue la misma regla documentada arriba:
-    # la saturacion la decide el motor con su cola, no el proxy.
+    # familia. El tope de 8 en paralelo que decia aqui se midio contra SGLang
+    # (`--mem-fraction-static 0.78`) y ya no aplica: a este residente lo sirve
+    # vLLM, no SGLang -- verificado en vivo el 20-09-2026 sobre el Deployment
+    # `qwen38-flash-next-head`: imagen `vllm/vllm-openai`, `GPU_MEM_UTIL=0.816`
+    # y `KV_CACHE_MEMORY_BYTES` 22 GiB. El tope real esta SIN remedir. 32 aqui
+    # sigue la misma regla documentada arriba y por el mismo motivo: la
+    # saturacion la decide el motor con su cola, no el proxy.
     - model_name: qwen38-flash-next
       litellm_params:
         model: openai/qwen38-flash-next
@@ -1126,9 +1130,10 @@ data:
     # en Qwen, el repetition_penalty 1.08. Una entrada al pool no puede llevar eso
     # porque no sabe quien va a contestar.
     TOOLING_MODE_TARGETS = {
-        # 26-08: el residente llm-tp pasa a Qwen3.8-Flash-Next NVFP4 (SGLang
-        # TP=2, k8s-ai-pocharlies#3). DeepSeek conserva su entrada del
-        # model_list como rollback: el EndpointSlice decide quien publica.
+        # 26-08: el residente llm-tp pasa a Qwen3.8-Flash-Next NVFP4 (TP=2,
+        # k8s-ai-pocharlies#3; entonces SGLang, hoy vLLM). DeepSeek conserva su
+        # entrada del model_list como rollback: el EndpointSlice decide quien
+        # publica.
         "llm-tp": "qwen38-flash-next",
         "creative": "qwen38-27b",
     }
@@ -5995,7 +6000,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-56d20dcec0f1
+        config.k8s.e-dani.com/revision: config-2b5cc0f68fc4
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
