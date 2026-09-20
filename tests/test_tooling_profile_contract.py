@@ -167,3 +167,48 @@ def test_proxy_fallbacks_never_leave_local_models():
             assert target in publicados, target
             # `model_name`, nunca `proveedor/modelo`: el Router resuelve por alias.
             assert "/" not in target, target
+
+
+def test_el_cooldown_del_residente_aparca_mas_que_el_de_su_fallback():
+    """20-09-2026: cooldown ASIMETRICO, y a proposito.
+
+    El residente local aparca LARGO porque caerse cuesta dinero: el trafico se va
+    a un tercero de pago con la cache fria y se refactura el prompt entero (~81k
+    tokens). Lo caro no es estar en Alibaba, es LLEGAR a Alibaba, asi que un
+    residente que flapea con cooldown corto paga el prefijo en cada rebote.
+
+    El fallback aparca CORTO porque es el ULTIMO recurso: expulsarlo mientras el
+    residente sigue caido deja la peticion sin ningun sitio a donde ir.
+
+    Si alguien iguala los dos valores, o invierte el orden, este test cae.
+    """
+    docs = [doc for doc in yaml.safe_load_all(MANIFEST.read_text()) if doc]
+    raw = next(
+        doc["data"]["config.yaml"]
+        for doc in docs
+        if doc.get("kind") == "ConfigMap"
+        and doc["metadata"]["name"] == "litellm-config"
+    )
+    config = yaml.safe_load(raw)
+    por_nombre = {m["model_name"]: m for m in config["model_list"]}
+
+    residente = (por_nombre["qwen38-flash-next"].get("model_info") or {}).get("cooldown_time")
+    fallback = (por_nombre["alibaba-qwen38-flash"].get("model_info") or {}).get("cooldown_time")
+    router = config["router_settings"]["cooldown_time"]
+
+    assert residente is not None and fallback is not None, (
+        "los dos extremos del salto declaran su cooldown; si uno se cae al default "
+        "del router la asimetria desaparece sin que se note"
+    )
+    assert fallback < router < residente, (
+        f"orden esperado: fallback ({fallback}) < router ({router}) < residente ({residente})"
+    )
+
+    # `litellm_params` se copia ENTERO en los kwargs de la llamada al proveedor
+    # (docstring de `_get_deployment_cooldown_policy`), asi que cooldown_time ahi
+    # se filtraria a la peticion de salida. `_first_present` mira `model_info`
+    # primero: ese es su sitio.
+    for nombre in ("qwen38-flash-next", "alibaba-qwen38-flash"):
+        assert "cooldown_time" not in por_nombre[nombre]["litellm_params"], (
+            f"{nombre}: cooldown_time va en model_info, no en litellm_params"
+        )
