@@ -849,6 +849,220 @@ data:
         description: Sonda de estado de la cuenta Grok - 200 = paga, 402/403 = sin creditos. No es para chatear.
         input_cost_per_token: 0.00000125
         output_cost_per_token: 0.0000025
+    # ── Alibaba Model Studio — plan Team (token plan) de info@e-dani.com ──────
+    #
+    # Alta 20-09-2026. Segundo upstream de pago que sale a Internet tras OpenRouter.
+    #
+    # EL ENDPOINT NO ES EL DE DASHSCOPE NORMAL. Una suscripcion "token plan" tiene
+    # host propio, y la key SOLO vale ahi: contra `dashscope-intl.aliyuncs.com` y
+    # `dashscope.aliyuncs.com` esta misma key da 401 `invalid_api_key` (probado el
+    # 20-09 en las dos regiones y tambien contra la API nativa /api/v1). Los dos
+    # planos, documentados en docs.modelstudio.console.alibabacloud.com (More Tools):
+    #   OpenAI    https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    #   Anthropic https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic
+    #
+    # Se usa el plano OpenAI con prefijo `openai/`, como todo lo demas del fichero.
+    # El plano Anthropic EXISTE y responde (medido: `POST /apps/anthropic/v1/messages`
+    # con `x-api-key`, 200, devuelve bloques `thinking` + `text` y
+    # `cache_creation_input_tokens`/`cache_read_input_tokens`). No se adopta porque
+    # el prefijo describe al UPSTREAM, no al cliente: un cliente Anthropic ya entra
+    # por /v1/messages del proxy y LiteLLM traduce igual. Cambiarlo meteria una
+    # transformacion menos rodada justo en el camino de emergencia, que es el que
+    # menos se ejercita. Queda escrito por si algun dia se mide que compensa.
+    #
+    # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Son 14 modelos y
+    # la pagina miente por los dos lados: `deepseek-v4-pro-0813`, `qwen-image-3.0-pro`,
+    # `qwen-audio-3.0-asr-flash` y los tres `happyhorse-1.1-*` que anuncia NO estan
+    # servidos, asi que no se publica ninguno (un alias a un modelo inexistente es un
+    # 404 con nuestro nombre encima). De los 14, aqui entran los 10 de chat.
+    #
+    # `supports_vision` esta MEDIDO uno a uno el 20-09 (cuadrado de color + "di el
+    # color"), no copiado de la pagina — que tambien se equivoca ahi: da
+    # `deepseek-v4.1-flash` como solo-texto y SI ve. Y hay un modo de fallo feo que
+    # obliga a medir en vez de fiarse del HTTP: con imagen, los que no la soportan
+    # NO dan error, devuelven 200 y contestan "no se proporciono ninguna imagen"
+    # (`deepseek-v4-pro`, `deepseek-v4-flash-0731`, `glm-5.2`, `glm-5.3`). El unico
+    # que falla en limpio con 400 es `qwen3.7-max`. Marcar vision de mas aqui
+    # mandaria imagenes a un modelo que las tira en silencio.
+    #
+    # Tools: medido tambien, los 10 devuelven `tool_calls`. `qwen3.8-max` ademas
+    # RECHAZA `tool_choice: "required"` con 400 (acepta la lista de tools y llama
+    # cuando hace falta, pero no se le puede forzar).
+    #
+    # SIN LIMITES DE VENTANA DECLARADOS: no estan medidos ni los da la doc del plan.
+    # Este fichero no lleva cifras inventadas; entran cuando alguien los lea del
+    # proveedor. `test_model_limits_contract` solo los exige a los alias LOCALES.
+    #
+    # `disable_background_health_check` en todos: plan DE PAGO, y la sonda de fondo
+    # son ~96 ciclos/dia por alias y replica que no informan de nada (mismo motivo
+    # documentado arriba para los residentes y los `or-*`).
+    #
+    # NO ENTRAN, y no es un olvido: audio (`qwen-audio-3.0-tts-plus`,
+    # `-realtime-plus`) — el STT/TTS de esta casa son `stt-turbo` y `omnivoice-tts`,
+    # arriba —, e imagen (`wan2.7-image`, `wan2.7-image-pro`), competencia del
+    # dashboard DGX (skills `dgx-image-apis` y `video-generation`), no del router de
+    # LLM. Si algun dia entran, van con `mode: image_generation` como los
+    # `grok-imagine*`.
+    - model_name: ali-qwen38-max
+      litellm_params:
+        model: openai/qwen3.8-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: Qwen3.8 Max · gama alta (Alibaba)
+        description: Qwen3.8-Max - texto + razonamiento + vision. El mayor del plan.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-qwen38-flash
+      litellm_params:
+        model: openai/qwen3.8-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: Qwen3.8 Flash · gemelo cloud del residente
+        description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-qwen37-plus
+      litellm_params:
+        model: openai/qwen3.7-plus
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: Qwen3.7 Plus (Alibaba)
+        description: Qwen3.7-Plus - texto + razonamiento + vision.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-qwen37-max
+      litellm_params:
+        model: openai/qwen3.7-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: Qwen3.7 Max (Alibaba)
+        description: Qwen3.7-Max - texto + razonamiento. Sin vision.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-qwen36-flash
+      litellm_params:
+        model: openai/qwen3.6-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: Qwen3.6 Flash (Alibaba)
+        description: Qwen3.6-Flash - texto + razonamiento + vision. Generacion anterior.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-deepseek-v41-flash
+      litellm_params:
+        model: openai/deepseek-v4.1-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: DeepSeek V4.1 Flash (Alibaba)
+        description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-deepseek-v4-pro
+      litellm_params:
+        model: openai/deepseek-v4-pro
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: DeepSeek V4 Pro (Alibaba)
+        description: DeepSeek-V4-Pro servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-deepseek-v4-flash-0731
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: DeepSeek V4 Flash 0731 (Alibaba)
+        description: DeepSeek-V4-Flash snapshot 0731 - pin de version.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-glm-53
+      litellm_params:
+        model: openai/glm-5.3
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: GLM-5.3 · Zhipu (Alibaba)
+        description: GLM-5.3 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: ali-glm-52
+      litellm_params:
+        model: openai/glm-5.2
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+      model_info:
+        name: GLM-5.2 · Zhipu (Alibaba)
+        description: GLM-5.2 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
     litellm_settings:
       success_callback:
       - db
@@ -1051,6 +1265,28 @@ data:
       # 2026-07-03: removed bge-*-cpu fallbacks (and the -cpu model_list entries).
       # Embedding+reranker are HA across both GPU nodes via the `bge-pool` label +
       # KEDA scale-to-zero, and the -cpu Services no longer exist (dead fallback).
+      # 20-09-2026: VUELVE `fallbacks`, con UNA entrada y por un motivo que no
+      # existia cuando se retiro. Lo de arriba sigue siendo cierto: `tooling` no
+      # lleva fallback, porque representa al residente del perfil global y tiene
+      # que fallar de forma VISIBLE. Esto es otra cosa — es el NOMBRE DIRECTO del
+      # residente cayendo a su GEMELO EXACTO en la nube: `qwen38-flash-next`
+      # (Spark, TP=2) -> `ali-qwen38-flash` (Qwen3.8-Flash en Alibaba). Mismo
+      # modelo, misma familia de sampling, misma semantica de thinking; lo unico
+      # que cambia es quien pone la GPU. En agosto no habia a donde caer (ver
+      # `project_dgx_storage_cleanup`), y por eso no habia entrada.
+      #
+      # Dispara en el modo de fallo que el comentario de arriba deja vivo: alias
+      # PUBLICADO pero sin deployment sano (cooldown tras `allowed_fails`, o un
+      # head en CrashLoop como el del 20-09). El Router lanza desde dentro del
+      # try de `async_function_with_fallbacks`, asi que la entrada SI se aplica.
+      #
+      # OJO: el fallback NO hereda el `cache_salt` de la entrada local — el sello
+      # `refusal:N` es una extension de NUESTRO vLLM y Alibaba no la conoce. Una
+      # peticion que caiga aqui sale con el comportamiento base del modelo de
+      # Alibaba. Por eso NO se pone fallback en `-uncensored`: ahi el sello es el
+      # proposito de la ruta y perderlo en silencio seria peor que un error.
+      fallbacks:
+        - qwen38-flash-next: ["ali-qwen38-flash"]
     # Proveedores de busqueda para websearch_interception (arriba en
     # litellm_settings.callbacks). SearXNG self-hosted del ns chat: sin API key,
     # sin salida a terceros. El formato json de /search esta activo en la
@@ -5886,6 +6122,40 @@ spec:
     - secretKey: auth.json
       remoteRef: { key: litellm/XAI_OAUTH_AUTH_JSON }
 ---
+# Key del plan Team de Alibaba Model Studio (cuenta info@e-dani.com), para los
+# alias `ali-*`. Sembrar/rotar SOLO ese campo, nunca con `--template`:
+#   op item edit litellm DASHSCOPE_API_KEY=sk-...
+#
+# POR QUE UN ExternalSecret PROPIO y no una entrada mas en `litellm-secrets`:
+# ese recurso documenta que si una entrada llega al cluster ANTES de que el
+# campo exista en 1Password, el ExternalSecret ENTERO pasa a SecretSyncedError y
+# deja de refrescar el resto — incluida LITELLM_MASTER_KEY, que tumba el proxy.
+# Aislado aqui, un campo que falte solo rompe los alias `ali-*`: el Secret no
+# nace, el env var del Deployment es `optional: true` y esos modelos devuelven
+# 401 de forma visible sin tocar a nadie mas.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-alibaba
+  namespace: litellm
+spec:
+  refreshInterval: 6h
+  secretStoreRef:
+    name: onepassword
+    kind: ClusterSecretStore
+  target:
+    name: litellm-alibaba
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: DASHSCOPE_API_KEY
+      # Apunta al item que creo el owner, TAL CUAL, en vez de duplicar la key en un
+      # campo del item `litellm`: un secreto en dos sitios acaba rotado en uno solo.
+      # El titulo lleva espacios y una arroba y por eso va entre comillas; ojo, que
+      # el parser de referencias `op://` del CLI RECHAZA la arroba (probado), asi
+      # que para leerlo a mano hay que ir por el ID del item, no por el titulo.
+      remoteRef: { key: "alibaba plan info@e-dani.com key/password" }
+---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.
 #
@@ -6000,7 +6270,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2b5cc0f68fc4
+        config.k8s.e-dani.com/revision: config-2975787dc191
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -6174,6 +6444,16 @@ spec:
             # sale a Internet; el model_list lo consume como `os.environ/`.
             - name: OPENROUTER_API_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: OPENROUTER_API_KEY } }
+            # Credencial del plan Team de Alibaba Model Studio para los alias
+            # `ali-*`. `optional: true` A PROPOSITO: mientras el Secret no exista
+            # (campo aun sin sembrar en 1Password, o el rate limit de 1Password
+            # impidiendo el refresco) el pod ARRANCA igual y solo los `ali-*`
+            # contestan 401. Sin `optional` el proxy ENTERO se queda sin arrancar
+            # por un upstream secundario, que es exactamente el modo de fallo que
+            # el ExternalSecret aislado de arriba trata de evitar.
+            - name: DASHSCOPE_API_KEY
+              valueFrom:
+                secretKeyRef: { name: litellm-alibaba, key: DASHSCOPE_API_KEY, optional: true }
             # Keys autorizadas a pedir los alias `or-*`. Falla CERRADO, al reves que
             # el gate abliterado. Si la variable llega vacia
             # se deniega a todo el mundo, incluida la master. Hace falta porque el

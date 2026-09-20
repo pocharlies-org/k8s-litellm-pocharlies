@@ -133,6 +133,37 @@ def test_proxy_fallbacks_never_leave_local_models():
     # 24-08-2026: `high` y `max` se retiran del model_list —eran el mismo backend
     # con otro nivel de pensamiento, que hoy se pide con `reasoning_effort`— y con
     # ellos sus dos saltos, que eran los unicos. Un fallback declarado para un
-    # alias que ya no existe no se dispara jamas.
-    assert graph == {}
-    assert all("/" not in target for targets in graph.values() for target in targets)
+    # alias que ya no existe no se dispara jamas. El grafo quedo VACIO.
+    #
+    # 20-09-2026: deja de estar vacio, con UNA arista y decidida a proposito por el
+    # owner. `graph == {}` era la forma de escribir "un fallback no saca trafico de
+    # los modelos locales" cuando NO habia gemelo en la nube al que caer; ahora lo
+    # hay (plan Team de Alibaba Model Studio) y el owner pidio ese salto. Lo que el
+    # contrato protege sigue siendo lo mismo, pero ahora se escribe explicito: la
+    # lista blanca es de UNA entrada y todo lo demas sigue prohibido.
+    #
+    # OJO A LO QUE IMPLICA LA ARISTA: cuando dispara, el prompt SALE de la maquina
+    # a un proveedor de terceros. Por eso la fuente permitida es solo el nombre
+    # directo del residente y NO `tooling` (que debe fallar visible: es el perfil
+    # global) ni ninguna ruta `-uncensored` (el sello `cache_salt: refusal:N` es una
+    # extension de nuestro vLLM; Alibaba la ignora y la ruta perderia su proposito
+    # EN SILENCIO). Ampliar esta lista es una decision del owner, no del que pasa.
+    PERMITIDAS = {"qwen38-flash-next": ["ali-qwen38-flash"]}
+    assert graph == PERMITIDAS, (
+        "el grafo de fallbacks solo admite la arista aprobada el 20-09-2026; "
+        f"encontrado: {graph}"
+    )
+
+    # Ninguna ruta sellada puede tener fallback: perderia el sello sin avisar.
+    assert not [src for src in graph if src.endswith("-uncensored")]
+
+    # El destino tiene que EXISTIR en el model_list; un fallback a un alias que no
+    # se publica no se dispara jamas y es peor que no tenerlo (ver el caso de
+    # `high`/`max` de arriba).
+    publicados = {m["model_name"] for m in config["model_list"]}
+    for source, targets in graph.items():
+        assert source in publicados, source
+        for target in targets:
+            assert target in publicados, target
+            # `model_name`, nunca `proveedor/modelo`: el Router resuelve por alias.
+            assert "/" not in target, target
