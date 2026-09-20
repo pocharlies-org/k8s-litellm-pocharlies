@@ -1326,6 +1326,35 @@ data:
       routing_strategy: simple-shuffle
       timeout: 600
       num_retries: 1
+      # ── PUENTE de renombrado (20-09): los alias largos de Alibaba siguen viva ──
+      #
+      # Al acortar los alias a <=17 caracteres (para que quepan en un boton de
+      # Telegram) borre el nombre viejo de un sync para otro, y una sesion de VS
+      # Code que lo tenia FIJADO se encontro con:
+      #   API Error: 400 anthropic_messages: Invalid model name passed in
+      #   model=alibaba-qwen38-max
+      # El picker de un cliente se relee al reiniciar; su sesion en curso no. Un
+      # renombrado que tira sesiones vivas no es un renombrado, es una rotura.
+      #
+      # `model_group_alias` resuelve el nombre pedido ANTES de enrutar, asi que el
+      # nombre viejo vuelve a servir sin duplicar la entrada del model_list (y sin
+      # duplicar sus flags de vision/cooldown, que es justo como se pudre una
+      # copia). Coste aceptado mientras dure el puente: los spend logs registran
+      # el nombre PEDIDO, o sea que el uso de un nombre viejo sale aparte del
+      # nuevo — razon de mas para quitar esto en cuanto no quede nadie usandolo.
+      #
+      # COMO QUITARLO: mirar en el panel de spend logs si queda alguna peticion
+      # con alguno de estos nombres en los ultimos 7 dias; en verde, se borra el
+      # bloque entero y su test.
+      model_group_alias:
+        alibaba-qwen38-max: alibaba-q38-max
+        alibaba-qwen38-flash: alibaba-q38-flash
+        alibaba-qwen37-plus: alibaba-q37-plus
+        alibaba-qwen37-max: alibaba-q37-max
+        alibaba-qwen36-flash: alibaba-q36-flash
+        alibaba-deepseek-v41-flash: alibaba-dsv41-fl
+        alibaba-deepseek-v4-pro: alibaba-dsv4-pro
+        alibaba-deepseek-v4-flash-0731: alibaba-dsv4f0731
       # 2026-06-22: a wedged vLLM backend (EngineCore deadlock; /health still 200)
       # used to keep eating ~50% of chat traffic because it took 20 fails before
       # any cooldown and the cooldown was only 30s. Eject faster and keep it out
@@ -6450,7 +6479,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2efafd3bc7e6
+        config.k8s.e-dani.com/revision: config-cbbf24a1a1ea
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
