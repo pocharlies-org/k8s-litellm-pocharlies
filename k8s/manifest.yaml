@@ -3032,7 +3032,23 @@ data:
     # LiteLLM v1.96.0 pops that kwarg in Router.async_function_with_fallbacks and
     # re-raises the original error when it is true. It is deliberately overwritten,
     # not setdefault: this policy cannot be undone by a client body containing false.
-    NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca"})
+    # Keys que NUNCA deben degradar a un fallback: se les estampa
+    # `disable_fallbacks` y el Router se queda con el deployment pedido o falla.
+    #
+    #   aurora-rca  mide, y una medida degradada es una medida falsa.
+    #   synapse     20-09-2026, decision del owner: Synapse NO es agentico —
+    #               hace llamadas acotadas, no conduce un bucle de herramientas —
+    #               asi que no gana nada saltando a la nube y si pierde: el salto
+    #               SACA EL PROMPT DE LA MAQUINA a un tercero de pago. Se queda en
+    #               el Spark local o falla de forma visible, que para una llamada
+    #               puntual es la respuesta correcta. Hermes, que si es agentico y
+    #               conversacional, SI lleva fallback a proposito.
+    #
+    # Ojo: esto NO es lo mismo que recortar el allowlist `models` de la key. El
+    # allowlist gobierna lo que la key puede PEDIR; esto gobierna a donde puede
+    # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
+    # Alibaba sin que nadie lo pida.
+    NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse"})
 
     def _apply_key_fallback_policy(data, user_api_key_dict):
         """Stamp the Router kill switch and return the effective per-request policy."""
@@ -6339,7 +6355,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-80e2926fed21
+        config.k8s.e-dani.com/revision: config-1fb550f05cf2
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
