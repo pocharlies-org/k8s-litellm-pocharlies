@@ -6266,12 +6266,18 @@ spec:
     deletionPolicy: Retain
   data:
     - secretKey: DASHSCOPE_API_KEY
-      # Apunta al item que creo el owner, TAL CUAL, en vez de duplicar la key en un
-      # campo del item `litellm`: un secreto en dos sitios acaba rotado en uno solo.
-      # El titulo lleva espacios y una arroba y por eso va entre comillas; ojo, que
-      # el parser de referencias `op://` del CLI RECHAZA la arroba (probado), asi
-      # que para leerlo a mano hay que ir por el ID del item, no por el titulo.
-      remoteRef: { key: "alibaba plan info@e-dani.com key/password" }
+      # Apunta al item que creo el owner, en vez de duplicar la key en un campo del
+      # item `litellm`: un secreto en dos sitios acaba rotado en uno solo.
+      #
+      # EL ITEM SE RENOMBRO EL 20-09-2026 y no es cosmetica. Nacio como
+      # `alibaba plan info@e-dani.com key` y con ese titulo el ExternalSecret NO
+      # RESUELVE: el provider `onepasswordSDK` de ESO construye internamente una
+      # referencia `op://` y la rechaza —
+      #   «secret references must only contain alphanumeric, _, . or - characters»
+      # — por los espacios y la arroba. El fallo es en el ESO, no en el CLI, y no
+      # se ve hasta que el recurso existe en el cluster. Un titulo de item que
+      # alimenta un ExternalSecret solo puede llevar [A-Za-z0-9_.-].
+      remoteRef: { key: alibaba-model-studio/password }
 ---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.
