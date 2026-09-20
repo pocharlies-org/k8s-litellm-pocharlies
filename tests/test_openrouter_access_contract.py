@@ -124,11 +124,45 @@ def test_the_gate_ignores_everything_that_is_not_an_openrouter_alias(open_gate):
         assert not denied, f"{model!r} no es un alias de OpenRouter y no le toca a este gate"
 
 
+def _allowlist():
+    return [i.strip() for i in _deployment_env()["LITELLM_OPENROUTER_ALLOWED_KEYS"]["value"].split(",")]
+
+
 def test_the_deployment_ships_a_non_empty_allowlist():
-    env = _deployment_env()
-    value = env["LITELLM_OPENROUTER_ALLOWED_KEYS"]["value"]
+    value = _deployment_env()["LITELLM_OPENROUTER_ALLOWED_KEYS"]["value"]
     assert value.strip(), "lista vacia = alias inservibles (ver el test de fail-closed)"
-    assert ALLOWED_KEY in [item.strip() for item in value.split(",")]
+    assert ALLOWED_KEY in _allowlist()
+
+
+def test_hermes_alcanza_los_alias_or_porque_su_picker_los_promete():
+    """Hermes (ns `hermes`) lista los `or-*` en su picker `/model`.
+
+    El picker es una promesa: una fila con 16 modelos que responde 403 al
+    elegirlos es peor que no tener fila. Por eso la key `hermes` esta en la
+    lista, y por eso esta linea existe — si alguien la quita, la fila de Hermes
+    vuelve a mentir en silencio y aqui falla, no en el movil de Dani.
+    """
+    assert "hermes" in _allowlist()
+    gate = _gate({"LITELLM_OPENROUTER_ALLOWED_KEYS": ",".join(_allowlist())})
+    denied, _ = gate._openrouter_access_denied("or-glm", "hermes")
+    assert not denied
+
+
+def test_la_lane_de_openrouter_tiene_su_propio_service_sobre_los_mismos_pods():
+    """El Service `litellm-openrouter` es un ALIAS de `litellm`, no un backend.
+
+    Hermes agrupa su picker por (base_url, credencial, api_mode) y colapsa en una
+    fila todo lo que comparta las tres: con un solo host, los alias del residente
+    y los `or-*` salian juntos como "Qwen38 (19)" (medido 20-09). La fila extra
+    solo existe si el host es distinto; si ademas apuntara a otros pods, la lane
+    seria de mentira. De ahi que se compare el selector y el puerto.
+    """
+    services = {d["metadata"]["name"]: d for d in _docs() if d.get("kind") == "Service"}
+    assert "litellm-openrouter" in services, "sin host propio, Hermes vuelve a una sola fila"
+
+    principal, lane = services["litellm"], services["litellm-openrouter"]
+    assert lane["spec"]["selector"] == principal["spec"]["selector"]
+    assert {"name": "http", "port": 4000, "targetPort": 4000} in lane["spec"]["ports"]
 
 
 def test_the_api_key_comes_from_the_external_secret_not_from_a_literal():

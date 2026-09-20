@@ -6582,7 +6582,12 @@ spec:
             # se deniega a todo el mundo, incluida la master. Hace falta porque el
             # allowlist de la key NO puede cerrar nada — `models: []` = todos, y 7 de
             # 10 keys lo tienen asi, luego publicar el alias lo concede a ocho keys.
-            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local" }
+            # `hermes` entra el 20-09 porque Hermes pinta una fila "OpenRouter" en
+            # su picker /model con los alias `or-*` del manifest. Una fila que
+            # lista 16 modelos y devuelve 403 al elegirlos es peor que no tenerla:
+            # el picker es una promesa de lo que se puede pedir. Sigue denegada
+            # para las demas (document-intake, synapse, master...).
+            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -6781,6 +6786,31 @@ spec:
   selector: { app: litellm }
   ports:
     - { name: active, port: 4001, targetPort: 4001 }
+---
+# Segunda puerta al MISMO proxy, para la lane de OpenRouter (`or-*`).
+#
+# NO cambia el routing: LiteLLM enruta por NOMBRE de modelo, no por cual Service
+# entró, y este Service tiene el mismo selector y el mismo puerto que `litellm`.
+# Existe por un motivo de cliente: Hermes (agente de Telegram/WhatsApp, ns
+# `hermes`) agrupa su picker `/model` por la terna (base_url, credencial,
+# api_mode) y COLAPSA en una sola fila todos los proveedores que comparten las
+# tres. Con un único host, los 3 alias del residente y los 16 `or-*` salían
+# juntos bajo una fila llamada "Qwen38" (medido el 20-09: `Qwen38 (19)` y ninguna
+# fila de OpenRouter). Dando a la lane de OpenRouter su propio nombre de host,
+# Hermes pinta dos filas y cada una lista lo suyo.
+#
+# Lo mismo sirve para cualquier consumidor que agrupe por endpoint. Si Hermes
+# cambiara de mecanismo, este Service seguiría siendo inofensivo: es un alias de
+# `litellm`, no un backend.
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-openrouter
+  namespace: litellm
+spec:
+  selector: { app: litellm }
+  ports:
+    - { name: http, port: 4000, targetPort: 4000 }
 ---
 # Internal access only: LAN and Tailscale clients use the LAN Traefik instance
 # (no SSO middleware — LiteLLM's API key remains the application gate).
