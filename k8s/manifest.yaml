@@ -217,16 +217,33 @@ data:
     # (`--mem-fraction-static 0.78`) y ya no aplica: a este residente lo sirve
     # vLLM, no SGLang -- verificado en vivo el 20-09-2026 sobre el Deployment
     # `qwen38-flash-next-head`: imagen `vllm/vllm-openai`, `GPU_MEM_UTIL=0.816`
-    # y `KV_CACHE_MEMORY_BYTES` 22 GiB. El tope real esta SIN remedir. 32 aqui
-    # sigue la misma regla documentada arriba y por el mismo motivo: la
-    # saturacion la decide el motor con su cola, no el proxy.
+    # y `KV_CACHE_MEMORY_BYTES` 22 GiB.
+    #
+    # 20-09-2026 (Dani): se DEROGA el "32, la saturacion la decide el motor".
+    # La evidencia es la gotcha de la muerte silenciosa (14-09, 736 peticiones
+    # medidas: p50 98 s, p99 591 s, max 851 s) y la cola de hoy: concurrencia
+    # 13-14 sostenida, la compania con tope dinamico 1 y 10 epicas esperando
+    # hueco mientras los turnos de claude mueren sin error. Dejar que el motor
+    # decida con su cola significa que el CLIENTE se rinde antes que el proxy:
+    # el .jsonl acaba en un tool_result, no hay fallo que dispare el fallback a
+    # `alibaba-qwen38-flash`, y la peticion se cobra entera en el residente sin
+    # que nadie escuche la respuesta. Con el tope AQUI la peticion numero 9 se
+    # rechaza al instante (MaxParallelRequests, que el Router trata como fallo
+    # del deployment) y el fallback existente la rehace en Alibaba en vez de
+    # encolar. 8 = la zona donde la latencia medida sigue siendo usable; el
+    # tope de KV real del motor sigue sin medir, esto es admision, no fisica.
+    # `timeout: 240` por el mismo motivo: por debajo de la paciencia del CLI
+    # (que subimos a 600 s con API_TIMEOUT_MS en las units de la compania) para
+    # que lo lento se convierta en APITimeoutError y caiga a Alibaba EN VEZ de
+    # dejar al cliente colgado. Lo caro del rebote (prefijo de ~81k tokens en
+    # frio) ya lo amortigua el cooldown asimetrico de arriba (900 s/60 s).
     - model_name: qwen38-flash-next
       litellm_params:
         model: openai/qwen38-flash-next
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
-        timeout: 600
-        max_parallel_requests: 32
+        timeout: 240
+        max_parallel_requests: 8
         # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
         # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
