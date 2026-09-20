@@ -56,15 +56,25 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         self.assertEqual(parsed["router_settings"]["timeout"], 600)
         model_list = parsed["model_list"]
         self.assertGreater(len(model_list), 0)
-        explicit_timeouts = {
-            entry["litellm_params"]["timeout"]
-            for entry in model_list
-            if "timeout" in entry.get("litellm_params", {})
-        }
-        self.assertEqual(
-            explicit_timeouts,
-            {600},
-        )
+        # 600 s es la regla; una excepción por modelo se DECLARA aquí con su
+        # motivo, no se cuela en el manifest en silencio.
+        #   qwen38-flash-next = 240 (20-09-2026, Dani): el residente TP=2 va por
+        #   debajo de la paciencia del CLI (600 s vía API_TIMEOUT_MS en la
+        #   compañía) a propósito — si el cliente se rinde antes que el proxy el
+        #   turno muere en silencio y el fallback a alibaba-qwen38-flash no se
+        #   dispara nunca. Detalle en el comentario de la entrada del manifest.
+        excepciones = {"qwen38-flash-next": 240}
+        for entry in model_list:
+            params = entry.get("litellm_params", {})
+            if "timeout" not in params:
+                continue
+            esperado = excepciones.get(entry["model_name"], 600)
+            self.assertEqual(
+                params["timeout"],
+                esperado,
+                f"{entry['model_name']}: timeout {params['timeout']} s, la regla es {esperado} s "
+                "(una excepción nueva se declara en `excepciones` con su motivo)",
+            )
 
     def test_litellm_uses_service_networking_without_a_host_port(self):
         deployment = self.resource("Deployment", "litellm")
