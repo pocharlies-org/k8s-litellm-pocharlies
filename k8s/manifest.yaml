@@ -475,7 +475,14 @@ data:
         api_base: http://tooling.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 32
+        # 21-09-2026: 32 -> 8. Desde el #107/#112 (sticky + Valkey + socket 2 s)
+        # el tope es real y global, no el semáforo por pod que hacía 8x2=16
+        # decorativo. El residente ya admitía a 8 (timeout 240, #98); tooling
+        # apunta al MISMO motor (pool label), así que 32 aquí era la puerta de
+        # atrás: por tooling entraban la compañía, synapse y openclaw y el
+        # motor se llenaba por encima de la zona usable medida. Mismo cambio
+        # para tooling-uncensored vía el anchor compartido: mismo motor.
+        max_parallel_requests: 8
         # 03-09-2026: sello EXPLICITO a 0, y es una correccion, no un detalle.
         #
         # El pool `tooling` ES hoy el qwen38-flash-next ablado: el service
@@ -7324,7 +7331,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-fbd16680d19d
+        config.k8s.e-dani.com/revision: config-f8533aed52c8
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
