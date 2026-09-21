@@ -148,10 +148,19 @@ def test_proxy_fallbacks_never_leave_local_models():
     # global) ni ninguna ruta `-uncensored` (el sello `cache_salt: refusal:N` es una
     # extension de nuestro vLLM; Alibaba la ignora y la ruta perderia su proposito
     # EN SILENCIO). Ampliar esta lista es una decision del owner, no del que pasa.
-    PERMITIDAS = {"qwen38-flash-next": ["alibaba-q38-flash"]}
+    #
+    # 21-09-2026 (OWU-51): la ampliacion ya esta tomada — el criterio C7 de la
+    # epica OWU-50, APROBADO POR DANI, autoriza las dos aristas de los perfiles
+    # CENSURADOS del chat (q38-flash / q38-flash-think) al mismo gemelo de nube.
+    # Los `-u` siguen y seguiran sin arista: una peticion abliterada no degrada.
+    PERMITIDAS = {
+        "qwen38-flash-next": ["alibaba-q38-flash"],
+        "q38-flash": ["alibaba-q38-flash"],
+        "q38-flash-think": ["alibaba-q38-flash"],
+    }
     assert graph == PERMITIDAS, (
-        "el grafo de fallbacks solo admite la arista aprobada el 20-09-2026; "
-        f"encontrado: {graph}"
+        "el grafo de fallbacks solo admite las aristas aprobadas por el owner "
+        f"(20-09 y 21-09-2026, OWU-50-C7); encontrado: {graph}"
     )
 
     # Ninguna ruta sellada puede tener fallback: perderia el sello sin avisar.

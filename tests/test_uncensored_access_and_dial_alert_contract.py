@@ -29,7 +29,9 @@ WATCHDOG = ROOT / "k8s" / "litellm-watchdog-cron.yaml"
 
 WANT_FN = {"_uncensored_access_denied"}
 WANT_CONST = {"UNCENSORED_ALLOWED_KEY_ALIASES", "UNCENSORED_GATED_ALIASES",
-              "TOOLING_UNCENSORED_ALIASES", "TOOLING_UNCENSORED_MODE_TARGETS"}
+              "TOOLING_UNCENSORED_ALIASES", "TOOLING_UNCENSORED_MODE_TARGETS",
+              # OWU-51: la asignacion de UNCENSORED_GATED_ALIASES lo referencia.
+              "Q38_UNCENSORED_ALIASES"}
 
 
 def _hook_source():

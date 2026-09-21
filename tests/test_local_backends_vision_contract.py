@@ -48,6 +48,15 @@ ALIAS_LOCALES = {
     "qwen38-27b-uncensored",
     "tooling",
     "tooling-uncensored",
+    # 21-09-2026 (OWU-51): los cuatro perfiles de chat. Decision tomada al
+    # anadirlos: heredan `supports_vision: true` del ancla `tooling_pool_info`,
+    # y detras de ellos esta el MISMO residente que `tooling` — el llm-tp vivo,
+    # comprobado que ve (test de arriba). Si un residente futuro no ve, el flag
+    # del ancla se corrige en el mismo commit y estos cuatro lo siguen.
+    "q38-flash",
+    "q38-flash-think",
+    "q38-flash-u",
+    "q38-flash-u-think",
 }
 
 
