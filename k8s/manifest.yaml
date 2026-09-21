@@ -11,7 +11,7 @@ metadata:
   name: litellm-postgres-creds
   namespace: litellm
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     name: onepassword
     kind: ClusterSecretStore
@@ -7174,7 +7174,7 @@ metadata:
   name: litellm-secrets
   namespace: litellm
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     name: onepassword
     kind: ClusterSecretStore
@@ -7252,7 +7252,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     name: onepassword
     kind: ClusterSecretStore
