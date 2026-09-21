@@ -274,8 +274,16 @@ async def _redis():
                 import redis.asyncio as aioredis
                 _redis_client = aioredis.from_url(
                     _redis_url(),
-                    socket_timeout=REDIS_OP_TIMEOUT_SECONDS,
-                    socket_connect_timeout=REDIS_OP_TIMEOUT_SECONDS,
+                    # Presupuesto de SOCKET holgado (2 s): medido en vivo el 21-09,
+                    # DNS=82 ms y conectar+AUTH en frío ≈ 220 ms — con 100 ms de
+                    # socket_timeout NINGUNA conexión fría llegaba nunca, ni
+                    # siquiera la escritura en background (el wait_for de 2 s no
+                    # aplicaba: moría antes en el socket). El presupuesto de 100 ms
+                    # del camino de la petición (mandato 10) lo impone el
+                    # asyncio.wait_for de _sticky_get, no el socket; la operación
+                    # en curso se cancela y la conexión se descarta (fail-open).
+                    socket_timeout=STICKY_WRITE_TIMEOUT_SECONDS,
+                    socket_connect_timeout=STICKY_WRITE_TIMEOUT_SECONDS,
                     health_check_interval=REDIS_HEALTH_CHECK_INTERVAL,
                     decode_responses=True,
                 )
