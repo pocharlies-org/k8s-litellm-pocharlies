@@ -5282,8 +5282,9 @@ data:
     #
     # FAIL-OPEN TOTAL: cualquier fallo (panel, Valkey, sidecar, cooldown) devuelve
     # False sin tocar data. Presupuesto por petición: ≤100 ms por operación
-    # (config TTL 5 s single-flight con último-bueno; Valkey y sidecar con timeout
-    # duro de 0,1 s). Valkey caído => LiteLLM sigue EXACTAMENTE como hoy.
+    # (config TTL 5 s stale-while-revalidate: el camino de la petición NO hace I/O,
+    # refresca en background con último-bueno; Valkey y sidecar con timeout duro de
+    # 0,1 s). Valkey caído => LiteLLM sigue EXACTAMENTE como hoy.
     import asyncio
     import logging
     import os
@@ -5314,8 +5315,16 @@ data:
     )
 
     CONFIG_TTL_SECONDS = 5.0
-    # ≤100 ms por operación en el camino de la petición (mandato 10).
+    # ≤100 ms por operación en el camino de la petición (mandato 10). La config ya
+    # NO está en el camino de la petición (stale-while-revalidate, ver _config);
+    # el tope sigue aquí como contrato y para cualquier uso síncrono futuro.
     CONFIG_TIMEOUT_SECONDS = 0.1
+    # Timeout del refrescador EN BACKGROUND: fuera del camino de la petición, nunca
+    # bloquea un request, así que no compite con el presupuesto de 100 ms. Medido en
+    # el pod (21-09): /api/model-routing/config tarda 130-300 ms SIEMPRE porque el
+    # backend paga un subprocess kubectl por lectura — un fetch síncrono con tope de
+    # 100 ms timeoutearía en cada intento y el panel no propagaría nunca (C8).
+    CONFIG_REFRESH_TIMEOUT_SECONDS = 2.0
     REDIS_OP_TIMEOUT_SECONDS = 0.1
     SIDECAR_TIMEOUT_SECONDS = 0.1
     STICKY_TTL_SECONDS = 3600
@@ -5346,7 +5355,8 @@ data:
     }
 
     _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
-    _config_lock = asyncio.Lock()
+    _config_refresh_task = None
+    _config_client = None
     _redis_client = None
     _redis_lock = asyncio.Lock()
 
@@ -5404,35 +5414,43 @@ data:
 
 
     async def _config():
-        """TTL 5 s single-flight con último-bueno (patrón _compute_mode_state de
-        strip_params — mandato 9: no escribir una tercera cache). Quien encuentra
-        la cache vencida y el lock ocupado NO espera: devuelve el último config
-        conocido. Si el fetch falla se conserva el último bueno."""
-        now = time.monotonic()
-        if now < _config_cache["expires"]:
-            return _config_cache["config"]
-        if _config_lock.locked():
-            return _config_cache["config"]
-        async with _config_lock:
-            now = time.monotonic()
-            if now < _config_cache["expires"]:
-                return _config_cache["config"]
-            config = _config_cache["config"]
-            try:
-                async with httpx.AsyncClient(timeout=CONFIG_TIMEOUT_SECONDS) as client:
-                    response = await client.get(CONFIG_URL)
-                response.raise_for_status()
-                candidate = response.json()
-                if isinstance(candidate, dict):
-                    config = _sanitize(candidate)
-            except Exception as exc:
-                log.warning(
-                    "session_router: config de routing no alcanzable (%s); sigo con el último conocido",
-                    exc,
-                )
-            _config_cache["config"] = config
-            _config_cache["expires"] = now + CONFIG_TTL_SECONDS
-            return config
+        """Stale-while-revalidate: el camino de la petición NO hace NINGUNA I/O de
+        config — devuelve la caché al instante (defaults seguros en frío) y, si está
+        vencida, lanza el refresco en background single-flight. Propagación de un
+        cambio del panel: TTL 5 s + ~0.3 s del refresco (C8 ≤10 s sigue holgado).
+        El patrón anterior (fetch síncrono con tope de 100 ms) era correcto en
+        presupuesto pero ciego en la práctica: el backend tarda 130-300 ms por el
+        subprocess kubectl y TODO fetch moría en ReadTimeout — el fail-open tapaba
+        el panel entero."""
+        global _config_refresh_task
+        if time.monotonic() >= _config_cache["expires"]:
+            if _config_refresh_task is None or _config_refresh_task.done():
+                _config_refresh_task = asyncio.create_task(_refresh_config())
+        return _config_cache["config"]
+
+
+    async def _refresh_config():
+        """Refresco en background: un task a la vez (single-flight por task.done()),
+        cliente persistente con keep-alive, NUNCA lanza (un task muerto no debe
+        arrastrar el hook). Renueva el TTL incluso en fallo: sin eso, cada petición
+        relanzaría el intento y habría una tormenta de tasks contra el backend."""
+        global _config_client
+        try:
+            if _config_client is None or _config_client.is_closed:
+                _config_client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(CONFIG_REFRESH_TIMEOUT_SECONDS))
+            response = await _config_client.get(CONFIG_URL)
+            response.raise_for_status()
+            candidate = response.json()
+            if isinstance(candidate, dict):
+                _config_cache["config"] = _sanitize(candidate)
+            # candidato no-dict: se conserva el último bueno (segunda red de _sanitize)
+        except Exception as exc:
+            log.warning(
+                "session_router: config de routing no alcanzable (%s); sigo con el último conocido",
+                exc,
+            )
+        _config_cache["expires"] = time.monotonic() + CONFIG_TTL_SECONDS
 
 
     def _redis_url():
@@ -7166,7 +7184,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-4ed980cb7b44
+        config.k8s.e-dani.com/revision: config-c12d45694a5b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

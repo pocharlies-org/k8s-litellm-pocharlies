@@ -17,7 +17,7 @@ sticky-routing.md en la épica):
      instant_reject; el plan explícito NUNCA se rechaza; sticky solo se escribe
      para sesiones de plan default.
   7. El comentario de router_settings sobre la afinidad queda actualizado.
-  9. La config del panel se cachea con TTL + single-flight + último-bueno.
+  9. La config del panel se cachea con TTL + refresco en background (SWR) + último-bueno.
  10. Este fichero: AST + forma del manifiesto + comportamiento.
 
 Fail-open: timeouts del camino de petición <= 100 ms y redis.asyncio.
@@ -212,6 +212,19 @@ def test_timeouts_del_camino_de_peticion_hasta_100ms(router_src):
         "REDIS_OP_TIMEOUT_SECONDS", "SIDECAR_TIMEOUT_SECONDS", "CONFIG_TIMEOUT_SECONDS"
     ):
         assert constantes[nombre] <= 0.1, f"{nombre} = {constantes[nombre]} > 100 ms"
+    # 21-09 (post-deploy): CONFIG_REFRESH_TIMEOUT_SECONDS puede ser holgado SOLO
+    # porque vive fuera del camino de la petición — _config() no hace NINGUNA I/O
+    # (stale-while-revalidate). El backend tarda 130-300 ms (subprocess kubectl)
+    # y un fetch síncrono con 100 ms timeoutearía siempre: el panel no propagaría.
+    assert 0.1 < constantes["CONFIG_REFRESH_TIMEOUT_SECONDS"] <= 5.0
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_config")
+    src_config = ast.get_source_segment(router_src, fn)
+    assert "httpx" not in src_config and ".get(" not in src_config, \
+        "_config() no puede bloquearse en I/O de red (solo lecturas de caché)"
+    refresco = next(n for n in tree.body
+                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "_refresh_config")
+    assert "CONFIG_REFRESH_TIMEOUT_SECONDS" in ast.get_source_segment(router_src, refresco)
 
 
 def test_redis_asyncio(router_src):
@@ -233,9 +246,26 @@ def test_apply_session_routing_es_fail_open(router_src):
     )
 
 
-def test_config_ttl_single_flight(router_src):
+def test_config_stale_while_revalidate(router_src):
+    """SWR (21-09): caché con TTL + refresco en background single-flight. El
+    camino de la petición devuelve SIEMPRE al instante (caché o defaults); el
+    único que hace I/O es _refresh_config, y renueva el TTL incluso en fallo
+    para no lanzar una tormenta de tasks contra el backend."""
     assert "CONFIG_TTL_SECONDS" in router_src
-    assert "locked()" in router_src  # single-flight sin bloqueo de los demás
+    tree = ast.parse(router_src)
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_config")
+    src = ast.get_source_segment(router_src, fn)
+    assert "create_task(_refresh_config())" in src  # refresco en background
+    assert ".done()" in src                          # single-flight: uno a la vez
+    assert "await " not in src.replace("async def _config():", ""), \
+        "_config no espera nada: sirve la caché y devuelve el control"
+    refresco = next(n for n in tree.body
+                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "_refresh_config")
+    cuerpo = ast.get_source_segment(router_src, refresco)
+    # el rinnovo del TTL va FUERA del try (se ejecuta también cuando el fetch falla)
+    assert cuerpo.rstrip().endswith('_config_cache["expires"] = time.monotonic() + CONFIG_TTL_SECONDS')
+    assert any(isinstance(n, ast.Try) for n in refresco.body)  # nunca lanza
 
 
 # ── Mandato 7: comentario de router_settings actualizado ─────────────────────
