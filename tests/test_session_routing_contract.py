@@ -217,6 +217,19 @@ def test_timeouts_del_camino_de_peticion_hasta_100ms(router_src):
     # (stale-while-revalidate). El backend tarda 130-300 ms (subprocess kubectl)
     # y un fetch síncrono con 100 ms timeoutearía siempre: el panel no propagaría.
     assert 0.1 < constantes["CONFIG_REFRESH_TIMEOUT_SECONDS"] <= 5.0
+    # 21-09 (fix defecto 1 QA live): STICKY_WRITE_TIMEOUT_SECONDS también puede
+    # ser holgado SOLO porque la escritura sticky es fire-and-forget — _sticky_set
+    # programa _sticky_set_bg y devuelve el control al instante. Con 100 ms en el
+    # camino de la petición ~99% de las escrituras morían bajo carga.
+    assert 0.1 < constantes["STICKY_WRITE_TIMEOUT_SECONDS"] <= 5.0
+    sticky_set = next(n for n in tree.body
+                      if isinstance(n, ast.AsyncFunctionDef) and n.name == "_sticky_set")
+    src_sticky_set = ast.get_source_segment(router_src, sticky_set)
+    assert "wait_for" not in src_sticky_set and "_schedule(" in src_sticky_set, \
+        "_sticky_set no puede bloquear la petición: fire-and-forget obligatorio"
+    fondo = next(n for n in tree.body
+                 if isinstance(n, ast.AsyncFunctionDef) and n.name == "_sticky_set_bg")
+    assert "STICKY_WRITE_TIMEOUT_SECONDS" in ast.get_source_segment(router_src, fondo)
     fn = next(n for n in tree.body
               if isinstance(n, ast.AsyncFunctionDef) and n.name == "_config")
     src_config = ast.get_source_segment(router_src, fn)
@@ -230,6 +243,37 @@ def test_timeouts_del_camino_de_peticion_hasta_100ms(router_src):
 def test_redis_asyncio(router_src):
     assert "import redis.asyncio" in router_src
     assert "socket_timeout" in router_src
+
+
+def test_redis_pool_caliente_y_warmup(router_src):
+    """Fix defecto 1: el pool mantiene la conexión viva (health_check_interval)
+    y la primera (DNS+TCP+AUTH) se paga en background, fuera de la petición."""
+    assert "health_check_interval" in router_src
+    assert "_redis_warmup" in router_src
+
+
+def test_fallos_de_valkey_dejan_rastro_throttled(router_src):
+    """Fix defecto 3 + observabilidad: sticky_get/sticky_set/warmup ya no
+    fallan en silencio, y los warnings van throttled (1/min con cuenta) para
+    no inundar el log bajo carga (930 líneas en 40 min midió el QA live)."""
+    for nombre in ("_sticky_get", "_sticky_set_bg", "_redis_warmup"):
+        fn = next(n for n in ast.parse(router_src).body
+                  if isinstance(n, ast.AsyncFunctionDef) and n.name == nombre)
+        assert "_warn_throttled" in ast.get_source_segment(router_src, fn), nombre
+    assert 'def _warn_throttled' in router_src
+
+
+def test_decision_deja_una_linea_observable(router_src):
+    """Fix defecto 2: cada petición con features activos o reescritura produce
+    UNA línea INFO con model/sid/bound/plan/cool/inflight/decision — los
+    caminos degradados de alibaba ya no son mudos."""
+    apply_fn = next(n for n in ast.parse(router_src).body
+                    if isinstance(n, ast.AsyncFunctionDef)
+                    and n.name == "apply_session_routing")
+    src = ast.get_source_segment(router_src, apply_fn)
+    assert "session_router decision:" in src
+    for campo in ("cool=", "plan=", "bound=", "inflight=", "sid="):
+        assert campo in src, campo
 
 
 def test_apply_session_routing_es_fail_open(router_src):
