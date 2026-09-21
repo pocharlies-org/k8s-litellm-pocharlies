@@ -178,7 +178,7 @@ def test_las_cuatro_superficies_del_owner_pueden_pedir_la_abliterada(hook):
     """OWU-50: los cuatro perfiles de chat tienen que estar operativos en Open
     WebUI, Claude Code CLI, Hermes y Synapse.
 
-    El picker puede ofrecer `q38-flash-u` y aun asi devolver 403: la puerta de
+    El picker puede ofrecer `qwen38-u-off` y aun asi devolver 403: la puerta de
     keys corre ANTES que la del hook, asi que cada key que ofrece los perfiles
     tiene que estar en la allowlist. Se comprueba por alias, que es lo que lee el
     gate, y con el nombre del perfil (no el del residente): si manana se renombra
@@ -186,7 +186,7 @@ def test_las_cuatro_superficies_del_owner_pueden_pedir_la_abliterada(hook):
     """
     for alias in ("open-webui-v3", "claude-local", "hermes", "synapse"):
         assert alias in hook.UNCENSORED_ALLOWED_KEY_ALIASES, alias
-        for perfil in ("q38-flash-u", "q38-flash-u-think"):
+        for perfil in ("qwen38-u-off", "qwen38-flash-next-uncensored"):
             denied, _ = hook._uncensored_access_denied(perfil, alias)
             assert denied is False, f"{alias} no puede pedir {perfil}"
 
@@ -194,5 +194,5 @@ def test_las_cuatro_superficies_del_owner_pueden_pedir_la_abliterada(hook):
 def test_una_key_que_no_esta_en_la_lista_si_sigue_rechazando(hook):
     """Que abrir dos keys no convierta esto en un no-control."""
     assert "benchmark" not in hook.UNCENSORED_ALLOWED_KEY_ALIASES
-    denied, _ = hook._uncensored_access_denied("q38-flash-u", "benchmark")
+    denied, _ = hook._uncensored_access_denied("qwen38-u-off", "benchmark")
     assert denied is True

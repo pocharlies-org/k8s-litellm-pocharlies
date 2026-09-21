@@ -102,25 +102,25 @@ THINKING = {"type": "enabled", "budget_tokens": 12000}
 def test_pensamiento_exPLICITO_se_traduce_y_no_viaja(hook):
     """El caso del bug: residente + thinking -> sin `thinking`, con ctk low.
 
-    budget 12000 >= 4096 -> "high" (umbral del bridge), y la tabla qwen traduce
-    high -> reasoning_effort "low" (lo que el backend aguanta sin 400).
+    budget 12000 >= 4096 -> "high" (umbral del bridge), y desde el 22-09 la tabla
+    qwen honra high (el clamp high->low se retiro: medido, el nightly acepta high).
     """
     data = _run(hook, {"model": "qwen38-flash-next", "thinking": dict(THINKING)},
                 "qwen38-flash-next")
     assert "thinking" not in data, "el thinking viajo crudo: el bridge reescribe a /v1/responses"
-    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "low"}
+    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "high"}
 
 
 @pytest.mark.parametrize("budget,tier", [
     (1024, "low"),      # >= LOW(1024)
     (2048, "medium"),   # >= MEDIUM(2048)
-    (4096, "high"),     # >= HIGH(4096) -> la tabla qwen lo baja a low
+    (4096, "high"),     # >= HIGH(4096) -> high honrado (clamp retirado 22-09)
     (512, "low"),       # "minimal" para el bridge; aqui se sube al minimo real
 ])
 def test_umbrales_del_budget_coinciden_con_los_del_bridge(hook, budget, tier):
-    # El tier del bridge NO es el que viaja: THINKING_KWARGS de qwen traduce
-    # high->low. Lo que se comprueba es el resultado final en ctk.
-    esperado = {"low": "low", "medium": "medium", "high": "low"}[tier]
+    # El tier del bridge viaja tal cual desde el 22-09 (el clamp high->low se
+    # retiro: los cuatro niveles del backend estan medidos y responden 200).
+    esperado = {"low": "low", "medium": "medium", "high": "high"}[tier]
     data = _run(hook, {"model": "qwen38-flash-next",
                        "thinking": {"type": "enabled", "budget_tokens": budget}},
                 "qwen38-flash-next")

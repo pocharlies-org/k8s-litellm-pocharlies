@@ -55,10 +55,8 @@ ALIAS_LOCALES = {
     # lo declara (qwen38-flash-next y qwen38-27b). Si algun dia uno de los cuatro
     # deja de compartir ancla, esta linea pasa a ser una decision propia y hay que
     # medirla, no suponerla.
-    "q38-flash",
-    "q38-flash-think",
-    "q38-flash-u",
-    "q38-flash-u-think",
+    "qwen38-off",
+    "qwen38-u-off",
 }
 
 

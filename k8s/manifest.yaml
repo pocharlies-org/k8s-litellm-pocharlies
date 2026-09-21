@@ -381,10 +381,12 @@ data:
         #
         # 21-09-2026 (OWU-51): hasta hoy esta lista no tenia `low`, en contradiccion
         # con la frase de arriba. No era un detalle de redaccion: `low` es el nivel
-        # que elige el perfil `q38-flash-u-think`, y quien lee esta lista para montar
-        # su menu (OpenClaw con /effort) no lo ofrecia en la ruta abliterada. Medido
-        # hoy contra el motor con la key de chat: `q38-flash-u-think` -> HTTP 200 con
-        # `reasoning_content` de 140 caracteres, y `q38-flash-u` -> 200 con
+        # que elige el perfil abliterado que piensa (`qwen38-flash-next-uncensored`,
+        # antes `q38-flash-u-think`), y quien lee esta lista para montar su menu
+        # (OpenClaw con /effort) no lo ofrecia en la ruta abliterada. Medido
+        # 21-09 contra el motor con la key de chat: tier low -> HTTP 200 con
+        # `reasoning_content` de 140 caracteres, y el perfil apagado
+        # (`qwen38-u-off`, antes `q38-flash-u`) -> 200 con
         # `reasoning_content` AUSENTE. O sea: el backend abliterado honra `low` igual
         # que el censurado, y quien lo negaba estaba mintiendo.
         #
@@ -570,12 +572,17 @@ data:
       model_info: *tooling_pool_info
     # ── OWU-50: los cuatro perfiles de chat (21-09-2026, decisión de Dani) ───────
     #
-    # CUATRO NOMBRES, DOS CAPACIDADES. `q38-flash` y `q38-flash-think` son el
-    # residente censurado del perfil vivo; `q38-flash-u` y `q38-flash-u-think` son
-    # el mismo residente abliterado. Lo único que cambia dentro de cada pareja es
-    # CUÁNTO PIENSA, y eso no se declara aquí: vive en THINKING_TIERS, que es la
-    # tabla que el plugin `litellm-thinking-profile` ya usa para poner el nivel por
-    # alias pedido. Aquí solo se declaran los nombres y a qué pool apuntan.
+    # DOS CAPACIDADES, DOS NIVELES, CUATRO NOMBRES QUE SE LEEN SOLOS
+    # (renombrado 22-09-2026 a pedido del owner: los nombres viejos `q38-flash*`
+    # duplicaban el residente sin decir qué era cada uno). La matriz:
+    #   `qwen38-flash-next` / `qwen38-flash-next-uncensored` -> el residente
+    #       (censurado / abliterado) PENSANDO (tier low).
+    #   `qwen38-off` / `qwen38-u-off` -> EL MISMO residente con el
+    #       pensamiento APAGADO.
+    # El nivel no se declara aquí: vive en THINKING_TIERS, que es la tabla que el
+    # plugin `litellm-thinking-profile` ya usa para ponerlo por alias pedido. Aquí
+    # solo se declaran los nombres y a qué pool apuntan. Los cuatro nombres viejos
+    # siguen vivos como puente en model_group_alias, con su caducidad.
     #
     # POR QUE ALIASES REALES Y NO PARÁMETROS DE OPEN WEBUI. Open WebUI guarda los
     # parámetros por modelo en su BD y son propiedad de UNA cuenta: eso es justo lo
@@ -602,16 +609,10 @@ data:
     # (reconciliador) es quien tiene que dejar de mirar solo el catálogo de Open WebUI
     # y poseer también el `models` de las keys, o cada alias nuevo morirá en un 403
     # que parece un problema de routing y no lo es.
-    - model_name: q38-flash
+    - model_name: qwen38-off
       litellm_params: *tooling_pool_params
       model_info: *tooling_pool_info
-    - model_name: q38-flash-think
-      litellm_params: *tooling_pool_params
-      model_info: *tooling_pool_info
-    - model_name: q38-flash-u
-      litellm_params: *tooling_pool_params
-      model_info: *tooling_pool_info
-    - model_name: q38-flash-u-think
+    - model_name: qwen38-u-off
       litellm_params: *tooling_pool_params
       model_info: *tooling_pool_info
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
@@ -1448,6 +1449,14 @@ data:
         alibaba-deepseek-v41-flash: alibaba-dsv41-fl
         alibaba-deepseek-v4-pro: alibaba-dsv4-pro
         alibaba-deepseek-v4-flash-0731: alibaba-dsv4f0731
+        # 22-09-2026: puente del renombrado de los perfiles de chat. Los dos
+        # `-think` mueren como nombre: su nivel (low) hoy lo da el nombre del
+        # residente que piensa. Misma regla de caducidad que los de arriba:
+        # spend logs 7 dias verdes y se borran estas cuatro lineas y su test.
+        q38-flash: qwen38-off
+        q38-flash-u: qwen38-u-off
+        q38-flash-think: qwen38-flash-next
+        q38-flash-u-think: qwen38-flash-next-uncensored
       # 2026-06-22: a wedged vLLM backend (EngineCore deadlock; /health still 200)
       # used to keep eating ~50% of chat traffic because it took 20 fails before
       # any cooldown and the cooldown was only 30s. Eject faster and keep it out
@@ -1664,7 +1673,7 @@ data:
     # cómputo los trate como locales; un alias fuera de aquí se enrutaría por su
     # `api_base` fijo y dejaría de seguir al residente del perfil.
     TOOLING_PROFILE_ALIASES = frozenset({
-        "tooling", "q38-flash", "q38-flash-think",
+        "tooling", "qwen38-off",
     })
 
     # `tooling-uncensored` significa lo mismo que `tooling` —el residente del perfil
@@ -1694,7 +1703,7 @@ data:
     # anadir los nombres sin anadirlos aqui seria abrir la ablacion a cualquier key
     # por la puerta de atras.
     TOOLING_UNCENSORED_ALIASES = frozenset({
-        "tooling-uncensored", "q38-flash-u", "q38-flash-u-think",
+        "tooling-uncensored", "qwen38-u-off",
     })
 
     def _component_is_ready(state, node, name):
@@ -1813,8 +1822,8 @@ data:
     # `hermes` y `synapse` entran (2026-09-21, pedido explicito del owner, OWU-50):
     # son las dos superficies que quedan por montar de las cuatro donde el owner
     # quiere los cuatro perfiles de chat (Open WebUI ya los tiene, Claude Code CLI
-    # se acaba de añadir). Sin aqui, `q38-flash-u` y `q38-flash-u-think` aparecen en
-    # el picker de Hermes y dan 403 — la puerta de keys va DELANTE de la del hook,
+    # se acaba de añadir). Sin aqui, `qwen38-u-off` (y antes los `q38-flash-u*`)
+    # aparecen en el picker de Hermes y dan 403 — la puerta de keys va DELANTE de la del hook,
     # asi que el alias existe pero la respuesta no llega. Las dos keys tienen
     # `models: []` (= todos los modelos), luego esto no abre superficie de catalogo:
     # solo quita el candado de la ruta abliterada a dos keys del propio owner.
@@ -3432,18 +3441,16 @@ data:
         # fija si el modelo pedido esta en este dict — y pasaria lo que ya costo
         # tres intentos el 19-08: peticion al Service de pool SIN `cache_salt`, HTTP
         # 200, y el residente CENSURADO contestando bajo un nombre que dice
-        # `q38-flash-u`. Lo vigila test_the_capability_alias_is_in_CAPABILITY_CHAINS
+        # `qwen38-u-off`. Lo vigila test_the_capability_alias_is_in_CAPABILITY_CHAINS
         # _or_the_rewrite_never_runs, que es un test de comportamiento, no de forma.
         #
-        # Los dos censurados HEREDAN la red de nube (es el fallback del residente,
-        # y el criterio C7 de OWU-50 se ejerce justo por aqui). Los dos abliterados
-        # van con `fallbacks` VACIO por el motivo de arriba: si cayeran a una ruta
+        # El censurado HEREDA la red de nube (es el fallback del residente,
+        # y el criterio C7 de OWU-50 se ejerce justo por aqui). El abliterado
+        # va con `fallbacks` VACIO por el motivo de arriba: si cayera a una ruta
         # censurada contestarian censurado a quien pidio lo contrario, con 200 y sin
         # aviso. Lo mismo que ya decide #101 para `tooling-uncensored`.
-        "q38-flash": {"model": "q38-flash", "fallbacks": TOOLING_FALLBACKS},
-        "q38-flash-think": {"model": "q38-flash-think", "fallbacks": TOOLING_FALLBACKS},
-        "q38-flash-u": {"model": "q38-flash-u", "fallbacks": ()},
-        "q38-flash-u-think": {"model": "q38-flash-u-think", "fallbacks": ()},
+        "qwen38-off": {"model": "qwen38-off", "fallbacks": TOOLING_FALLBACKS},
+        "qwen38-u-off": {"model": "qwen38-u-off", "fallbacks": ()},
     }
     # ── Desvio de VISION (2026-08-11) ───────────────────────────────────────────
     #
@@ -3861,7 +3868,8 @@ data:
         # Consecuencia que hay que tener presente, la misma que ya documenta
         # `tooling`: estos cuatro reciben temperature 1.0 / top_p 0.95 de la familia
         # y pierden top_k/min_p/penalties. Con salida estructurada manda el cliente.
-        "q38-flash", "q38-flash-think", "q38-flash-u", "q38-flash-u-think",
+        "qwen38-flash-next-uncensored",
+        "qwen38-off", "qwen38-u-off",
     })
 
     # ── Nivel de pensamiento por ALIAS (2026-08-10) ─────────────────────────────
@@ -3921,31 +3929,35 @@ data:
         # `tooling-uncensored` no entra aqui: la ablacion es una capacidad
         # solicitada de forma explicita, no un nivel de pensamiento.
         #
-        # 21-09-2026 (OWU-50): los cuatro perfiles de chat SI entran, y hay que
-        # decir por que esto no contradice la linea de arriba. Arriba se excluye un
-        # NOMBRE DE CAPACIDAD (`tooling-uncensored`): ponerlo en la tabla daria a
-        # entender que abliter es un nivel de pensamiento, y no lo es. Aqui se
-        # declaran cuatro perfiles que son una COMBINACION elegida a proposito de
-        # capacidad + nivel, y el nivel es justo lo que esta tabla pone.
+        # 21-09-2026 (OWU-50): los perfiles de chat SI entran, y hay que decir por
+        # que esto no contradice la linea de arriba. Arriba se excluye un NOMBRE DE
+        # CAPACIDAD (`tooling-uncensored`): ponerlo en la tabla daria a entender que
+        # abliter es un nivel de pensamiento, y no lo es. Aqui se declaran
+        # combinaciones elegidas a proposito de capacidad + nivel, y el nivel es
+        # justo lo que esta tabla pone.
+        # 22-09-2026: `qwen38-flash-next-uncensored` ENTRA con `low`. Estaba fuera,
+        # y no era inocuo: sin entrada el tier es None y manda el default del
+        # servidor (xhigh) — el "mudo" de content vacio y finish=length. Con `low`
+        # el nombre que dice "pensando" piensa en el mismo nivel que su hermano
+        # censurado, y los dos `-think` (low explicito) dejan de tener razon de
+        # ser: se retiran y su trafico va al puente de model_group_alias.
         #
         # Y no es opcional. Un alias fuera de esta tabla devuelve tier=None,
         # `_apply_thinking_tier` hace return sin tocar nada y manda el default del
         # SERVIDOR — que en el chat template de Qwen3.8-Flash-Next es
         # `reasoning_effort|default('xhigh')`, o sea pensar al maximo sin que nadie
         # lo pida (medido 31-08: 17658 chars de razonamiento, content VACIO,
-        # finish=length). Un `q38-flash` sin entrada no seria "sin pensar": seria
+        # finish=length). Un `qwen38-off` sin entrada no seria "sin pensar": seria
         # "piensa mas que ninguno". Es el mismo fallo que se documento el 25-08 con
         # el nombre directo de DeepSeek.
         #
         # Consecuencia para la ruta abliterada, que queda dicha en voz alta:
         # `tooling-uncensored` sigue SIN entrada, asi que hoy piensa en xhigh por
         # defecto. No se le pone nivel aqui porque OpenClaw lo usa tal cual y
-        # cambiarle el default es otra decision; los perfiles de chat son nuevos y
-        # nacen con el nivel explicito que pidio Dani.
-        "q38-flash": "off",
-        "q38-flash-think": "low",
-        "q38-flash-u": "off",
-        "q38-flash-u-think": "low",
+        # cambiarle el default es otra decision.
+        "qwen38-flash-next-uncensored": "low",
+        "qwen38-off": "off",
+        "qwen38-u-off": "off",
     }
     # `/effort` de OpenClaw, que viaja como `reasoning_effort` de primer nivel.
     #
@@ -4042,13 +4054,17 @@ data:
             # como nivel oficial de la model card; la nota de la rama `elif` se
             # queda porque describe la plantilla.
             #
-            # `high` del backend NO existe: devuelve 400 "Unexpected reasoning
-            # effort high. Supported types are xhigh (default), medium, and low."
-            # Por eso `high` (alias deprecado del cliente) mapea a `low`.
+            # 22-09-2026: el clamp `high`->`low` se RETIRA. La nota vieja decia que
+            # el backend devolvia 400 a `high` ("Supported types are xhigh, medium,
+            # and low"); medido HOY contra el nightly actual (effort via
+            # chat_template_kwargs, mismo prompt): low 209 / medium 483 / high 290 /
+            # xhigh 244 caracteres de reasoning_content, los CUATRO con 200. El
+            # clamp estaba dejando el /effort high de Claude Code en lo mismo que
+            # low — los cuatro niveles del cliente salian indistinguibles.
             "off": {"enable_thinking": False},
             "low": {"enable_thinking": True, "reasoning_effort": "low"},
             "medium": {"enable_thinking": True, "reasoning_effort": "medium"},
-            "high": {"enable_thinking": True, "reasoning_effort": "low"},
+            "high": {"enable_thinking": True, "reasoning_effort": "high"},
             "max": {"enable_thinking": True, "reasoning_effort": "xhigh"},
         },
     }
@@ -5654,7 +5670,7 @@ data:
     # NO ES UN SEGUNDO CALLBACK (veredicto del arquitecto, mandato 2): este módulo
     # lo IMPORTA litellm_strip_params.py y lo llama desde su async_pre_call_hook,
     # justo después de la RED FINAL de visión y antes del sampling por familia. Ahí
-    # data["model"] ya está resuelto (tooling/q38-flash -> qwen38-flash-next), los
+    # data["model"] ya está resuelto (tooling/qwen38-off -> qwen38-flash-next), los
     # gates uncensored/openrouter ya pasaron, y el rewrite —si lo hay— llega ANTES
     # del sello, del template strict-system, de la admisión compute-mode y del
     # tracker de peticiones activas, que ven todos el modelo final.
@@ -5761,7 +5777,7 @@ data:
     # se estampa en strip_params DESPUÉS de este punto de inserción — por eso la
     # comprobación por NOMBRE aquí es obligatoria, el sello aún no existe).
     UNCENSORED_ALIASES = frozenset({
-        "tooling-uncensored", "q38-flash-u", "q38-flash-u-think",
+        "tooling-uncensored", "qwen38-u-off",
     })
     UNCENSORED_SUFFIX = "-uncensored"
 
@@ -7732,7 +7748,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-0701981abd0c
+        config.k8s.e-dani.com/revision: config-3f2057525967
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
