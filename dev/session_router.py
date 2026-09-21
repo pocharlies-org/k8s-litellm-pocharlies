@@ -91,6 +91,14 @@ CONFIG_TIMEOUT_SECONDS = 0.1
 # 100 ms timeoutearía en cada intento y el panel no propagaría nunca (C8).
 CONFIG_REFRESH_TIMEOUT_SECONDS = 2.0
 REDIS_OP_TIMEOUT_SECONDS = 0.1
+# Timeout de la ESCRITURA sticky, que va en background (fire-and-forget, fix del
+# defecto 1 del QA live 21-09: con 100 ms en el camino de la petición ~99% de los
+# sticky_set morían bajo carga y el binding no aterrizaba nunca). Fuera del
+# camino de la petición => no compite con el presupuesto del mandato 10.
+STICKY_WRITE_TIMEOUT_SECONDS = 2.0
+# PING de keepalive del pool de redis: mantiene la conexión caliente y evita
+# pagar DNS+TCP+AUTH en la siguiente operación (que sí va en camino de petición).
+REDIS_HEALTH_CHECK_INTERVAL = 30
 SIDECAR_TIMEOUT_SECONDS = 0.1
 STICKY_TTL_SECONDS = 3600
 STICKY_KEY_PREFIX = "session-router:sticky:"
@@ -124,6 +132,29 @@ _config_refresh_task = None
 _config_client = None
 _redis_client = None
 _redis_lock = asyncio.Lock()
+_bg_tasks = set()
+_warn_state = {}
+
+
+def _schedule(coro):
+    """Lanza una tarea en background sin perder la referencia (un task sin
+    referencia puede ser recolectado a medias por el GC de asyncio)."""
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+def _warn_throttled(key, mensaje):
+    """Warning como mucho 1/min por clave con cuenta acumulada: un fallo
+    sistemático (p.ej. valkey saturado bajo carga) no puede inundar el log —
+    930 líneas en 40 min midió el QA live del 21-09."""
+    now = time.monotonic()
+    prev = _warn_state.get(key)
+    if prev is None or now - prev[0] >= 60.0:
+        log.warning("session_router: %s (x%d)", mensaje, (prev[1] if prev else 0) + 1)
+        _warn_state[key] = (now, 0)
+    else:
+        _warn_state[key] = (prev[0], prev[1] + 1)
 
 
 def _is_uncensored(name):
@@ -245,12 +276,24 @@ async def _redis():
                     _redis_url(),
                     socket_timeout=REDIS_OP_TIMEOUT_SECONDS,
                     socket_connect_timeout=REDIS_OP_TIMEOUT_SECONDS,
+                    health_check_interval=REDIS_HEALTH_CHECK_INTERVAL,
                     decode_responses=True,
                 )
+                # Warmup en background: la primera conexión (DNS+TCP+AUTH) se paga
+                # fuera del camino de la petición; sin esto, el primer GET sticky
+                # de cada pod consumía su presupuesto de 100 ms en el handshake.
+                _schedule(_redis_warmup(_redis_client))
             except Exception as exc:
                 log.warning("session_router: redis no disponible (%s); fail-open", exc)
                 return None
     return _redis_client
+
+
+async def _redis_warmup(client):
+    try:
+        await asyncio.wait_for(client.ping(), timeout=STICKY_WRITE_TIMEOUT_SECONDS)
+    except Exception as exc:
+        _warn_throttled("redis_warmup", f"warmup de redis falló ({exc.__class__.__name__})")
 
 
 async def _sticky_get(sid):
@@ -263,23 +306,36 @@ async def _sticky_get(sid):
             timeout=REDIS_OP_TIMEOUT_SECONDS,
         )
         return value if value in ("local", "alibaba") else None
-    except Exception:
+    except Exception as exc:
+        # Fail-open (sesión tratada como fresca) pero ya no EN SILENCIO: el QA
+        # live del 21-09 mostró sesiones ligadas a alibaba re-evaluadas como
+        # frescas porque este timeout no dejaba rastro.
+        _warn_throttled("sticky_get", f"sticky_get falló ({exc.__class__.__name__}); trato la sesión como fresca")
         return None
 
 
 async def _sticky_set(sid, plan):
+    """Fire-and-forget: programa la escritura en background y devuelve el
+    control AL INSTANTE. Fix del defecto 1 del QA live (21-09): con el
+    presupuesto de 100 ms en el camino de la petición, ~99% de las escrituras
+    morían bajo carga (930+ fallos en 40 min, 6 claves escritas, 0 de plan
+    local) — el sticky quedaba inoperativo justo cuando más falta hacía. La
+    pérdida puntual se tolera por diseño: la siguiente petición re-intenta el
+    vínculo."""
+    _schedule(_sticky_set_bg(sid, plan))
+
+
+async def _sticky_set_bg(sid, plan):
     try:
         client = await _redis()
         if client is None:
             return
         await asyncio.wait_for(
             client.set(f"{STICKY_KEY_PREFIX}{sid}", plan, ex=STICKY_TTL_SECONDS),
-            timeout=REDIS_OP_TIMEOUT_SECONDS,
+            timeout=STICKY_WRITE_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        # Sin binding la siguiente petición re-intenta el vínculo: degradación
-        # visible solo como un posible rebote, nunca como un error.
-        log.warning("session_router: sticky_set falló (%s); fail-open", exc)
+        _warn_throttled("sticky_set", f"sticky_set falló ({exc.__class__.__name__}); fail-open")
 
 
 async def _inflight_resident(tracker):
@@ -331,9 +387,15 @@ def _group_in_cooldown(model_name):
     try:
         from litellm.proxy.proxy_server import llm_router
         if llm_router is None:
+            # El defecto 2 del QA live (default_plan=alibaba sin reescritura ni
+            # rastro) pasó por caminos mudos como este: ahora dicen por qué.
+            _warn_throttled("cooldown_router", "llm_router sin inicializar; overflow degradado")
             return None
         model_ids = llm_router.get_model_ids(model_name=model_name)
         if not model_ids:
+            _warn_throttled(
+                "cooldown_ids_" + str(model_name),
+                f"get_model_ids vacío para {model_name!r}; overflow degradado")
             return None
         cooling = llm_router.cooldown_cache.get_active_cooldowns(model_ids, None)
         return len(cooling) >= len(model_ids)
@@ -382,28 +444,61 @@ async def apply_session_routing(data, requested_model, tracker=None, resident_re
     (_compute_mode_state + _compute_mode_allows_local): mandato 9, no montar
     aquí una tercera cache del árbitro.
     """
+    info = {
+        "model": str(data.get("model") or ""), "sid": None, "bound": None,
+        "fresh": None, "plan": None, "cool": None, "inflight": None,
+        "decision": "fail-open", "active": False,
+    }
     try:
-        return await _apply(data, requested_model, tracker, bool(resident_ready))
+        rewrote = await _apply(data, requested_model, tracker, bool(resident_ready), info)
     except Exception as exc:
         log.warning("session_router: fallo inesperado (%s); fail-open", exc)
         return False
+    # Una línea INFO por petición cuando el routing de sesión está en juego
+    # (defecto 2 del QA live: default_plan=alibaba no reescribía y NO dejaba
+    # rastro — la causa real era invisible). Sin features activos, silencio:
+    # el tráfico normal no gana ruido de log.
+    if info["active"] or rewrote:
+        log.info(
+            "session_router decision: model=%s sid=%s bound=%s plan=%s cool=%s "
+            "inflight=%s -> %s%s",
+            info["model"] or "-", info["sid"] or "-", info["bound"], info["plan"],
+            info["cool"], info["inflight"], info["decision"],
+            " (REESCRITA)" if rewrote else "",
+        )
+    return rewrote
 
 
-async def _apply(data, requested_model, tracker, resident_ready):
+def _overflow_ok_info(info):
+    """_overflow_ok() dejando rastro del estado de cooldown en la decisión."""
+    cool = _group_in_cooldown(OVERFLOW_MODEL)
+    info["cool"] = cool
+    return cool is False
+
+
+async def _apply(data, requested_model, tracker, resident_ready, info):
     model = str(data.get("model") or "")
     if model not in ROUTED_MODELS:
+        info["decision"] = "no-routed"
         return False
     # Mandato 4a: petición sellada (disable_fallbacks, estampado aguas arriba
     # por strip_params) nunca abandona el backend que pidió.
     if data.get("disable_fallbacks") is True:
+        info["decision"] = "sellada"
         return False
     # Mandato 4b: uncensored nunca cae a Alibaba. Por NOMBRE (pedido y
     # resuelto): el sello se estampa después de este punto.
     if _is_uncensored(requested_model) or _is_uncensored(model):
+        info["decision"] = "uncensored"
         return False
 
     config = await _config()
     sid = _session_id(data)
+    info["sid"] = sid
+    info["active"] = bool(
+        config["sticky"] or config["instant_reject"]
+        or config["default_plan"] != "local" or config["session_plans"]
+    )
 
     # ── Precedencia 3: plan EXPLÍCITO del panel (decisión del operador) ──
     # Vive ANTES del corte por flags: un plan explícito es una orden directa
@@ -417,18 +512,28 @@ async def _apply(data, requested_model, tracker, resident_ready):
             explicit = plan_value
     if explicit == "local":
         # Al residente y ENCOLA si está lleno: nunca rechazo instantáneo.
+        info["plan"] = "local(explicito)"
+        info["decision"] = "plan_explicito_local"
         return False
     if explicit == "claude":
         # No aplica en este hook: Anthropic ni pasa por LiteLLM. La puerta vive
         # en el claude-router del x86 (PR-C4).
+        info["plan"] = "claude(explicito)"
+        info["decision"] = "plan_explicito_claude_puerta_en_router"
         return False
     if explicit == "alibaba":
-        if model == RESIDENT_MODEL and _overflow_ok():
+        info["plan"] = "alibaba(explicito)"
+        if model == RESIDENT_MODEL and _overflow_ok_info(info):
+            info["decision"] = "plan_alibaba"
             _rewrite(data, sid, "plan_alibaba")
             return True
+        info["decision"] = (
+            "plan_explicito_alibaba_degradado" if info["cool"] is not False
+            else "plan_explicito_alibaba_modelo_no_residente")
         return False
 
     if not config["sticky"] and not config["instant_reject"]:
+        info["decision"] = "flags_apagados"
         return False
 
     # ── Precedencia 4/5: sesiones de plan DEFAULT (sticky > válvula) ──
@@ -440,21 +545,28 @@ async def _apply(data, requested_model, tracker, resident_ready):
         plan = config["default_plan"] if config["sticky"] else "local"
     else:
         plan = bound
+    info["bound"] = bound
+    info["fresh"] = fresh
+    info["plan"] = plan
     if plan == "claude":
+        info["decision"] = "plan_claude_puerta_en_router"
         return False
 
     if plan == "alibaba":
-        if not _overflow_ok():
+        if not _overflow_ok_info(info):
             # Alibaba en cooldown o desconocido: degradar. Si el binding era
             # sticky y el residente admite, se re-vincula (hueco).
             if config["sticky"] and sid and not fresh and resident_ready:
                 await _sticky_set(sid, "local")
+            info["decision"] = "plan_alibaba_degradado_por_cooldown"
             return False
         if config["sticky"] and sid and fresh:
             await _sticky_set(sid, "alibaba")
         if model == RESIDENT_MODEL:
+            info["decision"] = "sticky_alibaba" if not fresh else "default_alibaba"
             _rewrite(data, sid, "sticky_alibaba" if not fresh else "default_alibaba")
             return True
+        info["decision"] = "plan_alibaba_modelo_no_residente"
         return False
 
     # plan == "local"
@@ -462,12 +574,14 @@ async def _apply(data, requested_model, tracker, resident_ready):
         # Hueco: compute-mode no admite el residente ahora mismo. Re-vincula a
         # Alibaba solo si está utilizable; si no, degrada (la admisión de
         # strip_params decidirá con su propio criterio).
-        if _overflow_ok():
+        if _overflow_ok_info(info):
             if config["sticky"] and sid:
                 await _sticky_set(sid, "alibaba")
             if model == RESIDENT_MODEL:
+                info["decision"] = "rebind_alibaba"
                 _rewrite(data, sid, "rebind_alibaba")
                 return True
+        info["decision"] = "residente_no_ready_degradado"
         return False
 
     # Válvula de capacidad (precedencia 5) — solo plan default. Con sticky
@@ -475,9 +589,11 @@ async def _apply(data, requested_model, tracker, resident_ready):
     # con sticky apagado es una válvula por petición que no escribe nada.
     if config["instant_reject"] and model == RESIDENT_MODEL:
         inflight = await _inflight_resident(tracker)
-        if inflight is not None and inflight >= config["local_slots"] and _overflow_ok():
+        info["inflight"] = inflight
+        if inflight is not None and inflight >= config["local_slots"] and _overflow_ok_info(info):
             if config["sticky"] and sid:
                 await _sticky_set(sid, "alibaba")
+            info["decision"] = "instant_reject"
             _rewrite(data, sid, "instant_reject")
             log.warning(
                 "session_router: instant_reject sid=%s en_vuelo=%s slots=%s -> %s",
@@ -487,4 +603,5 @@ async def _apply(data, requested_model, tracker, resident_ready):
 
     if config["sticky"] and sid and fresh:
         await _sticky_set(sid, "local")
+    info["decision"] = "local"
     return False
