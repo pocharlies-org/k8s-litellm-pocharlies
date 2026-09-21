@@ -4828,6 +4828,120 @@ data:
             log.debug("_log_sampling error: %s", e)
 
 
+    # ── Fase A del detector de refusal: sello `refusal_text` por peticion ───────
+    #
+    # El panel `/api/llm/refusal-rates` (dgx-infra) tiene DOS fuentes y la misma
+    # forma: la heuristica de texto (`refusal_text`, FASE A) y la sonda del kernel
+    # (`refusal_score`/`refusal_flag`, FASE B). La B exige imagen vLLM con
+    # `VLLM_REFUSAL_PROBE` y fichero de calibracion; la A no toca el modelo: mira el
+    # principio de la respuesta y la clasifica. La A era la que faltaba por cablear:
+    # el hook solo sellaba `refusal_lambda`/`refusal_runtime` (el DIAL, que consume
+    # el Historial), nunca el VEREDICTO de rechazo, asi que el denominador del panel
+    # (`refusal_text IS NOT NULL`) estaba a cero y pintaba "No disponible" pese a
+    # miles de peticiones.
+    #
+    # Se escribe en el MISMO sitio que el sello del dial y por el MISMO motivo:
+    # dentro de `spend_logs_metadata`, que es un dict libre que sobrevive al filtro
+    # allowlist de `SpendLogsMetadata` (una clave plana fuera de ahi se tira en
+    # silencio). Verificado que la via del pre-call persiste (10164 filas con
+    # refusal_lambda en 24 h).
+    #
+    # CONTRATO con el panel: el valor es EXACTAMENTE 'refusal' o 'answer'. El panel
+    # cuenta el numerador por `refusal_text = 'refusal'` y el denominador por
+    # `refusal_text IS NOT NULL`, y avisa (`n_text_unknown`) si aparece otro valor.
+    # No se escribe NULL ni para respuestas vacias: si no hay texto de asistente
+    # (embeddings, transcription, imagen, un fallo) NO se sella, para no inflar el
+    # denominador con filas que jamas podran clasificarse.
+    #
+    # La heuristica es conservadora y deliberadamente pequena: es el baseline que la
+    # sonda tiene que batir, no un clasificador definitivo. Un falso 'answer' (rechazo
+    # con palabras no listas) subestima la tasa; un falso 'refusal' la infla. Ninguno
+    # de los dos pasa desapercibido: el panel pinta `n` (denominador) junto a la tasa.
+    _REFUSAL_OPENERS = (
+        # ingles
+        "i can't", "i cannot", "i can not", "i'm unable", "i am unable",
+        "i'm not able", "i am not able", "i won't", "i will not",
+        "i'm sorry, but", "i'm sorry but", "sorry, but i", "i apologize but",
+        "as an ai", "as a language model", "i'm not comfortable",
+        "i can't assist", "i cannot assist", "i can't help", "i cannot help",
+        "i can't provide", "i cannot provide", "i'm unable to help",
+        "i won't be able", "i don't think i can", "not able to assist",
+        # espanol (los modelos responden en ambos idiomas segun el turno)
+        "no puedo", "no me es posible", "no estoy capacitado",
+        "como modelo de lenguaje", "como ia", "como inteligencia artificial",
+        "lamento", "no puedo asistir", "no puedo ayudar", "no puedo proporcionar",
+    )
+
+    def _looks_like_refusal(text: str) -> bool:
+        low = (text or "").lstrip()[:400].lower()
+        return any(p in low for p in _REFUSAL_OPENERS)
+
+    def _extract_response_text(response):
+        """Texto del primer choice. ModelResponse obj o dict; content str o bloques."""
+        try:
+            choices = (
+                response.get("choices") if isinstance(response, dict)
+                else getattr(response, "choices", None)
+            )
+            if not choices:
+                return None
+            first = choices[0]
+            msg = (first.get("message") if isinstance(first, dict)
+                   else getattr(first, "message", None))
+            content = (msg.get("content") if isinstance(msg, dict)
+                       else getattr(msg, "content", None))
+        except Exception:
+            return None
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):  # bloques estilo anthropic [{type:text,text:…}]
+            parts = []
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "text":
+                    parts.append(b.get("text", ""))
+                elif isinstance(b, str):
+                    parts.append(b)
+            return "".join(parts) or None
+        return None
+
+    def _extract_delta_text(chunk) -> str:
+        """Fragmento de texto de un chunk de streaming (choices[0].delta.content)."""
+        try:
+            choices = (chunk.get("choices") if isinstance(chunk, dict)
+                       else getattr(chunk, "choices", None))
+            if not choices:
+                return ""
+            delta = (choices[0].get("delta") if isinstance(choices[0], dict)
+                     else getattr(choices[0], "delta", None))
+            content = (delta.get("content") if isinstance(delta, dict)
+                       else getattr(delta, "content", None))
+            return content if isinstance(content, str) else ""
+        except Exception:
+            return ""
+
+    def _stamp_refusal_text(request_data, text) -> None:
+        """Clasifica `text` y escribe `refusal_text` en spend_logs_metadata.
+
+        Silencioso por diseño: es telemetria, jamas puede romper la peticion ni
+        alterar la respuesta que ve el cliente. Sin texto de asistente, no sella.
+        """
+        if not text or not isinstance(request_data, dict):
+            return
+        try:
+            _mvar = "litellm_metadata" if "litellm_metadata" in request_data else "metadata"
+            _meta = request_data.get(_mvar)
+            if not isinstance(_meta, dict):
+                _meta = {}
+                request_data[_mvar] = _meta
+            _slm = _meta.get("spend_logs_metadata")
+            if not isinstance(_slm, dict):
+                _slm = {}
+                _meta["spend_logs_metadata"] = _slm
+            _slm["refusal_text"] = "refusal" if _looks_like_refusal(text) else "answer"
+        except Exception as e:
+            log.debug("refusal_text stamp error: %s", e)
+
+
     class StripUnsupportedParams(litellm.integrations.custom_logger.CustomLogger):
         STRIP_PARAMS = {"reasoningSummary", "reasoning_summary"}
 
@@ -5236,18 +5350,38 @@ data:
                 )
             except Exception as e:
                 log.debug("track_proxy_success_usage error: %s", e)
+            # Fase A: veredicto de rechazo sobre la respuesta COMPLETA (no-stream).
+            # Va aqui y no en async_log_success_event porque este hook corre en el
+            # camino de la request, ANTES de que el logging escriba la fila de
+            # SpendLogs; async_log_success_event depende del orden de
+            # `litellm.callbacks` (ProxyLogging escribe primero) y podria llegar
+            # tarde. Muta el mismo dict anidado que el pre-call ya persistio.
+            _stamp_refusal_text(data, _extract_response_text(response))
             _track_end_from_payload(data, "proxy_success")
             return None
 
         async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
+            # El texto del turno se reparte entre chunks: hay que acumularlo para
+            # clasificarlo al final. La mayoria del trafico de agentes (Claude Code,
+            # openclaw) es streaming, asi que sin esta rama el panel solo veria las
+            # respuestas no-stream y seguiria pareciendo vacio.
+            _acc: list = []
             try:
                 async for chunk in response:
                     try:
                         _update_tracking_from_payload(request_data, chunk)
                     except Exception as e:
                         log.debug("track_iterator_chunk error: %s", e)
+                    try:
+                        _acc.append(_extract_delta_text(chunk))
+                    except Exception as e:
+                        log.debug("refusal_text accumulate error: %s", e)
                     yield chunk
             finally:
+                # El row de streaming se escribe al agotarse el stream (falta el
+                # usage final), y este `finally` corre al agotarse: el sello llega a
+                # tiempo sobre el mismo dict que lee el constructor de la fila.
+                _stamp_refusal_text(request_data, "".join(_acc) or None)
                 _track_end_from_payload(request_data, "streaming_iterator")
 
         async def async_post_call_failure_hook(
@@ -7418,7 +7552,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-92b4874b6fb6
+        config.k8s.e-dani.com/revision: config-e626f91eaec7
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
