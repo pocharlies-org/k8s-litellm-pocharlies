@@ -1837,6 +1837,82 @@ data:
             "allowed": sorted(UNCENSORED_ALLOWED_KEY_ALIASES),
         }
 
+    # ── imagen gorda hacia Alibaba: se rechaza antes de salir ─────────────────
+    # DashScope descarga el fichero multimodal A SU LADO y tiene un tope de tiempo
+    # para hacerlo. Medido el 21-09-2026 contra `alibaba-q38-flash`, misma peticion
+    # y solo cambiando el tamano del PNG: 16 KB -> 200, 3,0 MB -> 200,
+    # 12,3 MB -> 400 invalid_parameter_error "Download multimodal file timed out".
+    # El residente local no tiene ese problema porque decodifica el base64 en su
+    # propio proceso y no descarga nada: por eso SOLO se ve con Alibaba.
+    #
+    # Por que no se reescala aqui: la imagen de LiteLLM es la oficial de ghcr y NO
+    # trae Pillow (comprobado en el contenedor: ModuleNotFoundError: No module
+    # named 'PIL'), y en un hook de Python puro no hay codec para reducir un
+    # JPEG/PNG sin decodificarlo. Reescalar de verdad exige construir imagen
+    # propia, y eso es una decision aparte, no un detalle de este hook.
+    #
+    # Lo que si se gana con esto: no perder ~40 s de espera, y sobre todo un error
+    # que dice que hacer. Sin esto el 400 llega con el mensaje de DashScope y, como
+    # los grupos `alibaba-*` no tienen fallback declarado, el turno muere en
+    # silencio y el cliente reintenta el mismo payload gordo para siempre.
+    ALIBABA_MULTIMODAL_MAX_BYTES = 4 * 1024 * 1024
+
+    def _b64_payload_len(text):
+        """Bytes detras de un `data:...;base64,...`, estimado sin decodificar."""
+        head, sep, b64 = text.partition("base64,")
+        if not sep or not b64:
+            return 0
+        return len(b64) * 3 // 4
+
+    def _inline_image_sizes(data):
+        """Tamanos (en bytes) de las imagenes en linea de un payload de chat.
+
+        Acepta las dos formas que circulan por aqui: la de OpenAI
+        (`image_url.url` con data URI) y la de Anthropic (`source.data` en
+        base64), porque el hook puede ver la peticion antes de traducir.
+        """
+        sizes = []
+        for msg in data.get("messages") or []:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                kind = part.get("type")
+                if kind == "image_url":
+                    url = str((part.get("image_url") or {}).get("url") or "")
+                elif kind == "image":
+                    source = part.get("source") or {}
+                    if source.get("type") == "base64":
+                        url = "data:;base64," + str(source.get("data") or "")
+                    else:
+                        url = str(source.get("url") or "")
+                else:
+                    continue
+                if "base64," in url:
+                    sizes.append(_b64_payload_len(url))
+                # Una URL remota no se mide aqui: su tamano lo comprueba el propio
+                # LiteLLM con MAX_IMAGE_URL_DOWNLOAD_SIZE_MB.
+        return sizes
+
+    def _alibaba_multimodal_too_large(model, data):
+        """(True, detalle) si el destino es Alibaba y lleva una imagen imposible."""
+        if not str(model).startswith("alibaba-"):
+            return False, None
+        for size in _inline_image_sizes(data):
+            if size > ALIBABA_MULTIMODAL_MAX_BYTES:
+                return True, {
+                    "error": "image_too_large_for_alibaba",
+                    "model": str(model),
+                    "image_mb": round(size / (1024 * 1024), 1),
+                    "limit_mb": ALIBABA_MULTIMODAL_MAX_BYTES // (1024 * 1024),
+                    "hint": ("Alibaba no descarga ficheros multimodales por encima de su "
+                             "tope de tiempo (medido: 3 MB si, 12 MB no). Reescala la "
+                             "imagen, o pide el residente local, que si la acepta."),
+                }
+        return False, None
+
     def _apply_uncensored_fallback_policy(data, *names):
         """Una peticion abliterada NUNCA degrada: el sello no viaja a Alibaba.
 
@@ -5113,6 +5189,17 @@ data:
             # de capacidad (`tooling-uncensored` -> el residente del perfil vivo).
             _apply_uncensored_fallback_policy(data, requested_model, model)
 
+            # Imagen gorda hacia Alibaba: fuera aqui, en milisegundos y con mensaje
+            # propio, en vez de esperar el timeout de DashScope. Va DESPUES de
+            # resolver el alias para que cubra tambien la caida de `tooling` o de un
+            # `q38-*` en la nube, no solo el nombre directo.
+            _big, _big_detail = _alibaba_multimodal_too_large(model, data)
+            if _big:
+                router_log.warning(
+                    "multimodal: %s descarta una imagen de %s MB (limite %s MB)",
+                    _big_detail["model"], _big_detail["image_mb"], _big_detail["limit_mb"])
+                raise HTTPException(status_code=400, detail=_big_detail)
+
             return data
 
         def pre_call_hook(self, user_api_key_dict, cache, data, call_type):
@@ -7331,7 +7418,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f8533aed52c8
+        config.k8s.e-dani.com/revision: config-92b4874b6fb6
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
