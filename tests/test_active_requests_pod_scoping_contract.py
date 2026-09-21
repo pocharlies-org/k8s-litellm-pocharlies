@@ -627,9 +627,21 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
         # comparando una lista vacia contra una fila.
         assert body_old["active"] and body_new["active"], "un lado no recibio el fixture"
         assert "error" not in body_old and "error" not in body_new
-        assert _shape(body_old) == _shape(body_new), (
+        # INFRA-208 (mandato 1 del veredicto del arquitecto): `counts_by_model`
+        # es una clave ADITIVA con el mismo precedente que `peers_failed` — los
+        # dos consumidores conocidos (dgx-infra api/litellm_active.py y
+        # api/routes_hud.py) leen solo "active" y desconocen el resto. La
+        # comparacion de formas la excluye y la comprueba por separado.
+        shape_new = _shape(body_new)
+        counts_shape = shape_new.pop("counts_by_model", None)
+        assert isinstance(counts_shape, dict) and counts_shape, (
+            "counts_by_model desaparecio del agregado (INFRA-208)"
+        )
+        assert all(tipo == "int" for tipo in counts_shape.values())
+        assert sum(body_new["counts_by_model"].values()) == len(body_new["active"])
+        assert _shape(body_old) == shape_new, (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
-            f"ahora: {json.dumps(_shape(body_new))}"
+            f"ahora: {json.dumps(shape_new)}"
         )
         assert body_old["active"][0]["request_id"] == body_new["active"][0]["request_id"] == "req-1"
 

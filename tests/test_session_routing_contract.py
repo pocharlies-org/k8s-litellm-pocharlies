@@ -1,0 +1,526 @@
+"""Contract de INFRA-208: sticky routing por sesión + rechazo instantáneo.
+
+Codifica los 10 mandatos del veredicto del arquitecto (nota-tech-lead-diseno-
+sticky-routing.md en la épica):
+
+  1. Valkey SOLO para el mapa sticky: prohibido INCR/DECR/ZSET; el contador en
+     vuelo sale del ActiveRequestTracker + el sidecar (:4001), y el sidecar
+     publica counts_by_model como clave aditiva.
+  2. session_router.py NO es un segundo callback: lo importa
+     litellm_strip_params.py y lo llama desde su async_pre_call_hook, tras la
+     red final de visión y antes de _apply_family_sampling.
+  3. Todo rewrite residente->alibaba marca _session_routing_rerouted y la
+     admisión compute-mode lo respeta (not session_rerouted).
+  4. Guardas antes de reescribir: disable_fallbacks y nombres uncensored.
+  5. Cooldown por API pública del Router; fallo de la consulta => degradar.
+  6. Precedencia: sellado > admisión > plan explícito > sticky > default con
+     instant_reject; el plan explícito NUNCA se rechaza; sticky solo se escribe
+     para sesiones de plan default.
+  7. El comentario de router_settings sobre la afinidad queda actualizado.
+  9. La config del panel se cachea con TTL + single-flight + último-bueno.
+ 10. Este fichero: AST + forma del manifiesto + comportamiento.
+
+Fail-open: timeouts del camino de petición <= 100 ms y redis.asyncio.
+"""
+import ast
+import asyncio
+import sys
+import types
+from pathlib import Path
+
+import pytest
+import yaml
+
+MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
+
+RESIDENT = "qwen38-flash-next"
+OVERFLOW = "alibaba-q38-flash"
+SID = "33283bc9-8ac3-4445-990c-c1c86d8add8c"
+
+REDIS_COUNTER_ATTRS = {
+    "incr", "decr", "incrby", "incrbyfloat", "decrby",
+    "zadd", "zrem", "zcard", "zcount", "zrange", "zrangebyscore",
+    "zremrangebyscore", "zincrby", "zscore",
+}
+
+
+@pytest.fixture(scope="module")
+def docs():
+    return [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+
+
+@pytest.fixture(scope="module")
+def configmap(docs):
+    return next(
+        d for d in docs
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
+    )
+
+
+@pytest.fixture(scope="module")
+def router_src(configmap):
+    return configmap["data"]["session_router.py"]
+
+
+@pytest.fixture(scope="module")
+def strip_src(configmap):
+    return configmap["data"]["litellm_strip_params.py"]
+
+
+@pytest.fixture(scope="module")
+def sidecar_src(configmap):
+    return configmap["data"]["active_requests_api.py"]
+
+
+@pytest.fixture(scope="module")
+def router_mod(router_src):
+    """Ejecuta el módulo con httpx stubbeado (el entorno de tests no necesita
+    la dependencia real; las pruebas de comportamiento stubbean las E/S)."""
+    saved = sys.modules.get("httpx")
+    sys.modules["httpx"] = types.ModuleType("httpx")
+    try:
+        module = types.ModuleType("session_router_under_test")
+        exec(compile(router_src, "session_router.py", "exec"), module.__dict__)
+    finally:
+        if saved is not None:
+            sys.modules["httpx"] = saved
+        else:
+            sys.modules.pop("httpx", None)
+    return module
+
+
+# ── Mandato 1: Valkey solo mapa sticky; contador = tracker + sidecar ─────────
+
+
+def test_session_router_no_tiene_contador_redis(router_src):
+    tree = ast.parse(router_src)
+    usados = {
+        node.attr for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr.lower() in REDIS_COUNTER_ATTRS
+    }
+    assert not usados, f"contador Redis prohibido en el hook: {usados}"
+    upper = router_src.upper()
+    for palabra in ("ZADD", "ZREM", "INCRBY", "DECRBY", "ZSET"):
+        # Los comentarios pueden citar la prohibición; el CÓDIGO no puede usarla.
+        lineas_codigo = [
+            l for l in router_src.splitlines()
+            if palabra in l.upper() and not l.lstrip().startswith("#")
+        ]
+        assert not lineas_codigo, f"{palabra} en código: {lineas_codigo}"
+    assert "INCR" not in upper.replace("INCR/DECR", "")
+
+
+def test_session_router_usa_tracker_y_sidecar(router_src):
+    assert "tracker.snapshot()" in router_src
+    assert "request_id" in router_src  # dedupe local vs sidecar
+    assert "/internal/active-requests" in router_src
+
+
+def test_sidecar_publica_counts_by_model(sidecar_src):
+    assert "def _counts_by_model" in sidecar_src
+    # agregado, endpoint /local y camino degradado
+    assert sidecar_src.count('"counts_by_model": _counts_by_model(') == 3
+
+
+# ── Mandato 2: módulo importado por strip_params, NO callback ────────────────
+
+
+def test_no_registrado_como_callback(configmap):
+    settings = yaml.safe_load(configmap["data"]["config.yaml"])
+    callbacks = settings["litellm_settings"]["callbacks"]
+    assert not any("session_router" in str(c) for c in callbacks)
+    assert "litellm_strip_params.proxy_handler_instance" in callbacks
+
+
+def test_session_router_no_es_custom_logger(router_src):
+    assert "CustomLogger" not in router_src
+    assert "proxy_handler_instance" not in router_src
+
+
+def test_strip_params_importa_session_router_tolerando_falta(strip_src):
+    idx = strip_src.index("import session_router")
+    window = strip_src[max(0, idx - 200):idx + 300]
+    assert "try:" in window and "session_router = None" in window
+
+
+def test_llamada_entre_vision_final_y_family_sampling(strip_src):
+    # call sites (no los def): la llamada de visión lleva data.get, la de
+    # sampling va indentada a 12 espacios dentro del hook.
+    i_vision = strip_src.index('if _omit_images_for_blind_backends(data, data.get("model", "")):')
+    i_call = strip_src.index("session_router.apply_session_routing")
+    i_family = strip_src.index("\n        _apply_family_sampling(data, thinking_alias)")
+    assert i_vision < i_call < i_family
+
+
+# ── Mandato 3: marcador de reroute respetado por la admisión ─────────────────
+
+
+def test_rewrite_marca_session_routing_rerouted(router_src):
+    assert '_session_routing_rerouted' in router_src
+
+
+def test_admision_respeta_el_marcador(strip_src):
+    assert (
+        "if not vision_diverted and not session_rerouted "
+        "and _is_local_vllm_request(model, proxy_model, api_base):" in strip_src
+    )
+    # la única llamada a la admisión queda bajo ese guard
+    assert strip_src.count("await _enforce_compute_mode_admission(") == 1
+
+
+# ── Mandato 4: guardas disable_fallbacks y uncensored ────────────────────────
+
+
+def test_guardas_antes_de_reescribir(router_src):
+    tree = ast.parse(router_src)
+    apply_fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == "_apply"
+    )
+    fuente = ast.get_source_segment(router_src, apply_fn)
+    i_sellado = fuente.index('data.get("disable_fallbacks") is True')
+    i_uncensored = fuente.index("_is_uncensored(requested_model)")
+    i_rewrite = fuente.index("_rewrite(")
+    assert i_sellado < i_rewrite and i_uncensored < i_rewrite
+    assert '"-uncensored"' in router_src or "UNCENSORED_SUFFIX" in router_src
+
+
+# ── Mandato 5: cooldown por API pública, nunca claves de cache ───────────────
+
+
+def test_cooldown_por_api_publica(router_src):
+    assert "get_model_ids" in router_src
+    assert "get_active_cooldowns" in router_src
+    assert "cooldown_cache" in router_src
+    # nunca construye/parsea claves internas del cooldown
+    assert "cooldown_deployment_id" not in router_src
+    assert "get_keys" not in router_src
+
+
+# ── Mandatos 9/10: fail-open, timeouts, redis asyncio ────────────────────────
+
+
+def test_timeouts_del_camino_de_peticion_hasta_100ms(router_src):
+    tree = ast.parse(router_src)
+    constantes = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if getattr(target, "id", "").endswith("TIMEOUT_SECONDS"):
+                    constantes[target.id] = node.value.value
+    for nombre in (
+        "REDIS_OP_TIMEOUT_SECONDS", "SIDECAR_TIMEOUT_SECONDS", "CONFIG_TIMEOUT_SECONDS"
+    ):
+        assert constantes[nombre] <= 0.1, f"{nombre} = {constantes[nombre]} > 100 ms"
+
+
+def test_redis_asyncio(router_src):
+    assert "import redis.asyncio" in router_src
+    assert "socket_timeout" in router_src
+
+
+def test_apply_session_routing_es_fail_open(router_src):
+    tree = ast.parse(router_src)
+    fn = next(
+        n for n in tree.body
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "apply_session_routing"
+    )
+    # try/except que devuelve False: ningún error puede propagarse al hook
+    assert any(isinstance(n, ast.Try) for n in fn.body)
+    assert any(
+        isinstance(n, ast.Return) and getattr(n.value, "value", None) is False
+        for n in ast.walk(fn)
+    )
+
+
+def test_config_ttl_single_flight(router_src):
+    assert "CONFIG_TTL_SECONDS" in router_src
+    assert "locked()" in router_src  # single-flight sin bloqueo de los demás
+
+
+# ── Mandato 7: comentario de router_settings actualizado ─────────────────────
+
+
+def test_comentario_afinidad_actualizado():
+    texto = MANIFEST.read_text()
+    assert "NO hay afinidad por conversacion" not in texto
+    assert "INFRA-208" in texto
+
+
+# ── Forma del manifiesto (mandato 10: valkey + ExternalSecret + Service) ─────
+
+
+def test_valkey_deployment_con_requirepass(docs):
+    dep = next(
+        d for d in docs
+        if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm-valkey"
+    )
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    args = container["args"]
+    i = args.index("--requirepass")
+    assert args[i + 1] == "$(VALKEY_PASSWORD)"
+    env = {e["name"]: e for e in container["env"]}
+    ref = env["VALKEY_PASSWORD"]["valueFrom"]["secretKeyRef"]
+    assert ref["name"] == "litellm-valkey-creds" and ref["key"] == "password"
+    assert "optional" not in ref  # sin contraseña el valkey NO arranca
+    volumes = dep["spec"]["template"]["spec"].get("volumes") or []
+    assert not [v for v in volumes if "persistentVolumeClaim" in v]  # efímero
+
+
+def test_external_secret_valkey(docs):
+    eso = next(
+        d for d in docs
+        if d.get("kind") == "ExternalSecret"
+        and d["metadata"]["name"] == "litellm-valkey-creds"
+    )
+    ref = eso["spec"]["data"][0]["remoteRef"]["key"]
+    assert ref == "litellm/VALKEY_PASSWORD"
+    assert eso["spec"]["secretStoreRef"]["name"] == "onepassword"
+
+
+def test_service_valkey(docs):
+    svc = next(
+        d for d in docs
+        if d.get("kind") == "Service" and d["metadata"]["name"] == "litellm-valkey"
+    )
+    assert svc["spec"]["ports"][0]["port"] == 6379
+
+
+def test_litellm_env_y_mount_del_hook(docs):
+    dep = next(
+        d for d in docs
+        if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm"
+    )
+    container = dep["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e for e in container["env"]}
+    assert "SESSION_ROUTER_REDIS_URL" in env
+    assert "MODEL_ROUTING_CONFIG_URL" in env
+    pwd = env["SESSION_ROUTER_REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"]
+    assert pwd["name"] == "litellm-valkey-creds" and pwd.get("optional") is True
+    mounts = container["volumeMounts"]
+    assert any(
+        m.get("subPath") == "session_router.py"
+        and m["mountPath"] == "/app/session_router.py"
+        for m in mounts
+    )
+
+
+# ── Mandato 6: precedencia, en comportamiento ────────────────────────────────
+
+
+def _cfg(**over):
+    base = {
+        "sticky": False, "instant_reject": False, "local_slots": 8,
+        "default_plan": "local", "session_plans": {},
+    }
+    base.update(over)
+    return base
+
+
+class _Env:
+    """Stubbea las cuatro E/S del módulo (config, sticky, cooldown, contador)
+    y graba lo que se escribe en Valkey."""
+
+    def __init__(self, mod, cfg, bound=None, cooldown=False, inflight=0):
+        self.writes = []
+        self.mod = mod
+
+        async def config():
+            return cfg
+
+        async def sticky_get(sid):
+            return bound
+
+        async def sticky_set(sid, plan):
+            self.writes.append((sid, plan))
+
+        def group_in_cooldown(name):
+            return cooldown
+
+        async def inflight_resident(tracker):
+            return inflight
+
+        mod._config = config
+        mod._sticky_get = sticky_get
+        mod._sticky_set = sticky_set
+        mod._group_in_cooldown = group_in_cooldown
+        mod._inflight_resident = inflight_resident
+
+    def run(self, data, requested="tooling", resident_ready=True):
+        return asyncio.run(self.mod.apply_session_routing(
+            data, requested, tracker=object(), resident_ready=resident_ready,
+        ))
+
+
+def _data(model=RESIDENT, **extra):
+    base = {"model": model, "litellm_trace_id": SID, "metadata": {}}
+    base.update(extra)
+    return base
+
+
+def test_flags_apagados_noop_exacto(router_mod):
+    env = _Env(router_mod, _cfg(), inflight=99)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT and env.writes == []
+
+
+def test_sellado_gana_a_todo(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0,
+                                default_plan="alibaba"), cooldown=False)
+    data = _data(disable_fallbacks=True)
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT and env.writes == []
+
+
+@pytest.mark.parametrize("pedido", ["tooling-uncensored", "q38-flash-u", "q38-flash-u-think"])
+def test_uncensored_por_nombre_pedido_no_cae_a_alibaba(router_mod, pedido):
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"))
+    data = _data()
+    assert env.run(data, requested=pedido) is False
+    assert data["model"] == RESIDENT
+
+
+def test_uncensored_resuelto_pasa_de_largo(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0))
+    data = _data(model="qwen38-flash-next-uncensored")
+    assert env.run(data) is False
+    assert data["model"] == "qwen38-flash-next-uncensored"
+
+
+def test_plan_explicito_local_nunca_se_rechaza(router_mod):
+    """Mandato 6: el plan explícito es decisión del usuario — cola, no válvula."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0,
+                                session_plans={SID: "local"}), inflight=99)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == []  # sticky no se escribe para planes explícitos
+
+
+def test_plan_explicito_claude_es_noop_en_el_hook(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0,
+                                session_plans={SID: "claude"}), inflight=99)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_plan_explicito_alibaba_reescribe_y_marca(router_mod):
+    env = _Env(router_mod, _cfg(sticky=False, instant_reject=False,
+                                session_plans={SID: "alibaba"}))
+    data = _data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_rerouted"] is True
+    assert data["metadata"]["_router_original_model"] == RESIDENT
+    assert "api_base" not in data and "api_key" not in data
+
+
+def test_plan_explicito_alibaba_con_cooldown_degrada(router_mod):
+    env = _Env(router_mod, _cfg(session_plans={SID: "alibaba"}), cooldown=True)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_sticky_default_alibaba_vincula_y_reescribe(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"))
+    data = _data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]
+
+
+def test_sticky_binding_local_conserva_residente(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False), bound="local")
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT and env.writes == []
+
+
+def test_sticky_local_con_hueco_se_revincula_a_alibaba(router_mod):
+    """compute-mode no admite residente => rebind al destino sano."""
+    env = _Env(router_mod, _cfg(sticky=True), bound="local")
+    data = _data()
+    assert env.run(data, resident_ready=False) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]
+
+
+def test_sticky_alibaba_en_cooldown_se_revincula_a_local(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True), bound="alibaba", cooldown=True)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+
+
+def test_valvula_sin_sticky_reescribe_al_instante(router_mod):
+    env = _Env(router_mod, _cfg(sticky=False, instant_reject=True, local_slots=2),
+               inflight=2)
+    data = _data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_reason"] == "instant_reject"
+    assert env.writes == []  # sin sticky no se escribe binding
+
+
+def test_valvula_por_debajo_de_slots_no_actua(router_mod):
+    env = _Env(router_mod, _cfg(instant_reject=True, local_slots=8), inflight=7)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_valvula_con_cooldown_desconocido_degrada(router_mod):
+    """Mandato 5: cooldown None (no se pudo saber) => ni rewrite ni stick a
+    Alibaba. El binding al destino LOCAL sano sí se escribe (no depende del
+    cooldown de Alibaba)."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0),
+               cooldown=None, inflight=99)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+
+
+def test_peticion_al_grupo_alibaba_no_se_toca(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0),
+               inflight=99)
+    data = _data(model=OVERFLOW)
+    assert env.run(data) is False
+    assert data["model"] == OVERFLOW
+
+
+def test_modelos_ajenos_pasan_de_largo(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0),
+               inflight=99)
+    for modelo in ("claude-opus-4", "or-gpt5", "qwen38-27b", "tooling"):
+        data = _data(model=modelo)
+        assert env.run(data) is False
+        assert data["model"] == modelo
+
+
+def test_sin_sid_no_hay_sticky_pero_la_valvula_actua(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=1),
+               inflight=1)
+    data = {"model": RESIDENT, "metadata": {}}
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == []  # sin sid no se puede vincular
+
+
+def test_fallo_interno_devuelve_false_sin_tocar_data(router_mod):
+    async def boom():
+        raise RuntimeError("config caída")
+
+    anterior = router_mod._config
+    router_mod._config = boom  # apply envuelve TODO en try/except
+    try:
+        data = _data()
+        assert asyncio.run(router_mod.apply_session_routing(
+            data, "tooling", tracker=None, resident_ready=True)) is False
+        assert data["model"] == RESIDENT
+    finally:
+        router_mod._config = anterior

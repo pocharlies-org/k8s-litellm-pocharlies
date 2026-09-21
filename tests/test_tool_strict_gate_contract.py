@@ -81,10 +81,17 @@ def test_gate_is_wired_into_local_vllm_requests():
     imagen desviada sigue teniendo proxy_model=`tooling`, asi que sin
     esa condicion _is_local_vllm_request diria True y se le marcarian las tools
     como strict para una gramatica de vLLM que no la va a servir.
+
+    2026-09-21 (INFRA-208): la guarda lleva ademas `not session_rerouted`, por
+    el mismo motivo exacto — el rewrite del hook session_router a Alibaba
+    tambien deja proxy_model diciendo el alias local, y sin el marcador el
+    rechazo instantaneo se comeria un 503 de admision (y un strict de tools
+    para un vLLM que no lo atiende) justo cuando el computo local esta apagado.
     """
     text = MANIFEST.read_text()
     block = text[text.index(
-        "if not vision_diverted and _is_local_vllm_request(model, proxy_model, api_base):"):]
+        "if not vision_diverted and not session_rerouted "
+        "and _is_local_vllm_request(model, proxy_model, api_base):"):]
     block = block[:block.index("tracking_id = str(uuid.uuid4())")]
     assert "_enforce_tool_strict(data" in block
 
