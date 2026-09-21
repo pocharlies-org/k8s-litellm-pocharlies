@@ -34,7 +34,12 @@ WANT_FN = {"_apply_family_sampling", "_family_of_alias",
            # lo llama `_apply_family_sampling`; si no se exporta aqui, el
            # NameError cae en su except y el perfil de familia deja de
            # aplicarse ENTERO, no solo la parte nueva.
-           "_thinking_is_on", "_has_tools"}
+           "_thinking_is_on", "_has_tools",
+           # 21-09-2026: `_apply_thinking_tier` llama ahora a
+           # `_anthropic_thinking_tier` (el `thinking` de /v1/messages). Sin
+           # exportarla, su NameError cae en el except y el tier deja de
+           # aplicarse EN SILENCIO — el mismo modo de fallo de los de arriba.
+           "_anthropic_thinking_tier"}
 WANT_CONST = {"FAMILY_SAMPLING", "SWAPPABLE_ALIASES",
               "THINKING_TIERS", "THINKING_KWARGS", "CLIENT_EFFORT_TIERS"}
 

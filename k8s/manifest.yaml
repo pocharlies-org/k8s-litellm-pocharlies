@@ -1043,6 +1043,13 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
+        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
+        # pregunta, /v1/chat/completions): `none` -> reasoning_content 0;
+        # low/medium/high/max/xhigh -> reasoning_content 358/418/420/557/512
+        # chars. Los seis se aceptan con 200 y gradiente. Sin esto, opencode
+        # (que filtra sus variantes de effort por esta lista) no pinta ningun
+        # nivel para el alias.
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
         disable_background_health_check: true
     # ── El gemelo cloud del residente. UN alias, y por el plano OpenAI ───────
     #
@@ -1112,6 +1119,12 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
+        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
+        # pregunta, /v1/chat/completions): `none` -> reasoning 0; low/medium/
+        # high/max/xhigh -> reasoning_content presente (343/355/337/286/327
+        # chars). Es lo que filtra los variants del picker de opencode
+        # (plugin opencode-litellm, mapping.ts).
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
         disable_background_health_check: true
     - model_name: alibaba-q37-plus
       litellm_params:
@@ -3665,6 +3678,17 @@ data:
         # El budget NO es un nivel del menu, asi que no viaja crudo al backend:
         # se traduce al nivel mas cercano (<=1024 -> low, <=8192 -> medium,
         # mas -> max/xhigh), que es lo que puede prometer este motor.
+        #
+        # 21-09-2026 (imagen v1.100.0): la premisa de arriba es FALSA hoy. El
+        # pre_call_hook corre con el cuerpo ANTHROPIC crudo: aqui `thinking`
+        # sigue siendo un dict y NUNCA llega un "budget:<tokens>" — la
+        # traduccion thinking->reasoning_effort la hace el bridge DESPUES de
+        # este hook (leido en adapters/handler.py de la imagen; y medido en
+        # vivo: con `thinking` explicito el bridge reescribe el modelo a
+        # "openai/responses/..." y la peticion acaba en POST /v1/responses del
+        # backend, que es el bug del bloque thinking perdido). La rama
+        # "budget:" se deja por seguridad por si el orden volviera, pero el
+        # camino vivo del formato Anthropic es `_anthropic_thinking_tier`.
         effort = data.get("reasoning_effort")
         if not effort:
             r = data.get("reasoning")
@@ -3684,6 +3708,66 @@ data:
                 return "medium"
             return "max"
         return texto
+
+    def _anthropic_thinking_tier(data):
+        """El nivel que pide el campo `thinking` de Anthropic, o None.
+
+        21-09-2026 (imagen v1.100.0). Medido: un `/v1/messages` con
+        `thinking: {type: "enabled", budget_tokens: N}` contra el residente
+        local devolvia CERO bloques thinking. La cadena, leida en la imagen:
+        el bridge de LiteLLM traduce `thinking` a `reasoning_effort` (>=4096
+        -> "high") y DESPUES, si el proveedor es "openai" y hay thinking
+        activo, reescribe el modelo a "openai/responses/..." y manda la
+        peticion al endpoint /v1/responses del backend — sin mirar el flag
+        LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES (ese flag
+        solo gobierna el dispatcher exterior, no esta reescritura interna;
+        reproducido en local con la libreria exacta, v1.100.0). vLLM contesta
+        200 por /v1/responses, pero ahi el `chat_template_kwargs` del hook no
+        viaja y el razonamiento se pierde en la traduccion responses->chat ->
+        el cliente ve texto sin thinking (y el motor pensando en vano: 3213
+        tokens de salida medidos para 254 caracteres visibles).
+
+        El fix: traducir el `thinking` aqui, en el hook, que corre ANTES que
+        el bridge, y RETIRARLO del cuerpo. Sin `thinking` el bridge no
+        traduce ni reescribe: la peticion sigue la ruta chat/completions de
+        siempre, que si devuelve el razonamiento (medido hoy: sin `thinking`
+        explicito, 16108 chars de reasoning -> bloque thinking). Es decir:
+        `thinking` deja de ser un campo que viaje y pasa a ser, exactamente,
+        un effort del cliente.
+
+        Los umbrales son los del propio bridge (litellm.constants
+        DEFAULT_REASONING_EFFORT_{HIGH,MEDIUM,LOW}_THINKING_BUDGET =
+        4096/2048/1024), para que el mismo budget signifique lo mismo aqui
+        que en cualquier otro backend. "minimal" (<1024) no existe en este
+        motor: se sube a "low", el minimo real. Solo se aplica a los alias de
+        la tabla THINKING_TIERS (los residentes locales que gestiona este
+        hook); un alias cloud como `alibaba-q38-flash` NO esta en la tabla y
+        no se toca: su ruta actual (provider openai sobre DashScope, cuyo
+        /responses si conserva el razonamiento) esta medida funcionando hoy y
+        meterle la tijera seria cambiar lo que funciona.
+        """
+        th = data.get("thinking")
+        if not isinstance(th, dict):
+            return None
+        ttype = str(th.get("type") or "").lower()
+        if ttype == "disabled":
+            return "off"
+        if ttype == "adaptive":
+            # El cliente deja elegir al modelo: el nivel del alias manda, y
+            # aqui solo interesa que el campo no viaje (ver el docstring),
+            # asi que se traduce por el peldano mas conservador.
+            return "low"
+        if ttype != "enabled":
+            return None
+        try:
+            presupuesto = int(th.get("budget_tokens") or 0)
+        except (TypeError, ValueError):
+            presupuesto = 0
+        if presupuesto >= 4096:
+            return "high"
+        if presupuesto >= 2048:
+            return "medium"
+        return "low"
 
     def _has_part_type(data, names):
         for entry in _message_entries(data):
@@ -4522,6 +4606,20 @@ data:
         """
         try:
             requested_tier = _client_thinking_tier(data)
+            # 21-09-2026: en /v1/messages el cliente no manda `reasoning_effort`
+            # sino `thinking` (dict Anthropic). Sin leerlo, el effort explicito
+            # del cliente caia al default del alias Y el campo viajaba crudo al
+            # bridge, que lo traducia y reescribia la ruta a /v1/responses — el
+            # bug del bloque thinking perdido. Ver `_anthropic_thinking_tier`.
+            # Puerta por el alias RESUELTO (data["model"], ya reescrito por el
+            # session_router): solo los locales de THINKING_TIERS; si la pegada
+            # sticky mando el pedido a Alibaba, `thinking` sigue viajando como
+            # hoy, que esta medido funcionando.
+            thinking_tier = None
+            if (data.get("model") or "").strip() in THINKING_TIERS:
+                thinking_tier = CLIENT_EFFORT_TIERS.get(_anthropic_thinking_tier(data) or "")
+                if requested_tier is None:
+                    requested_tier = thinking_tier
             tier = requested_tier or THINKING_TIERS.get((requested_alias or "").strip())
             if not tier:
                 return
@@ -4590,9 +4688,14 @@ data:
                     applied.append("strip:reasoning.effort")
                     if not r:
                         data.pop("reasoning", None)
+                # El `thinking` Anthropic NO puede viajar una vez traducido:
+                # es justo la llave que dispara la reescritura del bridge a
+                # /v1/responses (ver `_anthropic_thinking_tier`).
+                if thinking_tier and data.pop("thinking", None) is not None:
+                    applied.append("strip:thinking")
             if applied:
                 sampling_log.info("thinking: origen=%s alias=%s tier=%s familia=%s -> %s",
-                                  "effort" if requested_tier else "alias",
+                                  "thinking" if thinking_tier else ("effort" if requested_tier else "alias"),
                                   requested_alias, tier, fam, ",".join(applied))
         except Exception as e:  # nunca romper una peticion por esto
             log.debug("_apply_thinking_tier error: %s", e)
@@ -7629,7 +7732,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1938a9b3af83
+        config.k8s.e-dani.com/revision: config-0701981abd0c
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
