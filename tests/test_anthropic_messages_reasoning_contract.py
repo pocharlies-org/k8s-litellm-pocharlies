@@ -43,7 +43,12 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 WANT_FN = {"_apply_thinking_tier", "_client_thinking_tier",
            "_reasoning_effort_value", "_family_of_alias",
-           "_is_structured_output", "_has_tools"}
+           "_is_structured_output", "_has_tools",
+           # 21-09-2026: `_apply_thinking_tier` llama a `_anthropic_thinking_tier`
+           # para el `thinking` Anthropic; sin exportarla, su NameError cae en el
+           # except y el tier deja de aplicarse ENTERO (mismo modo de fallo
+           # que ya documenta `_has_tools` arriba).
+           "_anthropic_thinking_tier"}
 WANT_CONST = {"THINKING_TIERS", "THINKING_KWARGS", "CLIENT_EFFORT_TIERS",
               "FAMILY_SAMPLING"}
 

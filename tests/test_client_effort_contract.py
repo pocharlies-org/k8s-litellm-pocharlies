@@ -44,7 +44,12 @@ WANT_FN = {"_apply_thinking_tier", "_client_thinking_tier",
            # peticion lleva tools (sglang#36537). Sin exportar `_has_tools` su
            # NameError cae en el except de la funcion y el tier deja de
            # aplicarse ENTERO, no solo esa rama.
-           "_is_structured_output", "_has_tools"}
+           "_is_structured_output", "_has_tools",
+           # 21-09-2026: `_apply_thinking_tier` llama a `_anthropic_thinking_tier`
+           # para el `thinking` Anthropic; sin exportarla, su NameError cae en el
+           # except y el tier deja de aplicarse ENTERO (mismo modo de fallo
+           # que ya documenta `_has_tools` arriba).
+           "_anthropic_thinking_tier"}
 WANT_CONST = {"THINKING_TIERS", "THINKING_KWARGS", "CLIENT_EFFORT_TIERS",
               # `_family_of_alias` resuelve la familia contra esta tabla.
               "FAMILY_SAMPLING"}
