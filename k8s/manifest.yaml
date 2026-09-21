@@ -5517,8 +5517,16 @@ data:
                     import redis.asyncio as aioredis
                     _redis_client = aioredis.from_url(
                         _redis_url(),
-                        socket_timeout=REDIS_OP_TIMEOUT_SECONDS,
-                        socket_connect_timeout=REDIS_OP_TIMEOUT_SECONDS,
+                        # Presupuesto de SOCKET holgado (2 s): medido en vivo el 21-09,
+                        # DNS=82 ms y conectar+AUTH en frío ≈ 220 ms — con 100 ms de
+                        # socket_timeout NINGUNA conexión fría llegaba nunca, ni
+                        # siquiera la escritura en background (el wait_for de 2 s no
+                        # aplicaba: moría antes en el socket). El presupuesto de 100 ms
+                        # del camino de la petición (mandato 10) lo impone el
+                        # asyncio.wait_for de _sticky_get, no el socket; la operación
+                        # en curso se cancela y la conexión se descarta (fail-open).
+                        socket_timeout=STICKY_WRITE_TIMEOUT_SECONDS,
+                        socket_connect_timeout=STICKY_WRITE_TIMEOUT_SECONDS,
                         health_check_interval=REDIS_HEALTH_CHECK_INTERVAL,
                         decode_responses=True,
                     )
@@ -5669,7 +5677,9 @@ data:
         metadata["_session_routing_reason"] = reason
         metadata["_router_original_model"] = original
         metadata["_router_resolved_model"] = OVERFLOW_MODEL
-        log.info(
+        # WARNING: el proceso proxy filtra los INFO de este logger (medido 21-09);
+        # una reescritura es siempre notable y tiene que verse en el log vivo.
+        log.warning(
             "session_router: %r -> %r (razon=%s, sid=%s)",
             original, OVERFLOW_MODEL, reason, sid or "-",
         )
@@ -5697,12 +5707,17 @@ data:
         except Exception as exc:
             log.warning("session_router: fallo inesperado (%s); fail-open", exc)
             return False
-        # Una línea INFO por petición cuando el routing de sesión está en juego
+        # Una línea por petición cuando el routing de sesión está en juego
         # (defecto 2 del QA live: default_plan=alibaba no reescribía y NO dejaba
         # rastro — la causa real era invisible). Sin features activos, silencio:
-        # el tráfico normal no gana ruido de log.
+        # el tráfico normal no gana ruido de log. IMPORTANTE: en el proceso proxy
+        # el logger solo deja pasar WARNING+ (medido en vivo 21-09: las líneas
+        # INFO de _rewrite y de decisión no aparecían jamás) — toda decisión
+        # NOTABLE (reescritura o degradación) va por WARNING; el resto INFO.
         if info["active"] or rewrote:
-            log.info(
+            notable = rewrote or "degradado" in str(info["decision"])
+            emit = log.warning if notable else log.info
+            emit(
                 "session_router decision: model=%s sid=%s bound=%s plan=%s cool=%s "
                 "inflight=%s -> %s%s",
                 info["model"] or "-", info["sid"] or "-", info["bound"], info["plan"],
@@ -7309,7 +7324,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-208ff7703398
+        config.k8s.e-dani.com/revision: config-fbd16680d19d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

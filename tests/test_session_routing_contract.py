@@ -252,6 +252,24 @@ def test_redis_pool_caliente_y_warmup(router_src):
     assert "_redis_warmup" in router_src
 
 
+def test_socket_del_cliente_no_topa_a_100ms(router_src):
+    """Medido en vivo 21-09: DNS=82 ms + conectar+AUTH en frío ≈ 220 ms. Con
+    socket_timeout=REDIS_OP_TIMEOUT_SECONDS ninguna conexión fría llegaba jamás,
+    ni la de la escritura en background (su wait_for de 2 s no aplicaba: el
+    socket moría antes a los 100 ms). El cliente usa el presupuesto holgado;
+    los 100 ms del camino de la petición los impone el wait_for de _sticky_get."""
+    redis_fn = next(n for n in ast.parse(router_src).body
+                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "_redis")
+    src_redis = ast.get_source_segment(router_src, redis_fn)
+    assert "socket_timeout=STICKY_WRITE_TIMEOUT_SECONDS" in src_redis
+    assert "socket_connect_timeout=STICKY_WRITE_TIMEOUT_SECONDS" in src_redis
+    get_fn = next(n for n in ast.parse(router_src).body
+                  if isinstance(n, ast.AsyncFunctionDef) and n.name == "_sticky_get")
+    src_get = ast.get_source_segment(router_src, get_fn)
+    assert "timeout=REDIS_OP_TIMEOUT_SECONDS" in src_get, \
+        "el camino de petición mantiene su presupuesto de 100 ms vía wait_for"
+
+
 def test_fallos_de_valkey_dejan_rastro_throttled(router_src):
     """Fix defecto 3 + observabilidad: sticky_get/sticky_set/warmup ya no
     fallan en silencio, y los warnings van throttled (1/min con cuenta) para
@@ -274,6 +292,12 @@ def test_decision_deja_una_linea_observable(router_src):
     assert "session_router decision:" in src
     for campo in ("cool=", "plan=", "bound=", "inflight=", "sid="):
         assert campo in src, campo
+    # El proceso proxy filtra los INFO de este logger (medido en vivo 21-09):
+    # toda decisión notable (reescritura/degradación) debe salir por WARNING.
+    assert "log.warning" in src and "degradado" in src
+    rewrite_fn = next(n for n in ast.parse(router_src).body
+                      if isinstance(n, ast.FunctionDef) and n.name == "_rewrite")
+    assert "log.warning" in ast.get_source_segment(router_src, rewrite_fn)
 
 
 def test_apply_session_routing_es_fail_open(router_src):
