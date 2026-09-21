@@ -378,7 +378,20 @@ data:
         # aqui y no se hereda de nadie: el desvio de vision y el menu de razonamiento
         # leen model_info de la entrada que se pide, y un alias `-uncensored` con
         # model_info vacio se lee como "no se sabe".
-        supported_reasoning_efforts: [none, high, max, xhigh]
+        #
+        # 21-09-2026 (OWU-51): hasta hoy esta lista no tenia `low`, en contradiccion
+        # con la frase de arriba. No era un detalle de redaccion: `low` es el nivel
+        # que elige el perfil `q38-flash-u-think`, y quien lee esta lista para montar
+        # su menu (OpenClaw con /effort) no lo ofrecia en la ruta abliterada. Medido
+        # hoy contra el motor con la key de chat: `q38-flash-u-think` -> HTTP 200 con
+        # `reasoning_content` de 140 caracteres, y `q38-flash-u` -> 200 con
+        # `reasoning_content` AUSENTE. O sea: el backend abliterado honra `low` igual
+        # que el censurado, y quien lo negaba estaba mintiendo.
+        #
+        # `medium` sigue SIN estar, y es a proposito: no se ha medido en este backend.
+        # Anadirlo seria heredar la afirmacion de la entrada censurada, que es justo
+        # lo que este comentario dice que no hay que hacer.
+        supported_reasoning_efforts: [none, low, high, max, xhigh]
         # Mismo motor que la entrada censurada, luego mismo trato con el bucle
         # de fondo: el health-check deduplica por model_info.id y no por
         # api_base, asi que los alias de un mismo backend se callan TODOS o
@@ -6607,7 +6620,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-82307fba02a0
+        config.k8s.e-dani.com/revision: config-5d503699b92e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
