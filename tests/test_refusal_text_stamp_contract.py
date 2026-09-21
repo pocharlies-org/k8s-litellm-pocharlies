@@ -112,6 +112,26 @@ def test_extract_delta_text(hook):
     assert hook._extract_delta_text({"choices": [{"delta": {}}]}) == ""
 
 
+def test_extract_delta_text_uses_litellm_extractor_for_anthropic(hook, monkeypatch):
+    """El chunk de /v1/messages no trae choices[].delta.content: litellm lo
+    normaliza y su get_response_string es el que saca el texto. Sin usarlo, el
+    sello anthropic salía vacío (0/80 medido). Se simula ese extractor."""
+    calls = []
+
+    class FakeLitellm:
+        @staticmethod
+        def get_response_string(response_obj=None):
+            # un ModelResponseStream anthropic normalizado: el texto NO está en
+            # choices[].delta.content, así que el fallback OpenAI daría ""
+            calls.append(response_obj)
+            return "hola"
+
+    monkeypatch.setattr(hook, "litellm", FakeLitellm, raising=False)
+    anthropic_chunk = {"type": "content_block_delta", "delta": {"text": "hola"}}
+    assert hook._extract_delta_text(anthropic_chunk) == "hola"
+    assert calls  # pasó por el extractor canónico, no por el fallback
+
+
 # ── el sello: forma, anidamiento y condiciones ───────────────────────────────
 def test_stamp_writes_refusal_nested(hook):
     data = {"metadata": {"spend_logs_metadata": {"refusal_lambda": "0.0"}}}
