@@ -32,6 +32,8 @@ def _pure_gate():
         "TOOLING_UNCENSORED_MODE_TARGETS",
         "TOOLING_PROFILE_ALIASES",
         "TOOLING_UNCENSORED_ALIASES",
+        # OWU-51: la rama nueva de admision lo referencia.
+        "Q38_POOL_ALIASES",
     }
     keep = [
         node for node in tree.body
@@ -71,6 +73,35 @@ def test_tooling_admission_follows_the_ready_resident_during_transitions():
         False, "compute_mode_transition"
     )
     assert gate(qwen_ready, "ornith-1.0") == (False, "compute_mode_transition")
+
+
+def test_q38_pool_aliases_are_admitted_like_the_pool_they_point_at():
+    """OWU-51: los cuatro perfiles de chat comparten la admision de `tooling`.
+
+    Su semantica es «el residente que responde», no la contabilidad de la
+    transicion: se les admite mientras ALGUN residente del pool este Ready
+    (aunque el arbitro este en plena transicion), y se les niega con el MISMO
+    motivo que a `tooling` cuando ninguno lo esta. Cae en la rama
+    Q38_POOL_ALIASES, no en la via historica (phase ready + desired==effective),
+    que los cortaria en transiciones donde el pool si da servicio.
+    """
+    gate = _pure_gate()
+    qwen_ready_in_transition = {
+        "phase": "waiting",
+        "desired_mode": "llm-tp",
+        "effective_mode": "creative",
+        "components": {
+            "dgx1": [{"name": "dense-uncensored", "ready": True,
+                      "desired_replicas": 1, "ready_replicas": 1}],
+        },
+    }
+    for alias in ("q38-flash", "q38-flash-think", "q38-flash-u", "q38-flash-u-think"):
+        assert gate(qwen_ready_in_transition, alias) == (True, None), alias
+        # Sin residente Ready: el mismo fallo visible que `tooling`, no la via
+        # historica del `compute_mode_transition`.
+        assert gate({"phase": "waiting"}, alias) == (
+            False, "tooling_resident_not_ready"), alias
+    assert gate(None, "q38-flash") == (False, "compute_mode_unavailable")
 
 
 def test_hook_checks_mode_before_tracking_a_new_local_request():

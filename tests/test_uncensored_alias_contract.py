@@ -33,7 +33,10 @@ CAPABILITY = "tooling-uncensored"
 # Alias censurados que tienen que llevar sello EXPLICITO a 0. Desde que el
 # residente sirve con el lambda global en 1.0, "sin sello" ya no significa
 # "censurado": significa "usa el global", que es ablado.
-CENSURABLES = ("qwen38-flash-next", "tooling")
+# 21-09-2026 (OWU-51): los dos perfiles censurados del chat heredan el sello a 0
+# del ancla `tooling_pool_params` — y tienen que HEREDARLO: sin sello explicito,
+# con el lambda global en 1.0 saldrian ablados igual que su gemelo `-u`.
+CENSURABLES = ("qwen38-flash-next", "tooling", "q38-flash", "q38-flash-think")
 # 01-09-2026: se va `deepseek-v4-flash-0731-uncensored` (refusal:1.5) con la
 # retirada de DeepSeek.
 # 01-09 (tarde): entra `qwen38-flash-next-uncensored` con su propio sello. No es
@@ -41,9 +44,15 @@ CENSURABLES = ("qwen38-flash-next", "tooling")
 # windowsxp811203/Qwen3.8-Flash-Next-Abliterated (lambda_eff 1.4994-1.5008,
 # spread 0.09%) y aplicar el criterio del 27B, donde la variacion entre capas se
 # absorbe en un coef y aqui ese coef sale 1. Coincidir con DeepSeek es coincidencia.
+# 21-09-2026 (OWU-51): entran los dos perfiles abliterados del chat. Llevan el
+# MISMO sello (1.0) que el nombre directo porque hoy detras de ambos esta el MISMO
+# residente llm-tp con lambda=1.0; el `extra_body` del ancla se REPLAZA (el merge
+# `<<:` de PyYAML es superficial), no se fusiona con el refusal:0 heredado.
 MODEL_SCOPED_LAMBDA = {
     "qwen38-27b-uncensored": "refusal:1.0",
     "qwen38-flash-next-uncensored": "refusal:1.0",
+    "q38-flash-u": "refusal:1.0",
+    "q38-flash-u-think": "refusal:1.0",
 }
 
 WANT_FN = {"_component_is_ready", "_ready_tooling_modes",
@@ -55,7 +64,9 @@ WANT_CONST = {"TOOLING_UNCENSORED_MODE_TARGETS", "TOOLING_UNCENSORED_ALIASES",
               "CAPABILITY_CHAINS", "TOOLING_FALLBACKS",
               "TOOLING_MODE_TARGETS", "TOOLING_MODE_COMPONENTS",
               "TOOLING_PROFILE_ALIASES",
-              "CAPABILITY_CHAINS", "TOOLING_FALLBACKS"}
+              # OWU-51: los dos frozensets nuevos, referenciados por las
+              # asignaciones/functions que este modulo recorta y ejecuta.
+              "Q38_POOL_ALIASES", "Q38_UNCENSORED_ALIASES"}
 
 
 def _docs():
@@ -201,7 +212,12 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
         "components": components["creative"],
     }) == ("qwen38-27b-uncensored", None)
     # Y cada destino es una entrada con sello propio, no un nombre inventado.
-    assert set(hook.TOOLING_UNCENSORED_MODE_TARGETS.values()) == set(MODEL_SCOPED_LAMBDA)
+    # 21-09-2026 (OWU-51): `<=` y no `==` — MODEL_SCOPED_LAMBDA ya no es solo la
+    # coleccion de destinos de este mapa: los dos `-u` del chat declaran su sello
+    # propio SIN ser destino de reescritura (ahi esta justo la diferencia de
+    # diseno: gateados, no reescritos). La propiedad que se comprueba es la de
+    # siempre: ningun destino del mapa es un nombre inventado sin sello.
+    assert set(hook.TOOLING_UNCENSORED_MODE_TARGETS.values()) <= set(MODEL_SCOPED_LAMBDA)
 
 
 def test_the_capability_alias_is_in_CAPABILITY_CHAINS_or_the_rewrite_never_runs(hook):

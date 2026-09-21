@@ -43,6 +43,12 @@ UNCENSORED_NAMES = (
     "tooling-uncensored",
     "qwen38-flash-next-uncensored",
     "qwen38-27b-uncensored",
+    # 21-09-2026 (OWU-51): los dos perfiles abliterados del chat. El test de
+    # nombres solo detecta el sufijo `-uncensored`, asi que la lista a mano es
+    # OBLIGATORIA: sin estas dos lineas, `q38-flash-u` y `q38-flash-u-think`
+    # nacerian fuera de la cobertura del contrato de no-degradacion.
+    "q38-flash-u",
+    "q38-flash-u-think",
 )
 
 # Nombres censurados que SÍ llevan fallback declarado. El stamp no debe tocarlos:
@@ -54,6 +60,9 @@ WANT_CONST = {
     "UNCENSORED_GATED_ALIASES",
     "TOOLING_UNCENSORED_ALIASES",
     "TOOLING_UNCENSORED_MODE_TARGETS",
+    # OWU-51: la asignacion de UNCENSORED_GATED_ALIASES lo referencia; sin el
+    # en el modulo recortado, el exec peta por NameError.
+    "Q38_UNCENSORED_ALIASES",
 }
 
 
