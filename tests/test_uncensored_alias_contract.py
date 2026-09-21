@@ -170,7 +170,15 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
     OJO a lo que este test NO puede probar: que el backend parse el sello. Eso se
     comprueba contra el pod (GET /admin/refusal_lambda != 404), no aqui.
     """
-    assert hook.TOOLING_UNCENSORED_ALIASES == frozenset({CAPABILITY})
+    # 21-09-2026 (OWU-50): era `== frozenset({CAPABILITY})`, o sea contaba en vez de
+    # mirar el contrato. Lo que este test protege es que EL alias de capacidad sea
+    # `tooling-uncensored` y resuelva al residente ABLITERADO — y eso sigue igual.
+    # Con los dos perfiles de chat abliterados (`q38-flash-u`, `q38-flash-u-think`)
+    # la igualdad exacta estorba y, peor, desvia: esos dos nombres tienen que estar
+    # en este conjunto porque de él se deriva `UNCENSORED_GATED_ALIASES`, y un alias
+    # uncensored fuera de la puerta es ablacion libre para cualquier key. Lo de
+    # "uno y solo uno" lo vigila desde aqui `test_chat_catalog_contract`.
+    assert CAPABILITY in hook.TOOLING_UNCENSORED_ALIASES
     components = {
         "llm-tp": {
             # Las keys son HISTORICAS a proposito: son el contrato de

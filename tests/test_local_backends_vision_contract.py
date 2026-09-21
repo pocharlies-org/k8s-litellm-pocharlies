@@ -48,6 +48,17 @@ ALIAS_LOCALES = {
     "qwen38-27b-uncensored",
     "tooling",
     "tooling-uncensored",
+    # 21-09 (OWU-50): los cuatro perfiles de chat. La decision de "ve o no" no se
+    # toma aqui, se HEREDA: reutilizan las anclas `tooling_pool_params` /
+    # `tooling_pool_info`, asi que declaran `supports_vision: true` igual que los dos
+    # nombres de capacidad en los que se basan — y en los dos perfiles el residente
+    # lo declara (qwen38-flash-next y qwen38-27b). Si algun dia uno de los cuatro
+    # deja de compartir ancla, esta linea pasa a ser una decision propia y hay que
+    # medirla, no suponerla.
+    "q38-flash",
+    "q38-flash-think",
+    "q38-flash-u",
+    "q38-flash-u-think",
 }
 
 

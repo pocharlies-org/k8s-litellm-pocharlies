@@ -548,6 +548,52 @@ data:
     - model_name: tooling-uncensored
       litellm_params: *tooling_pool_params
       model_info: *tooling_pool_info
+    # ── OWU-50: los cuatro perfiles de chat (21-09-2026, decisión de Dani) ───────
+    #
+    # CUATRO NOMBRES, DOS CAPACIDADES. `q38-flash` y `q38-flash-think` son el
+    # residente censurado del perfil vivo; `q38-flash-u` y `q38-flash-u-think` son
+    # el mismo residente abliterado. Lo único que cambia dentro de cada pareja es
+    # CUÁNTO PIENSA, y eso no se declara aquí: vive en THINKING_TIERS, que es la
+    # tabla que el plugin `litellm-thinking-profile` ya usa para poner el nivel por
+    # alias pedido. Aquí solo se declaran los nombres y a qué pool apuntan.
+    #
+    # POR QUE ALIASES REALES Y NO PARÁMETROS DE OPEN WEBUI. Open WebUI guarda los
+    # parámetros por modelo en su BD y son propiedad de UNA cuenta: eso es justo lo
+    # que produce que cada cuenta vea una cosa (OWU-50). Un perfil que vive en la BD
+    # de un cliente no es GitOps. Declararlos aquí los pone en el único sitio que ya
+    # es versionado, testeado y que decide quién es el residente.
+    #
+    # Reutilizan las anclas de `tooling`/`tooling-uncensored` a propósito: los flags
+    # de visión, timeouts y admisión los posee una sola vez cada capacidad. Copiar y
+    # pegar esos bloques es la forma exacta en que dos nombres dejan de significar
+    # lo mismo. El hook reescribe el nombre al residente vivo antes de enrutar
+    # (TOOLING_MODE_TARGETS / TOOLING_UNCENSORED_MODE_TARGETS), así que estos cuatro
+    # siguen al residente del perfil `llm-tp` sin que nadie toque Open WebUI.
+    #
+    # OJO — HAY UN SEGUNDO SITIO, Y NO ES ESTE FICHERO. Cada key de LiteLLM lleva su
+    # propia allowlist de modelos (`models` de la key, en la Postgres de LiteLLM), y
+    # el control va ANTES que este manifiesto: medir `tooling-uncensored` con la key
+    # de chat da 403 «key not allowed to access model» aunque el gate del hook esté
+    # abierto (medido 21-09; la prueba de que el gate sí está abierto es que
+    # `qwen38-flash-next-uncensored`, que sí está en la lista de la key, contesta
+    # 200). La key de chat se llama `open-webui-v3` y hoy solo conoce los nombres con
+    # los que nació, así que añadir un alias aquí NO lo hace alcanzable: hay que
+    # añadirlo también a la key. Se hace a mano en H1 y queda como deuda: OWU-52
+    # (reconciliador) es quien tiene que dejar de mirar solo el catálogo de Open WebUI
+    # y poseer también el `models` de las keys, o cada alias nuevo morirá en un 403
+    # que parece un problema de routing y no lo es.
+    - model_name: q38-flash
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    - model_name: q38-flash-think
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    - model_name: q38-flash-u
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    - model_name: q38-flash-u-think
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -1564,7 +1610,14 @@ data:
     # 24-08-2026: `high` y `max` salen del model_list, asi que ya no se pueden
     # pedir: una peticion con esos nombres muere en route_llm_request antes del
     # hook. Dejarlos aqui seria describir una superficie que no existe.
-    TOOLING_PROFILE_ALIASES = frozenset({"tooling"})
+    # OWU-50 (21-09): los dos perfiles censurados de chat entran en el MISMO
+    # conjunto que `tooling`, no en uno nuevo. Este conjunto es lo que hace que el
+    # hook reescriba el alias al residente vivo y que la admisión del perfil de
+    # cómputo los trate como locales; un alias fuera de aquí se enrutaría por su
+    # `api_base` fijo y dejaría de seguir al residente del perfil.
+    TOOLING_PROFILE_ALIASES = frozenset({
+        "tooling", "q38-flash", "q38-flash-think",
+    })
 
     # `tooling-uncensored` significa lo mismo que `tooling` —el residente del perfil
     # vivo— pero con la proyeccion rank-1 encendida. Se resuelve al nombre DIRECTO
@@ -1586,7 +1639,15 @@ data:
         # el residente del perfil, que es lo que `tooling-uncensored` siempre fue.
         "llm-tp": "qwen38-flash-next-uncensored",
     }
-    TOOLING_UNCENSORED_ALIASES = frozenset({"tooling-uncensored"})
+    # OWU-50 (21-09): los dos perfiles abliterados de chat entran AQUI y no en un
+    # conjunto aparte, y no es una cuestion de orden estetica. De este conjunto se
+    # deriva `UNCENSORED_GATED_ALIASES`, que es la puerta de la ruta abliterada: un
+    # alias uncensored que no este aqui NO pasa por el control de keys, o sea que
+    # anadir los nombres sin anadirlos aqui seria abrir la ablacion a cualquier key
+    # por la puerta de atras.
+    TOOLING_UNCENSORED_ALIASES = frozenset({
+        "tooling-uncensored", "q38-flash-u", "q38-flash-u-think",
+    })
 
     def _component_is_ready(state, node, name):
         components = (state.get("components") or {}).get(node) or []
@@ -3233,6 +3294,24 @@ data:
         # `fallbacks` VACIO: una ruta censurada no puede llevar el sello. La resolucion real la hace
         # _resolve_tooling_uncensored, que da 503 antes que degradar.
         "tooling-uncensored": {"model": "tooling-uncensored", "fallbacks": ()},
+        # 21-09-2026 (OWU-50): los cuatro perfiles de chat, con la misma regla.
+        #
+        # Sin estas entradas la reescritura NO ocurre nunca — `cap_alias` solo se
+        # fija si el modelo pedido esta en este dict — y pasaria lo que ya costo
+        # tres intentos el 19-08: peticion al Service de pool SIN `cache_salt`, HTTP
+        # 200, y el residente CENSURADO contestando bajo un nombre que dice
+        # `q38-flash-u`. Lo vigila test_the_capability_alias_is_in_CAPABILITY_CHAINS
+        # _or_the_rewrite_never_runs, que es un test de comportamiento, no de forma.
+        #
+        # Los dos censurados HEREDAN la red de nube (es el fallback del residente,
+        # y el criterio C7 de OWU-50 se ejerce justo por aqui). Los dos abliterados
+        # van con `fallbacks` VACIO por el motivo de arriba: si cayeran a una ruta
+        # censurada contestarian censurado a quien pidio lo contrario, con 200 y sin
+        # aviso. Lo mismo que ya decide #101 para `tooling-uncensored`.
+        "q38-flash": {"model": "q38-flash", "fallbacks": TOOLING_FALLBACKS},
+        "q38-flash-think": {"model": "q38-flash-think", "fallbacks": TOOLING_FALLBACKS},
+        "q38-flash-u": {"model": "q38-flash-u", "fallbacks": ()},
+        "q38-flash-u-think": {"model": "q38-flash-u-think", "fallbacks": ()},
     }
     # ── Desvio de VISION (2026-08-11) ───────────────────────────────────────────
     #
@@ -3571,6 +3650,15 @@ data:
         # 26-08: mismo arrastre por THINKING_TIERS para el residente nuevo
         # (test_los_tres_tiers_son_swappable exige tier ⊆ swappable).
         "qwen38-flash-next",
+        # 21-09 (OWU-50): los cuatro perfiles de chat entran ARRASTRADOS por su
+        # entrada en THINKING_TIERS, igual que `deepseek-v4-flash-0731` y
+        # `qwen38-flash-next` antes que ellos — no es una eleccion de sampling, es
+        # el precio de tener tier: fuera de aqui `_apply_family_sampling` sale antes
+        # de tiempo y el alias se queda con el sampling que pida el cliente.
+        # Consecuencia que hay que tener presente, la misma que ya documenta
+        # `tooling`: estos cuatro reciben temperature 1.0 / top_p 0.95 de la familia
+        # y pierden top_k/min_p/penalties. Con salida estructurada manda el cliente.
+        "q38-flash", "q38-flash-think", "q38-flash-u", "q38-flash-u-think",
     })
 
     # ── Nivel de pensamiento por ALIAS (2026-08-10) ─────────────────────────────
@@ -3629,6 +3717,32 @@ data:
         # con `reasoning_effort`, que es la via que ya usaba todo el mundo.
         # `tooling-uncensored` no entra aqui: la ablacion es una capacidad
         # solicitada de forma explicita, no un nivel de pensamiento.
+        #
+        # 21-09-2026 (OWU-50): los cuatro perfiles de chat SI entran, y hay que
+        # decir por que esto no contradice la linea de arriba. Arriba se excluye un
+        # NOMBRE DE CAPACIDAD (`tooling-uncensored`): ponerlo en la tabla daria a
+        # entender que abliter es un nivel de pensamiento, y no lo es. Aqui se
+        # declaran cuatro perfiles que son una COMBINACION elegida a proposito de
+        # capacidad + nivel, y el nivel es justo lo que esta tabla pone.
+        #
+        # Y no es opcional. Un alias fuera de esta tabla devuelve tier=None,
+        # `_apply_thinking_tier` hace return sin tocar nada y manda el default del
+        # SERVIDOR — que en el chat template de Qwen3.8-Flash-Next es
+        # `reasoning_effort|default('xhigh')`, o sea pensar al maximo sin que nadie
+        # lo pida (medido 31-08: 17658 chars de razonamiento, content VACIO,
+        # finish=length). Un `q38-flash` sin entrada no seria "sin pensar": seria
+        # "piensa mas que ninguno". Es el mismo fallo que se documento el 25-08 con
+        # el nombre directo de DeepSeek.
+        #
+        # Consecuencia para la ruta abliterada, que queda dicha en voz alta:
+        # `tooling-uncensored` sigue SIN entrada, asi que hoy piensa en xhigh por
+        # defecto. No se le pone nivel aqui porque OpenClaw lo usa tal cual y
+        # cambiarle el default es otra decision; los perfiles de chat son nuevos y
+        # nacen con el nivel explicito que pidio Dani.
+        "q38-flash": "off",
+        "q38-flash-think": "low",
+        "q38-flash-u": "off",
+        "q38-flash-u-think": "low",
     }
     # `/effort` de OpenClaw, que viaja como `reasoning_effort` de primer nivel.
     #
@@ -6493,7 +6607,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d6b9423a5d57
+        config.k8s.e-dani.com/revision: config-82307fba02a0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
