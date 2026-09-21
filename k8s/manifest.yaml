@@ -4905,7 +4905,25 @@ data:
         return None
 
     def _extract_delta_text(chunk) -> str:
-        """Fragmento de texto de un chunk de streaming (choices[0].delta.content)."""
+        """Fragmento de texto de UN chunk de streaming.
+
+        Usa el extractor canónico de litellm (`get_response_string`), que es justo
+        el que usa `async_streaming_data_generator` para acumular `str_so_far` sobre
+        el MISMO chunk que pasa por este hook. Leerte el delta por tu cuenta con la
+        forma OpenAI (`choices[0].delta.content`) solo valía para `/chat/completions`:
+        `/v1/messages` (Claude Code) normaliza a un `ModelResponseStream` cuya texto
+        no está ahí, y el sello salía vacío -> refusal_text NULL en el 100 % del
+        tráfico anthropic (medido: 0/80). Fallback a la forma OpenAI si
+        `get_response_string` no está o lanza.
+        """
+        try:
+            fn = getattr(litellm, "get_response_string", None)
+            if callable(fn):
+                s = fn(response_obj=chunk)
+                if isinstance(s, str) and s:
+                    return s
+        except Exception:
+            pass
         try:
             choices = (chunk.get("choices") if isinstance(chunk, dict)
                        else getattr(chunk, "choices", None))
@@ -7581,7 +7599,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-4274853a0a86
+        config.k8s.e-dani.com/revision: config-659e0c2bc0b9
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
