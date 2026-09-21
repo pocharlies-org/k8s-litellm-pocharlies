@@ -5361,27 +5361,56 @@ data:
             return None
 
         async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
-            # El texto del turno se reparte entre chunks: hay que acumularlo para
-            # clasificarlo al final. La mayoria del trafico de agentes (Claude Code,
-            # openclaw) es streaming, asi que sin esta rama el panel solo veria las
-            # respuestas no-stream y seguiria pareciendo vacio.
-            _acc: list = []
+            # El texto del turno llega repartido en chunks y la heuristica mira el
+            # PRINCIPIO de la respuesta, asi que basta el prefijo acumulado. La
+            # mayoria del trafico de agentes (Claude Code via /v1/messages, openclaw)
+            # es streaming: sin esta rama el panel solo veria respuestas no-stream.
+            #
+            # Se sella CHUNK A CHUNK, no en el finally. Medido tras el primer
+            # despliegue: el no-stream salia con refusal_text pero el stream
+            # (acompletion stream=true y anthropic_messages) salia a NULL. Motivo:
+            # el payload de la fila de SpendLogs se construye ANTES del bucle de
+            # callbacks de logging (emit_standard_logging_payload en
+            # litellm_logging._async_success_handler_body), y en streaming ese
+            # constructor puede correr antes de que este generador se agote. Lo que
+            # SI llega a la fila es lo que estaba en el dict anidado cuando se
+            # construyo — por eso refusal_runtime (pre-call) sale en todas y mi
+            # escritura tardia en el finally no. Sellar sobre el MISMO dict que
+            # propaga el pre-call, desde el primer chunk, hace que el veredicto este
+            # presente cuandoquiera que se construya la fila.
+            #
+            # El prefijo se congela a 400 chars: es la ventana que lee
+            # _looks_like_refusal, pasada esa marca el veredicto no puede cambiar y
+            # dejar de re-clasificar evita un join O(n) por chunk.
+            _prefix: list = []
+            _plen = 0
+            _frozen = False
             try:
                 async for chunk in response:
                     try:
                         _update_tracking_from_payload(request_data, chunk)
                     except Exception as e:
                         log.debug("track_iterator_chunk error: %s", e)
-                    try:
-                        _acc.append(_extract_delta_text(chunk))
-                    except Exception as e:
-                        log.debug("refusal_text accumulate error: %s", e)
+                    if not _frozen:
+                        try:
+                            _t = _extract_delta_text(chunk)
+                            if _t:
+                                _prefix.append(_t)
+                                _plen += len(_t)
+                                _stamp_refusal_text(request_data, "".join(_prefix))
+                                if _plen >= 400:
+                                    _frozen = True
+                        except Exception as e:
+                            log.debug("refusal_text stream stamp error: %s", e)
                     yield chunk
             finally:
-                # El row de streaming se escribe al agotarse el stream (falta el
-                # usage final), y este `finally` corre al agotarse: el sello llega a
-                # tiempo sobre el mismo dict que lee el constructor de la fila.
-                _stamp_refusal_text(request_data, "".join(_acc) or None)
+                # Ultimo pase por si ningun chunk traia texto ya congelado; sobre el
+                # mismo dict es idempotente.
+                if not _frozen and _prefix:
+                    try:
+                        _stamp_refusal_text(request_data, "".join(_prefix))
+                    except Exception as e:
+                        log.debug("refusal_text stream final stamp error: %s", e)
                 _track_end_from_payload(request_data, "streaming_iterator")
 
         async def async_post_call_failure_hook(
@@ -7552,7 +7581,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e626f91eaec7
+        config.k8s.e-dani.com/revision: config-4274853a0a86
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
