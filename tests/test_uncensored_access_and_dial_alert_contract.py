@@ -172,3 +172,27 @@ def test_the_dial_class_alerts_and_insists_without_failing_the_job():
     assert "tooling-uncensored" in src
     assert "/admin/refusal_lambda" in src
     assert "lambda" in src and ": 0" in src
+
+
+def test_las_cuatro_superficies_del_owner_pueden_pedir_la_abliterada(hook):
+    """OWU-50: los cuatro perfiles de chat tienen que estar operativos en Open
+    WebUI, Claude Code CLI, Hermes y Synapse.
+
+    El picker puede ofrecer `q38-flash-u` y aun asi devolver 403: la puerta de
+    keys corre ANTES que la del hook, asi que cada key que ofrece los perfiles
+    tiene que estar en la allowlist. Se comprueba por alias, que es lo que lee el
+    gate, y con el nombre del perfil (no el del residente): si manana se renombra
+    un alias, esto lo pilla.
+    """
+    for alias in ("open-webui-v3", "claude-local", "hermes", "synapse"):
+        assert alias in hook.UNCENSORED_ALLOWED_KEY_ALIASES, alias
+        for perfil in ("q38-flash-u", "q38-flash-u-think"):
+            denied, _ = hook._uncensored_access_denied(perfil, alias)
+            assert denied is False, f"{alias} no puede pedir {perfil}"
+
+
+def test_una_key_que_no_esta_en_la_lista_si_sigue_rechazando(hook):
+    """Que abrir dos keys no convierta esto en un no-control."""
+    assert "benchmark" not in hook.UNCENSORED_ALLOWED_KEY_ALIASES
+    denied, _ = hook._uncensored_access_denied("q38-flash-u", "benchmark")
+    assert denied is True

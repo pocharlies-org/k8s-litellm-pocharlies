@@ -1790,13 +1790,21 @@ data:
     # locales`), y su allowlist de la BD ya lista modelos concretos — no es una key
     # con `models: []`, o sea que aqui no se abre una superficie accidental: entra
     # exactamente el `qwen38-flash-next-uncensored` que el owner pidio, y nada mas.
+    # `hermes` y `synapse` entran (2026-09-21, pedido explicito del owner, OWU-50):
+    # son las dos superficies que quedan por montar de las cuatro donde el owner
+    # quiere los cuatro perfiles de chat (Open WebUI ya los tiene, Claude Code CLI
+    # se acaba de añadir). Sin aqui, `q38-flash-u` y `q38-flash-u-think` aparecen en
+    # el picker de Hermes y dan 403 — la puerta de keys va DELANTE de la del hook,
+    # asi que el alias existe pero la respuesta no llega. Las dos keys tienen
+    # `models: []` (= todos los modelos), luego esto no abre superficie de catalogo:
+    # solo quita el candado de la ruta abliterada a dos keys del propio owner.
     # Vacio = sin restriccion, y es DELIBERADO que el default NO sea vacio.
     UNCENSORED_ALLOWED_KEY_ALIASES = frozenset(
         alias.strip()
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
             "openclaw-qwen36-prod,master,playground,open-webui-v3,"
-            "opencode-20260630-local,claude-local",
+            "opencode-20260630-local,claude-local,hermes,synapse",
         ).split(",")
         if alias.strip()
     )
@@ -7184,7 +7192,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c12d45694a5b
+        config.k8s.e-dani.com/revision: config-a2057de194ad
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
