@@ -7492,7 +7492,7 @@ metadata:
   name: litellm-alibaba
   namespace: litellm
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     name: onepassword
     kind: ClusterSecretStore
@@ -8097,7 +8097,7 @@ metadata:
   name: litellm-valkey-creds
   namespace: litellm
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     name: onepassword
     kind: ClusterSecretStore
