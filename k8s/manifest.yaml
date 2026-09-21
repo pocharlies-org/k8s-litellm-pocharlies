@@ -4937,25 +4937,55 @@ data:
         except Exception:
             return ""
 
+    def _slm_stamp(container, val) -> None:
+        """Escribe `refusal_text` en container['spend_logs_metadata'] si `container`
+        es un dict vivo. No crea contenedores que no existian ya (solo sella los que
+        el payload va a leer)."""
+        if not isinstance(container, dict):
+            return
+        _slm = container.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            container["spend_logs_metadata"] = _slm
+        _slm["refusal_text"] = val
+
     def _stamp_refusal_text(request_data, text) -> None:
         """Clasifica `text` y escribe `refusal_text` en spend_logs_metadata.
 
         Silencioso por diseño: es telemetria, jamas puede romper la peticion ni
         alterar la respuesta que ve el cliente. Sin texto de asistente, no sella.
+
+        LA FILA lee spend_logs_metadata de
+        `model_call_details['litellm_params']['metadata'|'litellm_metadata']`
+        (get_litellm_metadata_from_kwargs). En el pre-call, `data['metadata']` ES
+        ese objeto por referencia y por eso el sello del dial aterriza. Pero en
+        `async_post_call_streaming_iterator_hook` el `request_data` es una COPIA del
+        router: escribir alli no llega (0/1028 anthropic medido). Por eso se sella
+        TAMBIEN en el logging_obj vivo, accesible desde request_data y que es la
+        fuente de verdad del payload.
         """
         if not text or not isinstance(request_data, dict):
             return
         try:
+            val = "refusal" if _looks_like_refusal(text) else "answer"
+            # via del request_data (aterriza en no-stream; puede ser copia en stream)
             _mvar = "litellm_metadata" if "litellm_metadata" in request_data else "metadata"
             _meta = request_data.get(_mvar)
             if not isinstance(_meta, dict):
                 _meta = {}
                 request_data[_mvar] = _meta
-            _slm = _meta.get("spend_logs_metadata")
-            if not isinstance(_slm, dict):
-                _slm = {}
-                _meta["spend_logs_metadata"] = _slm
-            _slm["refusal_text"] = "refusal" if _looks_like_refusal(text) else "answer"
+            _slm_stamp(_meta, val)
+            # via del logging_obj: la que de verdad lee la fila en streaming
+            _log = request_data.get("litellm_logging_obj")
+            _mcd = getattr(_log, "model_call_details", None)
+            if isinstance(_mcd, dict):
+                _lp = _mcd.get("litellm_params")
+                if isinstance(_lp, dict):
+                    for _k in ("metadata", "litellm_metadata"):
+                        _slm_stamp(_lp.get(_k), val)
+                    # si litellm_params no traia metadata, el payload cae a
+                    # model_call_details['metadata'] (via del pre-call)
+                    _slm_stamp(_mcd.get("metadata"), val)
         except Exception as e:
             log.debug("refusal_text stamp error: %s", e)
 
@@ -7599,7 +7629,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-659e0c2bc0b9
+        config.k8s.e-dani.com/revision: config-1938a9b3af83
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

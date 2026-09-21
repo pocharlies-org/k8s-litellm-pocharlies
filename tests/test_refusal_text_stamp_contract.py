@@ -29,6 +29,7 @@ WANT_FN = {
     "_looks_like_refusal",
     "_extract_response_text",
     "_extract_delta_text",
+    "_slm_stamp",
     "_stamp_refusal_text",
 }
 WANT_CONST = {"_REFUSAL_OPENERS"}
@@ -168,6 +169,48 @@ def test_stamp_value_is_always_in_the_contract_set(hook):
         data = {"metadata": {}}
         hook._stamp_refusal_text(data, t or "nonempty")
         assert data["metadata"]["spend_logs_metadata"]["refusal_text"] in ("refusal", "answer")
+
+
+def test_stamp_reaches_live_logging_obj_dict_in_streaming(hook):
+    """El bug que esto fija: en streaming el `request_data` del iterator hook es una
+    COPIA del router, asi que sellar ahi no llega a la fila (0/1028 anthropic). La
+    fila lee de `logging_obj.model_call_details['litellm_params']['metadata']`. El
+    sello debe aterrizar en ESE dict vivo, no solo en la copia."""
+    live = {"spend_logs_metadata": {"refusal_runtime": "vllm"}}  # el que lee la fila
+    logging_obj = types.SimpleNamespace(
+        model_call_details={"litellm_params": {"metadata": live}}
+    )
+    # request_data con su propia COPIA de metadata (distinta del live)
+    request_data = {"metadata": {"spend_logs_metadata": {}},
+                    "litellm_logging_obj": logging_obj}
+    hook._stamp_refusal_text(request_data, "I cannot help with that.")
+    # el dict vivo (fuente de verdad de la fila) queda sellado...
+    assert live["spend_logs_metadata"]["refusal_text"] == "refusal"
+    # ...sin romper lo que ya estaba (el dial del pre-call)
+    assert live["spend_logs_metadata"]["refusal_runtime"] == "vllm"
+
+
+def test_stamp_reaches_litellm_metadata_variant(hook):
+    """get_litellm_metadata_from_kwargs prefiere litellm_metadata si viene no-vacio;
+    hay que sellar tambien ahi o el refusal_text se pierde para esas vias."""
+    live_lm = {"spend_logs_metadata": {}}
+    logging_obj = types.SimpleNamespace(
+        model_call_details={"litellm_params": {"litellm_metadata": live_lm,
+                                               "metadata": {}}}
+    )
+    request_data = {"litellm_logging_obj": logging_obj}
+    hook._stamp_refusal_text(request_data, "Claro, aqui tienes la receta.")
+    assert live_lm["spend_logs_metadata"]["refusal_text"] == "answer"
+
+
+def test_stamp_does_not_fabricate_metadata_container(hook):
+    """Si litellm_params no trae metadata, no se crea: se sella solo en request_data
+    (via no-stream) y no se inventan contenedores que el payload no leeria."""
+    logging_obj = types.SimpleNamespace(model_call_details={"litellm_params": {}})
+    request_data = {"metadata": {}, "litellm_logging_obj": logging_obj}
+    hook._stamp_refusal_text(request_data, "No puedo hacer eso.")
+    assert request_data["metadata"]["spend_logs_metadata"]["refusal_text"] == "refusal"
+    assert "metadata" not in logging_obj.model_call_details["litellm_params"]
 
 
 def test_stamp_never_raises_on_garbage(hook):
