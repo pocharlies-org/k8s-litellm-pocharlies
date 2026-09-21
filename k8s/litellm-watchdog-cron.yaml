@@ -791,7 +791,7 @@ metadata:
   name: litellm-watchdog-telegram
   namespace: litellm
 spec:
-  refreshInterval: 6h
+  refreshInterval: 24h
   secretStoreRef:
     kind: ClusterSecretStore
     name: onepassword
