@@ -434,7 +434,9 @@ def _rewrite(data, sid, reason):
     metadata["_session_routing_reason"] = reason
     metadata["_router_original_model"] = original
     metadata["_router_resolved_model"] = OVERFLOW_MODEL
-    log.info(
+    # WARNING: el proceso proxy filtra los INFO de este logger (medido 21-09);
+    # una reescritura es siempre notable y tiene que verse en el log vivo.
+    log.warning(
         "session_router: %r -> %r (razon=%s, sid=%s)",
         original, OVERFLOW_MODEL, reason, sid or "-",
     )
@@ -462,12 +464,17 @@ async def apply_session_routing(data, requested_model, tracker=None, resident_re
     except Exception as exc:
         log.warning("session_router: fallo inesperado (%s); fail-open", exc)
         return False
-    # Una línea INFO por petición cuando el routing de sesión está en juego
+    # Una línea por petición cuando el routing de sesión está en juego
     # (defecto 2 del QA live: default_plan=alibaba no reescribía y NO dejaba
     # rastro — la causa real era invisible). Sin features activos, silencio:
-    # el tráfico normal no gana ruido de log.
+    # el tráfico normal no gana ruido de log. IMPORTANTE: en el proceso proxy
+    # el logger solo deja pasar WARNING+ (medido en vivo 21-09: las líneas
+    # INFO de _rewrite y de decisión no aparecían jamás) — toda decisión
+    # NOTABLE (reescritura o degradación) va por WARNING; el resto INFO.
     if info["active"] or rewrote:
-        log.info(
+        notable = rewrote or "degradado" in str(info["decision"])
+        emit = log.warning if notable else log.info
+        emit(
             "session_router decision: model=%s sid=%s bound=%s plan=%s cool=%s "
             "inflight=%s -> %s%s",
             info["model"] or "-", info["sid"] or "-", info["bound"], info["plan"],

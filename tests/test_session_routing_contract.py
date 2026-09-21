@@ -292,6 +292,12 @@ def test_decision_deja_una_linea_observable(router_src):
     assert "session_router decision:" in src
     for campo in ("cool=", "plan=", "bound=", "inflight=", "sid="):
         assert campo in src, campo
+    # El proceso proxy filtra los INFO de este logger (medido en vivo 21-09):
+    # toda decisión notable (reescritura/degradación) debe salir por WARNING.
+    assert "log.warning" in src and "degradado" in src
+    rewrite_fn = next(n for n in ast.parse(router_src).body
+                      if isinstance(n, ast.FunctionDef) and n.name == "_rewrite")
+    assert "log.warning" in ast.get_source_segment(router_src, rewrite_fn)
 
 
 def test_apply_session_routing_es_fail_open(router_src):
