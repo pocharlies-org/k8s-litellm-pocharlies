@@ -4040,6 +4040,13 @@ data:
     # none/low/medium -> reasoning_content 0. Comportamiento igual al de antes
     # (fuera de la tabla el alias era off), solo que ahora explicito y sin
     # effort crudo de por medio.
+    # CONTRACT: litellm.reasoning-effort.v1
+    # Cada nivel de `reasoning_effort`/`thinking` que este proxy ANUNCIA en
+    # `supported_reasoning_efforts` debe traducirse, aqui, a un valor que el
+    # backend residente honra de verdad. Es superficie entre procesos: opencode,
+    # OpenClaw y Claude Code leen el menu y mandan el effort; si la tabla deja de
+    # honrarlo, el cliente se rompe sin que los tests de ESTE repo lo vean (fue
+    # exactamente lo que hizo 8022440 con `high`). Registro: CONTRACTS.yaml.
     THINKING_KWARGS = {
         "qwen": {
             # 31-08-2026: los niveles SI existen en qwen38-flash-next y hasta hoy
@@ -7851,7 +7858,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c817c81a350e
+        config.k8s.e-dani.com/revision: config-f7f574cb9a1b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
