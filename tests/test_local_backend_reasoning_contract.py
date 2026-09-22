@@ -43,6 +43,16 @@ def _client_effort_tiers() -> dict:
     raise AssertionError("no encuentro CLIENT_EFFORT_TIERS")
 
 
+def _thinking_kwargs() -> dict:
+    tree = ast.parse(_configmap_value("THINKING_KWARGS = {"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(getattr(t, "id", "") == "THINKING_KWARGS" for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("no encuentro THINKING_KWARGS")
+
+
 def _local_aliases_with_efforts() -> list[tuple[str, list[str]]]:
     """Alias servidos DENTRO del cluster que declaran niveles de esfuerzo.
 
@@ -161,3 +171,33 @@ def test_el_residente_llm_tp_no_anuncia_niveles_que_el_hook_no_traduce():
     assert efforts <= honrados, f"anuncia {sorted(efforts - honrados)}"
     # Y el menu oficial esta completo: none/low/medium/xhigh.
     assert {"none", "low", "medium", "xhigh"} <= efforts
+
+
+def test_toda_traduccion_qwen_cae_en_un_nivel_que_la_plantilla_valida():
+    """22-09-2026: no basta con que el hook traduzca; tiene que traducir a un
+    valor que la plantilla del residente acepte.
+
+    El chat template del snapshot servido (RadixArk Qwen3.8-Flash-Next-NVFP4
+    7b719225, chat_template.jinja:48) valida `reasoning_effort` contra
+    ('xhigh','medium','low') y levanta excepcion con cualquier otro — es piedra
+    del Jinja del modelo, no de la version de vLLM. El commit #122 retiro el
+    clamp y dejo pasar `high` crudo: medido hoy contra el head en produccion,
+    400 "Unexpected reasoning effort high". Y el efecto en cadena era lo grave:
+    el 400 activaba el fallback del router (qwen38-flash-next ->
+    alibaba-q38-flash), asi que toda sesion con "high" del menu era servida
+    SILENCIOSAMENTE por la nube (el 200 del proxy contestaba
+    "model":"qwen3.8-flash"), y en la ruta abliterada el fallback se llevaba
+    por delante el sello uncensored.
+
+    Este test fija la otra mitad del contrato: cada `reasoning_effort` que
+    THINKING_KWARGS["qwen"] emite esta en el vocabulario de la plantilla.
+    """
+    validados = {"xhigh", "medium", "low"}
+    for nivel, kwargs in _thinking_kwargs()["qwen"].items():
+        eff = kwargs.get("reasoning_effort")
+        if eff is None:
+            continue
+        assert eff in validados, (
+            f"THINKING_KWARGS['qwen'][{nivel!r}] manda reasoning_effort={eff!r}, "
+            "que el chat template del residente rechaza con 400"
+        )

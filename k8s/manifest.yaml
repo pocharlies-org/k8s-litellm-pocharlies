@@ -4077,10 +4077,32 @@ data:
             # xhigh 244 caracteres de reasoning_content, los CUATRO con 200. El
             # clamp estaba dejando el /effort high de Claude Code en lo mismo que
             # low — los cuatro niveles del cliente salian indistinguibles.
+            #
+            # 22-09-2026 (mismo dia, de vuelta): esa medicion NO corresponde al
+            # residente vivo y `high` crudo hay que dejar de mandarlo. Medido hoy
+            # contra el head EN PRODUCCION (100.73.153.70:8000, chat_template_kwargs
+            # reasoning_effort=high): 400 "Unexpected reasoning effort high.
+            # Supported types are xhigh (default), medium, and low." — y la
+            # plantilla del snapshot servido (RadixArk Qwen3.8-Flash-Next-NVFP4
+            # 7b719225, chat_template.jinja:48) lo valida en piedra:
+            # `not in ('xhigh','medium','low') -> raise`. Ninguna version de vLLM
+            # cambia eso: el que rechaza es el Jinja del modelo. Conviene decir el
+            # efecto en cadena, que es lo que hacia esto urgente y no el 400
+            # cosmetico: el 400 de `high` activaba el fallback del router
+            # (qwen38-flash-next -> alibaba-q38-flash), asi que TODO cliente que
+            # eligiera "high" en el menu estaba siendo servido SILENCIOSAMENTE por
+            # la nube de pago con otro modelo (medido: el 200 del proxy contesta
+            # con "model":"qwen3.8-flash", no con "qwen38-flash-next"), y en la
+            # ruta abliterada el fallback ademas se lleva por delante el sello
+            # uncensored. `high` se traduce ahora a `xhigh`: es el techo REAL de
+            # la plantilla y el nivel que el cliente quiere decir con "piensa
+            # mucho"; `max`/`xhigh` siguen cayendo al mismo sitio, que es lo que
+            # la plantilla puede prometer (tres niveles para cuatro nombres de
+            # cliente: la colision high=max es del modelo, no nuestra).
             "off": {"enable_thinking": False},
             "low": {"enable_thinking": True, "reasoning_effort": "low"},
             "medium": {"enable_thinking": True, "reasoning_effort": "medium"},
-            "high": {"enable_thinking": True, "reasoning_effort": "high"},
+            "high": {"enable_thinking": True, "reasoning_effort": "xhigh"},
             "max": {"enable_thinking": True, "reasoning_effort": "xhigh"},
         },
     }
@@ -7829,7 +7851,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-5fc217d16cf0
+        config.k8s.e-dani.com/revision: config-c817c81a350e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

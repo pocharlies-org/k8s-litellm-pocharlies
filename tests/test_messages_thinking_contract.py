@@ -102,25 +102,27 @@ THINKING = {"type": "enabled", "budget_tokens": 12000}
 def test_pensamiento_exPLICITO_se_traduce_y_no_viaja(hook):
     """El caso del bug: residente + thinking -> sin `thinking`, con ctk low.
 
-    budget 12000 >= 4096 -> "high" (umbral del bridge), y desde el 22-09 la tabla
-    qwen honra high (el clamp high->low se retiro: medido, el nightly acepta high).
+    budget 12000 >= 4096 -> "high" (umbral del bridge), y la tabla qwen traduce
+    high->xhigh: el residente VIVO rechaza `high` crudo (400 "Unexpected
+    reasoning effort high", medido 22-09 contra el head; chat_template.jinja:48
+    valida ('xhigh','medium','low')). `xhigh` es su techo.
     """
     data = _run(hook, {"model": "qwen38-flash-next", "thinking": dict(THINKING)},
                 "qwen38-flash-next")
     assert "thinking" not in data, "el thinking viajo crudo: el bridge reescribe a /v1/responses"
-    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "high"}
+    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "xhigh"}
 
 
 @pytest.mark.parametrize("budget,tier", [
     (1024, "low"),      # >= LOW(1024)
     (2048, "medium"),   # >= MEDIUM(2048)
-    (4096, "high"),     # >= HIGH(4096) -> high honrado (clamp retirado 22-09)
+    (4096, "high"),     # >= HIGH(4096) -> high, que la tabla traduce a xhigh
     (512, "low"),       # "minimal" para el bridge; aqui se sube al minimo real
 ])
 def test_umbrales_del_budget_coinciden_con_los_del_bridge(hook, budget, tier):
-    # El tier del bridge viaja tal cual desde el 22-09 (el clamp high->low se
-    # retiro: los cuatro niveles del backend estan medidos y responden 200).
-    esperado = {"low": "low", "medium": "medium", "high": "high"}[tier]
+    # El tier del bridge se traduce por THINKING_KWARGS["qwen"]: high->xhigh
+    # (el residente rechaza `high` crudo; ver test_pensamiento_exPLICITO...).
+    esperado = {"low": "low", "medium": "medium", "high": "xhigh"}[tier]
     data = _run(hook, {"model": "qwen38-flash-next",
                        "thinking": {"type": "enabled", "budget_tokens": budget}},
                 "qwen38-flash-next")

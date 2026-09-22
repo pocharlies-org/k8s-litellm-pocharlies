@@ -204,7 +204,7 @@ def test_quien_ya_opino_en_chat_template_kwargs_sigue_mandando(hook):
 def test_qwen_no_gradua_y_el_effort_solo_lo_enciende(hook):
     """Qwen enciende, apaga y ACOTA, pero no inventa niveles que no existen.
 
-    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. `medium` cae en una rama elif de la plantilla sin `reasoning_instructions` propio (hecho de la plantilla, sigue en pie). CORREGIDO 05-09-2026 (SC-203): el corolario "medium 2721 vs low 2993, indistinguibles" esta refutado — medido hoy via proxy con el razonamiento encendido, medium da reasoning real por encima de low; `high` mapea a `low` porque el backend no tiene nivel `high` (400), no porque medium sea silencio."""
+    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. `medium` cae en una rama elif de la plantilla sin `reasoning_instructions` propio (hecho de la plantilla, sigue en pie). CORREGIDO 05-09-2026 (SC-203): el corolario "medium 2721 vs low 2993, indistinguibles" esta refutado — medido hoy via proxy con el razonamiento encendido, medium da reasoning real por encima de low. 22-09 (medido contra el head vivo): `high` se traduce a `xhigh` porque la plantilla no tiene nivel `high` (400) y `xhigh` es su techo; ver test_toda_traduccion_qwen_cae_en_un_nivel_que_la_plantilla_valida."""
     data = {"model": "tooling", "reasoning_effort": "max"}
     assert ctk(hook, data, "tooling", backend="openai/qwen38-27b") == {
         "enable_thinking": True,
