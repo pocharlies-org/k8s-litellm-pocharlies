@@ -251,13 +251,38 @@ data:
     # las repeticiones, no abarata el primer rebote.
     # 8 = la zona donde la latencia medida sigue siendo usable; el
     # tope de KV real del motor sigue sin medir, esto es admision, no fisica.
+    #
+    # 22-09 23:00Z — 8 resulto DEMASIADO ALTO y se baja a 4 (8 efectivos entre
+    # las dos replicas). Medido en el residente con ~29 sesiones vivas:
+    #   running 5-9 (nunca los 16 de MAX_NUM_SEQS) · waiting 35-41 ·
+    #   kv_cache_usage 18-30 % (o sea: NO es el KV quien frena) ·
+    #   0,9 iteraciones/s = ~1,1 s por paso · 21,5 tokens de un presupuesto de
+    #   4096 · prompt throughput 0,0 t/s en la mayoria de tramos de 10 s.
+    # Sonda de control directa al motor, SIN pasar por este proxy: 66 tokens de
+    # prompt y 8 de salida tardaron 165,67 s (0,05 t/s); otra, timeout a los 180 s.
+    #
+    # El mecanismo es un circulo, no un limite: el motor va en
+    # `cudagraph_mode: FULL_DECODE_ONLY`, asi que un paso que lleve cualquier
+    # chunk de prefill sale de la grafica CUDA y corre eager. Cuanta mas cola,
+    # mas probabilidad de que CADA paso traiga un chunk, luego mas pasos eager,
+    # luego mas lenta la cola. Dejar que 16 peticiones apunten al motor
+    # garantiza pasos mixtos perpetuos: la cola propia es lo que apaga el motor.
+    # Por eso el tope va ABAJO del max_num_seqs del motor, no encima: 4 por pod
+    # deja el rebose en el semaphore de LiteLLM, donde `timeout: 240` si corta y
+    # el fallback a `alibaba-q38-flash` si responde. Dentro de la cola de vLLM no
+    # hay nadie que cancele: la peticion se espera entera y ademas tapa el hueco
+    # que otra habria liberado.
+    #
+    # Lo que NO hay que tocar para arreglar esto: subir MAX_NUM_BATCHED_TOKENS
+    # (apaga los cuda graphs del decode y el decode cae a ~1 t/s, medido el
+    # 19-09), ni GPU_MEM_UTIL, ni el perfil de computo.
     - model_name: qwen38-flash-next
       litellm_params:
         model: openai/qwen38-flash-next
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 240
-        max_parallel_requests: 8
+        max_parallel_requests: 4
         # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
         # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
@@ -7829,7 +7854,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-5fc217d16cf0
+        config.k8s.e-dani.com/revision: config-f360899a7c7e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
