@@ -116,7 +116,7 @@ def test_una_imagen_pequena_no_se_toca(hook):
 
 # ── el corte es SOLO para la ruta de nube ────────────────────────────────────
 
-@pytest.mark.parametrize("alias", ["qwen38-flash-next", "tooling", "q38-flash-u", "q38-flash-u-think"])
+@pytest.mark.parametrize("alias", ["qwen38-flash-next", "tooling", "qwen38-u-off"])
 def test_al_residente_local_le_puede_llegar_grande(hook, alias):
     """El vLLM decodifica el base64 en proceso: cortarle a él seria una regresion
     disfrazada de arreglo. El criterio es el prefijo del destino, no el tamano."""

@@ -266,4 +266,5 @@ def test_el_puente_de_renombrado_no_apunta_a_la_nada():
     colgados = {viejo: dest for viejo, dest in puente.items() if dest not in publicados}
     assert not colgados, f"alias viejos apuntando a un grupo inexistente: {colgados}"
     # y el destino corto es el que de verdad se sirve (no un tercer nombre)
-    assert all(dest.startswith("alibaba-") for dest in puente.values())
+    assert all(dest.startswith("alibaba-") for k, dest in puente.items()
+               if k.startswith("alibaba-"))

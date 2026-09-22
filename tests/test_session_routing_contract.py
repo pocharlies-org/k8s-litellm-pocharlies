@@ -471,7 +471,7 @@ def test_sellado_gana_a_todo(router_mod):
     assert data["model"] == RESIDENT and env.writes == []
 
 
-@pytest.mark.parametrize("pedido", ["tooling-uncensored", "q38-flash-u", "q38-flash-u-think"])
+@pytest.mark.parametrize("pedido", ["tooling-uncensored", "qwen38-u-off"])
 def test_uncensored_por_nombre_pedido_no_cae_a_alibaba(router_mod, pedido):
     env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"))
     data = _data()

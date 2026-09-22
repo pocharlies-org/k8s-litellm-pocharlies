@@ -121,13 +121,15 @@ def test_la_ruta_abliterada_del_residente_tambien_publica_low():
     """21-09-2026 (OWU-51): `qwen38-flash-next-uncensored` estuvo sin `low` mientras
     su propio comentario decia "mismos tiers honrados" que la entrada censurada.
 
-    Importa porque `low` es el nivel del perfil `q38-flash-u-think`: quien arma su
+    Importa porque `low` es el nivel del perfil `qwen38-flash-next-uncensored`
+    (antes `q38-flash-u-think`): quien arma su
     menu leyendo esta lista (OpenClaw con /effort) no lo ofrecia en la ruta
     abliterada, y el perfil existia igual. No es cosmética, es la unica declaracion
     que hay fuera del hook.
 
-    Medido el 21-09 via proxy con la key de chat: `q38-flash-u-think` -> 200 con
-    `reasoning_content` de 140 chars; `q38-flash-u` -> 200 sin `reasoning_content`.
+    Medido el 21-09 via proxy con la key de chat: tier low -> 200 con
+    `reasoning_content` de 140 chars; el perfil apagado (`qwen38-u-off`) ->
+    200 sin `reasoning_content`.
     El backend abliterado honra `low`. `medium` NO se anadio: no medido aqui, y
     heredarlo de la entrada censurada es lo que este fichero viene a evitar.
     """
@@ -140,7 +142,7 @@ def test_la_ruta_abliterada_del_residente_tambien_publica_low():
     efforts = list(entrada["supported_reasoning_efforts"])
     assert "low" in efforts, (
         f"la ruta abliterada anuncia {efforts} sin `low`: el perfil "
-        "`q38-flash-u-think` pide low y quien lee esta lista deja de ofrecerlo"
+        "el perfil abliterado que piensa pide low y quien lee esta lista deja de ofrecerlo"
     )
     assert set(efforts) <= set(_client_effort_tiers()), "anuncia un nivel que el hook no traduce"
 

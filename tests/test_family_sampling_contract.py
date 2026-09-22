@@ -227,9 +227,9 @@ def test_qwen_no_gradua_pero_si_enciende_y_apaga(hook):
     """Qwen enciende y apaga, y ademas ACOTA el nivel. Lo que NO puede pasar es
     que se le cuelen las claves de DeepSeek (`thinking`, effort `high`/`max`).
 
-    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. `medium` cae en una rama elif de la plantilla sin `reasoning_instructions` propio (hecho de la plantilla, sigue en pie). CORREGIDO 05-09-2026 (SC-203): el corolario "medium 2721 vs low 2993, indistinguibles" esta refutado — medido hoy via proxy con el razonamiento encendido, medium da reasoning real por encima de low; `high` mapea a `low` porque el backend no tiene nivel `high` (400), no porque medium sea silencio."""
+    Actualizado 31-08-2026: qwen38-flash-next SI gradua. Su chat template hace `reasoning_effort|default('xhigh')` y valida ('xhigh','medium','low'), asi que no traducir dejaba TODO en el maximo. `medium` cae en una rama elif de la plantilla sin `reasoning_instructions` propio (hecho de la plantilla, sigue en pie). CORREGIDO 05-09-2026 (SC-203): el corolario "medium 2721 vs low 2993, indistinguibles" esta refutado — medido hoy via proxy con el razonamiento encendido, medium da reasoning real por encima de low; `high` viajaba a `low` porque el backend devolvia 400 a `high`; medido 22-09-2026: el nightly actual lo acepta (200, reasoning 290 chars) y el clamp se retiro."""
     _install_fake_litellm({"tooling": _dep("openai/nvidia-qwen36-35b-nvfp4")})
-    esperado = {"high": "low", "max": "xhigh", "medium": "medium"}
+    esperado = {"high": "high", "max": "xhigh", "medium": "medium"}
     for effort, backend_effort in esperado.items():
         data = {"model": "tooling", "reasoning_effort": effort}
         hook._apply_thinking_tier(data, "tooling")
@@ -314,10 +314,12 @@ def test_ningun_tier_manda_un_effort_que_el_backend_no_tiene(hook):
     propio 400 lo dice: "Supported types are xhigh (default), medium, and low"
     — y la model card lo lista. Lo que el test protege de verdad, y sigue
     protegiendo, es que ningun valor CRUDO viaje al backend: los unicos efforts
-    que salen de la tabla son los que el motor acepta. `high`/`max` como
-    valores de backend NO existen (400), y por eso el alias deprecado `high`
-    traduce a `low` y `max` a `xhigh`."""
-    aceptados_por_el_motor = {None, "low", "medium", "xhigh"}
+    que salen de la tabla son los que el motor acepta. ACTUALIZADO 22-09-2026:
+    medido contra el nightly actual, `high` responde 200 (low 209 / medium 483 /
+    high 290 / xhigh 244 chars de reasoning); el 400 de la nota vieja ya no
+    existe y el clamp `high`->`low` se retiro. `max` como valor de backend sigue
+    sin existir y traduce a `xhigh`."""
+    aceptados_por_el_motor = {None, "low", "medium", "high", "xhigh"}
     for fam, niveles in hook.THINKING_KWARGS.items():
         for kw in niveles.values():
             assert kw.get("reasoning_effort") in aceptados_por_el_motor, fam
@@ -464,13 +466,13 @@ def test_con_tools_qwen_si_piensa_el_effort_pedido(hook):
 def test_sin_tools_qwen_sigue_pensando_si_se_lo_piden(hook):
     """La puerta es SOLO para tools: sin ellas el effort manda como siempre.
 
-    El `high` del cliente viaja como `low` al backend, que es el unico nivel
-    acotado que este template sabe instruir. Ver la nota en
-    test_qwen_no_gradua_pero_si_enciende_y_apaga."""
+    El `high` del cliente viaja como `high` al backend desde el 22-09-2026
+    (medido: el nightly lo acepta; ver la nota en
+    test_qwen_no_gradua_pero_si_enciende_y_apaga)."""
     _install_fake_litellm({"tooling": _dep("openai/qwen38-flash-next")})
     data = {"model": "tooling", "reasoning_effort": "high"}
     hook._apply_thinking_tier(data, "tooling")
-    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "low"}
+    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "high"}
 
 
 def test_con_tools_el_sampling_usa_el_perfil_de_pensar(hook):

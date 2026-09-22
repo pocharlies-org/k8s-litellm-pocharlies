@@ -173,7 +173,8 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
     # 21-09-2026 (OWU-50): era `== frozenset({CAPABILITY})`, o sea contaba en vez de
     # mirar el contrato. Lo que este test protege es que EL alias de capacidad sea
     # `tooling-uncensored` y resuelva al residente ABLITERADO — y eso sigue igual.
-    # Con los dos perfiles de chat abliterados (`q38-flash-u`, `q38-flash-u-think`)
+    # Con los perfiles de chat abliterados (`qwen38-u-off` y, via puente,
+    # los viejos `q38-flash-u*`)
     # la igualdad exacta estorba y, peor, desvia: esos dos nombres tienen que estar
     # en este conjunto porque de él se deriva `UNCENSORED_GATED_ALIASES`, y un alias
     # uncensored fuera de la puerta es ablacion libre para cualquier key. Lo de

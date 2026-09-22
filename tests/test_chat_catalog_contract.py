@@ -29,15 +29,27 @@ import yaml
 
 MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
-# Los cuatro, con el tier que cada uno debe terminar pidiendo.
+# La matriz 2x2 (capacidad x pensar), con el tier que cada nombre debe terminar
+# pidiendo. Renombrada el 22-09-2026: los nombres se leen solos ahora.
 PERFILES = {
-    "q38-flash": "off",
-    "q38-flash-think": "low",
-    "q38-flash-u": "off",
-    "q38-flash-u-think": "low",
+    "qwen38-flash-next": "low",
+    "qwen38-flash-next-uncensored": "low",
+    "qwen38-off": "off",
+    "qwen38-u-off": "off",
 }
-CENSURADOS = ("q38-flash", "q38-flash-think")
-ABLITERADOS = ("q38-flash-u", "q38-flash-u-think")
+# Los dos unicos que el hook REESCRIBE (los nombres del residente no necesitan
+# reescritura: ya son el residente).
+REESCRITOS = ("qwen38-off", "qwen38-u-off")
+CENSURADOS = ("qwen38-off",)
+ABLITERADOS = ("qwen38-u-off",)
+# Los cuatro nombres viejos: retirados del model_list, vivos solo como puente.
+PUENTE_VIEJO = ("q38-flash", "q38-flash-think", "q38-flash-u", "q38-flash-u-think")
+PUENTE = {
+    "q38-flash": "qwen38-off",
+    "q38-flash-u": "qwen38-u-off",
+    "q38-flash-think": "qwen38-flash-next",
+    "q38-flash-u-think": "qwen38-flash-next-uncensored",
+}
 
 
 @pytest.fixture(scope="module")
@@ -92,10 +104,15 @@ def test_los_cuatro_perfiles_estan_publicados_en_el_model_list(config):
     publicados = {e["model_name"] for e in config["model_list"]}
     faltan = sorted(set(PERFILES) - publicados)
     assert not faltan, f"Open WebUI dejaria de ofrecer {faltan}: {sorted(PERFILES)}"
+    puente = (config.get("router_settings") or {}).get("model_group_alias") or {}
+    colgados = sorted(v for v in PUENTE_VIEJO if puente.get(v) != PUENTE[v])
+    assert not colgados, f"nombres viejos sin puente correcto (404 para sesiones fijadas): {colgados}"
+    reaparecen = sorted(v for v in PUENTE_VIEJO if v in publicados)
+    assert not reaparecen, f"un nombre retirado volvio al model_list: {reaparecen}"
 
 
 def test_cada_perfile_mantiene_su_nivel_de_pensamiento(hook):
-    """`q38-flash` sin pensar y los `-think` en `low`.
+    """Los `-off` sin pensar y los que piensan en `low`.
 
     Sin entrada en THINKING_TIERS no hay "sin pensar": hay default del SERVIDOR, y
     el chat template de Qwen3.8-Flash-Next arranca en xhigh (medido 31-08: content
@@ -108,14 +125,15 @@ def test_cada_perfile_mantiene_su_nivel_de_pensamiento(hook):
         )
 
 
-def test_los_dos_think_terminan_en_el_mismo_nivel(hook):
-    """Simetria: los dos perfiles con thinking piensan lo MISMO.
+def test_los_dos_que_piensan_terminan_en_el_mismo_nivel(hook):
+    """Simetria: censurado y abliterado que prometen pensar, piensan LO MISMO.
 
     Si la ruta abliterada no honra el nivel elegido, este test no lo puede saber —
     lo dice la medicion contra el motor. Lo que si pilla es que alguien ponga
-    `low` en uno y `medium` en el otro y se llamen igual.
+    `low` en uno y `medium` en el otro y se llamen igual, o que saque el
+    abliterado de la tabla (fuera de ella manda el xhigh del servidor: el "mudo").
     """
-    assert hook.THINKING_TIERS["q38-flash-think"] == hook.THINKING_TIERS["q38-flash-u-think"]
+    assert hook.THINKING_TIERS["qwen38-flash-next"] == hook.THINKING_TIERS["qwen38-flash-next-uncensored"]
 
 
 @pytest.fixture(scope="module")
@@ -170,13 +188,17 @@ def test_los_abliterados_estan_detras_de_la_puerta_de_keys(hook):
     ablacion a cualquier key por la puerta de atras."""
     for alias in ABLITERADOS:
         assert alias in hook.TOOLING_UNCENSORED_ALIASES, alias
+    # el nombre directo del residente abliterado entra al gate por ser destino de
+    # TOOLING_UNCENSORED_MODE_TARGETS, no por estar en el conjunto de perfiles
+    assert "qwen38-flash-next-uncensored" in hook.UNCENSORED_GATED_ALIASES
+    for alias in ABLITERADOS:
         assert alias in hook.UNCENSORED_GATED_ALIASES, alias
 
 
-def test_los_cuatro_son_reescritos_al_residente_vivo(hook):
+def test_los_reescritos_son_reescritos_al_residente_vivo(hook):
     """Sin entrada en CAPABILITY_CHAINS la reescritura esta MUERTA: sale al pool
     sin `cache_salt` y contesta el residente equivocado con HTTP 200."""
-    for alias in PERFILES:
+    for alias in REESCRITOS:
         assert alias in hook.CAPABILITY_CHAINS, alias
     for alias in CENSURADOS:
         assert alias in hook.TOOLING_PROFILE_ALIASES, alias
