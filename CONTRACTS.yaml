@@ -1,0 +1,30 @@
+# CONTRACTS.yaml — superficie de contrato de k8s-litellm-pocharlies.
+#
+# Formato común de la casa (ver ~/k8s/synapse/CONTRACTS.yaml y el checker
+# genérico k8s-gitops-pocharlies/scripts/check-contracts.py). Reglas y vía de
+# excepción: skill `synapse-contracts`. Lo existente NO muta: breaking =
+# entrada nueva `.vN+1` + deprecación de la vieja; retirar = `status: removed`
+# (tombstone), nunca borrar. Un commit que toca superficie lleva el trailer
+# `Contract-Change: <accion> <id>` y actualiza este fichero en el mismo push.
+version: 1
+registry: synapse:libs/synapse-contracts/registry.yaml
+contracts:
+  - id: dgx.claude.class-header.v1
+    kind: http-header
+    value: x-claude-class
+    role: consumer
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Session-class request header stamped by the x86 claude-local-router
+      wrapper for company-launched (supervisor/headless) sessions — the
+      publisher lives in x86-host-runtime (separate PR); this repo consumes
+      it in the LiteLLM session-routing hook. Value "company" suppresses the
+      instant_reject overflow valve only: the session queues in compute-mode
+      admission instead of being rewritten to Alibaba (Dani decision
+      2026-09-21). The header cannot bypass sealed requests, uncensored
+      aliases, explicit panel plans or admission; it is forgeable by any
+      keyed client, whose only effect is self-inflicted queuing. Absent or
+      any other value keeps today's behavior; any read error is fail-open.

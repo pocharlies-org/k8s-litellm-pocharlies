@@ -3,7 +3,7 @@
 # NO ES UN SEGUNDO CALLBACK (veredicto del arquitecto, mandato 2): este módulo
 # lo IMPORTA litellm_strip_params.py y lo llama desde su async_pre_call_hook,
 # justo después de la RED FINAL de visión y antes del sampling por familia. Ahí
-# data["model"] ya está resuelto (tooling/q38-flash -> qwen38-flash-next), los
+# data["model"] ya está resuelto (tooling/qwen38-off -> qwen38-flash-next), los
 # gates uncensored/openrouter ya pasaron, y el rewrite —si lo hay— llega ANTES
 # del sello, del template strict-system, de la admisión compute-mode y del
 # tracker de peticiones activas, que ven todos el modelo final.
@@ -110,9 +110,19 @@ PLANES = ("local", "alibaba", "claude")
 # se estampa en strip_params DESPUÉS de este punto de inserción — por eso la
 # comprobación por NOMBRE aquí es obligatoria, el sello aún no existe).
 UNCENSORED_ALIASES = frozenset({
-    "tooling-uncensored", "q38-flash-u", "q38-flash-u-think",
+    "tooling-uncensored", "qwen38-u-off",
 })
 UNCENSORED_SUFFIX = "-uncensored"
+
+# INFRA-208 (22-09): clase de sesión. El wrapper de la compañía (x86-
+# host-runtime) estampa x-claude-class: company; con ese valor la válvula
+# instant_reject NO aplica — la sesión sigue a la admisión de strip_params,
+# que ENCOLA (decisión de Dani 21-09: la compañía nunca salta a Alibaba).
+# Sin cabecera u otro valor, comportamiento actual. Superficie de contrato:
+# CONTRACTS.yaml dgx.claude.class-header.v1 (publisher: el wrapper x86;
+# consumer: este hook).
+CLASS_HEADER = "x-claude-class"
+COMPANY_CLASS = "company"
 
 # Ambos flags off (default, y estado mientras el panel no exista o no esté
 # alcanzable): los mecanismos AUTOMÁTICOS duermen y llamar a
@@ -184,6 +194,41 @@ def _session_id(data):
     user_id = md.get("user_id") or ""
     if isinstance(user_id, str) and user_id.startswith("_session_"):
         return user_id
+    return None
+
+
+def _claude_class(data):
+    """La clase de sesión que estampa el wrapper (x-claude-class). Vía real
+    verificada contra litellm v1.100.0 (la pineada) y sonda en vivo el 22-09
+    — ver plans/company-class-instant-reject-plan.md:
+    add_litellm_data_to_request asigna INCONDICIONALMENTE todas las cabeceras
+    del request (salvo credenciales, enmascaradas) a data["metadata"]
+    ["headers"], y clean_headers guarda las claves con la CAJA DEL CABLE
+    (itera sin normalizar): por eso la comparación es case-insensitive por
+    clave y el valor se normaliza a minúsculas. data["headers"] (raíz) solo
+    existe con forward_client_headers_to_llm_api (apagado en este
+    despliegue) y llega remapeada con prefijo x-litellm-; se lee también por
+    robustez, igual que en _session_id.
+
+    Fail-open: cualquier forma rara (no-dict, items() roto, None) => None =>
+    comportamiento actual; no lanza nunca. La cabecera es falsificable por
+    cualquier cliente con key: el único efecto es ENCOLAR en vez de saltar a
+    Alibaba bajo saturación (auto-perjuicio), sin escalar privilegios — no
+    toca sellado, admisión ni planes explícitos."""
+    # CONTRACT: dgx.claude.class-header.v1
+    try:
+        sources = [data.get("headers"), (data.get("metadata") or {}).get("headers")]
+    except AttributeError:
+        return None
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        try:
+            for key, value in source.items():
+                if isinstance(key, str) and key.lower() == CLASS_HEADER and value:
+                    return str(value).strip().lower() or None
+        except (AttributeError, TypeError):
+            continue
     return None
 
 
@@ -457,6 +502,7 @@ async def apply_session_routing(data, requested_model, tracker=None, resident_re
     info = {
         "model": str(data.get("model") or ""), "sid": None, "bound": None,
         "fresh": None, "plan": None, "cool": None, "inflight": None,
+        "class": None,
         "decision": "fail-open", "active": False,
     }
     try:
@@ -475,9 +521,10 @@ async def apply_session_routing(data, requested_model, tracker=None, resident_re
         notable = rewrote or "degradado" in str(info["decision"])
         emit = log.warning if notable else log.info
         emit(
-            "session_router decision: model=%s sid=%s bound=%s plan=%s cool=%s "
-            "inflight=%s -> %s%s",
-            info["model"] or "-", info["sid"] or "-", info["bound"], info["plan"],
+            "session_router decision: model=%s sid=%s class=%s bound=%s plan=%s "
+            "cool=%s inflight=%s -> %s%s",
+            info["model"] or "-", info["sid"] or "-", info["class"] or "-",
+            info["bound"], info["plan"],
             info["cool"], info["inflight"], info["decision"],
             " (REESCRITA)" if rewrote else "",
         )
@@ -510,6 +557,12 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     config = await _config()
     sid = _session_id(data)
     info["sid"] = sid
+    # La clase se lee aquí (no dentro de la válvula) para que la línea de
+    # decisión la lleve también en los caminos que la rodean (sellado, plan
+    # explícito...): la precedencia NO la mira, solo la visibilidad.
+    claude_class = _claude_class(data)
+    info["class"] = claude_class
+    company = claude_class == COMPANY_CLASS
     info["active"] = bool(
         config["sticky"] or config["instant_reject"]
         or config["default_plan"] != "local" or config["session_plans"]
@@ -602,7 +655,13 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     # Válvula de capacidad (precedencia 5) — solo plan default. Con sticky
     # activo, el disparo RE-VINCULA la sesión (destino sano = hueco libre);
     # con sticky apagado es una válvula por petición que no escribe nada.
-    if config["instant_reject"] and model == RESIDENT_MODEL:
+    # INFRA-208 (22-09): las sesiones de la compañía (x-claude-class:
+    # company) NUNCA saltan por la válvula — deciden `local` y la admisión
+    # de strip_params ENCOLA (decisión de Dani 21-09). El gate es SOLO esta
+    # válvula: sellado, uncensored, plan explícito, sticky ya ligado a
+    # alibaba y re-bind por residente no-ready aplican igual — la cabecera
+    # no esquiva precedencia ni salta cola.
+    if config["instant_reject"] and model == RESIDENT_MODEL and not company:
         inflight = await _inflight_resident(tracker)
         info["inflight"] = inflight
         if inflight is not None and inflight >= config["local_slots"] and _overflow_ok_info(info):
