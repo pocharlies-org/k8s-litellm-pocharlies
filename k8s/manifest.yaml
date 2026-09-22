@@ -5803,6 +5803,16 @@ data:
     })
     UNCENSORED_SUFFIX = "-uncensored"
 
+    # INFRA-208 (22-09): clase de sesión. El wrapper de la compañía (x86-
+    # host-runtime) estampa x-claude-class: company; con ese valor la válvula
+    # instant_reject NO aplica — la sesión sigue a la admisión de strip_params,
+    # que ENCOLA (decisión de Dani 21-09: la compañía nunca salta a Alibaba).
+    # Sin cabecera u otro valor, comportamiento actual. Superficie de contrato:
+    # CONTRACTS.yaml dgx.claude.class-header.v1 (publisher: el wrapper x86;
+    # consumer: este hook).
+    CLASS_HEADER = "x-claude-class"
+    COMPANY_CLASS = "company"
+
     # Ambos flags off (default, y estado mientras el panel no exista o no esté
     # alcanzable): los mecanismos AUTOMÁTICOS duermen y llamar a
     # apply_session_routing es un no-op exacto del comportamiento anterior. Un plan
@@ -5873,6 +5883,41 @@ data:
         user_id = md.get("user_id") or ""
         if isinstance(user_id, str) and user_id.startswith("_session_"):
             return user_id
+        return None
+
+
+    def _claude_class(data):
+        """La clase de sesión que estampa el wrapper (x-claude-class). Vía real
+        verificada contra litellm v1.100.0 (la pineada) y sonda en vivo el 22-09
+        — ver plans/company-class-instant-reject-plan.md:
+        add_litellm_data_to_request asigna INCONDICIONALMENTE todas las cabeceras
+        del request (salvo credenciales, enmascaradas) a data["metadata"]
+        ["headers"], y clean_headers guarda las claves con la CAJA DEL CABLE
+        (itera sin normalizar): por eso la comparación es case-insensitive por
+        clave y el valor se normaliza a minúsculas. data["headers"] (raíz) solo
+        existe con forward_client_headers_to_llm_api (apagado en este
+        despliegue) y llega remapeada con prefijo x-litellm-; se lee también por
+        robustez, igual que en _session_id.
+
+        Fail-open: cualquier forma rara (no-dict, items() roto, None) => None =>
+        comportamiento actual; no lanza nunca. La cabecera es falsificable por
+        cualquier cliente con key: el único efecto es ENCOLAR en vez de saltar a
+        Alibaba bajo saturación (auto-perjuicio), sin escalar privilegios — no
+        toca sellado, admisión ni planes explícitos."""
+        # CONTRACT: dgx.claude.class-header.v1
+        try:
+            sources = [data.get("headers"), (data.get("metadata") or {}).get("headers")]
+        except AttributeError:
+            return None
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            try:
+                for key, value in source.items():
+                    if isinstance(key, str) and key.lower() == CLASS_HEADER and value:
+                        return str(value).strip().lower() or None
+            except (AttributeError, TypeError):
+                continue
         return None
 
 
@@ -6146,6 +6191,7 @@ data:
         info = {
             "model": str(data.get("model") or ""), "sid": None, "bound": None,
             "fresh": None, "plan": None, "cool": None, "inflight": None,
+            "class": None,
             "decision": "fail-open", "active": False,
         }
         try:
@@ -6164,9 +6210,10 @@ data:
             notable = rewrote or "degradado" in str(info["decision"])
             emit = log.warning if notable else log.info
             emit(
-                "session_router decision: model=%s sid=%s bound=%s plan=%s cool=%s "
-                "inflight=%s -> %s%s",
-                info["model"] or "-", info["sid"] or "-", info["bound"], info["plan"],
+                "session_router decision: model=%s sid=%s class=%s bound=%s plan=%s "
+                "cool=%s inflight=%s -> %s%s",
+                info["model"] or "-", info["sid"] or "-", info["class"] or "-",
+                info["bound"], info["plan"],
                 info["cool"], info["inflight"], info["decision"],
                 " (REESCRITA)" if rewrote else "",
             )
@@ -6199,6 +6246,12 @@ data:
         config = await _config()
         sid = _session_id(data)
         info["sid"] = sid
+        # La clase se lee aquí (no dentro de la válvula) para que la línea de
+        # decisión la lleve también en los caminos que la rodean (sellado, plan
+        # explícito...): la precedencia NO la mira, solo la visibilidad.
+        claude_class = _claude_class(data)
+        info["class"] = claude_class
+        company = claude_class == COMPANY_CLASS
         info["active"] = bool(
             config["sticky"] or config["instant_reject"]
             or config["default_plan"] != "local" or config["session_plans"]
@@ -6291,7 +6344,13 @@ data:
         # Válvula de capacidad (precedencia 5) — solo plan default. Con sticky
         # activo, el disparo RE-VINCULA la sesión (destino sano = hueco libre);
         # con sticky apagado es una válvula por petición que no escribe nada.
-        if config["instant_reject"] and model == RESIDENT_MODEL:
+        # INFRA-208 (22-09): las sesiones de la compañía (x-claude-class:
+        # company) NUNCA saltan por la válvula — deciden `local` y la admisión
+        # de strip_params ENCOLA (decisión de Dani 21-09). El gate es SOLO esta
+        # válvula: sellado, uncensored, plan explícito, sticky ya ligado a
+        # alibaba y re-bind por residente no-ready aplican igual — la cabecera
+        # no esquiva precedencia ni salta cola.
+        if config["instant_reject"] and model == RESIDENT_MODEL and not company:
             inflight = await _inflight_resident(tracker)
             info["inflight"] = inflight
             if inflight is not None and inflight >= config["local_slots"] and _overflow_ok_info(info):
@@ -7770,7 +7829,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-619874a6ceaf
+        config.k8s.e-dani.com/revision: config-5fc217d16cf0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
