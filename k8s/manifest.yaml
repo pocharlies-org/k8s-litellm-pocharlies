@@ -1706,6 +1706,22 @@ data:
         "tooling-uncensored", "qwen38-u-off",
     })
 
+    # Puente del renombrado en el HOOK (22-09-2026, pareja del `model_group_alias`
+    # del router). Hace falta los dos y no solo el del router: `model_group_alias`
+    # elige el deployment, pero este hook corre con el nombre CRUDO pedido, y todas
+    # sus tablas (CAPABILITY_CHAINS, THINKING_TIERS, el gate uncensored) miran ese
+    # nombre. Sin este mapa, un `q38-flash` puenteado salia al pool con
+    # `model: "tooling"` en el cuerpo y vLLM lo rechazaba con 404 (medido 22-09,
+    # y ademas metia el deployment en cooldown). Con la reescritura aqui delante,
+    # el trafico puenteado se comporta EXACTAMENTE como el nombre nuevo.
+    # Caduca junto con el puente del router (~27-09, spend logs 7 dias verdes).
+    CHAT_PROFILE_RENAMES = {
+        "q38-flash": "qwen38-off",
+        "q38-flash-u": "qwen38-u-off",
+        "q38-flash-think": "qwen38-flash-next",
+        "q38-flash-u-think": "qwen38-flash-next-uncensored",
+    }
+
     def _component_is_ready(state, node, name):
         components = (state.get("components") or {}).get(node) or []
         for component in components:
@@ -5118,6 +5134,12 @@ data:
 
             requested_model = data.get("model", "")
 
+            # Puente del renombrado (ver CHAT_PROFILE_RENAMES): lo primero, antes
+            # de cualquier gate, para que un nombre viejo puenteado pase por las
+            # mismas puertas y tablas que el nuevo.
+            if requested_model in CHAT_PROFILE_RENAMES:
+                requested_model = data["model"] = CHAT_PROFILE_RENAMES[requested_model]
+
             # Gate de la ruta ABLITERADA, lo primero de todo y a proposito: antes de
             # sanear sampling, de reescribir alias y de cualquier llamada al backend.
             # Si esta key no puede pedirla, no se toca nada mas y se devuelve 403.
@@ -7748,7 +7770,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-3f2057525967
+        config.k8s.e-dani.com/revision: config-619874a6ceaf
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
