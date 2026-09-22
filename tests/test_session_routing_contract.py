@@ -622,3 +622,221 @@ def test_fallo_interno_devuelve_false_sin_tocar_data(router_mod):
         assert data["model"] == RESIDENT
     finally:
         router_mod._config = anterior
+
+
+# ── INFRA-208 (22-09): clase de sesión x-claude-class (C1-C4) ───────────────
+# Decisión de Dani 21-09: las sesiones de la compañía (cabecera que estampa el
+# wrapper de x86, publisher en x86-host-runtime — PR aparte) NUNCA saltan a
+# Alibaba por la válvula: deciden `local` y la admisión de strip_params encola.
+# Las demás sesiones siguen saltando igual que hoy. Plan y vía real verificada:
+# plans/company-class-instant-reject-plan.md.
+
+
+def _company_data(**extra):
+    """data como la que entrega add_litellm_data_to_request en litellm
+    v1.100.0: las cabeceras del request, con la caja del cable, viven en
+    data["metadata"]["headers"] (asignación incondicional; verificado contra
+    la versión pineada y con sonda en vivo el 22-09)."""
+    return _data(metadata={"headers": {"x-claude-class": "company"}}, **extra)
+
+
+# C1: company + saturado + instant_reject=true => encola, cero reescrituras,
+# cero re-bind sticky a alibaba.
+
+
+def test_c1_company_con_valvula_disparada_encola_sin_reescribir(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2),
+               inflight=99)
+    data = _company_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert "_session_routing_rerouted" not in data["metadata"]
+    # fresh + sticky: el único binding escrito es LOCAL; ningún re-bind a
+    # alibaba (lo que haría la válvula hoy).
+    assert env.writes == [(SID, "local")]
+
+
+def test_c1_company_sin_sticky_la_valvula_no_dispara(router_mod):
+    env = _Env(router_mod, _cfg(sticky=False, instant_reject=True, local_slots=2),
+               inflight=99)
+    data = _company_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == []
+
+
+@pytest.mark.parametrize("clave,valor", [
+    ("X-Claude-Class", "company"),   # caja del cable sobre HTTP/1.1
+    ("x-CLAUDE-class", "Company"),   # SDKs que canonizan mayúsculas intermedias
+    ("X-CLAUDE-CLASS", " COMPANY "), # recorte del valor también
+])
+def test_c1_company_case_insensitive_por_clave_y_valor(router_mod, clave, valor):
+    """clean_headers (v1.100.0) guarda las claves con la caja del cable: un
+    get() a pelo por la minúscula sería el bug. La lectura es case-insensitive."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2),
+               inflight=99)
+    data = _data(metadata={"headers": {clave: valor}})
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+
+
+# C2: sin cabecera (o con otra clase) => comportamiento idéntico al actual.
+
+
+def test_c2_sin_cabecera_la_valvula_sigue_saltando_y_rebinde(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2),
+               inflight=99)
+    data = _data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]  # re-bind sticky intacto
+    assert data["metadata"]["_session_routing_rerouted"] is True
+
+
+@pytest.mark.parametrize("otro_valor", ["interactive", "compania", "", "   "])
+def test_c2_otras_clases_comportamiento_actual(router_mod, otro_valor):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2),
+               inflight=99)
+    data = _data(metadata={"headers": {"x-claude-class": otro_valor}})
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]
+
+
+# C3: la cabecera no esquiva sellado, uncensored, plan explícito, sticky ya
+# ligado a alibaba ni el re-bind por residente no-ready — solo desactiva la
+# válvula; y no salta cola (la supresión devuelve el control a la admisión).
+
+
+def test_c3_company_no_esquiva_el_sellado(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0,
+                                default_plan="alibaba"), inflight=99)
+    data = _company_data(disable_fallbacks=True)
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == []
+
+
+def test_c3_company_no_esquiva_uncensored(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"), inflight=99)
+    data = _company_data()
+    assert env.run(data, requested="tooling-uncensored") is False
+    assert data["model"] == RESIDENT
+
+
+def test_c3_plan_exPLICITO_alibaba_gana_a_la_clase(router_mod):
+    """Orden del operador > clase: el plan explícito sigue reescribiendo."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0,
+                                session_plans={SID: "alibaba"}), inflight=99)
+    data = _company_data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+
+
+def test_c3_sticky_ya_ligado_a_alibaba_sigue_ligado(router_mod):
+    """Binding previo (default_plan=alibaba, o escrito antes de desplegar,
+    TTL 1 h): company solo apaga la VALVULA, no deshace destinos."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0),
+               bound="alibaba", inflight=99)
+    data = _company_data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+
+
+def test_c3_residente_no_ready_sigue_rebindeando(router_mod):
+    """No es saturación, es que el residente no está: encolar sería un 503
+    seguro. La ruta de disponibilidad (compute-mode) aplica igual a company."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0),
+               bound="local", inflight=99)
+    data = _company_data()
+    assert env.run(data, resident_ready=False) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]
+
+
+# C4: fail-open — cualquier forma rara de la cabecera/metadata = sin clase =
+# comportamiento actual, sin excepción.
+
+
+@pytest.mark.parametrize("cabeceras", ["no-dict", 42, None,
+                                       ["x-claude-class", "company"]])
+def test_c4_cabeceras_con_forma_rara_fail_open(router_mod, cabeceras):
+    env = _Env(router_mod, _cfg(sticky=False, instant_reject=True, local_slots=2),
+               inflight=99)
+    data = _data(metadata={"headers": cabeceras})
+    assert env.run(data) is True  # sin excepción y saltando como hoy
+    assert data["model"] == OVERFLOW
+
+
+def test_c4_metadata_no_dict_comportamiento_identico(router_mod):
+    """metadata corrupta (ni dict): el helper no lanza y la petición se
+    comporta EXACTAMENTE igual con y sin cabecera."""
+    for with_class in (False, True):
+        env = _Env(router_mod, _cfg(sticky=False, instant_reject=True,
+                                    local_slots=2), inflight=99)
+        data = {"model": RESIDENT, "litellm_trace_id": SID, "metadata": "no-dict"}
+        if with_class:
+            data["headers"] = {"x-claude-class": "company"}
+        assert env.run(data) is True
+        assert data["model"] == OVERFLOW
+
+
+def test_c4_metadata_lista_no_dict_fail_open(router_mod):
+    """metadata lista (ni dict): el helper y _rewrite la toleran; el sid sale
+    del trace_id y la válvula actúa EXACTAMENTE como sin cabecera."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2),
+               inflight=99)
+    data = {"model": RESIDENT, "litellm_trace_id": SID, "metadata": ["headers"]}
+    assert env.run(data) is True  # sin clase => comportamiento actual
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_rerouted"] is True  # _rewrite la reemplazó
+
+
+# Observabilidad y forma: la supresión es grepeable y el gate no se ensancha.
+
+
+def test_class_aparece_en_la_linea_de_decision(router_mod, caplog):
+    import logging
+
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2),
+               inflight=99)
+    data = _company_data()
+    with caplog.at_level(logging.INFO, logger="session_router"):
+        assert env.run(data) is False
+    lineas = [r.getMessage() for r in caplog.records
+              if "session_router decision:" in r.getMessage()]
+    # con company la válvula ni se evalúa (no se cuenta inflight): la línea
+    # muestra class=company y destino local — la supresión es grepeable.
+    assert any("class=company" in l and "-> local" in l for l in lineas), lineas
+
+
+def test_sin_cabecera_class_sale_como_guion(router_mod, caplog):
+    import logging
+
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False), inflight=0)
+    data = _data()
+    with caplog.at_level(logging.INFO, logger="session_router"):
+        assert env.run(data) is False
+    lineas = [r.getMessage() for r in caplog.records
+              if "session_router decision:" in r.getMessage()]
+    assert any("class=-" in l for l in lineas), lineas
+
+
+def test_gate_de_valvula_exacto_y_helper_robusto(router_src):
+    """El gate exige instant_reject + modelo residente + not company (no se
+    ensancha a otras rutas), la lectura es case-insensitive por clave y el
+    marcador de contrato está en el sitio."""
+    assert 'config["instant_reject"] and model == RESIDENT_MODEL and not company' in router_src
+    tree = ast.parse(router_src)
+    cls_fn = next(n for n in tree.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_claude_class")
+    src = ast.get_source_segment(router_src, cls_fn)
+    assert "key.lower() == CLASS_HEADER" in src
+    assert "isinstance(source, dict)" in src  # formas raras => None, sin lanza
+    apply_fn = next(n for n in tree.body
+                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "_apply")
+    src_apply = ast.get_source_segment(router_src, apply_fn)
+    # company solo se usa en el gate de la válvula: ninguna otra ruta lo mira
+    assert src_apply.count("not company") == 1, "company no debe colarse en más caminos"
+    assert "# CONTRACT: dgx.claude.class-header.v1" in router_src
