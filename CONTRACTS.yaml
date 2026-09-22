@@ -10,7 +10,12 @@ version: 1
 registry: synapse:libs/synapse-contracts/registry.yaml
 contracts:
   - id: dgx.claude.class-header.v1
-    kind: http-header
+    # kind 'schema' y no 'http-header': el checker (k8s-gitops-pocharlies
+    # scripts/check-contracts.py) solo admite allowlist|cloudevent|http-route|
+    # queue|routing-key|schema|workflow-file. Una cabecera con valor cerrado
+    # es convencion de datos entre procesos -- el mismo kind que
+    # bus.routing_key_format en synapse.
+    kind: schema
     value: x-claude-class
     role: consumer
     files:

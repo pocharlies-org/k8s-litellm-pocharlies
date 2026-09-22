@@ -102,9 +102,14 @@ en la ruta local, el hook lo salta si falta). Se crea `CONTRACTS.yaml` en la ra√
 con el formato real de los repos de la casa (`version: 1`, `registry:`, `contracts:
 [id, kind, value, role, files, status, note]`), entrada nueva:
 
-- `id: dgx.claude.class-header.v1`, `kind: http-header`, `value: x-claude-class`,
+- `id: dgx.claude.class-header.v1`, `kind: schema`, `value: x-claude-class`,
   `role: consumer` (publisher: el wrapper de x86-host-runtime, otro PR; consumer:
-  este hook).
+  este hook). **Desviacion medida sobre el enunciado (C5 decia `kind:
+  http-header`)**: el checker real (`k8s-gitops-pocharlies
+  scripts/check-contracts.py`, job `Contract surface` del CI reusable) solo
+  admite `allowlist|cloudevent|http-route|queue|routing-key|schema|workflow-file`
+  y rechazo `http-header` en CI. Una cabecera con valor cerrado es convencion
+  de datos entre procesos: `schema` (precedente: `bus.routing_key_format`).
 
 El commit del c√≥digo lleva el trailer `Contract-Change: add
 dgx.claude.class-header.v1` y marcador `# CONTRACT: dgx.claude.class-header.v1`
