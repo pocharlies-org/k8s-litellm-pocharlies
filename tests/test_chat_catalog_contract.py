@@ -73,7 +73,7 @@ WANT_CONST = {
     "TOOLING_MODE_TARGETS",
     "TOOLING_UNCENSORED_MODE_TARGETS", "UNCENSORED_GATED_ALIASES",
     "CAPABILITY_CHAINS", "TOOLING_FALLBACKS",
-    "THINKING_TIERS", "SWAPPABLE_ALIASES",
+    "THINKING_TIERS", "SWAPPABLE_ALIASES", "CHAT_PROFILE_RENAMES",
 }
 
 
@@ -193,6 +193,25 @@ def test_los_abliterados_estan_detras_de_la_puerta_de_keys(hook):
     assert "qwen38-flash-next-uncensored" in hook.UNCENSORED_GATED_ALIASES
     for alias in ABLITERADOS:
         assert alias in hook.UNCENSORED_GATED_ALIASES, alias
+
+
+def test_el_puente_del_hook_y_el_del_router_coinciden(config, hook):
+    """Los DOS puentes del renombrado tienen que decir lo mismo.
+
+    `model_group_alias` elige el deployment, pero el hook ve el nombre CRUDO
+    pedido y sus tablas (CAPABILITY_CHAINS, THINKING_TIERS, el gate uncensored)
+    lo miran a el. Si alguien toca uno y no el otro, el trafico puenteado sale
+    al pool con `model: "tooling"` y vLLM lo rechaza con 404 — y de paso mete el
+    deployment en cooldown (medido 22-09).
+    """
+    puente = (config.get("router_settings") or {}).get("model_group_alias") or {}
+    viejos = {k: v for k, v in puente.items() if k.startswith("q38-flash")}
+    assert viejos == hook.CHAT_PROFILE_RENAMES, (
+        f"puente del router {viejos} != puente del hook {hook.CHAT_PROFILE_RENAMES}"
+    )
+    publicados = {e["model_name"] for e in config["model_list"]}
+    colgados = {k: v for k, v in viejos.items() if v not in publicados}
+    assert not colgados, f"puentes apuntando a un grupo no publicado: {colgados}"
 
 
 def test_los_reescritos_son_reescritos_al_residente_vivo(hook):
