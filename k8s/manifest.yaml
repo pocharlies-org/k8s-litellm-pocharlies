@@ -5851,6 +5851,8 @@ data:
     # refresca en background con último-bueno; Valkey y sidecar con timeout duro de
     # 0,1 s). Valkey caído => LiteLLM sigue EXACTAMENTE como hoy.
     import asyncio
+    import hashlib
+    import json
     import logging
     import os
     import time
@@ -6043,6 +6045,51 @@ data:
         if isinstance(user_id, str) and user_id.startswith("_session_"):
             return user_id
         return None
+
+
+    # Llave de afinidad para clientes SIN id de sesión (23-09-2026). Medido ese día:
+    # opencode manda 22 peticiones con 22 session_id distintos en 10 min (y hermes igual):
+    # sin id estable no hay sticky, cada petición se decide suelta y la conversación salta
+    # entre el local y Alibaba llegando fría a los dos. El sistema y el primer mensaje de
+    # usuario NO cambian en toda la conversación: su hash (con el cliente) la identifica.
+    # Las marcas cache_control se ignoran (los clientes las mueven entre turnos).
+    AFFINITY_CHARS = 20000
+
+
+    def _sin_cache_control(obj):
+        if isinstance(obj, dict):
+            return {k: _sin_cache_control(v) for k, v in obj.items() if k != "cache_control"}
+        if isinstance(obj, list):
+            return [_sin_cache_control(v) for v in obj]
+        return obj
+
+
+    def _prefix_affinity_key(data):
+        """`pfx-<hash>` estable para toda una conversación sin id, o None."""
+        try:
+            msgs = data.get("messages")
+            if not isinstance(msgs, list) or not msgs:
+                return None
+            metas = [data.get("metadata"), data.get("litellm_metadata")]
+            alias = next((m.get("user_api_key_alias") or m.get("user_api_key_hash")
+                          for m in metas if isinstance(m, dict)
+                          and (m.get("user_api_key_alias") or m.get("user_api_key_hash"))), "")
+
+            def trozo(x):
+                x = _sin_cache_control(x)
+                texto = x if isinstance(x, str) else json.dumps(x, ensure_ascii=False, sort_keys=True, default=str)
+                return texto[:AFFINITY_CHARS]
+
+            partes = [str(alias), trozo(data.get("system") or "")]
+            for m in msgs:
+                if not isinstance(m, dict):
+                    continue
+                partes.append(f"{m.get('role')}:{trozo(m.get('content'))}")
+                if m.get("role") == "user":
+                    break
+            return "pfx-" + hashlib.sha1("\x1f".join(partes).encode("utf-8", "replace")).hexdigest()[:24]
+        except Exception:
+            return None
 
 
     def _claude_class(data):
@@ -6519,7 +6566,7 @@ data:
             return False
 
         config = await _config()
-        sid = _session_id(data)
+        sid = _session_id(data) or _prefix_affinity_key(data)
         info["sid"] = sid
         # La clase se lee aquí (no dentro de la válvula) para que la línea de
         # decisión la lleve también en los caminos que la rodean (sellado, plan
@@ -8130,7 +8177,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-510542335fc2
+        config.k8s.e-dani.com/revision: config-c1c386be28f4
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
