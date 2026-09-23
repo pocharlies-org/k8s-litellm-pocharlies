@@ -143,3 +143,20 @@ contracts:
       Same recipe for `tooling`/`tooling-uncensored` since 2026-09-23. The
       thinking-off aliases `qwen38-off`/`qwen38-u-off` advertise only [none]
       and the hook forces them off whatever effort the client sends.
+  - id: dgx.litellm.active-requests.v1
+    kind: http-route
+    value: /internal/active-requests
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Sidecar :4001 of every litellm pod (this pod + peers, deduplicated).
+      Consumed by dgx-infra services/dashboard/api/litellm_active.py and
+      api/routes_hud.py: the /inferencia cards put each live request on its
+      engine card by `server_id` (MUST equal the card's srv.id, e.g.
+      `qwen38-flash-next-head`) and derive the per-request phase
+      (queue/prefill vs decode) from `ttft_ms`, `completion_tokens` and the
+      live `output_speed_tps`. Fields are additive; null means "not
+      measured", never zero. Since 2026-09-23 the resident is measured live
+      on both /v1/chat/completions and /v1/messages.
