@@ -639,6 +639,16 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
         )
         assert all(tipo == "int" for tipo in counts_shape.values())
         assert sum(body_new["counts_by_model"].values()) == len(body_new["active"])
+        # Mismo precedente para las claves de enrutado por fila (route_kind /
+        # route_from / route_reason / route_at): ADITIVAS, las lee el panel de
+        # dgx-infra con .get() para marcar las peticiones de Alibaba que eran
+        # del residente local. Se excluyen de la comparacion y se exige que
+        # esten las cuatro.
+        route_keys = {"route_kind", "route_from", "route_reason", "route_at"}
+        for row in shape_new["active"]:
+            assert route_keys <= set(row), "faltan claves de enrutado en la fila"
+            for key in route_keys:
+                row.pop(key)
         assert _shape(body_old) == shape_new, (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
             f"ahora: {json.dumps(shape_new)}"

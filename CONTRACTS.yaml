@@ -161,3 +161,11 @@ contracts:
       measured", never zero. Since 2026-09-23 the resident is measured live
       on both /v1/chat/completions and /v1/messages (on /v1/messages the
       request is found through `litellm_metadata._tracking_id`).
+      Since 2026-09-23 each row also carries the additive route_kind
+      (direct|reroute|fallback), route_from (model the request was asked of,
+      e.g. qwen38-flash-next), route_reason (session_router reason or
+      router_fallback) and route_at: the VLLM SERVERS panel uses them to show
+      live Alibaba traffic and which of it was the local resident's. A router
+      fallback revives the row the primary's failure had closed. Pinned by
+      tests/test_active_requests_pod_scoping_contract.py (AC5) and
+      tests/test_active_request_route_origin_contract.py.
