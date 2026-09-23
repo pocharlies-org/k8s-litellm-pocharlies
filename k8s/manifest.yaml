@@ -4733,11 +4733,34 @@ data:
             # veia por /v1/responses; por chat/completions los seis valores dan 200,
             # asi que el bug quedaba invisible en las pruebas normales.
             #
-            # Se quita SOLO cuando hemos traducido de verdad (`kwargs` no vacio) y el
-            # nivel lo pidio el cliente: si el tier vino del nombre del alias, el
-            # cliente no puso nada que quitar. Un alias sin traduccion para su familia
-            # sale por el `return` de arriba y conserva su effort intacto.
-            if requested_tier:
+            # 23-09-2026 (clamp total): la puerta vieja era `if requested_tier:`, o
+            # sea "solo si el esfuerzo del cliente estaba en CLIENT_EFFORT_TIERS".
+            # Deja fuera el caso en que el cliente manda un valor que NO esta en la
+            # tabla -- el vocabulario propio de otro proveedor (`minimal` de OpenAI,
+            # `auto`, un typo, o el empty string): `_client_thinking_tier` lo lee como
+            # None, `tier` cae al default del alias (un nivel VALIDO), se traduce en
+            # chat_template_kwargs... y el valor crudo del cliente se quedaba puesto
+            # viajando al backend, que lo rechaza con 400. Es el MISMO fallo del
+            # `high` crudo, pero por la otra puerta: `high` se colaba por estar en la
+            # tabla y no traducirse; `minimal` se cuela por no estar y no retirarse.
+            #
+            # La regla correcta no es "tradujimos un tier conocido" sino "el cliente
+            # puso un esfuerzo en el cuerpo": si lo puso, ya lo hemos sustituido por
+            # un nivel valido en chat_template_kwargs y el crudo NO puede quedarse.
+            # Si el cliente no puso nada (el tier vino del alias), no hay nada que
+            # quitar. Un alias fuera de THINKING_TIERS sale por el `return` de arriba
+            # y conserva su effort intacto: ahi el vocabulario lo honra el propio
+            # backend y no nos metemos.
+            client_put_effort = (
+                data.get("reasoning_effort") is not None
+                or data.get("reasoningEffort") is not None
+                or (isinstance(data.get("extra_body"), dict)
+                    and (data["extra_body"].get("reasoning_effort") is not None
+                         or data["extra_body"].get("reasoningEffort") is not None))
+                or (isinstance(data.get("reasoning"), dict)
+                    and data["reasoning"].get("effort") is not None)
+            )
+            if requested_tier or client_put_effort:
                 for campo in ("reasoning_effort", "reasoningEffort"):
                     if data.pop(campo, None) is not None:
                         applied.append("strip:%s" % campo)
@@ -7858,7 +7881,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f7f574cb9a1b
+        config.k8s.e-dani.com/revision: config-5c4041b0e007
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

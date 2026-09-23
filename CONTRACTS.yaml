@@ -75,3 +75,10 @@ contracts:
       ceiling). Any future edit to the advertised levels or to THINKING_KWARGS
       is a change to this contract: keep both sides consistent, and remember the
       backend's accepted set is a property of the model's Jinja, not of vLLM.
+      The guarantee is TOTAL, not just over the advertised set: once the hook has
+      translated a level into chat_template_kwargs for a local grading model it
+      strips ANY client-supplied reasoning_effort/thinking carrier, so a value
+      OUTSIDE the vocabulary (another provider's `minimal`, `auto`, a typo, the
+      empty string) can never travel raw and 400 either — it falls back to the
+      alias default level. Guarded by
+      tests/test_messages_thinking_contract.py::test_esfuerzo_no_reconocido_no_viaja_crudo.
