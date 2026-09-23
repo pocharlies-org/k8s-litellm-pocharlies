@@ -66,7 +66,10 @@ contracts:
       every request of the session) and <sid> is the client session id when
       there is one, or pfx-<24 hex> — a hash of api-key alias + system + first
       user message — for clients that send none (opencode, hermes), so a
-      whole conversation keeps its affinity. Values unchanged.
+      whole conversation keeps its affinity. Values unchanged. The pfx- hash
+      is computed AFTER the hook strips Claude Code's x-anthropic-billing-header
+      system block (2026-09-23), so it no longer carries that per-conversation
+      suffix.
   - id: dgx.model-routing.config.v1
     kind: http-route
     value: /api/model-routing/config

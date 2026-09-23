@@ -1656,7 +1656,19 @@ data:
     COMPUTE_MODE_RETRY_AFTER_SECONDS = max(
         1, int(os.environ.get("COMPUTE_MODE_RETRY_AFTER_SECONDS", "5"))
     )
-    _compute_mode_cache = {"expires": 0.0, "state": None}
+    # 23-09-2026: último estado BUENO. Medido ese día: el backend del dashboard
+    # (que sirve /api/compute/mode) se reinicia con cada re-pin y en una hora
+    # hubo 23 "All connection attempts failed". Cada fallo dejaba el estado en
+    # None durante 5 s: la admisión devolvía 503 a TODO lo local y el
+    # session_router mudaba a Alibaba sesiones calientes (rebind_alibaba), que
+    # volvían al local en frío. Con un fallo de lectura se sigue usando la última
+    # lectura buena hasta COMPUTE_MODE_STALE_OK_SECONDS; pasado eso, None como
+    # antes (fail-closed). Un cambio de perfil tarda minutos y pasa por `phase:
+    # switching`, que la última lectura buena ya habría recogido.
+    COMPUTE_MODE_STALE_OK_SECONDS = float(
+        os.environ.get("COMPUTE_MODE_STALE_OK_SECONDS", "120")
+    )
+    _compute_mode_cache = {"expires": 0.0, "state": None, "good": None, "good_at": 0.0}
     _compute_mode_lock = asyncio.Lock()
 
     # 2026-08-18: los dos valores eran "tooling" porque el alias `tooling` lo
@@ -2392,6 +2404,14 @@ data:
                     state = candidate
             except Exception as exc:
                 log.error("compute-mode admission observation failed: %s", exc)
+            if state is not None:
+                _compute_mode_cache["good"] = state
+                _compute_mode_cache["good_at"] = now
+            elif (
+                _compute_mode_cache.get("good") is not None
+                and now - _compute_mode_cache.get("good_at", 0.0) <= COMPUTE_MODE_STALE_OK_SECONDS
+            ):
+                state = _compute_mode_cache["good"]
             _compute_mode_cache["state"] = state
             _compute_mode_cache["expires"] = now + COMPUTE_MODE_CACHE_SECONDS
             return state
@@ -3426,6 +3446,59 @@ data:
     # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
     # Alibaba sin que nadie lo pida.
     NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse"})
+
+    # ── Línea de facturación de Claude Code (23-09-2026) ─────────────────────────
+    # Claude Code pone como PRIMER bloque del system `x-anthropic-billing-header:
+    # cc_version=<v>.<3 hex>; cc_entrypoint=...;`, y los 3 hex dependen del
+    # contenido de cada conversación (medido: mismo mensaje -> mismo sufijo, otro
+    # mensaje -> otro). Para Anthropic es atribución; aquí (vLLM y Alibaba) es la
+    # primera línea del prompt y hace que NINGUNA conversación comparta prefijo con
+    # otra: cada subagente o sesión nueva re-prefilla system + tools (~20-40k) aunque
+    # sean idénticos. Medido: ~50 % de los tokens sin caché del residente eran
+    # conversaciones nuevas en frío. LiteLLM nunca reenvía a Anthropic, así que se
+    # quita siempre. Solo el bloque que EMPIEZA por la cabecera; nada más se toca.
+    BILLING_HEADER_PREFIX = "x-anthropic-billing-header:"
+
+    def _is_billing_block(block):
+        return (
+            isinstance(block, dict)
+            and isinstance(block.get("text"), str)
+            and block["text"].lstrip().startswith(BILLING_HEADER_PREFIX)
+        )
+
+    def _strip_billing_line(text):
+        if isinstance(text, str) and text.lstrip().startswith(BILLING_HEADER_PREFIX):
+            resto = text.lstrip().split("\n", 1)
+            return (resto[1] if len(resto) > 1 else "").lstrip("\n"), True
+        return text, False
+
+    def _strip_billing_header(data):
+        """Quita la cabecera de facturación del system (formato Anthropic: `system`
+        lista o str; formato OpenAI: mensajes role=system). Devuelve True si quitó."""
+        quitado = False
+        system = data.get("system")
+        if isinstance(system, list):
+            limpio = [b for b in system if not _is_billing_block(b)]
+            if len(limpio) != len(system):
+                data["system"] = limpio
+                quitado = True
+        elif isinstance(system, str):
+            data["system"], quitado = _strip_billing_line(system)
+        messages = data.get("messages")
+        if isinstance(messages, list):
+            for msg in messages:
+                if not isinstance(msg, dict) or msg.get("role") != "system":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, list):
+                    limpio = [b for b in content if not _is_billing_block(b)]
+                    if len(limpio) != len(content):
+                        msg["content"] = limpio
+                        quitado = True
+                elif isinstance(content, str):
+                    msg["content"], hit = _strip_billing_line(content)
+                    quitado = quitado or hit
+        return quitado
 
     def _apply_key_fallback_policy(data, user_api_key_dict):
         """Stamp the Router kill switch and return the effective per-request policy."""
@@ -5226,6 +5299,9 @@ data:
         async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
             for p in self.STRIP_PARAMS:
                 data.pop(p, None)
+            # La línea de facturación de Claude Code rompe el prefijo compartido entre
+            # conversaciones en vLLM y en Alibaba (ver BILLING_HEADER_PREFIX).
+            _strip_billing_header(data)
 
             requested_model = data.get("model", "")
 
@@ -5907,6 +5983,7 @@ data:
     # de la sesión (local o alibaba): mientras la sesión trabaja se queda donde está su
     # caché; tras 10 min sin peticiones caduca y la siguiente vuelve a decidirse.
     STICKY_TTL_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_S", "600"))
+    # CONTRACT: dgx.session-router.sticky-key.v1
     STICKY_KEY_PREFIX = "session-router:sticky:"
     DEFAULT_LOCAL_SLOTS = 8
     LOCAL_SLOTS_CAP = 64
@@ -8177,7 +8254,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c1c386be28f4
+        config.k8s.e-dani.com/revision: config-ed8dfc4a869e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
