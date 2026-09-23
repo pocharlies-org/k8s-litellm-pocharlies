@@ -33,3 +33,18 @@ contracts:
       aliases, explicit panel plans or admission; it is forgeable by any
       keyed client, whose only effect is self-inflicted queuing. Absent or
       any other value keeps today's behavior; any read error is fail-open.
+  - id: dgx.litellm.service-alias.alibaba.v1
+    kind: http-route
+    value: litellm-alibaba
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Service alias of `litellm` (same selector and port 4000) consumed by
+      Hermes (k8s-openclaw-qwen36-pocharlies helm/hermes/values.yaml,
+      extraProviders[alibaba].baseUrl) so its /model picker renders the
+      `alibaba-*` aliases in their own row, separate from the DGX Spark
+      resident. Hermes groups picker rows by (base_url, credential,
+      api_mode), so the distinct host is the whole point. Not a backend:
+      routing stays by model name.

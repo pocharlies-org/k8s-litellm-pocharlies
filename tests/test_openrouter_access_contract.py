@@ -160,9 +160,12 @@ def test_la_lane_de_openrouter_tiene_su_propio_service_sobre_los_mismos_pods():
     services = {d["metadata"]["name"]: d for d in _docs() if d.get("kind") == "Service"}
     assert "litellm-openrouter" in services, "sin host propio, Hermes vuelve a una sola fila"
 
-    principal, lane = services["litellm"], services["litellm-openrouter"]
-    assert lane["spec"]["selector"] == principal["spec"]["selector"]
-    assert {"name": "http", "port": 4000, "targetPort": 4000} in lane["spec"]["ports"]
+    principal = services["litellm"]
+    for alias in ("litellm-openrouter", "litellm-alibaba"):
+        assert alias in services, f"sin {alias}, Hermes vuelve a juntar filas"
+        lane = services[alias]
+        assert lane["spec"]["selector"] == principal["spec"]["selector"]
+        assert {"name": "http", "port": 4000, "targetPort": 4000} in lane["spec"]["ports"]
 
 
 def test_the_api_key_comes_from_the_external_secret_not_from_a_literal():

@@ -8262,6 +8262,21 @@ spec:
   ports:
     - { name: http, port: 4000, targetPort: 4000 }
 ---
+# Tercera puerta al MISMO proxy, para la lane de Alibaba (`alibaba-*`), por el
+# mismo motivo que `litellm-openrouter`: Hermes pinta una fila por host, y Dani
+# (23-09) quiere el residente de los Sparks y los `alibaba-*` en filas separadas.
+# Alias de `litellm`, no un backend: el routing sigue siendo por nombre de modelo.
+# CONTRACT: dgx.litellm.service-alias.alibaba.v1 (lo consume Hermes; no renombrar)
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-alibaba
+  namespace: litellm
+spec:
+  selector: { app: litellm }
+  ports:
+    - { name: http, port: 4000, targetPort: 4000 }
+---
 # Internal access only: LAN and Tailscale clients use the LAN Traefik instance
 # (no SSO middleware — LiteLLM's API key remains the application gate).
 apiVersion: traefik.io/v1alpha1
