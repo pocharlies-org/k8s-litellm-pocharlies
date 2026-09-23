@@ -419,9 +419,11 @@ class _Env:
     """Stubbea las cuatro E/S del módulo (config, sticky, cooldown, contador)
     y graba lo que se escribe en Valkey."""
 
-    def __init__(self, mod, cfg, bound=None, cooldown=False, inflight=0):
+    def __init__(self, mod, cfg, bound=None, cooldown=False, inflight=0, stuck=False):
         self.writes = []
         self.mod = mod
+        mod._ensure_vllm_poller = lambda: None
+        mod._queue_stuck = lambda now=None: stuck
 
         async def config():
             return cfg
@@ -667,7 +669,7 @@ def test_c1_company_con_alibaba_activado_desborda_aunque_instant_reject_este_apa
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
     assert data["metadata"]["_session_routing_reason"] == "company_overflow"
-    assert env.writes == [(SID, "alibaba")]
+    assert env.writes == []  # 23-09: desvío por petición, sin re-vincular
 
 
 def test_c1_company_sin_campo_company_es_activado(router_mod):
@@ -736,7 +738,8 @@ def test_c2_sin_cabecera_la_valvula_sigue_saltando_y_rebinde(router_mod):
     data = _data()
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
-    assert env.writes == [(SID, "alibaba")]  # re-bind sticky intacto
+    # 23-09: desvío POR PETICIÓN, la sesión no se re-vincula a Alibaba
+    assert env.writes == []
     assert data["metadata"]["_session_routing_rerouted"] is True
 
 
@@ -747,7 +750,7 @@ def test_c2_otras_clases_comportamiento_actual(router_mod, otro_valor):
     data = _data(metadata={"headers": {"x-claude-class": otro_valor}})
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
-    assert env.writes == [(SID, "alibaba")]
+    assert env.writes == []  # 23-09: desvío por petición, sin re-vincular
 
 
 # C3: la cabecera no esquiva sellado, uncensored, plan explícito, sticky ya
@@ -996,3 +999,129 @@ def test_company_por_v1_messages_lee_litellm_metadata(router_mod):
     data = {"model": "alibaba-q38-max", "litellm_metadata": {"headers": {"x-claude-class": "company"}}}
     denegada, detalle = _policy(router_mod, _cfg(company={"alibaba": False}), data, requested="alibaba-q38-max")
     assert denegada is True and detalle["error"] == "company_alibaba_disabled"
+
+
+
+# ── Sin esperas (23-09-2026): presupuesto único + cola de vLLM + desvío por petición ──
+
+
+def test_cola_de_vllm_atascada_desvia_la_peticion_sin_revincular(router_mod):
+    """Con pocas en vuelo pero la cola de vLLM atascada >= tolerancia, lo nuevo sale a
+    Alibaba — y la sesión conserva su casa en el local (su caché está allí)."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=16),
+               inflight=3, stuck=True, bound="local")
+    data = _company_data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_trigger"] == "cola"
+    assert env.writes == []
+
+
+def test_cola_sin_dato_fresco_no_desvia(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=16),
+               inflight=3, stuck=None, bound="local")
+    data = _company_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_lleno_marca_el_motivo(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=4),
+               inflight=4, bound="local")
+    data = _data()
+    assert env.run(data) is True
+    assert data["metadata"]["_session_routing_trigger"] == "lleno"
+    assert data["metadata"]["_session_routing_reason"] == "instant_reject"
+
+
+def test_cola_atascada_no_desvia_a_quien_no_tiene_valvula(router_mod):
+    """Sin clase company e instant_reject apagado: ni con la cola atascada."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False), inflight=1, stuck=True)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_parse_vllm_gauges_suma_engines_y_filtra_modelo(router_mod):
+    texto = "\n".join([
+        "# HELP vllm:num_requests_waiting x",
+        'vllm:num_requests_waiting{engine="0",model_name="qwen38-flash-next"} 2.0',
+        'vllm:num_requests_waiting{engine="1",model_name="qwen38-flash-next"} 1.0',
+        'vllm:num_requests_running{engine="0",model_name="qwen38-flash-next"} 9.0',
+        'vllm:num_requests_waiting{engine="0",model_name="otro"} 50.0',
+        'vllm:num_requests_waiting_by_reason{model_name="qwen38-flash-next",reason="capacity"} 7.0',
+    ])
+    assert router_mod._parse_vllm_gauges(texto, "qwen38-flash-next") == (3.0, 9.0)
+    assert router_mod._parse_vllm_gauges("nada", "qwen38-flash-next") == (None, None)
+
+
+@pytest.fixture
+def fresh_mod(router_src):
+    """Módulo recién cargado: _Env deja stubs en el módulo compartido (scope=module)."""
+    saved = sys.modules.get("httpx")
+    sys.modules["httpx"] = types.ModuleType("httpx")
+    try:
+        module = types.ModuleType("session_router_fresh")
+        exec(compile(router_src, "session_router.py", "exec"), module.__dict__)
+    finally:
+        if saved is not None:
+            sys.modules["httpx"] = saved
+        else:
+            sys.modules.pop("httpx", None)
+    return module
+
+
+def test_queue_stuck_cuenta_desde_que_la_cola_no_se_vacia(fresh_mod):
+    m = fresh_mod
+    tol = m.WAIT_TOLERANCE_SECONDS
+    assert tol == 5.0
+    assert m._queue_stuck(now=1.0) is None                       # sin lecturas: no actúa
+    m._note_vllm_sample(2, 10, now=100.0)
+    assert m._queue_stuck(now=100.0 + tol - 0.1) is False
+    m._note_vllm_sample(1, 10, now=102.0)                        # sigue sin vaciarse
+    assert m._queue_stuck(now=100.0 + tol) is True
+    m._note_vllm_sample(0, 10, now=100.0 + tol + 1)              # se vació: se reinicia
+    assert m._queue_stuck(now=100.0 + tol + 1) is False
+    assert m._queue_stuck(now=100.0 + tol + 1 + m.VLLM_STALE_SECONDS + 1) is None  # dato viejo
+
+
+def test_presupuesto_unico_cuenta_toda_la_familia_del_residente(fresh_mod):
+    """El abliterado va al MISMO vLLM: cuenta contra el mismo presupuesto."""
+    m = fresh_mod
+    assert m.RESIDENT_FAMILY == frozenset({RESIDENT, RESIDENT + "-uncensored"})
+
+    class T:
+        def snapshot(self):
+            return {"a": {"model": RESIDENT}, "b": {"model": RESIDENT + "-uncensored"},
+                    "c": {"model": OVERFLOW}}
+
+    class Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"active": [
+                {"request_id": "a", "model": RESIDENT},                  # ya contado (este pod)
+                {"request_id": "x", "model": RESIDENT + "-uncensored"},  # otra réplica
+                {"request_id": "y", "model": OVERFLOW},
+            ]}
+
+    class Cli:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return Resp()
+
+    m.httpx.AsyncClient = Cli
+    assert asyncio.run(m._inflight_resident(T())) == 3
+
+
+def test_ttl_sticky_por_defecto_10_min(router_mod):
+    assert router_mod.STICKY_TTL_SECONDS == 600
