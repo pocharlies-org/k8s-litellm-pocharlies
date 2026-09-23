@@ -101,9 +101,9 @@ STICKY_WRITE_TIMEOUT_SECONDS = 2.0
 # pagar DNS+TCP+AUTH en la siguiente operación (que sí va en camino de petición).
 REDIS_HEALTH_CHECK_INTERVAL = 30
 SIDECAR_TIMEOUT_SECONDS = 0.1
-# 23-09-2026 (Dani): 10 min. Un vínculo a Alibaba (re-bind con el residente no
-# listo, plan alibaba) ya no retiene la sesión una hora: a los 10 min vuelve a
-# decidirse, y lo normal es volver al local.
+# 23-09-2026 (Dani): 10 min DE INACTIVIDAD. El vínculo se RENUEVA en cada petición
+# de la sesión (local o alibaba): mientras la sesión trabaja se queda donde está su
+# caché; tras 10 min sin peticiones caduca y la siguiente vuelve a decidirse.
 STICKY_TTL_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_S", "600"))
 STICKY_KEY_PREFIX = "session-router:sticky:"
 DEFAULT_LOCAL_SLOTS = 8
@@ -796,7 +796,8 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
                 await _sticky_set(sid, "local")
             info["decision"] = "plan_alibaba_degradado_por_cooldown"
             return False
-        if config["sticky"] and sid and fresh:
+        if config["sticky"] and sid:
+            # fresh: vincula; ligada: renueva el TTL (afinidad = caché de Alibaba)
             await _sticky_set(sid, "alibaba")
         if model == RESIDENT_MODEL:
             info["decision"] = "sticky_alibaba" if not fresh else "default_alibaba"
@@ -835,11 +836,12 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     # 23-09-2026 (Dani, "sin esperas"): la válvula salta por dos motivos —
     #   lleno: el presupuesto ÚNICO del residente (todos sus nombres) en local_slots;
     #   cola:  la cola de vLLM lleva WAIT_TOLERANCE_SECONDS sin vaciarse —
-    # y desvía SOLO ESTA PETICIÓN: la sesión NO se re-vincula a Alibaba. Medido ese día:
-    # en Alibaba un contexto de ~108k casi no cachea (~11k) y cada turno tarda ~15 s en
-    # dar el primer token (p90 29 s), mientras que en el local un turno con el prefijo
-    # cacheado va en segundos. Mudar la sesión haría lento CADA turno; desviar la
-    # petición atascada solo quita la espera, y el local sigue lleno de trabajo.
+    # y MUDA LA SESIÓN a Alibaba (sticky, renovado en cada petición). Desviar solo la
+    # petición (lo que hizo #134 unas horas) fue un error medido: la sesión saltaba
+    # petición a petición entre el local y Alibaba y llegaba FRÍA a los dos (Alibaba
+    # 22 % de acierto de caché, 198 M tokens en 4 h). Con la sesión quieta la caché
+    # funciona en los dos lados — medido el mismo día: Alibaba 19.712/20.553 y
+    # 20.480/20.803 tokens cacheados en turnos seguidos; vLLM 22.400/28.046.
     valvula = (company and company_overflow) or (not company and config["instant_reject"])
     if valvula and model == RESIDENT_MODEL:
         _ensure_vllm_poller()
@@ -848,6 +850,8 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         stuck = _queue_stuck()
         lleno = inflight is not None and inflight >= config["local_slots"]
         if (lleno or stuck) and _overflow_ok_info(info):
+            if config["sticky"] and sid:
+                await _sticky_set(sid, "alibaba")
             razon = "company_overflow" if company else "instant_reject"
             motivo = "lleno" if lleno else "cola"
             info["decision"] = f"{razon}_{motivo}"
@@ -860,7 +864,8 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
             )
             return True
 
-    if config["sticky"] and sid and fresh:
+    if config["sticky"] and sid:
+        # fresh: vincula; ligada: renueva el TTL (afinidad = caché del local)
         await _sticky_set(sid, "local")
     info["decision"] = "local"
     return False

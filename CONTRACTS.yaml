@@ -33,8 +33,9 @@ contracts:
       switch on, it overflows to Alibaba once local_slots are in flight at
       the resident (all resident names counted as one budget) or the vLLM
       queue has not emptied for SESSION_ROUTER_WAIT_TOLERANCE_S (default 5 s),
-      whatever instant_reject says; the detour is per request and never
-      rebinds the session; switch off, it is sealed.
+      whatever instant_reject says; the overflow moves the whole session
+      (sticky, TTL renewed on every request = 10 min of inactivity) so its
+      prefix cache stays warm on one side; switch off, it is sealed.
       The header cannot bypass sealed requests, uncensored aliases, explicit
       panel plans or admission; it is forgeable by any keyed client, whose
       only effect is to get the company's overflow policy. Absent or any

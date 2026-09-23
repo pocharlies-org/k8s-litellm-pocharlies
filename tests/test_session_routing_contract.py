@@ -536,7 +536,20 @@ def test_sticky_binding_local_conserva_residente(router_mod):
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=False), bound="local")
     data = _data()
     assert env.run(data) is False
-    assert data["model"] == RESIDENT and env.writes == []
+    # 23-09: el vínculo se RENUEVA en cada petición (TTL = inactividad)
+    assert data["model"] == RESIDENT and env.writes == [(SID, "local")]
+
+
+def test_sticky_alibaba_ligada_renueva_el_vinculo(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True), bound="alibaba")
+    data = _data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]
+
+
+def test_ttl_es_de_inactividad_10_min(router_mod):
+    assert router_mod.STICKY_TTL_SECONDS == 600
 
 
 def test_sticky_local_con_hueco_se_revincula_a_alibaba(router_mod):
@@ -669,7 +682,7 @@ def test_c1_company_con_alibaba_activado_desborda_aunque_instant_reject_este_apa
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
     assert data["metadata"]["_session_routing_reason"] == "company_overflow"
-    assert env.writes == []  # 23-09: desvío por petición, sin re-vincular
+    assert env.writes == [(SID, "alibaba")]  # la sesión se muda (afinidad de caché)
 
 
 def test_c1_company_sin_campo_company_es_activado(router_mod):
@@ -738,8 +751,7 @@ def test_c2_sin_cabecera_la_valvula_sigue_saltando_y_rebinde(router_mod):
     data = _data()
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
-    # 23-09: desvío POR PETICIÓN, la sesión no se re-vincula a Alibaba
-    assert env.writes == []
+    assert env.writes == [(SID, "alibaba")]  # la sesión se muda (afinidad de caché)
     assert data["metadata"]["_session_routing_rerouted"] is True
 
 
@@ -750,7 +762,7 @@ def test_c2_otras_clases_comportamiento_actual(router_mod, otro_valor):
     data = _data(metadata={"headers": {"x-claude-class": otro_valor}})
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
-    assert env.writes == []  # 23-09: desvío por petición, sin re-vincular
+    assert env.writes == [(SID, "alibaba")]  # la sesión se muda (afinidad de caché)
 
 
 # C3: la cabecera no esquiva sellado, uncensored, plan explícito, sticky ya
@@ -1005,16 +1017,17 @@ def test_company_por_v1_messages_lee_litellm_metadata(router_mod):
 # ── Sin esperas (23-09-2026): presupuesto único + cola de vLLM + desvío por petición ──
 
 
-def test_cola_de_vllm_atascada_desvia_la_peticion_sin_revincular(router_mod):
-    """Con pocas en vuelo pero la cola de vLLM atascada >= tolerancia, lo nuevo sale a
-    Alibaba — y la sesión conserva su casa en el local (su caché está allí)."""
+def test_cola_de_vllm_atascada_muda_la_sesion(router_mod):
+    """Con pocas en vuelo pero la cola de vLLM atascada >= tolerancia, la sesión sale a
+    Alibaba y se QUEDA allí (sticky): desviar petición a petición la dejaba fría en los
+    dos lados (medido el 23-09: 22 % de acierto en Alibaba)."""
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=16),
                inflight=3, stuck=True, bound="local")
     data = _company_data()
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
     assert data["metadata"]["_session_routing_trigger"] == "cola"
-    assert env.writes == []
+    assert env.writes == [(SID, "alibaba")]
 
 
 def test_cola_sin_dato_fresco_no_desvia(router_mod):
@@ -1123,5 +1136,3 @@ def test_presupuesto_unico_cuenta_toda_la_familia_del_residente(fresh_mod):
     assert asyncio.run(m._inflight_resident(T())) == 3
 
 
-def test_ttl_sticky_por_defecto_10_min(router_mod):
-    assert router_mod.STICKY_TTL_SECONDS == 600
