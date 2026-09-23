@@ -232,3 +232,31 @@ def test_cliente_con_ctk_propio_manda_pero_no_deja_thinking(hook):
                 "qwen38-flash-next")
     assert "thinking" not in data
     assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "medium"}
+
+
+@pytest.mark.parametrize("alias", ["qwen38-off", "qwen38-u-off"])
+@pytest.mark.parametrize("body", [
+    {"reasoning_effort": "high"},
+    {"reasoning_effort": "xhigh"},
+    {"reasoning_effort": "low"},
+    {"reasoning_effort": "minimal"},
+    {"extra_body": {"reasoning_effort": "max"}},
+    {"thinking": {"type": "enabled", "budget_tokens": 12000}},
+])
+def test_alias_apagado_no_piensa_aunque_el_cliente_lo_pida(hook, alias, body):
+    """23-09-2026: `qwen38-off`/`qwen38-u-off` son el residente SIN pensar, y
+    ningun effort del cliente los enciende: se traduce a off y el crudo no viaja.
+    El hook reescribe data["model"] al residente; el alias pedido llega aparte."""
+    data = _run(hook, {"model": "qwen38-flash-next", **{k: (dict(v) if isinstance(v, dict) else v)
+                                                        for k, v in body.items()}}, alias)
+    assert _ctk(data) == {"enable_thinking": False}
+    assert "reasoning_effort" not in data
+    assert "reasoning_effort" not in (data.get("extra_body") or {})
+    assert "thinking" not in data
+
+
+def test_alias_que_piensa_sigue_honrando_el_effort_del_cliente(hook):
+    """La regla general no cambia: en un alias que piensa, el effort del cliente gana."""
+    data = _run(hook, {"model": "qwen38-flash-next", "reasoning_effort": "high"},
+                "qwen38-flash-next")
+    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "xhigh"}

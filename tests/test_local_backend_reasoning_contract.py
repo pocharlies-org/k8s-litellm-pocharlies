@@ -15,6 +15,7 @@ borro del repo — llevaba muerto desde el 18-08 —, asi que la unica fuente es
 import ast
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -205,3 +206,32 @@ def test_toda_traduccion_qwen_cae_en_un_nivel_que_la_plantilla_valida():
             f"THINKING_KWARGS['qwen'][{nivel!r}] manda reasoning_effort={eff!r}, "
             "que el chat template del residente rechaza con 400"
         )
+
+
+def _model_info(alias: str) -> dict:
+    config = yaml.safe_load(_configmap_value("model_list:"))
+    for entry in config["model_list"]:
+        if entry["model_name"] == alias:
+            return entry.get("model_info") or {}
+    raise AssertionError(f"no encuentro {alias} en el model_list")
+
+
+def test_tooling_publica_la_receta_oficial_del_residente():
+    """23-09-2026: `tooling` resuelve al mismo residente que `qwen38-flash-next`,
+    asi que su menu es el mismo: sin `high`/`max`, que caen en `xhigh`."""
+    assert list(_model_info("tooling")["supported_reasoning_efforts"]) == [
+        "none", "low", "medium", "xhigh",
+    ]
+
+
+@pytest.mark.parametrize("alias", ["qwen38-off", "qwen38-u-off"])
+def test_los_alias_apagados_solo_ofrecen_none(alias):
+    """23-09-2026: heredaban la escalera de `tooling` por el ancla y el picker les
+    ofrecia High/Xhigh. El menu se pisa a [none] (no vacio: Hermes lee "sin
+    declaracion" como escalera completa), y el resto del ancla se sigue heredando."""
+    info = _model_info(alias)
+    assert list(info["supported_reasoning_efforts"]) == ["none"]
+    tooling = _model_info("tooling")
+    for campo in ("supports_vision", "supports_function_calling", "backend",
+                  "disable_background_health_check", "max_input_tokens"):
+        assert info.get(campo) == tooling.get(campo), f"{alias} dejo de heredar {campo}"
