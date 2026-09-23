@@ -1606,6 +1606,7 @@ data:
     import os
     import threading
     import time
+    from urllib.parse import urlparse
 
     import httpx
     import litellm
@@ -2583,6 +2584,52 @@ data:
             if getattr(usage, name, None) is not None
         }
 
+    def _track_live_chunk(stream, usage):
+        """Uso acumulado del chunk -> tracker, desde el CustomStreamWrapper.
+
+        El hook de iterador del proxy NO basta: en /v1/messages lo que itera son
+        los BYTES SSE ya traducidos a Anthropic, sin `usage` hasta el
+        `message_delta` final. Aqui se ve el chunk OpenAI que manda vLLM, en las
+        dos vias (chat y messages). El `_tracking_id` y el backend se buscan UNA
+        vez por stream (el logging_obj lleva los mensajes enteros: recorrerlo por
+        chunk seria O(prompt) por token). Telemetria: jamas rompe el stream.
+        """
+        try:
+            state = getattr(stream, "_active_request_state", None)
+            if state is None:
+                details = getattr(
+                    getattr(stream, "logging_obj", None), "model_call_details", None)
+                tracking_id = (
+                    _tracking_id_from_payload(details)
+                    if isinstance(details, dict) else None
+                )
+                state = {"tracking_id": tracking_id}
+                stream._active_request_state = state
+                if tracking_id:
+                    params = details.get("litellm_params")
+                    api_base = (
+                        (params.get("api_base") if isinstance(params, dict) else None)
+                        or details.get("api_base")
+                    )
+                    if api_base:
+                        # model=None: solo el servidor; el modelo que ensena el
+                        # panel lo sigue poniendo quien ya lo ponia.
+                        request_tracker.update_backend(
+                            tracking_id, model=None, api_base=api_base)
+            tracking_id = state["tracking_id"]
+            if not tracking_id:
+                return
+            prompt_tokens, completion_tokens = usage_from_response(
+                {"usage": _usage_snapshot(usage)})
+            if prompt_tokens is not None or completion_tokens is not None:
+                request_tracker.update_usage(
+                    tracking_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+        except Exception as e:
+            log.debug("track_live_chunk error: %s", e)
+
     def _preserve_live_usage_chunks():
         """Keep provider usage across LiteLLM 1.85 chunk sanitization."""
         original = CustomStreamWrapper.chunk_creator
@@ -2597,6 +2644,8 @@ data:
             hidden_params = getattr(chunk, "_hidden_params", None)
             if usage is not None and isinstance(hidden_params, dict):
                 hidden_params["live_usage"] = _usage_snapshot(usage)
+            if usage is not None:
+                _track_live_chunk(self, usage)
             return chunk
 
         wrapped._active_request_usage_patch = True
@@ -5583,13 +5632,32 @@ data:
             # alias local, y sin el marcador el rechazo instantáneo se
             # comería un 503 de admisión justo cuando el cómputo local está
             # apagado, que es cuando la nube hace más falta.
+            _stream_usage_extra = call_type == "anthropic_messages"
             if not vision_diverted and not session_rerouted and _is_local_vllm_request(model, proxy_model, api_base):
                 await _enforce_compute_mode_admission(model, proxy_model, api_base)
-                enable_continuous_usage(data)
+                enable_continuous_usage(data, via_extra_body=_stream_usage_extra)
+                if _stream_usage_extra:
+                    _preserve_uncensored_seal(data)
                 # Gate de args: que la gramatica del schema sea obligatoria en
                 # NUESTROS modelos (ver _enforce_tool_strict). Se hace despues de
                 # resolver el modelo para que el log diga a donde iba de verdad.
                 _enforce_tool_strict(data, resolved_model=model)
+            elif (
+                not vision_diverted
+                and not session_rerouted
+                and _served_by_local_vllm(model)
+            ):
+                # El residente por su NOMBRE DIRECTO (claude-local, opencode,
+                # hermes piden `qwen38-flash-next`) no esta en LOCAL_VLLM_ALIASES
+                # a proposito: esa lista tambien arma la admision de compute-mode,
+                # que responde 503 en el pre-call y le quitaria su fallback a
+                # Alibaba. Aqui solo se pide el uso continuo -- sin el, el panel no
+                # sabe si una peticion esta en prefill o escribiendo. Medido: el
+                # gemelo de Alibaba acepta `continuous_usage_stats` y `cache_salt`
+                # en extra_body, asi que el fallback no se rompe.
+                enable_continuous_usage(data, via_extra_body=_stream_usage_extra)
+                if _stream_usage_extra:
+                    _preserve_uncensored_seal(data)
             tracking_id = str(uuid.uuid4())
             data.setdefault("metadata", {})
             data["metadata"]["_tracking_id"] = tracking_id
@@ -5858,6 +5926,34 @@ data:
         "ornith-canary",
         "qwen38-27b",
     }
+
+    # ¿Sirve este alias NUESTRO vLLM? Se mira el router VIVO (como
+    # _deployment_cache_salt): todas sus deployments en un servicio del namespace
+    # `llm`. Cubre el residente por nombre directo y los perfiles del pool
+    # (`qwen38-off`, ...) sin mantener otra lista que se quede vieja -- justo lo
+    # que le paso a LOCAL_VLLM_ALIASES, que sigue en el 27B. Cacheado: el
+    # model_list no cambia sin reiniciar el proxy.
+    _LOCAL_VLLM_SUFFIX = ".llm.svc.cluster.local"
+    _served_by_local_vllm_cache = {}
+
+    def _served_by_local_vllm(alias):
+        alias = str(alias or "")
+        if alias in _served_by_local_vllm_cache:
+            return _served_by_local_vllm_cache[alias]
+        verdict = False
+        try:
+            from litellm.proxy.proxy_server import llm_router
+            deps = (llm_router.get_model_list(model_name=alias) or ()) if llm_router else ()
+            hosts = [
+                urlparse(str((d.get("litellm_params") or {}).get("api_base") or "")).hostname or ""
+                for d in deps
+            ]
+            verdict = bool(hosts) and all(h.endswith(_LOCAL_VLLM_SUFFIX) for h in hosts)
+        except Exception as e:
+            log.debug("_served_by_local_vllm(%s): %s", alias, e)
+            return False
+        _served_by_local_vllm_cache[alias] = verdict
+        return verdict
 
     def _is_local_vllm_request(model, proxy_model, api_base):
         if resolve_server_id(model, api_base):
@@ -6840,6 +6936,15 @@ data:
     }
 
 
+    # Servicios de vLLM cuyo nombre NO empieza por `vllm-` (el regex de abajo no
+    # los ve) -> el id de su tarjeta en el panel (srv.id de /api/activity). Sin
+    # esto el residente llm-tp salia con server_id null: sus peticiones no caian
+    # en su tarjeta y el panel no podia cruzarlas con la cola de su motor.
+    SERVER_BY_SERVICE = {
+        "qwen38-flash-next": "qwen38-flash-next-head",
+    }
+
+
     def _normalise_api_base(api_base: Any) -> str:
         return str(api_base or "").rstrip("/")
 
@@ -6854,15 +6959,44 @@ data:
         service_name = host.split(".", 1)[0].lower()
         if re.fullmatch(r"vllm-[a-z0-9-]+", service_name):
             return service_name
+        if service_name in SERVER_BY_SERVICE:
+            return SERVER_BY_SERVICE[service_name]
         return SERVER_BY_MODEL_AND_BASE.get(
             (str(model or ""), normalized_base)
         )
 
 
-    def enable_continuous_usage(data: Dict[str, Any]) -> Dict[str, Any]:
-        """Ask compatible streaming backends for cumulative usage per chunk."""
+    def enable_continuous_usage(
+        data: Dict[str, Any],
+        *,
+        via_extra_body: bool = False,
+    ) -> Dict[str, Any]:
+        """Ask compatible streaming backends for cumulative usage per chunk.
+
+        `via_extra_body`: /v1/messages (anthropic_messages) NO respeta el
+        `stream_options` de la peticion -- el adaptador Anthropic->OpenAI de
+        LiteLLM 1.100 lo reescribe a `{"include_usage": True}` a pelo y tira
+        `continuous_usage_stats`, asi que vLLM solo manda el uso al final y el
+        panel veia TODA peticion de Claude Code "sin primer token" durante
+        minutos. `extra_body` si pasa el adaptador y el SDK de OpenAI lo funde
+        ENCIMA del body: medido en el pod, sin el 0 chunks con uso, con el uso
+        acumulado en cada chunk. Ojo: un `extra_body` de la peticion SUSTITUYE
+        al de la deployment (el sello `cache_salt`); quien llame con
+        `via_extra_body=True` tiene que restaurar el sello despues.
+        """
         if data.get("stream") is not True:
             return data
+        options = dict(data.get("stream_options") or {})
+        options["include_usage"] = True
+        options["continuous_usage_stats"] = True
+        data["stream_options"] = options
+        if via_extra_body:
+            body = data.get("extra_body")
+            if not isinstance(body, dict):
+                body = {}
+                data["extra_body"] = body
+            body["stream_options"] = dict(options)
+        return data
         options = dict(data.get("stream_options") or {})
         options["include_usage"] = True
         options["continuous_usage_stats"] = True
@@ -7275,6 +7409,7 @@ data:
     if __name__ == "__main__":
         main()
   active_requests_api.py: |
+    # CONTRACT: dgx.litellm.active-requests.v1 (lo consume el panel dgx-infra; campos aditivos, no renombrar)
     """Superficie HTTP de peticiones en vuelo de los pods de LiteLLM (SC-403).
 
     Dos URLs, dos fuentes:
@@ -8254,7 +8389,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-ed8dfc4a869e
+        config.k8s.e-dani.com/revision: config-839644923a13
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
