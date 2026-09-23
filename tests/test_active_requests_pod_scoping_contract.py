@@ -649,6 +649,12 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
             assert route_keys <= set(row), "faltan claves de enrutado en la fila"
             for key in route_keys:
                 row.pop(key)
+        # Y para `prompt_tokens_estimate`: tamaño estimado al entrar, para ver
+        # cuanto lleva una peticion en cola/prefill antes de su primer token.
+        # ADITIVA, el panel la lee con .get() y cae a prompt_tokens.
+        for row in shape_new["active"]:
+            assert "prompt_tokens_estimate" in row, "falta prompt_tokens_estimate en la fila"
+            row.pop("prompt_tokens_estimate")
         assert _shape(body_old) == shape_new, (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
             f"ahora: {json.dumps(shape_new)}"

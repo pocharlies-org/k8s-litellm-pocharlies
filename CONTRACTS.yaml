@@ -169,3 +169,9 @@ contracts:
       fallback revives the row the primary's failure had closed. Pinned by
       tests/test_active_requests_pod_scoping_contract.py (AC5) and
       tests/test_active_request_route_origin_contract.py.
+      Since 2026-09-24 each row also carries the additive
+      prompt_tokens_estimate: input size ESTIMATED at the pre-call (text
+      characters / a chars-per-token ratio learned from real prompt_tokens),
+      so a request still in queue/prefill shows its size before the first
+      token. It never replaces prompt_tokens, which stays backend-only.
+      Pinned by tests/test_prompt_tokens_estimate_contract.py.
