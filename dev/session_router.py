@@ -223,6 +223,13 @@ def _claude_class(data):
     despliegue) y llega remapeada con prefijo x-litellm-; se lee también por
     robustez, igual que en _session_id.
 
+    OJO (23-09-2026, medido en vivo): en las rutas de LITELLM_METADATA_ROUTES
+    — `/v1/messages` entre ellas, que es por donde entra TODO Claude Code — el
+    mismo add_litellm_data_to_request escribe en data["litellm_metadata"]
+    ["headers"], no en data["metadata"]. Sin leer ahí, una sesión de la
+    compañía por /v1/messages salía sin clase: ni la exención de la válvula ni
+    el interruptor «Fallback Alibaba» la reconocían. Se leen las tres fuentes.
+
     Fail-open: cualquier forma rara (no-dict, items() roto, None) => None =>
     comportamiento actual; no lanza nunca. La cabecera es falsificable por
     cualquier cliente con key: el único efecto es ENCOLAR en vez de saltar a
@@ -230,7 +237,11 @@ def _claude_class(data):
     toca sellado, admisión ni planes explícitos."""
     # CONTRACT: dgx.claude.class-header.v1
     try:
-        sources = [data.get("headers"), (data.get("metadata") or {}).get("headers")]
+        sources = [
+            data.get("headers"),
+            (data.get("metadata") or {}).get("headers"),
+            (data.get("litellm_metadata") or {}).get("headers"),
+        ]
     except AttributeError:
         return None
     for source in sources:

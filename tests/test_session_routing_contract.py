@@ -933,3 +933,17 @@ def test_strip_params_llama_a_la_politica_de_la_compania(strip_src):
     assert i_key < i_pol < i_sr
     bloque = strip_src[i_pol:i_pol + 600]
     assert "raise HTTPException(status_code=403, detail=_detail)" in bloque
+
+
+def test_company_por_v1_messages_lee_litellm_metadata(router_mod):
+    """23-09-2026, medido en vivo: en /v1/messages (LITELLM_METADATA_ROUTES de
+    litellm) las cabeceras van a data["litellm_metadata"]["headers"]. Es la ruta
+    de Claude Code entera: sin leerla, la compañía no se reconocía por ahí."""
+    data = {"model": RESIDENT, "litellm_trace_id": SID,
+            "litellm_metadata": {"headers": {"X-Claude-Class": "company"}}}
+    assert router_mod._claude_class(data) == "company"
+    assert _policy(router_mod, _cfg(company={"claude": True, "alibaba": False}), data) == (False, None)
+    assert data["disable_fallbacks"] is True
+    data = {"model": "alibaba-q38-max", "litellm_metadata": {"headers": {"x-claude-class": "company"}}}
+    denegada, detalle = _policy(router_mod, _cfg(company={"alibaba": False}), data, requested="alibaba-q38-max")
+    assert denegada is True and detalle["error"] == "company_alibaba_disabled"
