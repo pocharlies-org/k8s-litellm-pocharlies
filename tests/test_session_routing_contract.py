@@ -840,3 +840,96 @@ def test_gate_de_valvula_exacto_y_helper_robusto(router_src):
     # company solo se usa en el gate de la válvula: ninguna otra ruta lo mira
     assert src_apply.count("not company") == 1, "company no debe colarse en más caminos"
     assert "# CONTRACT: dgx.claude.class-header.v1" in router_src
+
+
+# ── Interruptor «Fallback Alibaba» de la compañía (23-09-2026) ────────────────
+# El panel Settings de dgx.e-dani.com/claude-sessions guarda el interruptor en
+# control-nexus/company-control; el dashboard lo sirve en el campo ADITIVO
+# `company` de /api/model-routing/config. Con alibaba=false una petición de la
+# compañía se sella (nada la lleva a Alibaba) y un `alibaba-*` explícito es 403.
+# El resto de clientes no cambia.
+
+
+def _policy(mod, cfg, data, requested="tooling"):
+    async def config():
+        return cfg
+    mod._config = config
+    return asyncio.run(mod.apply_company_policy(data, requested))
+
+
+def test_company_sanitize_solo_un_false_bool_apaga(router_mod):
+    assert router_mod._sanitize({})["company"] == {"claude": True, "alibaba": True}
+    assert router_mod._sanitize({"company": {"alibaba": "false", "claude": 0}})["company"] == {
+        "claude": True, "alibaba": True}
+    assert router_mod._sanitize({"company": {"alibaba": False}})["company"] == {
+        "claude": True, "alibaba": False}
+    assert router_mod._sanitize({"company": ["basura"]})["company"] == {"claude": True, "alibaba": True}
+    assert router_mod.DEFAULT_CONFIG["company"] == {"claude": True, "alibaba": True}
+
+
+def test_company_con_alibaba_permitido_no_toca_nada(router_mod):
+    data = _company_data()
+    assert _policy(router_mod, _cfg(company={"claude": True, "alibaba": True}), data) == (False, None)
+    assert "disable_fallbacks" not in data
+    # config vieja sin el campo: igual (fail-open al comportamiento anterior)
+    data = _company_data()
+    assert _policy(router_mod, _cfg(), data) == (False, None)
+    assert "disable_fallbacks" not in data
+
+
+def test_company_sin_alibaba_sella_la_peticion(router_mod):
+    data = _company_data()
+    assert _policy(router_mod, _cfg(company={"claude": True, "alibaba": False}), data) == (False, None)
+    assert data["disable_fallbacks"] is True
+
+
+def test_company_sin_alibaba_rechaza_un_alibaba_explicito(router_mod):
+    for pedido in ("alibaba-q38-max", "alibaba-qwen38-max", "ALIBABA-q38-flash"):
+        data = _company_data(model=pedido)
+        denegada, detalle = _policy(router_mod, _cfg(company={"alibaba": False}), data, requested=pedido)
+        assert denegada is True
+        assert detalle["error"] == "company_alibaba_disabled"
+        assert "disable_fallbacks" not in data
+
+
+def test_sin_clase_company_el_interruptor_no_aplica(router_mod):
+    for data in (_data(), _data(metadata={"headers": {"x-claude-class": "interactive"}}),
+                 _data(model="alibaba-q38-max")):
+        assert _policy(router_mod, _cfg(company={"claude": False, "alibaba": False}), data,
+                       requested=data["model"]) == (False, None)
+        assert "disable_fallbacks" not in data
+
+
+def test_company_sellada_no_se_reescribe_a_alibaba(router_mod):
+    """El sello es lo que ya respeta el hook (mandato 4a): con alibaba=false, ni el
+    plan explícito alibaba, ni un sticky ligado a alibaba, ni el re-bind por
+    residente no-ready sacan a la compañía del local."""
+    cfg = _cfg(sticky=True, instant_reject=True, local_slots=0, default_plan="alibaba",
+               session_plans={SID: "alibaba"}, company={"claude": True, "alibaba": False})
+    env = _Env(router_mod, cfg, bound="alibaba", inflight=99)
+    data = _company_data()
+    _policy(router_mod, cfg, data)
+    env = _Env(router_mod, cfg, bound="alibaba", inflight=99)
+    assert env.run(data, resident_ready=False) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == []
+
+
+def test_company_policy_fail_open(router_mod):
+    async def revienta():
+        raise RuntimeError("panel caído")
+    router_mod._config = revienta
+    data = _company_data()
+    assert asyncio.run(router_mod.apply_company_policy(data, "tooling")) == (False, None)
+    assert "disable_fallbacks" not in data
+
+
+def test_strip_params_llama_a_la_politica_de_la_compania(strip_src):
+    """Justo tras la política de fallbacks por key, tolerando un módulo sin la
+    función, y con 403 visible para el alibaba explícito."""
+    i_key = strip_src.index("fallbacks_disabled = _apply_key_fallback_policy(data, user_api_key_dict)")
+    i_pol = strip_src.index('getattr(session_router, "apply_company_policy", None)')
+    i_sr = strip_src.index("session_router.apply_session_routing(")
+    assert i_key < i_pol < i_sr
+    bloque = strip_src[i_pol:i_pol + 600]
+    assert "raise HTTPException(status_code=403, detail=_detail)" in bloque

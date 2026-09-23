@@ -124,6 +124,18 @@ UNCENSORED_SUFFIX = "-uncensored"
 CLASS_HEADER = "x-claude-class"
 COMPANY_CLASS = "company"
 
+# Interruptor «Fallback Alibaba» de la compañía (23-09-2026). El panel Settings de
+# /claude-sessions lo guarda en control-nexus/company-control y el dashboard lo sirve
+# en el campo ADITIVO `company` de /api/model-routing/config (contrato
+# dgx.model-routing.config.v1). Con `company.alibaba = false`, una petición de clase
+# company (a) se SELLA con disable_fallbacks — el Router no cae a alibaba-q38-flash y
+# este mismo módulo la ve "sellada" y no la reescribe por sticky, plan ni re-bind — y
+# (b) si pide un `alibaba-*` explícito se rechaza con 403. Solo la compañía: el resto de
+# consumidores conserva su fallback. `company.claude` no se usa aquí (Anthropic ni pasa
+# por LiteLLM): lo aplica el claude-router del x86.
+ALIBABA_PREFIX = "alibaba-"
+DEFAULT_COMPANY = {"claude": True, "alibaba": True}
+
 # Ambos flags off (default, y estado mientras el panel no exista o no esté
 # alcanzable): los mecanismos AUTOMÁTICOS duermen y llamar a
 # apply_session_routing es un no-op exacto del comportamiento anterior. Un plan
@@ -135,6 +147,7 @@ DEFAULT_CONFIG = {
     "local_slots": DEFAULT_LOCAL_SLOTS,
     "default_plan": "local",
     "session_plans": {},
+    "company": dict(DEFAULT_COMPANY),
 }
 
 _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
@@ -248,6 +261,9 @@ def _sanitize(raw):
             else {}
         ),
     }
+    # Solo un false bool apaga un interruptor de la compañía: ausente, null o basura = hoy.
+    company = raw.get("company") if isinstance(raw.get("company"), dict) else {}
+    config["company"] = {k: company.get(k) is not False for k in DEFAULT_COMPANY}
     slots = raw.get("local_slots")
     if isinstance(slots, int) and not isinstance(slots, bool) and 0 <= slots <= LOCAL_SLOTS_CAP:
         config["local_slots"] = slots
@@ -485,6 +501,40 @@ def _rewrite(data, sid, reason):
         "session_router: %r -> %r (razon=%s, sid=%s)",
         original, OVERFLOW_MODEL, reason, sid or "-",
     )
+
+
+async def apply_company_policy(data, requested_model):
+    """Interruptor «Fallback Alibaba» de la compañía. Lo llama litellm_strip_params en su
+    async_pre_call_hook justo después de la política de fallbacks por key, ANTES de
+    resolver alias y de apply_session_routing.
+
+    Devuelve (denegada, detalle). Sin clase company o con Alibaba permitido: (False, None)
+    sin tocar nada. Con Alibaba desactivado: un `alibaba-*` pedido o resuelto -> (True,
+    detalle para un 403); cualquier otro -> sella `disable_fallbacks` y (False, None).
+    Fail-open: cualquier fallo o config fría = (False, None) = comportamiento anterior."""
+    try:
+        if _claude_class(data) != COMPANY_CLASS:
+            return False, None
+        config = await _config()
+        if (config.get("company") or {}).get("alibaba", True) is not False:
+            return False, None
+        for name in (requested_model, data.get("model")):
+            if str(name or "").lower().startswith(ALIBABA_PREFIX):
+                log.warning(
+                    "session_router: company pidio %r con el fallback a Alibaba desactivado -> 403",
+                    name,
+                )
+                return True, {
+                    "error": "company_alibaba_disabled",
+                    "model": str(name),
+                    "hint": ("La compañía tiene Alibaba desactivado en dgx.e-dani.com/"
+                             "claude-sessions#settings: usa el LLM local."),
+                }
+        data["disable_fallbacks"] = True
+        return False, None
+    except Exception as exc:
+        _warn_throttled("company_policy", f"apply_company_policy falló ({exc}); fail-open")
+        return False, None
 
 
 async def apply_session_routing(data, requested_model, tracker=None, resident_ready=True):
