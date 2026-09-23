@@ -5381,6 +5381,103 @@ data:
         except Exception as e:
             log.debug("refusal_text stamp error: %s", e)
 
+    # ── Fase B del detector de refusal: sello de la SONDA del vLLM ──────────────
+    # CONTRACT: dgx.litellm.refusal-probe-stamp.v1 (refusal_score/flag/cal, ver CONTRACTS.yaml)
+    #
+    # El residente (qwen38-flash-next con VLLM_REFUSAL_PROBE=1) mide token a token el
+    # coseno del residual contra la direccion de refusal y devuelve un veredicto por
+    # peticion: en streaming como `provider_specific_fields.refusal_probe` del chunk
+    # con finish_reason (LiteLLM lo copia a model_response.provider_specific_fields y
+    # como atributo `refusal_probe`), y sin streaming como clave extra del choice
+    # (convert_dict_to_response la deja en choice.provider_specific_fields). Codigo de
+    # la sonda: k8s-ai-pocharlies ursucipian-mod/refusal/payload/refusal_probe.py.
+    #
+    # CONTRATO con el panel (/api/llm/refusal-rates): `refusal_score` es un numero
+    # como TEXTO (el SQL lo pasa por regex antes del cast), `refusal_flag` un
+    # booleano JSON (el SQL compara con 'true') y SOLO existe si hay calibracion;
+    # `refusal_cal` el id de esa calibracion. Sin calibracion se sella score y NO
+    # flag: el panel lo pinta "presente, sin calibrar" y la tasa sigue en el texto.
+    # Proveedores externos (Alibaba, OpenAI...) no traen el campo: no se sella nada
+    # y su fila queda en la FASE A.
+    def _extract_refusal_probe(obj):
+        """refusal_probe de un chunk/respuesta de LiteLLM, o None. Nunca lanza."""
+        try:
+            cands = [obj]
+            choices = (obj.get("choices") if isinstance(obj, dict)
+                       else getattr(obj, "choices", None))
+            if choices:
+                cands.append(choices[0])
+            for c in cands:
+                direct = (c.get("refusal_probe") if isinstance(c, dict)
+                          else getattr(c, "refusal_probe", None))
+                if isinstance(direct, dict):
+                    return direct
+                psf = (c.get("provider_specific_fields") if isinstance(c, dict)
+                       else getattr(c, "provider_specific_fields", None))
+                if isinstance(psf, dict) and isinstance(psf.get("refusal_probe"), dict):
+                    return psf["refusal_probe"]
+        except Exception:
+            return None
+        return None
+
+    def _refusal_probe_fields(rp):
+        """Del veredicto de la sonda a las claves de spend_logs_metadata."""
+        if not isinstance(rp, dict):
+            return None
+        score = rp.get("score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            return None
+        if score != score or score in (float("inf"), float("-inf")):
+            return None
+        fields = {"refusal_score": f"{float(score):.6f}"}
+        if isinstance(rp.get("feature"), str):
+            fields["refusal_probe_feature"] = rp["feature"]
+        flag = rp.get("flag")
+        cal = rp.get("cal")
+        # flag sin calibracion no es un veredicto: no se sella aunque viniera.
+        if isinstance(flag, bool) and isinstance(cal, str) and cal:
+            fields["refusal_flag"] = flag
+            fields["refusal_cal"] = cal
+        return fields
+
+    def _slm_update(container, fields) -> None:
+        """Como _slm_stamp, con varias claves de una vez."""
+        if not isinstance(container, dict):
+            return
+        _slm = container.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            container["spend_logs_metadata"] = _slm
+        _slm.update(fields)
+
+    def _stamp_refusal_probe(request_data, obj) -> bool:
+        """Sella la sonda si `obj` la trae. Mismas dos vias que _stamp_refusal_text
+        (request_data y logging_obj vivo), por el mismo motivo. True si sello."""
+        if not isinstance(request_data, dict):
+            return False
+        try:
+            fields = _refusal_probe_fields(_extract_refusal_probe(obj))
+            if not fields:
+                return False
+            _mvar = "litellm_metadata" if "litellm_metadata" in request_data else "metadata"
+            _meta = request_data.get(_mvar)
+            if not isinstance(_meta, dict):
+                _meta = {}
+                request_data[_mvar] = _meta
+            _slm_update(_meta, fields)
+            _log = request_data.get("litellm_logging_obj")
+            _mcd = getattr(_log, "model_call_details", None)
+            if isinstance(_mcd, dict):
+                _lp = _mcd.get("litellm_params")
+                if isinstance(_lp, dict):
+                    for _k in ("metadata", "litellm_metadata"):
+                        _slm_update(_lp.get(_k), fields)
+                    _slm_update(_mcd.get("metadata"), fields)
+            return True
+        except Exception as e:
+            log.debug("refusal_probe stamp error: %s", e)
+            return False
+
 
     class StripUnsupportedParams(litellm.integrations.custom_logger.CustomLogger):
         STRIP_PARAMS = {"reasoningSummary", "reasoning_summary"}
@@ -5875,6 +5972,8 @@ data:
             # `litellm.callbacks` (ProxyLogging escribe primero) y podria llegar
             # tarde. Muta el mismo dict anidado que el pre-call ya persistio.
             _stamp_refusal_text(data, _extract_response_text(response))
+            # Fase B: veredicto de la sonda del vLLM, si el backend la trae.
+            _stamp_refusal_probe(data, response)
             _track_end_from_payload(data, "proxy_success")
             return None
 
@@ -5903,8 +6002,14 @@ data:
             _prefix: list = []
             _plen = 0
             _frozen = False
+            # Fase B: la sonda llega UNA vez, en el chunk con finish_reason. Se
+            # sella al recibirlo, ANTES de pedir el siguiente: es entonces cuando
+            # el wrapper aun no ha dado el stream por cerrado.
+            _probe_done = False
             try:
                 async for chunk in response:
+                    if not _probe_done:
+                        _probe_done = _stamp_refusal_probe(request_data, chunk)
                     try:
                         _update_tracking_from_payload(request_data, chunk)
                     except Exception as e:
@@ -8636,7 +8741,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-421ac557ef76
+        config.k8s.e-dani.com/revision: config-3a54c4b566a7
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

@@ -175,3 +175,26 @@ contracts:
       so a request still in queue/prefill shows its size before the first
       token. It never replaces prompt_tokens, which stays backend-only.
       Pinned by tests/test_prompt_tokens_estimate_contract.py.
+  - id: dgx.litellm.refusal-probe-stamp.v1
+    # Claves que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
+    # que lee por SQL el panel de refusal. Mismo kind que class-header: es una
+    # convencion de datos entre procesos, no una ruta.
+    kind: schema
+    value: refusal_score
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Fase B del detector de refusal (2026-09-24). Cuando el backend devuelve
+      refusal_probe (el residente qwen38-flash-next con VLLM_REFUSAL_PROBE=1,
+      k8s-ai-pocharlies ursucipian-mod/refusal/payload/refusal_probe.py), el
+      hook sella en spend_logs_metadata: refusal_score = numero como TEXTO que
+      pasa la regex ^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$; refusal_flag =
+      booleano JSON y SOLO con calibracion; refusal_cal = id de la
+      calibracion; refusal_probe_feature = nombre del rasgo. Consumido por
+      dgx-infra services/dashboard/api/refusal_rates.py (_RATES_SQL: n_probe,
+      n_probe_flag, n_probe_flagged, refusal_cal). Backends sin sonda no
+      sellan nada. Aditivo junto a refusal_text (fase A), refusal_lambda y
+      refusal_runtime, que no cambian. Pinned by
+      tests/test_refusal_probe_stamp_contract.py.
