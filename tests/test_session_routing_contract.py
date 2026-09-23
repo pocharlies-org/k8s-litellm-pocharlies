@@ -28,6 +28,8 @@ import sys
 import types
 from pathlib import Path
 
+import re
+
 import pytest
 import yaml
 
@@ -755,6 +757,56 @@ def test_c3_residente_no_ready_sigue_rebindeando(router_mod):
     assert env.writes == [(SID, "alibaba")]
 
 
+# C5 (23-09-2026): desborde de la compañía. Con su interruptor company.alibaba
+# encendido, una sesión company con el residente lleno se reescribe a Alibaba
+# aunque el instant_reject global esté apagado; con él apagado (o sin campo)
+# sigue encolando. Deroga el «la compañía nunca salta» del 21-09.
+
+
+def test_c5_company_overflow_desborda_con_valvula_global_apagada(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=8,
+                                company={"claude": True, "alibaba": True}), inflight=8)
+    data = _company_data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_reason"] == "company_overflow"
+    assert env.writes == [(SID, "alibaba")]
+
+
+def test_c5_company_overflow_sin_sticky_ni_valvula_global(router_mod):
+    env = _Env(router_mod, _cfg(sticky=False, instant_reject=False, local_slots=8,
+                                company={"alibaba": True}), inflight=9)
+    data = _company_data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == []
+
+
+def test_c5_company_con_hueco_se_queda_en_local(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, local_slots=8,
+                                company={"alibaba": True}), inflight=7)
+    data = _company_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+
+
+def test_c5_company_con_alibaba_apagado_encola(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2,
+                                company={"alibaba": False}), inflight=99)
+    data = _company_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_c5_el_resto_no_desborda_por_el_interruptor_de_la_compania(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=2,
+                                company={"alibaba": True}), inflight=99)
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
 # C4: fail-open — cualquier forma rara de la cabecera/metadata = sin clase =
 # comportamiento actual, sin excepción.
 
@@ -824,10 +876,12 @@ def test_sin_cabecera_class_sale_como_guion(router_mod, caplog):
 
 
 def test_gate_de_valvula_exacto_y_helper_robusto(router_src):
-    """El gate exige instant_reject + modelo residente + not company (no se
-    ensancha a otras rutas), la lectura es case-insensitive por clave y el
-    marcador de contrato está en el sitio."""
-    assert 'config["instant_reject"] and model == RESIDENT_MODEL and not company' in router_src
+    """El gate elige válvula por clase — company.alibaba para la compañía,
+    instant_reject para el resto — y exige modelo residente (no se ensancha a
+    otras rutas); la lectura es case-insensitive por clave y el marcador de
+    contrato está en el sitio."""
+    assert 'valvula, motivo = (company_overflow, "company_overflow") if company else (' in router_src
+    assert 'if valvula and model == RESIDENT_MODEL:' in router_src
     tree = ast.parse(router_src)
     cls_fn = next(n for n in tree.body
                   if isinstance(n, ast.FunctionDef) and n.name == "_claude_class")
@@ -837,8 +891,9 @@ def test_gate_de_valvula_exacto_y_helper_robusto(router_src):
     apply_fn = next(n for n in tree.body
                     if isinstance(n, ast.AsyncFunctionDef) and n.name == "_apply")
     src_apply = ast.get_source_segment(router_src, apply_fn)
-    # company solo se usa en el gate de la válvula: ninguna otra ruta lo mira
-    assert src_apply.count("not company") == 1, "company no debe colarse en más caminos"
+    # company solo decide la válvula (y su interruptor): ninguna otra ruta lo mira
+    assert src_apply.count("if company else") == 1, "company no debe colarse en más caminos"
+    assert not re.search(r"not company\b", src_apply)
     assert "# CONTRACT: dgx.claude.class-header.v1" in router_src
 
 

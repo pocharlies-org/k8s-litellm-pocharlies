@@ -6429,7 +6429,16 @@ data:
                 else "plan_explicito_alibaba_modelo_no_residente")
             return False
 
-        if not config["sticky"] and not config["instant_reject"]:
+        # Desborde de la compañía (23-09-2026, deroga el «la compañía nunca salta» del 21-09):
+        # con su interruptor «Fallback Alibaba» encendido (company.alibaba, el que ya existe),
+        # una sesión company que encuentra el residente lleno (local_slots en vuelo) se reescribe
+        # a Alibaba en vez de encolar. Va por su interruptor, NO por el instant_reject global:
+        # el global sigue gobernando al resto de clientes. Medido la noche del 22→23-09: la
+        # compañía encolada contra un vLLM a 16 en curso tuvo el freno de saturación puesto el
+        # 68 % del tiempo y 9 CTO parados; el fallback no entraba porque solo cubría errores.
+        company_overflow = company and (config.get("company") or {}).get("alibaba") is True
+        info["company_overflow"] = company_overflow
+        if not config["sticky"] and not config["instant_reject"] and not company_overflow:
             info["decision"] = "flags_apagados"
             return False
 
@@ -6484,23 +6493,24 @@ data:
         # Válvula de capacidad (precedencia 5) — solo plan default. Con sticky
         # activo, el disparo RE-VINCULA la sesión (destino sano = hueco libre);
         # con sticky apagado es una válvula por petición que no escribe nada.
-        # INFRA-208 (22-09): las sesiones de la compañía (x-claude-class:
-        # company) NUNCA saltan por la válvula — deciden `local` y la admisión
-        # de strip_params ENCOLA (decisión de Dani 21-09). El gate es SOLO esta
-        # válvula: sellado, uncensored, plan explícito, sticky ya ligado a
-        # alibaba y re-bind por residente no-ready aplican igual — la cabecera
-        # no esquiva precedencia ni salta cola.
-        if config["instant_reject"] and model == RESIDENT_MODEL and not company:
+        # Las sesiones de la compañía (x-claude-class: company) usan SU válvula:
+        # la gobierna company.alibaba (desbordan) y no el instant_reject global. Con
+        # company.alibaba=false llegan selladas y no pasan de «sellada». Sellado,
+        # uncensored, plan explícito, sticky ya ligado y re-bind por residente
+        # no-ready aplican igual — la cabecera no esquiva precedencia.
+        valvula, motivo = (company_overflow, "company_overflow") if company else (
+            config["instant_reject"], "instant_reject")
+        if valvula and model == RESIDENT_MODEL:
             inflight = await _inflight_resident(tracker)
             info["inflight"] = inflight
             if inflight is not None and inflight >= config["local_slots"] and _overflow_ok_info(info):
                 if config["sticky"] and sid:
                     await _sticky_set(sid, "alibaba")
-                info["decision"] = "instant_reject"
-                _rewrite(data, sid, "instant_reject")
+                info["decision"] = motivo
+                _rewrite(data, sid, motivo)
                 log.warning(
-                    "session_router: instant_reject sid=%s en_vuelo=%s slots=%s -> %s",
-                    sid or "-", inflight, config["local_slots"], OVERFLOW_MODEL,
+                    "session_router: %s sid=%s en_vuelo=%s slots=%s -> %s",
+                    info["decision"], sid or "-", inflight, config["local_slots"], OVERFLOW_MODEL,
                 )
                 return True
 
@@ -7969,7 +7979,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-91fefde9dc07
+        config.k8s.e-dani.com/revision: config-ab9203d19095
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
