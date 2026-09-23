@@ -1705,7 +1705,17 @@ data:
         "llm-tp": (("dgx1", "deepseek-worker"), ("dgx2", "deepseek-head")),
         "creative": (("dgx1", "dense-uncensored"),),
     }
-    TOOLING_FALLBACKS = ()
+    # 24-09-2026: `tooling` deja de fallar en seco y DEGRADA a Alibaba, decision del
+    # owner. Sin residente Ready (head arrancando tras un reinicio, TP=2 roto) la
+    # key del Estudio (`playground` en la web, `dgx-studio` en Telegram) se quedaba
+    # en un 503 "tooling profile target is unavailable" durante los ~20 min del
+    # arranque. `alibaba-q38-flash` es el gemelo EXACTO del residente de `llm-tp`
+    # (el mismo al que ya cae `qwen38-flash-next` por el router). Con fallback, el
+    # prompt SALE de la maquina: es el precio aceptado. Siguen sin fallback
+    # `aurora-rca`/`synapse` (NO_FALLBACK_KEY_ALIASES -> disable_fallbacks) y las
+    # rutas abliteradas (no usan esta tupla). Lo hereda `qwen38-off`, que ya lo
+    # esperaba (CAPABILITY_CHAINS).
+    TOOLING_FALLBACKS = ("alibaba-q38-flash",)
     # Alias que significan «el residente del perfil vivo» y por eso se reescriben
     # al nombre directo antes de enrutar. `tooling` = sin pensar; high/max = el
     # MISMO backend con otro nivel de pensamiento.
@@ -2375,8 +2385,8 @@ data:
 
         The local head is selected from the residents whose Kubernetes components
         are Ready. Transition bookkeeping never hides a still-operational resident.
-        ``disable_fallbacks`` remains part of the policy contract, although the
-        current fallback list is intentionally empty.
+        Without a Ready resident it degrades to ``TOOLING_FALLBACKS`` (the cloud
+        twin, 24-09-2026) unless ``disable_fallbacks`` (aurora-rca/synapse keys).
         """
         target, reason = _tooling_target_for_compute_mode(state)
         if target and alias_live(target):
@@ -2442,7 +2452,8 @@ data:
 
         Both compute profiles publish ``tooling`` on their own resident. The ready
         components choose the target even while the arbiter is waiting/switching.
-        If neither resident is Ready, or its alias is not live, the caller gets 503.
+        If neither resident is Ready, it degrades to ``TOOLING_FALLBACKS``; with
+        fallbacks disabled for the key, or nothing live, the caller gets 503.
         """
         state = await _compute_mode_state()
         resolved, route_state, reason = _tooling_route_for_state(
@@ -5463,8 +5474,8 @@ data:
                 # pensamiento). El nivel lo sigue poniendo THINKING_TIERS a partir
                 # del alias PEDIDO (`thinking_alias`), que no se toca aqui.
                 #
-                # Los perfiles comparten la misma política local. La lista
-                # está vacía desde la retirada de las salidas externas.
+                # Los perfiles comparten la misma política local; sin residente
+                # degradan a TOOLING_FALLBACKS (Alibaba, 24-09-2026).
                 if cap_alias in TOOLING_UNCENSORED_ALIASES:
                     # Mismo mecanismo que los perfiles de abajo, otro destino y sin
                     # fallback: degradar devolveria un modelo censurado a quien
@@ -8396,7 +8407,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-375a742a571d
+        config.k8s.e-dani.com/revision: config-9386674dc4bc
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

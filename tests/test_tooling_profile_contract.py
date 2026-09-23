@@ -1,7 +1,9 @@
 """Contract for the single dynamic local capability: ``tooling``.
 
 The capability follows the resident that is operational according to the GPU
-arbiter's component readiness. It has no cloud or cross-profile fallback.
+arbiter's component readiness. Without a Ready resident it degrades to the cloud
+twin of the llm-tp resident (``alibaba-q38-flash``, owner decision 24-09-2026);
+never to the other profile's resident.
 """
 import ast
 import types
@@ -105,10 +107,31 @@ def test_transition_keeps_whichever_resident_is_actually_ready(hook):
     assert hook._tooling_target_for_compute_mode(state) == ("qwen38-27b", None)
 
 
-def test_no_ready_resident_fails_closed_without_fallback(hook):
+def test_no_ready_resident_degrades_to_the_cloud_twin(hook):
+    # 24-09-2026: el head arrancando dejaba al Estudio en 503 ~20 min. Ahora cae al
+    # gemelo de Alibaba, y SOLO a el: nada de saltar al residente del otro perfil.
+    assert hook.TOOLING_FALLBACKS == ("alibaba-q38-flash",)
     state = _state()
-    assert hook.TOOLING_FALLBACKS == ()
-    assert hook._tooling_route_for_state(state, lambda _name: False) == (
+    live = lambda name: name == "alibaba-q38-flash"
+    assert hook._tooling_route_for_state(state, live) == (
+        "alibaba-q38-flash",
+        "degraded",
+        "tooling_resident_not_ready",
+    )
+
+
+def test_no_ready_resident_with_fallbacks_disabled_fails_closed(hook):
+    state = _state()
+    live = lambda name: name == "alibaba-q38-flash"
+    assert hook._tooling_route_for_state(state, live, disable_fallbacks=True) == (
+        None,
+        "dry",
+        "tooling_resident_not_ready",
+    )
+
+
+def test_nothing_live_fails_closed(hook):
+    assert hook._tooling_route_for_state(_state(), lambda _name: False) == (
         None,
         "dry",
         "tooling_resident_not_ready",
