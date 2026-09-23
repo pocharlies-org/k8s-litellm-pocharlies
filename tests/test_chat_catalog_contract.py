@@ -141,7 +141,7 @@ def fallbacks(config):
     """`router_settings.fallbacks` aplastado en {modelo: [a donde cae]}.
 
     Ahi vive el fallback de verdad, no en `TOOLING_FALLBACKS` del hook — esa cadena
-    esta en `()` desde que la red se declaro en el router. Y la clave es el nombre
+    solo cubre `tooling`/`qwen38-off` (a Alibaba desde el 24-09). Y la clave es el nombre
     DIRECTO del residente, porque el hook reescribe el alias ANTES de enrutar: pedir
     `q38-flash` acaba pidiendo `qwen38-flash-next`, y esa es la clave que mira
     LiteLLM. Eso es lo que hace que los cuatro perfiles hereden la red (o se queden
