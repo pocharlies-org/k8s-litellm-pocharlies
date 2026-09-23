@@ -1136,3 +1136,49 @@ def test_presupuesto_unico_cuenta_toda_la_familia_del_residente(fresh_mod):
     assert asyncio.run(m._inflight_resident(T())) == 3
 
 
+
+
+# ── Afinidad sin id de sesión (23-09-2026): opencode/hermes no mandan id estable ──
+
+
+def _conv(first_user="haz X", extra=0, marca=False):
+    sistema = {"type": "text", "text": "eres opencode"}
+    if marca:
+        sistema["cache_control"] = {"type": "ephemeral"}
+    msgs = [{"role": "system", "content": [sistema]}, {"role": "user", "content": first_user}]
+    for i in range(extra):
+        msgs += [{"role": "assistant", "content": f"paso {i}"}, {"role": "user", "content": f"resultado {i}"}]
+    return {"model": RESIDENT, "messages": msgs, "metadata": {"user_api_key_alias": "opencode"}}
+
+
+def test_llave_de_afinidad_estable_en_toda_la_conversacion(fresh_mod):
+    k1 = fresh_mod._prefix_affinity_key(_conv(extra=0))
+    k2 = fresh_mod._prefix_affinity_key(_conv(extra=3))
+    k3 = fresh_mod._prefix_affinity_key(_conv(extra=3, marca=True))   # cache_control movido
+    assert k1 and k1.startswith("pfx-") and k1 == k2 == k3
+
+
+def test_llave_de_afinidad_distingue_conversaciones_y_clientes(fresh_mod):
+    a = fresh_mod._prefix_affinity_key(_conv("tarea A"))
+    b = fresh_mod._prefix_affinity_key(_conv("tarea B"))
+    c = _conv("tarea A"); c["metadata"] = {"user_api_key_alias": "hermes"}
+    assert a != b and a != fresh_mod._prefix_affinity_key(c)
+
+
+def test_llave_de_afinidad_forma_rara_es_none(fresh_mod):
+    assert fresh_mod._prefix_affinity_key({"messages": "x"}) is None
+    assert fresh_mod._prefix_affinity_key({}) is None
+
+
+def test_sin_sid_el_desborde_vincula_por_la_llave_de_afinidad(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2), inflight=5)
+    data = _conv()
+    assert env.run(data) is True
+    assert len(env.writes) == 1 and env.writes[0][0].startswith("pfx-") and env.writes[0][1] == "alibaba"
+
+
+def test_con_sid_manda_el_sid(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2), inflight=5)
+    data = _conv(); data["litellm_trace_id"] = SID
+    env.run(data)
+    assert env.writes == [(SID, "alibaba")]

@@ -49,6 +49,24 @@ contracts:
       metadata.headers AND litellm_metadata.headers: on LiteLLM's
       LITELLM_METADATA_ROUTES (/v1/messages, i.e. all of Claude Code) the
       request headers land in litellm_metadata, measured live 2026-09-23.
+  - id: dgx.session-router.sticky-key.v1
+    kind: schema
+    value: session-router:sticky:<sid>
+    anchor: "session-router:sticky:"
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Publisher side (consumer: dgx-infra services/dashboard/api/
+      session_routing_stats.py, read-only SCAN + GET/TTL). Valkey
+      litellm-valkey db 0, value local|alibaba, only for default-plan
+      sessions. Since 2026-09-23 the TTL is 600 s of INACTIVITY (renewed on
+      every request of the session) and <sid> is the client session id when
+      there is one, or pfx-<24 hex> — a hash of api-key alias + system + first
+      user message — for clients that send none (opencode, hermes), so a
+      whole conversation keeps its affinity. Values unchanged.
   - id: dgx.model-routing.config.v1
     kind: http-route
     value: /api/model-routing/config
