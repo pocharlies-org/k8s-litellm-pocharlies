@@ -6392,6 +6392,10 @@ data:
         claude_class = _claude_class(data)
         info["class"] = claude_class
         company = claude_class == COMPANY_CLASS
+        # Interruptor «Fallback Alibaba» de la compañía (23-09-2026): activado, la compañía
+        # desborda a Alibaba al llenarse el residente (su propia válvula, abajo); desactivado,
+        # ni llega aquí — apply_company_policy la sella antes y la precedencia 1 la deja pasar.
+        company_overflow = company and (config.get("company") or {}).get("alibaba", True) is not False
         info["active"] = bool(
             config["sticky"] or config["instant_reject"]
             or config["default_plan"] != "local" or config["session_plans"]
@@ -6429,7 +6433,7 @@ data:
                 else "plan_explicito_alibaba_modelo_no_residente")
             return False
 
-        if not config["sticky"] and not config["instant_reject"]:
+        if not config["sticky"] and not config["instant_reject"] and not company_overflow:
             info["decision"] = "flags_apagados"
             return False
 
@@ -6484,23 +6488,27 @@ data:
         # Válvula de capacidad (precedencia 5) — solo plan default. Con sticky
         # activo, el disparo RE-VINCULA la sesión (destino sano = hueco libre);
         # con sticky apagado es una válvula por petición que no escribe nada.
-        # INFRA-208 (22-09): las sesiones de la compañía (x-claude-class:
-        # company) NUNCA saltan por la válvula — deciden `local` y la admisión
-        # de strip_params ENCOLA (decisión de Dani 21-09). El gate es SOLO esta
-        # válvula: sellado, uncensored, plan explícito, sticky ya ligado a
-        # alibaba y re-bind por residente no-ready aplican igual — la cabecera
-        # no esquiva precedencia ni salta cola.
-        if config["instant_reject"] and model == RESIDENT_MODEL and not company:
+        # Quién pasa por la válvula (23-09-2026, deroga el "la compañía nunca salta"
+        # del 21-09/22-09): las sesiones de la compañía (x-claude-class: company) la
+        # gobierna SU interruptor «Fallback Alibaba» del panel Settings, no
+        # instant_reject — activado, desbordan a Alibaba en cuanto el residente está
+        # lleno (medido el 23-09 con MAX_NUM_SEQS=16: cola vLLM p50 ~19 s, p95 ~87 s,
+        # TTFT p95 ~142 s, y la compañía sin salida); desactivado, ya vienen selladas.
+        # El resto de sesiones, como siempre: solo con instant_reject. Sellado,
+        # uncensored, plan explícito, sticky ya ligado y re-bind aplican igual.
+        valvula = (company and company_overflow) or (not company and config["instant_reject"])
+        if valvula and model == RESIDENT_MODEL:
             inflight = await _inflight_resident(tracker)
             info["inflight"] = inflight
             if inflight is not None and inflight >= config["local_slots"] and _overflow_ok_info(info):
                 if config["sticky"] and sid:
                     await _sticky_set(sid, "alibaba")
-                info["decision"] = "instant_reject"
-                _rewrite(data, sid, "instant_reject")
+                razon = "company_overflow" if company else "instant_reject"
+                info["decision"] = razon
+                _rewrite(data, sid, razon)
                 log.warning(
-                    "session_router: instant_reject sid=%s en_vuelo=%s slots=%s -> %s",
-                    sid or "-", inflight, config["local_slots"], OVERFLOW_MODEL,
+                    "session_router: %s sid=%s en_vuelo=%s slots=%s -> %s",
+                    razon, sid or "-", inflight, config["local_slots"], OVERFLOW_MODEL,
                 )
                 return True
 
@@ -7969,7 +7977,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-91fefde9dc07
+        config.k8s.e-dani.com/revision: config-25a9830013b7
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
