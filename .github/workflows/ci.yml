@@ -1,10 +1,12 @@
 name: CI
 
+# Un solo run por PR: el push de ramas duplicaba el de pull_request (la
+# concurrencia agrupa por github.ref, distinto en ambos eventos, y no se
+# cancelaban). push queda solo para el tronco.
 on:
   pull_request:
-    branches: ["**"]
   push:
-    branches: ["**"]
+    branches: [main, "deploy/prod"]
     tags-ignore: ["**"]
 
 concurrency:
