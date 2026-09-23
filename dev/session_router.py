@@ -107,6 +107,7 @@ SIDECAR_TIMEOUT_SECONDS = 0.1
 # de la sesión (local o alibaba): mientras la sesión trabaja se queda donde está su
 # caché; tras 10 min sin peticiones caduca y la siguiente vuelve a decidirse.
 STICKY_TTL_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_S", "600"))
+# CONTRACT: dgx.session-router.sticky-key.v1
 STICKY_KEY_PREFIX = "session-router:sticky:"
 DEFAULT_LOCAL_SLOTS = 8
 LOCAL_SLOTS_CAP = 64

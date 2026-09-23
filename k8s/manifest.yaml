@@ -5983,6 +5983,7 @@ data:
     # de la sesión (local o alibaba): mientras la sesión trabaja se queda donde está su
     # caché; tras 10 min sin peticiones caduca y la siguiente vuelve a decidirse.
     STICKY_TTL_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_S", "600"))
+    # CONTRACT: dgx.session-router.sticky-key.v1
     STICKY_KEY_PREFIX = "session-router:sticky:"
     DEFAULT_LOCAL_SLOTS = 8
     LOCAL_SLOTS_CAP = 64
@@ -8253,7 +8254,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1298f6f82894
+        config.k8s.e-dani.com/revision: config-ed8dfc4a869e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
