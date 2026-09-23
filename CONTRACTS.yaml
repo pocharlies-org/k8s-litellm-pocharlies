@@ -31,7 +31,10 @@ contracts:
       company Alibaba switch (company.alibaba of dgx.model-routing.config.v1,
       2026-09-23, superseding the 2026-09-21 "company never overflows"):
       switch on, it overflows to Alibaba once local_slots are in flight at
-      the resident, whatever instant_reject says; switch off, it is sealed.
+      the resident (all resident names counted as one budget) or the vLLM
+      queue has not emptied for SESSION_ROUTER_WAIT_TOLERANCE_S (default 5 s),
+      whatever instant_reject says; the detour is per request and never
+      rebinds the session; switch off, it is sealed.
       The header cannot bypass sealed requests, uncensored aliases, explicit
       panel plans or admission; it is forgeable by any keyed client, whose
       only effect is to get the company's overflow policy. Absent or any

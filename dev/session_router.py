@@ -101,7 +101,10 @@ STICKY_WRITE_TIMEOUT_SECONDS = 2.0
 # pagar DNS+TCP+AUTH en la siguiente operación (que sí va en camino de petición).
 REDIS_HEALTH_CHECK_INTERVAL = 30
 SIDECAR_TIMEOUT_SECONDS = 0.1
-STICKY_TTL_SECONDS = 3600
+# 23-09-2026 (Dani): 10 min. Un vínculo a Alibaba (re-bind con el residente no
+# listo, plan alibaba) ya no retiene la sesión una hora: a los 10 min vuelve a
+# decidirse, y lo normal es volver al local.
+STICKY_TTL_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_S", "600"))
 STICKY_KEY_PREFIX = "session-router:sticky:"
 DEFAULT_LOCAL_SLOTS = 8
 LOCAL_SLOTS_CAP = 64
@@ -136,6 +139,37 @@ COMPANY_CLASS = "company"
 # por LiteLLM): lo aplica el claude-router del x86.
 ALIBABA_PREFIX = "alibaba-"
 DEFAULT_COMPANY = {"claude": True, "alibaba": True}
+
+# ── Sin esperas en el residente (23-09-2026, Dani: "no quiero que nunca se espere") ──
+# Medido ese día: el semáforo de LiteLLM casi no espera (p99 0,25 s); la espera es la
+# COLA DE vLLM (p50 8 s, p95 94 s en 6 h), y con 3-5 peticiones en marcha también: el
+# prefill de un contexto largo frío va de uno en uno (4096 tokens/paso, T=0) y todo lo
+# nuevo espera detrás. Por eso la válvula no mira solo cuántas hay en vuelo, sino si la
+# cola de vLLM lleva WAIT_TOLERANCE_SECONDS sin vaciarse: entonces lo nuevo sale a
+# Alibaba. La lee un sondeo en BACKGROUND de /metrics del residente (el camino de la
+# petición no hace I/O); dato viejo o sondeo caído => sin desvío (fail-open).
+#
+# Un solo presupuesto para el residente: todos los nombres que acaban en el mismo vLLM
+# (el directo y su gemelo abliterado; tooling/qwen38-off se reescriben antes a estos)
+# cuentan juntos contra local_slots.
+RESIDENT_FAMILY = frozenset(
+    n.strip() for n in (
+        os.environ.get("SESSION_ROUTER_RESIDENT_FAMILY")
+        or f"{RESIDENT_MODEL},{RESIDENT_MODEL}-uncensored"
+    ).split(",") if n.strip()
+)
+VLLM_METRICS_URL = os.environ.get(
+    "SESSION_ROUTER_VLLM_METRICS_URL",
+    "http://qwen38-flash-next.llm.svc.cluster.local:8000/metrics",
+)
+VLLM_MODEL_NAME = os.environ.get("SESSION_ROUTER_VLLM_MODEL_NAME", RESIDENT_MODEL)
+WAIT_TOLERANCE_SECONDS = float(os.environ.get("SESSION_ROUTER_WAIT_TOLERANCE_S", "5"))
+VLLM_POLL_SECONDS = 1.0
+VLLM_POLL_TIMEOUT_SECONDS = 0.8
+# Sin lectura buena en este tiempo el dato no vale: la válvula de cola no actúa.
+VLLM_STALE_SECONDS = 5.0
+_vllm_queue = {"waiting": None, "running": None, "since": None, "read_at": None}
+_vllm_poller = None
 
 # Ambos flags off (default, y estado mientras el panel no exista o no esté
 # alcanzable): los mecanismos AUTOMÁTICOS duermen y llamar a
@@ -419,6 +453,74 @@ async def _sticky_set_bg(sid, plan):
         _warn_throttled("sticky_set", f"sticky_set falló ({exc.__class__.__name__}); fail-open")
 
 
+def _parse_vllm_gauges(text, model_name=None):
+    """(waiting, running) del texto Prometheus de vLLM para `model_name`, sumando
+    las series que haya (una por engine). (None, None) si no aparece ninguna."""
+    model_name = model_name or VLLM_MODEL_NAME
+    marca = f'model_name="{model_name}"'
+    waiting = running = None
+    for line in (text or "").splitlines():
+        if line.startswith("#") or marca not in line:
+            continue
+        nombre = line.split("{", 1)[0]
+        if nombre not in ("vllm:num_requests_waiting", "vllm:num_requests_running"):
+            continue
+        try:
+            valor = float(line.rsplit(" ", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if nombre == "vllm:num_requests_waiting":
+            waiting = (waiting or 0.0) + valor
+        else:
+            running = (running or 0.0) + valor
+    return waiting, running
+
+
+def _note_vllm_sample(waiting, running, now=None):
+    """Registra una lectura. `since` = desde cuándo la cola NO se ha vaciado."""
+    now = time.monotonic() if now is None else now
+    _vllm_queue["waiting"] = waiting
+    _vllm_queue["running"] = running
+    _vllm_queue["read_at"] = now
+    if waiting and waiting > 0:
+        if _vllm_queue["since"] is None:
+            _vllm_queue["since"] = now
+    else:
+        _vllm_queue["since"] = None
+
+
+async def _poll_vllm_forever():
+    client = httpx.AsyncClient(timeout=httpx.Timeout(VLLM_POLL_TIMEOUT_SECONDS))
+    while True:
+        try:
+            response = await client.get(VLLM_METRICS_URL)
+            response.raise_for_status()
+            waiting, running = _parse_vllm_gauges(response.text)
+            if waiting is not None:
+                _note_vllm_sample(waiting, running)
+        except Exception as exc:
+            _warn_throttled("vllm_poll", f"sondeo de la cola de vLLM falló ({exc.__class__.__name__}); sin válvula de cola")
+        await asyncio.sleep(VLLM_POLL_SECONDS)
+
+
+def _ensure_vllm_poller():
+    """Arranca el sondeo la primera vez que hace falta (y lo rearranca si murió)."""
+    global _vllm_poller
+    if _vllm_poller is None or _vllm_poller.done():
+        _vllm_poller = asyncio.create_task(_poll_vllm_forever())
+
+
+def _queue_stuck(now=None):
+    """True si la cola de vLLM lleva >= WAIT_TOLERANCE_SECONDS sin vaciarse; False si
+    no; None si no hay lectura fresca (=> la válvula de cola no actúa)."""
+    now = time.monotonic() if now is None else now
+    read_at = _vllm_queue["read_at"]
+    if read_at is None or now - read_at > VLLM_STALE_SECONDS:
+        return None
+    since = _vllm_queue["since"]
+    return since is not None and now - since >= WAIT_TOLERANCE_SECONDS
+
+
 async def _inflight_resident(tracker):
     """Peticiones en vuelo al residente (mandato 1): este pod por el tracker
     in-process (exacto) + las OTRAS réplicas por el sidecar :4001, deduplicando
@@ -431,7 +533,7 @@ async def _inflight_resident(tracker):
     try:
         snapshot = tracker.snapshot() if tracker is not None else {}
         for rid, row in (snapshot or {}).items():
-            if isinstance(row, dict) and row.get("model") == RESIDENT_MODEL:
+            if isinstance(row, dict) and row.get("model") in RESIDENT_FAMILY:
                 local_n += 1
                 local_ids.add(rid)
     except Exception as exc:
@@ -450,7 +552,7 @@ async def _inflight_resident(tracker):
         for row in rows:
             if (
                 isinstance(row, dict)
-                and row.get("model") == RESIDENT_MODEL
+                and row.get("model") in RESIDENT_FAMILY
                 and row.get("request_id") not in local_ids
             ):
                 remote_n += 1
@@ -729,19 +831,32 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     # TTFT p95 ~142 s, y la compañía sin salida); desactivado, ya vienen selladas.
     # El resto de sesiones, como siempre: solo con instant_reject. Sellado,
     # uncensored, plan explícito, sticky ya ligado y re-bind aplican igual.
+    #
+    # 23-09-2026 (Dani, "sin esperas"): la válvula salta por dos motivos —
+    #   lleno: el presupuesto ÚNICO del residente (todos sus nombres) en local_slots;
+    #   cola:  la cola de vLLM lleva WAIT_TOLERANCE_SECONDS sin vaciarse —
+    # y desvía SOLO ESTA PETICIÓN: la sesión NO se re-vincula a Alibaba. Medido ese día:
+    # en Alibaba un contexto de ~108k casi no cachea (~11k) y cada turno tarda ~15 s en
+    # dar el primer token (p90 29 s), mientras que en el local un turno con el prefijo
+    # cacheado va en segundos. Mudar la sesión haría lento CADA turno; desviar la
+    # petición atascada solo quita la espera, y el local sigue lleno de trabajo.
     valvula = (company and company_overflow) or (not company and config["instant_reject"])
     if valvula and model == RESIDENT_MODEL:
+        _ensure_vllm_poller()
         inflight = await _inflight_resident(tracker)
         info["inflight"] = inflight
-        if inflight is not None and inflight >= config["local_slots"] and _overflow_ok_info(info):
-            if config["sticky"] and sid:
-                await _sticky_set(sid, "alibaba")
+        stuck = _queue_stuck()
+        lleno = inflight is not None and inflight >= config["local_slots"]
+        if (lleno or stuck) and _overflow_ok_info(info):
             razon = "company_overflow" if company else "instant_reject"
-            info["decision"] = razon
+            motivo = "lleno" if lleno else "cola"
+            info["decision"] = f"{razon}_{motivo}"
             _rewrite(data, sid, razon)
+            data["metadata"]["_session_routing_trigger"] = motivo
             log.warning(
-                "session_router: %s sid=%s en_vuelo=%s slots=%s -> %s",
-                razon, sid or "-", inflight, config["local_slots"], OVERFLOW_MODEL,
+                "session_router: %s (%s) sid=%s en_vuelo=%s slots=%s cola_vllm=%s -> %s",
+                razon, motivo, sid or "-", inflight, config["local_slots"],
+                _vllm_queue["waiting"], OVERFLOW_MODEL,
             )
             return True
 
