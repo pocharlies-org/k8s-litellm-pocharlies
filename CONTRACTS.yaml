@@ -26,13 +26,17 @@ contracts:
       Session-class request header stamped by the x86 claude-local-router
       wrapper for company-launched (supervisor/headless) sessions — the
       publisher lives in x86-host-runtime (separate PR); this repo consumes
-      it in the LiteLLM session-routing hook. Value "company" suppresses the
-      instant_reject overflow valve only: the session queues in compute-mode
-      admission instead of being rewritten to Alibaba (Dani decision
-      2026-09-21). The header cannot bypass sealed requests, uncensored
-      aliases, explicit panel plans or admission; it is forgeable by any
-      keyed client, whose only effect is self-inflicted queuing. Absent or
-      any other value keeps today's behavior; any read error is fail-open.
+      it in the LiteLLM session-routing hook. Value "company" takes the
+      session out of the global instant_reject valve and puts it under the
+      company Alibaba switch (company.alibaba of dgx.model-routing.config.v1,
+      2026-09-23, superseding the 2026-09-21 "company never overflows"):
+      switch on, it overflows to Alibaba once local_slots are in flight at
+      the resident, whatever instant_reject says; switch off, it is sealed.
+      The header cannot bypass sealed requests, uncensored aliases, explicit
+      panel plans or admission; it is forgeable by any keyed client, whose
+      only effect is to get the company's overflow policy. Absent or any
+      other value keeps the instant_reject behavior; any read error is
+      fail-open.
       Since 2026-09-23 the value "company" also gates the company Alibaba
       switch (field company.alibaba of dgx.model-routing.config.v1): when it
       is false, company requests are sealed with disable_fallbacks and an
