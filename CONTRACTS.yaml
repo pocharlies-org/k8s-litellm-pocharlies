@@ -48,3 +48,37 @@ contracts:
       resident. Hermes groups picker rows by (base_url, credential,
       api_mode), so the distinct host is the whole point. Not a backend:
       routing stays by model name.
+
+  - id: litellm.reasoning-effort.v1
+    kind: schema
+    # `supported_reasoning_efforts` es el literal que comparten las dos mitades
+    # del contrato: el menu que el proxy publica (model_info del model_list) y
+    # la tabla `THINKING_KWARGS` del hook que lo honra. Ambos viven en el mismo
+    # fichero; el marcador `# CONTRACT:` esta sobre THINKING_KWARGS.
+    value: supported_reasoning_efforts
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Cross-process contract between this proxy and its LLM clients (opencode,
+      OpenClaw, Claude Code). The proxy publishes a reasoning-effort vocabulary
+      in `supported_reasoning_efforts`; clients read it, paint a menu, and send
+      `reasoning_effort` (OpenAI) or `thinking` (Anthropic) back. The hook's
+      THINKING_KWARGS must translate EVERY advertised level into a value the
+      resident backend actually honors — otherwise the client silently gets a
+      different model. This is exactly what broke on 2026-09-22: commit 8022440
+      removed the `high` clamp and sent `high` raw to qwen38-flash-next, whose
+      chat template rejects it (400); the router fallback then served every
+      "high" session from Alibaba under a different model id, with no repo test
+      failing. Repaired by translating `high`->`xhigh` (the template's real
+      ceiling). Any future edit to the advertised levels or to THINKING_KWARGS
+      is a change to this contract: keep both sides consistent, and remember the
+      backend's accepted set is a property of the model's Jinja, not of vLLM.
+      The guarantee is TOTAL, not just over the advertised set: once the hook has
+      translated a level into chat_template_kwargs for a local grading model it
+      strips ANY client-supplied reasoning_effort/thinking carrier, so a value
+      OUTSIDE the vocabulary (another provider's `minimal`, `auto`, a typo, the
+      empty string) can never travel raw and 400 either — it falls back to the
+      alias default level. Guarded by
+      tests/test_messages_thinking_contract.py::test_esfuerzo_no_reconocido_no_viaja_crudo.

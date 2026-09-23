@@ -102,25 +102,27 @@ THINKING = {"type": "enabled", "budget_tokens": 12000}
 def test_pensamiento_exPLICITO_se_traduce_y_no_viaja(hook):
     """El caso del bug: residente + thinking -> sin `thinking`, con ctk low.
 
-    budget 12000 >= 4096 -> "high" (umbral del bridge), y desde el 22-09 la tabla
-    qwen honra high (el clamp high->low se retiro: medido, el nightly acepta high).
+    budget 12000 >= 4096 -> "high" (umbral del bridge), y la tabla qwen traduce
+    high->xhigh: el residente VIVO rechaza `high` crudo (400 "Unexpected
+    reasoning effort high", medido 22-09 contra el head; chat_template.jinja:48
+    valida ('xhigh','medium','low')). `xhigh` es su techo.
     """
     data = _run(hook, {"model": "qwen38-flash-next", "thinking": dict(THINKING)},
                 "qwen38-flash-next")
     assert "thinking" not in data, "el thinking viajo crudo: el bridge reescribe a /v1/responses"
-    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "high"}
+    assert _ctk(data) == {"enable_thinking": True, "reasoning_effort": "xhigh"}
 
 
 @pytest.mark.parametrize("budget,tier", [
     (1024, "low"),      # >= LOW(1024)
     (2048, "medium"),   # >= MEDIUM(2048)
-    (4096, "high"),     # >= HIGH(4096) -> high honrado (clamp retirado 22-09)
+    (4096, "high"),     # >= HIGH(4096) -> high, que la tabla traduce a xhigh
     (512, "low"),       # "minimal" para el bridge; aqui se sube al minimo real
 ])
 def test_umbrales_del_budget_coinciden_con_los_del_bridge(hook, budget, tier):
-    # El tier del bridge viaja tal cual desde el 22-09 (el clamp high->low se
-    # retiro: los cuatro niveles del backend estan medidos y responden 200).
-    esperado = {"low": "low", "medium": "medium", "high": "high"}[tier]
+    # El tier del bridge se traduce por THINKING_KWARGS["qwen"]: high->xhigh
+    # (el residente rechaza `high` crudo; ver test_pensamiento_exPLICITO...).
+    esperado = {"low": "low", "medium": "medium", "high": "xhigh"}[tier]
     data = _run(hook, {"model": "qwen38-flash-next",
                        "thinking": {"type": "enabled", "budget_tokens": budget}},
                 "qwen38-flash-next")
@@ -161,6 +163,33 @@ def test_effort_del_cliente_gana_pero_thinking_se_retira_igual(hook):
     assert "thinking" not in data
     assert "reasoning_effort" not in data        # el effort se tradujo, no viaja crudo
     assert _ctk(data).get("reasoning_effort") == "medium"
+
+
+@pytest.mark.parametrize("esfuerzo", ["minimal", "auto", "ULTRA", "maximo", ""])
+def test_esfuerzo_no_reconocido_no_viaja_crudo(hook, esfuerzo):
+    """Clamp total (23-09-2026): un `reasoning_effort` que NO esta en
+    CLIENT_EFFORT_TIERS -- vocabulario de otro proveedor (`minimal` de OpenAI),
+    `auto`, un typo o el empty string -- cae al default del alias (un nivel
+    VALIDO) en chat_template_kwargs, y el valor crudo del cliente NO puede
+    viajar: si lo hiciera, el residente lo rechaza con 400 igual que al `high`
+    viejo (chat_template.jinja:48 valida solo xhigh/medium/low).
+
+    Es la otra puerta del mismo bug que arregló #125: `high` se colaba por ESTAR
+    en la tabla y no traducirse; `minimal` se cuela por NO estar y no retirarse.
+    La puerta vieja (`if requested_tier:`) solo cerraba la primera."""
+    data = _run(hook, {"model": "qwen38-flash-next", "reasoning_effort": esfuerzo},
+                "qwen38-flash-next")
+    assert "reasoning_effort" not in data, "el esfuerzo crudo viaja: 400 del residente"
+    assert _ctk(data).get("reasoning_effort") in ("low", "medium", "xhigh")
+    assert _ctk(data).get("enable_thinking") is True
+
+
+def test_esfuerzo_anidado_no_reconocido_no_viaja_crudo(hook):
+    """Misma garantia para el portador anidado `reasoning: {effort: ...}`."""
+    data = _run(hook, {"model": "qwen38-flash-next",
+                       "reasoning": {"effort": "minimal"}}, "qwen38-flash-next")
+    assert "reasoning" not in data, "el reasoning.effort crudo viaja: 400 del residente"
+    assert _ctk(data).get("reasoning_effort") in ("low", "medium", "xhigh")
 
 
 def test_salida_estructurada_gana_y_thinking_se_retira(hook):

@@ -4040,6 +4040,13 @@ data:
     # none/low/medium -> reasoning_content 0. Comportamiento igual al de antes
     # (fuera de la tabla el alias era off), solo que ahora explicito y sin
     # effort crudo de por medio.
+    # CONTRACT: litellm.reasoning-effort.v1
+    # Cada nivel de `reasoning_effort`/`thinking` que este proxy ANUNCIA en
+    # `supported_reasoning_efforts` debe traducirse, aqui, a un valor que el
+    # backend residente honra de verdad. Es superficie entre procesos: opencode,
+    # OpenClaw y Claude Code leen el menu y mandan el effort; si la tabla deja de
+    # honrarlo, el cliente se rompe sin que los tests de ESTE repo lo vean (fue
+    # exactamente lo que hizo 8022440 con `high`). Registro: CONTRACTS.yaml.
     THINKING_KWARGS = {
         "qwen": {
             # 31-08-2026: los niveles SI existen en qwen38-flash-next y hasta hoy
@@ -4077,10 +4084,32 @@ data:
             # xhigh 244 caracteres de reasoning_content, los CUATRO con 200. El
             # clamp estaba dejando el /effort high de Claude Code en lo mismo que
             # low — los cuatro niveles del cliente salian indistinguibles.
+            #
+            # 22-09-2026 (mismo dia, de vuelta): esa medicion NO corresponde al
+            # residente vivo y `high` crudo hay que dejar de mandarlo. Medido hoy
+            # contra el head EN PRODUCCION (100.73.153.70:8000, chat_template_kwargs
+            # reasoning_effort=high): 400 "Unexpected reasoning effort high.
+            # Supported types are xhigh (default), medium, and low." — y la
+            # plantilla del snapshot servido (RadixArk Qwen3.8-Flash-Next-NVFP4
+            # 7b719225, chat_template.jinja:48) lo valida en piedra:
+            # `not in ('xhigh','medium','low') -> raise`. Ninguna version de vLLM
+            # cambia eso: el que rechaza es el Jinja del modelo. Conviene decir el
+            # efecto en cadena, que es lo que hacia esto urgente y no el 400
+            # cosmetico: el 400 de `high` activaba el fallback del router
+            # (qwen38-flash-next -> alibaba-q38-flash), asi que TODO cliente que
+            # eligiera "high" en el menu estaba siendo servido SILENCIOSAMENTE por
+            # la nube de pago con otro modelo (medido: el 200 del proxy contesta
+            # con "model":"qwen3.8-flash", no con "qwen38-flash-next"), y en la
+            # ruta abliterada el fallback ademas se lleva por delante el sello
+            # uncensored. `high` se traduce ahora a `xhigh`: es el techo REAL de
+            # la plantilla y el nivel que el cliente quiere decir con "piensa
+            # mucho"; `max`/`xhigh` siguen cayendo al mismo sitio, que es lo que
+            # la plantilla puede prometer (tres niveles para cuatro nombres de
+            # cliente: la colision high=max es del modelo, no nuestra).
             "off": {"enable_thinking": False},
             "low": {"enable_thinking": True, "reasoning_effort": "low"},
             "medium": {"enable_thinking": True, "reasoning_effort": "medium"},
-            "high": {"enable_thinking": True, "reasoning_effort": "high"},
+            "high": {"enable_thinking": True, "reasoning_effort": "xhigh"},
             "max": {"enable_thinking": True, "reasoning_effort": "xhigh"},
         },
     }
@@ -4704,11 +4733,34 @@ data:
             # veia por /v1/responses; por chat/completions los seis valores dan 200,
             # asi que el bug quedaba invisible en las pruebas normales.
             #
-            # Se quita SOLO cuando hemos traducido de verdad (`kwargs` no vacio) y el
-            # nivel lo pidio el cliente: si el tier vino del nombre del alias, el
-            # cliente no puso nada que quitar. Un alias sin traduccion para su familia
-            # sale por el `return` de arriba y conserva su effort intacto.
-            if requested_tier:
+            # 23-09-2026 (clamp total): la puerta vieja era `if requested_tier:`, o
+            # sea "solo si el esfuerzo del cliente estaba en CLIENT_EFFORT_TIERS".
+            # Deja fuera el caso en que el cliente manda un valor que NO esta en la
+            # tabla -- el vocabulario propio de otro proveedor (`minimal` de OpenAI,
+            # `auto`, un typo, o el empty string): `_client_thinking_tier` lo lee como
+            # None, `tier` cae al default del alias (un nivel VALIDO), se traduce en
+            # chat_template_kwargs... y el valor crudo del cliente se quedaba puesto
+            # viajando al backend, que lo rechaza con 400. Es el MISMO fallo del
+            # `high` crudo, pero por la otra puerta: `high` se colaba por estar en la
+            # tabla y no traducirse; `minimal` se cuela por no estar y no retirarse.
+            #
+            # La regla correcta no es "tradujimos un tier conocido" sino "el cliente
+            # puso un esfuerzo en el cuerpo": si lo puso, ya lo hemos sustituido por
+            # un nivel valido en chat_template_kwargs y el crudo NO puede quedarse.
+            # Si el cliente no puso nada (el tier vino del alias), no hay nada que
+            # quitar. Un alias fuera de THINKING_TIERS sale por el `return` de arriba
+            # y conserva su effort intacto: ahi el vocabulario lo honra el propio
+            # backend y no nos metemos.
+            client_put_effort = (
+                data.get("reasoning_effort") is not None
+                or data.get("reasoningEffort") is not None
+                or (isinstance(data.get("extra_body"), dict)
+                    and (data["extra_body"].get("reasoning_effort") is not None
+                         or data["extra_body"].get("reasoningEffort") is not None))
+                or (isinstance(data.get("reasoning"), dict)
+                    and data["reasoning"].get("effort") is not None)
+            )
+            if requested_tier or client_put_effort:
                 for campo in ("reasoning_effort", "reasoningEffort"):
                     if data.pop(campo, None) is not None:
                         applied.append("strip:%s" % campo)
@@ -7829,7 +7881,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-5fc217d16cf0
+        config.k8s.e-dani.com/revision: config-5c4041b0e007
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
