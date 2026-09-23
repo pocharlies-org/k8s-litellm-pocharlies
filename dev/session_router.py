@@ -70,6 +70,7 @@ REDIS_URL = os.environ.get(
     "SESSION_ROUTER_REDIS_URL",
     "redis://litellm-valkey.litellm.svc.cluster.local:6379/0",
 )
+# CONTRACT: dgx.model-routing.config.v1
 CONFIG_URL = os.environ.get(
     "MODEL_ROUTING_CONFIG_URL",
     "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/model-routing/config",

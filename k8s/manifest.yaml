@@ -5837,6 +5837,7 @@ data:
         "SESSION_ROUTER_REDIS_URL",
         "redis://litellm-valkey.litellm.svc.cluster.local:6379/0",
     )
+    # CONTRACT: dgx.model-routing.config.v1
     CONFIG_URL = os.environ.get(
         "MODEL_ROUTING_CONFIG_URL",
         "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/model-routing/config",
@@ -7968,7 +7969,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-36391afe05e6
+        config.k8s.e-dani.com/revision: config-91fefde9dc07
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
