@@ -3424,6 +3424,11 @@ data:
         if not tracking_id:
             return None
 
+        try:
+            _note_fallback_from_payload(payload)
+        except Exception as e:
+            log.debug("track_fallback error: %s", e)
+
         backend = _backend_from_payload(payload)
         if backend:
             model, api_base = backend
@@ -3443,13 +3448,47 @@ data:
             )
         return tracking_id
 
-    def _track_end_from_payload(payload, source):
+    def _track_end_from_payload(payload, source, *, model=None):
         for tracking_id in _tracking_id_candidates(payload):
             try:
-                _track_end(tracking_id)
+                request_tracker.end(tracking_id, model=model)
             except Exception as e:
                 log.debug("track_end %s error: %s", source, e)
             return
+
+    def _fallback_hop_from_payload(payload):
+        """(original_model_group, model_group) si ESTE intento es un fallback
+        del Router. run_async_fallback (router_utils/fallback_event_handlers.py,
+        v1.96.0) sella en el metadata de cada salto `original_model_group` y
+        `model_group`; en el intento primario no existe original_model_group."""
+        for metadata in _metadata_candidates(payload):
+            original = metadata.get("original_model_group")
+            current = metadata.get("model_group")
+            if original and current and str(original) != str(current):
+                return str(original), str(current)
+        return None
+
+    def _model_group_from_payload(payload):
+        for metadata in _metadata_candidates(payload):
+            group = metadata.get("model_group")
+            if group:
+                return str(group)
+        return None
+
+    def _note_fallback_from_payload(payload):
+        hop = _fallback_hop_from_payload(payload)
+        if not hop:
+            return None
+        tracking_id = _tracking_id_from_payload(payload)
+        if not tracking_id:
+            return None
+        backend = _backend_from_payload(payload)
+        return request_tracker.mark_fallback(
+            tracking_id,
+            from_model=hop[0],
+            to_model=hop[1],
+            api_base=backend[1] if backend else None,
+        )
 
     def _auth_field(user_api_key_dict, name):
         if isinstance(user_api_key_dict, dict):
@@ -5734,6 +5773,12 @@ data:
             except Exception as e:
                 log.warning("refusal stamp error: %s", e)
             try:
+                _route_meta = data.get("metadata")
+                if not isinstance(_route_meta, dict):
+                    _route_meta = data.get("litellm_metadata")
+                if not isinstance(_route_meta, dict):
+                    _route_meta = {}
+                _rerouted = _route_meta.get("_session_routing_rerouted") is True
                 request_tracker.start(
                     tracking_id,
                     trace_id=_litellm_trace_id(data),
@@ -5745,6 +5790,11 @@ data:
                     # dentro de la misma ventana de TTL. No hay segunda llamada HTTP.
                     refusal_lambda=_rl,
                     refusal_runtime=_rt_key,
+                    # session_router ya reescribio (sticky/desborde/plan): la fila
+                    # nace en Alibaba pero sabiendo de que residente venia.
+                    route_kind="reroute" if _rerouted else "direct",
+                    route_from=_route_meta.get("_router_original_model") if _rerouted else None,
+                    route_reason=_route_meta.get("_session_routing_reason") if _rerouted else None,
                 )
             except Exception as e:
                 log.debug("track_start error: %s", e)
@@ -5789,8 +5839,21 @@ data:
             except Exception as e:
                 log.debug("track_stream error: %s", e)
 
+        def log_pre_api_call(self, model, messages, kwargs):
+            # Cada INTENTO contra un deployment pasa por aqui, tambien el salto
+            # de fallback del Router. Es el primer sitio donde se ve que la
+            # peticion ha caido a otro grupo, y la fila se revive aqui para que
+            # el panel la muestre mientras la sirve el fallback.
+            try:
+                _note_fallback_from_payload(kwargs)
+            except Exception as e:
+                log.debug("track_fallback pre_api error: %s", e)
+
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-            _track_end_from_payload(kwargs, "log_failure")
+            # Con el grupo del intento que ha fallado: si la fila ya esta en el
+            # fallback, el fallo tardio del primario no la cierra.
+            _track_end_from_payload(
+                kwargs, "log_failure", model=_model_group_from_payload(kwargs))
 
         async def async_post_call_success_hook(self, data, user_api_key_dict, response):
             try:
@@ -7095,6 +7158,13 @@ data:
             self.clock = clock
             self._records: Dict[str, Dict[str, Any]] = {}
             self._samples: Dict[str, Deque[Tuple[float, int]]] = {}
+            # Filas cerradas hace poco, para poder REVIVIRLAS si el Router de
+            # LiteLLM cae a un fallback: el intento fallido del residente dispara
+            # async_log_failure_event -> end() ANTES (o despues, es una carrera)
+            # de que el fallback arranque, con el MISMO _tracking_id. Sin esto la
+            # peticion desaparecia del panel justo mientras la servia Alibaba.
+            self._recently_ended: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+            self.revive_window_s = 120.0
             self._last_flush_at: Optional[float] = None
             self._lock = threading.RLock()
 
@@ -7109,10 +7179,14 @@ data:
             api_base: Any,
             refusal_lambda: Any = None,
             refusal_runtime: Any = None,
+            route_kind: Any = None,
+            route_from: Any = None,
+            route_reason: Any = None,
         ) -> Dict[str, Any]:
             now = self.clock()
             with self._lock:
                 self._discard_stale_locked(now)
+                self._recently_ended.pop(request_id, None)
                 self._records[request_id] = {
                     "request_id": request_id,
                     "trace_id": str(trace_id).strip() if trace_id else None,
@@ -7131,6 +7205,16 @@ data:
                     # ya no identifica el estado: 1.0 es uncensored en Qwen3.8 y
                     # medio censurado en DeepSeek (ahi sigue rechazando 5-7/10).
                     "refusal_runtime": str(refusal_runtime) if refusal_runtime else None,
+                    # POR QUE esta aqui y no donde se pidio. "direct" = el cliente
+                    # pidio este modelo; "reroute" = session_router la movio antes
+                    # de salir (sticky/desborde/plan); "fallback" = el Router de
+                    # LiteLLM cayo aqui tras fallar el primario. route_from es el
+                    # modelo del que venia (None en direct). El panel lo usa para
+                    # decir que peticiones de Alibaba ERAN del residente local.
+                    "route_kind": str(route_kind) if route_kind else "direct",
+                    "route_from": str(route_from) if route_from else None,
+                    "route_reason": str(route_reason) if route_reason else None,
+                    "route_at": now if route_kind and route_kind != "direct" else None,
                     "ts": now,
                     "first_token_ts": None,
                     "last_sample_ts": None,
@@ -7240,13 +7324,80 @@ data:
                     self._flush_locked(now, force=True)
                 return copy.deepcopy(record)
 
-        def end(self, request_id: str) -> None:
+        def end(self, request_id: str, *, model: Any = None) -> None:
+            """Cierra la fila. Con `model`, SOLO si la fila sigue en ese modelo:
+            el fallo tardio del intento primario (qwen38-flash-next) no puede
+            cerrar la fila que ya sirve el fallback (alibaba-q38-flash)."""
             now = self.clock()
             with self._lock:
+                record = self._records.get(request_id)
+                if (
+                    record is not None
+                    and model
+                    and record.get("route_kind") == "fallback"
+                    and str(model) != record.get("model")
+                ):
+                    return
                 removed = self._records.pop(request_id, None)
                 self._samples.pop(request_id, None)
                 if removed is not None:
+                    self._recently_ended[request_id] = (now, removed)
                     self._flush_locked(now, force=True)
+
+        def mark_fallback(
+            self,
+            request_id: str,
+            *,
+            from_model: Any,
+            to_model: Any,
+            api_base: Any = None,
+            reason: Any = "router_fallback",
+        ) -> Optional[Dict[str, Any]]:
+            """El Router cayo de `from_model` a `to_model` para esta peticion.
+            Revive la fila si el fallo del primario ya la habia cerrado. Conserva
+            `ts` (el reloj del cliente sigue contando desde el principio) y
+            reinicia las metricas del intento: los tokens del primario no son los
+            de Alibaba."""
+            if not to_model or not from_model or str(to_model) == str(from_model):
+                return None
+            now = self.clock()
+            with self._lock:
+                record = self._records.get(request_id)
+                if record is None:
+                    ended = self._recently_ended.get(request_id)
+                    if ended is None or now - ended[0] > self.revive_window_s:
+                        return None
+                    if (
+                        ended[1].get("route_kind") == "fallback"
+                        and ended[1].get("model") == str(to_model)
+                    ):
+                        # Ya cerrada EN el fallback: un evento de logging tardio
+                        # de ese mismo intento no la resucita.
+                        return None
+                    self._recently_ended.pop(request_id, None)
+                    record = ended[1]
+                    self._records[request_id] = record
+                if (
+                    record.get("route_kind") == "fallback"
+                    and record.get("model") == str(to_model)
+                ):
+                    return copy.deepcopy(record)
+                record["route_kind"] = "fallback"
+                record["route_from"] = str(from_model)
+                record["route_reason"] = str(reason) if reason else "router_fallback"
+                record["route_at"] = now
+                record["model"] = str(to_model)
+                record["server_id"] = resolve_server_id(to_model, api_base)
+                record["refusal_lambda"] = None
+                record["refusal_runtime"] = None
+                for key in (
+                    "first_token_ts", "last_sample_ts", "prompt_tokens",
+                    "completion_tokens", "output_speed_tps", "ttft_ms",
+                ):
+                    record[key] = None
+                self._samples[request_id] = deque()
+                self._flush_locked(now, force=True)
+                return copy.deepcopy(record)
 
         def snapshot(self) -> Dict[str, Dict[str, Any]]:
             now = self.clock()
@@ -7268,6 +7419,11 @@ data:
             for request_id in stale:
                 self._records.pop(request_id, None)
                 self._samples.pop(request_id, None)
+            for request_id in [
+                rid for rid, (ended_at, _rec) in self._recently_ended.items()
+                if now - ended_at > self.revive_window_s
+            ]:
+                self._recently_ended.pop(request_id, None)
             return bool(stale)
 
         def _flush_locked(self, now: float, *, force: bool) -> None:
@@ -7600,6 +7756,13 @@ data:
                     "server_id": raw.get("server_id"),
                     "refusal_lambda": raw.get("refusal_lambda"),
                     "refusal_runtime": raw.get("refusal_runtime"),
+                    # Origen del enrutado (direct|reroute|fallback) y de que
+                    # modelo venia: lo que dice que una fila de Alibaba ERA del
+                    # residente local.
+                    "route_kind": raw.get("route_kind"),
+                    "route_from": raw.get("route_from"),
+                    "route_reason": raw.get("route_reason"),
+                    "route_at": raw.get("route_at"),
                     "prompt_tokens": raw.get("prompt_tokens"),
                     "completion_tokens": raw.get("completion_tokens"),
                     "output_speed_tps": raw.get("output_speed_tps"),
@@ -8396,7 +8559,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-375a742a571d
+        config.k8s.e-dani.com/revision: config-933ec0b52228
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
