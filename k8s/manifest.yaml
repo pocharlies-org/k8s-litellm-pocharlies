@@ -5661,6 +5661,13 @@ data:
             tracking_id = str(uuid.uuid4())
             data.setdefault("metadata", {})
             data["metadata"]["_tracking_id"] = tracking_id
+            # /v1/messages: la metadata de LiteLLM va en `litellm_metadata`;
+            # `metadata` ahi es el campo de Anthropic (el user_id de Claude Code)
+            # y no llega al logging_obj del stream. Medido en el pod: con el id
+            # solo en `metadata` el chunk_creator no encuentra la peticion y el
+            # panel no ve ni primer token ni velocidad; en `litellm_metadata` si.
+            if isinstance(data.get("litellm_metadata"), dict):
+                data["litellm_metadata"]["_tracking_id"] = tracking_id
             if isinstance(litellm_params, dict):
                 litellm_params.setdefault("metadata", {})
                 if isinstance(litellm_params["metadata"], dict):
@@ -8389,7 +8396,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-839644923a13
+        config.k8s.e-dani.com/revision: config-375a742a571d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

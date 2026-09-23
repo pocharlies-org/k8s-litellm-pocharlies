@@ -222,3 +222,8 @@ def test_hook_feeds_tracker_from_the_openai_chunk_and_restores_the_seal():
     assert block.count("enable_continuous_usage(data, via_extra_body=_stream_usage_extra)") == 2
     assert block.count("_preserve_uncensored_seal(data)") == 2
     assert block.index("enable_continuous_usage(data, via_extra_body") < block.index("_preserve_uncensored_seal(data)")
+
+
+def test_tracking_id_also_rides_litellm_metadata_for_messages():
+    hook = _config_data()["litellm_strip_params.py"]
+    assert 'data["litellm_metadata"]["_tracking_id"] = tracking_id' in hook
