@@ -82,3 +82,8 @@ contracts:
       empty string) can never travel raw and 400 either — it falls back to the
       alias default level. Guarded by
       tests/test_messages_thinking_contract.py::test_esfuerzo_no_reconocido_no_viaja_crudo.
+      Since 2026-09-23 `qwen38-flash-next` and `qwen38-flash-next-uncensored`
+      ADVERTISE only the model's official recipe [none, low, medium, xhigh]:
+      `high`/`max` both landed on `xhigh`, so the menu showed three identical
+      options. They are withdrawn from the menu only — clients that still SEND
+      high/max keep being translated (CLIENT_EFFORT_TIERS), so no sender breaks.

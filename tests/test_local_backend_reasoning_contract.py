@@ -115,14 +115,14 @@ def test_el_residente_llm_tp_publica_sus_tiers_reales():
     # del residente es `low`. Lo que se midio el 01-09 ("low/medium dan 0
     # chars") era el motor sin --reasoning-parser (D1/SC-204: lo lleva) y con
     # el default del hook en off; medido hoy via proxy, ambos dan reasoning
-    # real no vacio. `xhigh` sigue (=max) y `high`/`max` se mantienen como
-    # alias deprecados del vocabulario del cliente.
+    # real no vacio. 23-09-2026: `high`/`max` salen del menu -- los dos caen en
+    # `xhigh` y el picker pintaba tres opciones iguales. Siguen aceptados y
+    # traducidos (CLIENT_EFFORT_TIERS); lo que queda anunciado es la receta
+    # oficial de la plantilla.
     assert list(backend["supported_reasoning_efforts"]) == [
         "none",
         "low",
         "medium",
-        "high",
-        "max",
         "xhigh",
     ]
 
@@ -140,8 +140,9 @@ def test_la_ruta_abliterada_del_residente_tambien_publica_low():
     Medido el 21-09 via proxy con la key de chat: tier low -> 200 con
     `reasoning_content` de 140 chars; el perfil apagado (`qwen38-u-off`) ->
     200 sin `reasoning_content`.
-    El backend abliterado honra `low`. `medium` NO se anadio: no medido aqui, y
-    heredarlo de la entrada censurada es lo que este fichero viene a evitar.
+    El backend abliterado honra `low`. `medium` entro el 23-09-2026, ya medido
+    en esta ruta (143 chars de reasoning, 0 fallbacks): desde entonces el menu es
+    el mismo que el de la entrada censurada, la receta oficial.
     """
     config = yaml.safe_load(_configmap_value("model_list:"))
     entrada = next(
@@ -155,6 +156,9 @@ def test_la_ruta_abliterada_del_residente_tambien_publica_low():
         "el perfil abliterado que piensa pide low y quien lee esta lista deja de ofrecerlo"
     )
     assert set(efforts) <= set(_client_effort_tiers()), "anuncia un nivel que el hook no traduce"
+    assert efforts == ["none", "low", "medium", "xhigh"], (
+        f"la ruta abliterada anuncia {efforts}: debe ser la receta oficial, igual que la censurada"
+    )
 
 
 def test_el_residente_llm_tp_no_anuncia_niveles_que_el_hook_no_traduce():

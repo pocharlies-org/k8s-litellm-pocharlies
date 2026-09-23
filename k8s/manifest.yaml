@@ -288,13 +288,19 @@ data:
         # medían el motor sin el parser puesto y ya no significan nada.
         # Menu = la receta oficial: none/low/medium/xhigh, con `low` de default
         # en ESTE proxy (THINKING_TIERS) — el xhigh de fabrica se queda para
-        # quien lo pida. `high`/`max` siguen anunciados como alias DEPRECADOS
-        # del vocabulario del cliente (high->low, max->xhigh via
-        # CLIENT_EFFORT_TIERS; medido hoy: ambos devuelven 200 con la traduccion
-        # correcta) y el strip impide que el valor crudo viaje al backend.
+        # quien lo pida.
+        # 23-09-2026: `high`/`max` salen del MENU. Se anunciaban como alias
+        # deprecados y los dos caen en `xhigh` (THINKING_KWARGS: high->xhigh
+        # desde el 22-09, max->xhigh desde siempre), asi que el picker pintaba
+        # tres opciones -- High, Xhigh, Max -- que son la misma. La plantilla solo
+        # tiene tres niveles (xhigh/medium/low) y el menu ya no finge un cuarto.
+        # Siguen ACEPTADOS: un cliente que mande high/max (el /effort de Claude
+        # Code, OpenClaw) sigue traducido por CLIENT_EFFORT_TIERS y el strip
+        # impide que el valor crudo viaje al backend. Lo que se retira es la
+        # oferta, no la traduccion.
         # El resto de la familia (27B, 4B) sigue con [none, high, max]: ahi no
         # hay medicion nueva.
-        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        supported_reasoning_efforts: [none, low, medium, xhigh]
         # 20-09-2026: cooldown ASIMETRICO. Este aparca LARGO (900 s) y su gemelo
         # `alibaba-q38-flash` aparca CORTO (60). No es simetria rota por
         # descuido, son dos riesgos distintos:
@@ -390,10 +396,14 @@ data:
         # `reasoning_content` AUSENTE. O sea: el backend abliterado honra `low` igual
         # que el censurado, y quien lo negaba estaba mintiendo.
         #
-        # `medium` sigue SIN estar, y es a proposito: no se ha medido en este backend.
-        # Anadirlo seria heredar la afirmacion de la entrada censurada, que es justo
-        # lo que este comentario dice que no hay que hacer.
-        supported_reasoning_efforts: [none, low, high, max, xhigh]
+        # 23-09-2026: entra `medium`, ya MEDIDO en esta ruta: via proxy, temp 0,
+        # "17*23": none -> 200 sin reasoning_content, low -> 110 chars, medium ->
+        # 143, xhigh -> 155, los cuatro con 0 fallbacks y model=
+        # qwen38-flash-next-uncensored. Y salen `high`/`max` del menu por lo mismo
+        # que en la entrada censurada: los dos caen en xhigh. Menu = receta
+        # oficial none/low/medium/xhigh, igual que la censurada; high/max siguen
+        # aceptados y traducidos si un cliente los manda.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
         # Mismo motor que la entrada censurada, luego mismo trato con el bucle
         # de fondo: el health-check deduplica por model_info.id y no por
         # api_base, asi que los alias de un mismo backend se callan TODOS o
@@ -7881,7 +7891,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-5c4041b0e007
+        config.k8s.e-dani.com/revision: config-b9a43a99ff8e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
