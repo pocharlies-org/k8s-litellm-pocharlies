@@ -533,9 +533,14 @@ data:
         # (medido 15-08: reasoning_content 0): ahi el motor resuelve esos
         # niveles como "no piensa" — el mismo resultado que daba antes, cuando
         # caian fuera de la tabla — y `none`/`high`/`max` siguen honrados igual
-        # que antes. `high`/`max` se mantienen anunciados como alias
-        # deprecados (high->low, max->xhigh).
-        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        # que antes.
+        # 23-09-2026: `high`/`max` salen del menu, igual que en qwen38-flash-next
+        # (el residente al que resuelve este alias): los dos caen en `xhigh`
+        # (THINKING_KWARGS) y el picker pintaba tres opciones iguales. Siguen
+        # ACEPTADOS y traducidos si un cliente los manda (CLIENT_EFFORT_TIERS).
+        # El perfil `creative` esta retirado desde el 21-09, asi que el 27B que
+        # describe el parrafo de arriba ya no esta detras de este alias.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
         # 02-09-2026 (STA-9): el alias de capacidad apunta al MISMO Service de pool
         # que el nombre directo del residente vivo, y el bucle de fondo deduplica
         # por model_info.id y no por api_base (ver bge-m3-embedding): sondear los
@@ -619,12 +624,24 @@ data:
     # (reconciliador) es quien tiene que dejar de mirar solo el catálogo de Open WebUI
     # y poseer también el `models` de las keys, o cada alias nuevo morirá en un 403
     # que parece un problema de routing y no lo es.
+    #
+    # 23-09-2026: el ancla de info se sigue heredando (vision, admision, health
+    # check), pero el MENU de esfuerzo se pisa a [none]. Heredado, estos dos
+    # anunciaban la escalera entera de `tooling` y opencode/Hermes ofrecian High
+    # o Xhigh en un alias cuyo nombre dice "apagado". Con [none] el picker solo
+    # ofrece lo que el alias es, y el hook (_apply_thinking_tier) lo sostiene:
+    # cualquier effort que llegue se traduce a off. `none` y no la lista vacia:
+    # Hermes lee "sin declaracion" como "escalera completa de upstream".
     - model_name: qwen38-off
       litellm_params: *tooling_pool_params
-      model_info: *tooling_pool_info
+      model_info:
+        <<: *tooling_pool_info
+        supported_reasoning_efforts: [none]
     - model_name: qwen38-u-off
       litellm_params: *tooling_pool_params
-      model_info: *tooling_pool_info
+      model_info:
+        <<: *tooling_pool_info
+        supported_reasoning_efforts: [none]
     # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
     #
     # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
@@ -4691,6 +4708,17 @@ data:
                 thinking_tier = CLIENT_EFFORT_TIERS.get(_anthropic_thinking_tier(data) or "")
                 if requested_tier is None:
                     requested_tier = thinking_tier
+            # 23-09-2026: un alias cuyo NOMBRE dice apagado (`qwen38-off`,
+            # `qwen38-u-off`) no piensa nunca. La regla general -- el effort del
+            # cliente gana al alias -- es para los alias que piensan: ahi el nivel
+            # se pide, no se elige cambiando de modelo. En estos dos el apagado ES
+            # el producto (OWU-50: el mismo residente sin pensar), y un effort que
+            # lo encendiera -- un `high` recordado por el picker de opencode, el
+            # /effort de otro cliente, un `thinking` Anthropic -- convertia en
+            # silencio `qwen38-off` en `qwen38-flash-next`. Se traduce a off y el
+            # strip de abajo retira el crudo igual que en cualquier otro caso.
+            if requested_tier and THINKING_TIERS.get((requested_alias or "").strip()) == "off":
+                requested_tier = "off"
             tier = requested_tier or THINKING_TIERS.get((requested_alias or "").strip())
             if not tier:
                 return
@@ -7977,7 +8005,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-25a9830013b7
+        config.k8s.e-dani.com/revision: config-f11f3a9e75b0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

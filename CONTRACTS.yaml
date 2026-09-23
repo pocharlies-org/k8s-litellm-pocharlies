@@ -115,3 +115,6 @@ contracts:
       `high`/`max` both landed on `xhigh`, so the menu showed three identical
       options. They are withdrawn from the menu only — clients that still SEND
       high/max keep being translated (CLIENT_EFFORT_TIERS), so no sender breaks.
+      Same recipe for `tooling`/`tooling-uncensored` since 2026-09-23. The
+      thinking-off aliases `qwen38-off`/`qwen38-u-off` advertise only [none]
+      and the hook forces them off whatever effort the client sends.
