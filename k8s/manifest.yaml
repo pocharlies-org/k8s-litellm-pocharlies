@@ -1638,6 +1638,57 @@ data:
     except Exception:  # pragma: no cover
         session_router = None
 
+    # 24-09-2026: `cache_control` de `/v1/messages` hasta Alibaba (cache EXPLICITA).
+    #
+    # El flag global LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES
+    # traduce todo `/v1/messages` a chat completions, y el adaptador de LiteLLM
+    # (`LiteLLMAnthropicMessagesAdapter._add_cache_control_if_applicable`) SOLO
+    # conserva el marcador si el modelo es Claude o un ARN de Bedrock. Para
+    # `alibaba-*` y el residente lo tiraba, asi que el Claude CLI caia en la cache
+    # IMPLICITA de DashScope. Medido hoy, mismo prefijo de ~38k contra
+    # `alibaba-q38-flash`:
+    #   /v1/chat/completions con marcador -> create 38303, read 38303 (explicita)
+    #   /v1/messages         con marcador -> sin create, read 37888  (implicita)
+    # El plano OpenAI de DashScope SI entiende `cache_control` en los bloques de
+    # contenido, y `openai/` con api_base que no es openai.com ya no lo quita
+    # (`_should_preserve_cache_control_for_endpoint`): el unico hueco era este.
+    #
+    # Alcance: los `alibaba-*` y los ROUTED_MODELS del session_router — el
+    # residente, porque la traduccion ocurre ANTES de enrutar y su caida a
+    # Alibaba lleva el mensaje ya traducido. vLLM acepta el campo y lo ignora
+    # (probado contra `qwen38-flash-next` con marcadores en system y user: 200).
+    try:
+        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
+            LiteLLMAnthropicMessagesAdapter as _MessagesAdapter,
+        )
+
+        _orig_add_cache_control = _MessagesAdapter._add_cache_control_if_applicable
+
+        def _keeps_cache_control(model):
+            if not model:
+                return False
+            if model.startswith("alibaba-"):
+                return True
+            return session_router is not None and model in session_router.ROUTED_MODELS
+
+        def _add_cache_control_if_applicable(self, source, target, model):
+            _orig_add_cache_control(self, source, target, model)
+            if not _keeps_cache_control(model) or not isinstance(target, dict):
+                return
+            cache_control = (
+                source.get("cache_control")
+                if isinstance(source, dict)
+                else getattr(source, "cache_control", None)
+            )
+            if cache_control:
+                target["cache_control"] = cache_control
+
+        _MessagesAdapter._add_cache_control_if_applicable = _add_cache_control_if_applicable
+    except Exception as exc:  # pragma: no cover - sin parche, cache implicita
+        logging.getLogger("litellm.cache_control").warning(
+            "parche cache_control /v1/messages no aplicado: %s", exc
+        )
+
     log = logging.getLogger("litellm.active_tracking")
     router_log = logging.getLogger("litellm.smart_router")
     # Sampling telemetry (Fase 6): solo observa, nunca modifica valores.
@@ -8741,7 +8792,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-3a54c4b566a7
+        config.k8s.e-dani.com/revision: config-9842c00e1f8d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
