@@ -101,6 +101,11 @@ contracts:
       resident. Hermes groups picker rows by (base_url, credential,
       api_mode), so the distinct host is the whole point. Not a backend:
       routing stays by model name.
+      Since 2026-09-24 (additive) `cache_control` markers sent on
+      /v1/messages survive the anthropic->openai translation for `alibaba-*`
+      and the session_router ROUTED_MODELS, so DashScope applies EXPLICIT
+      cache (cache_creation/cached_tokens) instead of implicit. Patch lives in
+      litellm_strip_params.py; /v1/chat/completions already forwarded them.
 
   - id: litellm.reasoning-effort.v1
     kind: schema
