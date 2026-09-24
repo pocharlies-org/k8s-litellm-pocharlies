@@ -106,6 +106,8 @@ contracts:
       and the session_router ROUTED_MODELS, so DashScope applies EXPLICIT
       cache (cache_creation/cached_tokens) instead of implicit. Patch lives in
       litellm_strip_params.py; /v1/chat/completions already forwarded them.
+      The adapter sees the DEPLOYMENT model (`openai/qwen3.8-flash`), not the
+      alias, so the patch resolves alias -> litellm_params.model via the router.
 
   - id: litellm.reasoning-effort.v1
     kind: schema
