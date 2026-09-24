@@ -1786,7 +1786,16 @@ data:
         "llm-tp": (("dgx1", "deepseek-worker"), ("dgx2", "deepseek-head")),
         "creative": (("dgx1", "dense-uncensored"),),
     }
-    TOOLING_FALLBACKS = ()
+    # 24-09-2026 (Dani, DGX-366): la capacidad cae a su gemelo cloud cuando NINGUN
+    # residente esta Ready. Antes era () y falla-cerrado: cada redeploy/reinicio del
+    # residente (15-20 min, y el A/B de la noche del 23 encadeno varios) dejaba
+    # `tooling`/`qwen38-off` en 503 `tooling_resident_not_ready` y Hermes, Jarvis y
+    # Open WebUI sin cerebro — el fallback del router (`qwen38-flash-next` ->
+    # `alibaba-q38-flash`) no llega a verlo porque este hook corta antes.
+    # Mismo modelo (Qwen3.8-Flash) en el plan Team. Siguen SIN salida externa las
+    # keys de NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse: `disable_fallbacks`) y
+    # los abliterados (_resolve_tooling_uncensored, sin cadena).
+    TOOLING_FALLBACKS = ("alibaba-q38-flash",)
     # Alias que significan «el residente del perfil vivo» y por eso se reescriben
     # al nombre directo antes de enrutar. `tooling` = sin pensar; high/max = el
     # MISMO backend con otro nivel de pensamiento.
@@ -8821,7 +8830,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b5888e3c7380
+        config.k8s.e-dani.com/revision: config-994f44029239
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

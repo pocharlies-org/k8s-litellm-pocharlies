@@ -136,20 +136,28 @@ def test_registered_but_unhealthy_keeps_the_router_kill_switch(hook):
     assert request == {"disable_fallbacks": True}
 
 
-@pytest.mark.parametrize("key_alias", ["keep", "k8sgpt", "openclaw", "unknown"])
-def test_las_demas_keys_tampoco_tienen_salida_externa(hook, key_alias):
-    """La politica de key SIGUE distinguiendo a Aurora (falla cerrado) del resto -- por
-    eso se conservan las aserciones sobre `disabled` y `disable_fallbacks`. Lo que
-    desaparece es el salto que esa politica deshabilitaba: sin destino independiente
-    las dos ramas acaban igual, en `dry`.
-    """
+@pytest.mark.parametrize("key_alias", ["hermes", "open-webui", "keep", "unknown"])
+def test_las_demas_keys_caen_al_gemelo_cloud(hook, key_alias):
+    """24-09-2026: sin residente vivo, el resto de keys (Hermes, Open WebUI, ...)
+    cae a `alibaba-q38-flash`; Aurora y Synapse no (tests de arriba y de abajo)."""
     request, disabled = _policy(hook, key_alias)
-    nada_vivo = lambda alias: False
+    solo_cloud = lambda alias: alias == "alibaba-q38-flash"
 
     assert disabled is False
     assert "disable_fallbacks" not in request
     assert hook._tooling_route_for_state(
-        READY_TP, nada_vivo, disable_fallbacks=disabled
+        READY_TP, solo_cloud, disable_fallbacks=disabled
+    ) == ("alibaba-q38-flash", "degraded", "compute_profile_target_unavailable")
+
+
+@pytest.mark.parametrize("key_alias", ["aurora-rca", "synapse"])
+def test_aurora_y_synapse_no_caen_a_la_nube(hook, key_alias):
+    _, disabled = _policy(hook, key_alias)
+    solo_cloud = lambda alias: alias == "alibaba-q38-flash"
+
+    assert disabled is True
+    assert hook._tooling_route_for_state(
+        READY_TP, solo_cloud, disable_fallbacks=disabled
     ) == (None, "dry", "compute_profile_target_unavailable")
 
 
