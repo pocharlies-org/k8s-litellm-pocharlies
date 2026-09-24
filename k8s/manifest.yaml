@@ -1678,6 +1678,10 @@ data:
             if llm_router is None:
                 return frozenset()
             routed = session_router.ROUTED_MODELS if session_router is not None else frozenset()
+            # `tooling`/`qwen38-off` (deployment `openai/tooling`): el hook los
+            # reescribe al residente DESPUES de traducir, y de ahi pueden caer a
+            # Alibaba. Sin esto llegaban alli sin marcador.
+            routed = routed | TOOLING_PROFILE_ALIASES
             names = set()
             for dep in llm_router.model_list or []:
                 alias = dep.get("model_name") or ""
@@ -8830,7 +8834,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-994f44029239
+        config.k8s.e-dani.com/revision: config-06c8e8c7155a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
