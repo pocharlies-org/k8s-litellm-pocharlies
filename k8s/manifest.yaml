@@ -1791,15 +1791,23 @@ data:
         "creative": (("dgx1", "dense-uncensored"),),
     }
     # 24-09-2026 (Dani, DGX-366): la capacidad cae a su gemelo cloud cuando NINGUN
-    # residente esta Ready. Antes era () y falla-cerrado: cada redeploy/reinicio del
-    # residente (15-20 min, y el A/B de la noche del 23 encadeno varios) dejaba
-    # `tooling`/`qwen38-off` en 503 `tooling_resident_not_ready` y Hermes, Jarvis y
-    # Open WebUI sin cerebro — el fallback del router (`qwen38-flash-next` ->
-    # `alibaba-q38-flash`) no llega a verlo porque este hook corta antes.
-    # Mismo modelo (Qwen3.8-Flash) en el plan Team. Siguen SIN salida externa las
-    # keys de NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse: `disable_fallbacks`) y
-    # los abliterados (_resolve_tooling_uncensored, sin cadena).
+    # residente esta Ready, para TODAS las keys salvo NO_FALLBACK_KEY_ALIASES
+    # (aurora-rca, synapse: `disable_fallbacks`). Antes era () y falla-cerrado: cada
+    # redeploy/reinicio del residente (15-20 min) dejaba `tooling`/`qwen38-off` en 503
+    # `tooling_resident_not_ready` y Hermes, Jarvis y Open WebUI sin cerebro — el
+    # fallback del router (`qwen38-flash-next` -> `alibaba-q38-flash`) no llega a
+    # verlo porque este hook corta antes. Mismo modelo (Qwen3.8-Flash) en el plan
+    # Team. Los abliterados siguen sin cadena (_resolve_tooling_uncensored).
+    # CONTRACT: dgx.litellm.tooling-cloud-fallback.v1
     TOOLING_FALLBACKS = ("alibaba-q38-flash",)
+    # Keys de DEMOSTRACIÓN (24-09-2026, Dani): las webs de propuesta que se enseñan a un
+    # cliente (galan.e-dani.com, uriel…) no pueden quedarse mudas delante de él. Estas
+    # keys ademas llevan fallbacks del Router POR PETICION (deployment que falla con el
+    # residente publicado); el caso «sin residente» ya lo cubre TOOLING_FALLBACKS.
+    # Cuando dispara, el prompt sale a Alibaba (plan Team): en una demo solo
+    # viajan preguntas sobre la propia propuesta, nunca datos de clientes.
+    # CONTRACT: dgx.litellm.key-fallbacks.demos.v1
+    KEY_TOOLING_FALLBACKS = {"demos": ("alibaba-q38-flash",)}
     # Alias que significan «el residente del perfil vivo» y por eso se reescriben
     # al nombre directo antes de enrutar. `tooling` = sin pensar; high/max = el
     # MISMO backend con otro nivel de pensamiento.
@@ -2464,7 +2472,7 @@ data:
             return None, "compute_mode_invalid"
         return target, None
 
-    def _tooling_route_for_state(state, alias_live, disable_fallbacks=False):
+    def _tooling_route_for_state(state, alias_live, disable_fallbacks=False, extra_fallbacks=()):
         """Choose the profile resident and fail visibly when it is unavailable.
 
         The local head is selected from the residents whose Kubernetes components
@@ -2476,7 +2484,7 @@ data:
         if target and alias_live(target):
             return target, "primary", reason
         if not disable_fallbacks:
-            for fallback in TOOLING_FALLBACKS:
+            for fallback in tuple(TOOLING_FALLBACKS) + tuple(extra_fallbacks):
                 if alias_live(fallback):
                     return fallback, "degraded", reason or "compute_profile_target_unavailable"
         return None, "dry", reason or "compute_profile_target_unavailable"
@@ -2531,7 +2539,7 @@ data:
             },
         )
 
-    async def _resolve_tooling_profile(disable_fallbacks=False):
+    async def _resolve_tooling_profile(disable_fallbacks=False, extra_fallbacks=()):
         """Resolve tooling exclusively to the active local resident.
 
         Both compute profiles publish ``tooling`` on their own resident. The ready
@@ -2540,7 +2548,8 @@ data:
         """
         state = await _compute_mode_state()
         resolved, route_state, reason = _tooling_route_for_state(
-            state, _alias_has_deployments, disable_fallbacks=disable_fallbacks
+            state, _alias_has_deployments, disable_fallbacks=disable_fallbacks,
+            extra_fallbacks=extra_fallbacks,
         )
         if resolved:
             return resolved, route_state
@@ -2552,7 +2561,7 @@ data:
                 "blocked": reason,
                 "target": _tooling_target_for_compute_mode(state)[0],
                 "ready_tooling_modes": list(_ready_tooling_modes(state)),
-                "fallbacks": [] if disable_fallbacks else list(TOOLING_FALLBACKS),
+                "fallbacks": [] if disable_fallbacks else list(TOOLING_FALLBACKS) + list(extra_fallbacks),
                 "fallbacks_disabled": disable_fallbacks,
                 "desired_mode": (state or {}).get("desired_mode"),
                 "effective_mode": (state or {}).get("effective_mode"),
@@ -3681,6 +3690,10 @@ data:
                     msg["content"], hit = _strip_billing_line(content)
                     quitado = quitado or hit
         return quitado
+
+    def _key_tooling_fallbacks(user_api_key_dict):
+        """Destinos extra de `tooling` que tiene ESTA key (vacío para casi todas)."""
+        return tuple(KEY_TOOLING_FALLBACKS.get(_resolve_key_label(user_api_key_dict), ()))
 
     def _apply_key_fallback_policy(data, user_api_key_dict):
         """Stamp the Router kill switch and return the effective per-request policy."""
@@ -5636,6 +5649,12 @@ data:
             # en ``data`` para que el Router cubra tambien el caso distinto en que
             # el alias existe pero todos sus deployments estan unhealthy/cooldown.
             fallbacks_disabled = _apply_key_fallback_policy(data, user_api_key_dict)
+            # Keys de demostración: además del `degraded` de la resolución de
+            # `tooling` (abajo), el Router recibe la lista por petición para el caso
+            # en que el alias existe pero su deployment falla o está en cooldown.
+            key_fallbacks = () if fallbacks_disabled else _key_tooling_fallbacks(user_api_key_dict)
+            if key_fallbacks and not data.get("fallbacks"):
+                data["fallbacks"] = list(key_fallbacks)
 
             # Interruptor «Fallback Alibaba» de la compañía (23-09-2026, panel
             # dgx.e-dani.com/claude-sessions#settings -> campo `company` de
@@ -5702,7 +5721,8 @@ data:
                     cap_resolved, cap_state = await _resolve_tooling_uncensored()
                 elif cap_alias in TOOLING_PROFILE_ALIASES:
                     cap_resolved, cap_state = await _resolve_tooling_profile(
-                        disable_fallbacks=fallbacks_disabled
+                        disable_fallbacks=fallbacks_disabled,
+                        extra_fallbacks=key_fallbacks,
                     )
                 else:
                     cap_resolved, cap_state = _walk_chain(cap_entry)
@@ -8834,7 +8854,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-06c8e8c7155a
+        config.k8s.e-dani.com/revision: config-b1cbdbf94058
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

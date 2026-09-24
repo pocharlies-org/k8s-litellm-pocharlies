@@ -22,6 +22,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 WANT_FN = {
     "_apply_key_fallback_policy",
+    "_key_tooling_fallbacks",
     "_auth_field",
     "_component_is_ready",
     "_compute_mode_allows_local",
@@ -33,6 +34,7 @@ WANT_FN = {
     "_tooling_target_for_compute_mode",
 }
 WANT_CONST = {
+    "KEY_TOOLING_FALLBACKS",
     "NO_FALLBACK_KEY_ALIASES",
     "TOOLING_FALLBACKS",
     "TOOLING_MODE_COMPONENTS",
@@ -216,3 +218,34 @@ def test_global_tooling_fallback_remains_for_every_other_key():
     }
 
     assert "tooling" not in graph, "tooling debe fallar si no hay residente local"
+
+
+def test_la_key_demos_cae_a_alibaba_y_solo_ella(hook):
+    """24-09-2026: las webs de propuesta (key `demos`) no se quedan mudas delante de un
+    cliente. Sin residente vivo, `tooling` degrada a Alibaba SOLO para esa key."""
+    solo_alibaba = lambda alias: alias == "alibaba-q38-flash"
+    demos = {"key_alias": "demos"}
+    extra = hook._key_tooling_fallbacks(demos)
+    assert extra == ("alibaba-q38-flash",)
+    assert hook._tooling_route_for_state(
+        READY_TP, solo_alibaba, disable_fallbacks=False, extra_fallbacks=extra
+    ) == ("alibaba-q38-flash", "degraded", "compute_profile_target_unavailable")
+    # Ninguna otra key tiene fallbacks POR KEY. Desde DGX-366 (mismo 24-09) el caso
+    # «sin residente» lo cubre TOOLING_FALLBACKS para todas las keys salvo las de
+    # NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse), que llegan con disable_fallbacks.
+    for alias in ("keep", "openclaw", "aurora-rca"):
+        assert hook._key_tooling_fallbacks({"key_alias": alias}) == ()
+    assert hook._tooling_route_for_state(
+        READY_TP, solo_alibaba, disable_fallbacks=False
+    ) == ("alibaba-q38-flash", "degraded", "compute_profile_target_unavailable")
+    assert hook._tooling_route_for_state(
+        READY_TP, solo_alibaba, disable_fallbacks=True
+    ) == (None, "dry", "compute_profile_target_unavailable")
+
+
+def test_demos_respeta_el_interruptor_de_fallbacks(hook):
+    solo_alibaba = lambda alias: alias == "alibaba-q38-flash"
+    extra = hook._key_tooling_fallbacks({"key_alias": "demos"})
+    assert hook._tooling_route_for_state(
+        READY_TP, solo_alibaba, disable_fallbacks=True, extra_fallbacks=extra
+    ) == (None, "dry", "compute_profile_target_unavailable")

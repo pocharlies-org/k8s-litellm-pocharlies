@@ -226,3 +226,25 @@ contracts:
       sellan nada. Aditivo junto a refusal_text (fase A), refusal_lambda y
       refusal_runtime, que no cambian. Pinned by
       tests/test_refusal_probe_stamp_contract.py.
+  - id: dgx.litellm.key-fallbacks.demos.v1
+    # kind 'allowlist': es la lista de keys (por key_alias) que tienen salida
+    # externa en `tooling`; el consumidor la usa sabiendo que su key la tiene.
+    kind: allowlist
+    value: demos
+    anchor: 'KEY_TOOLING_FALLBACKS = {"demos"'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-24 (Dani). La key con key_alias `demos` (webs de propuesta a
+      clientes: galan.e-dani.com, uriel) es la UNICA con salida externa en
+      `tooling`: sin residente vivo, `tooling` degrada a alibaba-q38-flash
+      (extra_fallbacks en _resolve_tooling_profile) y la misma lista viaja a
+      data["fallbacks"] para que el Router cubra el deployment caido o en
+      cooldown. Respeta disable_fallbacks (politica de key y de la compania).
+      Consumidor: dgx-infra k8s/apps/galan-proposal (galan-chat, secret
+      galan-chat-llm en traefik-edge). Renombrar la key o quitarla del mapa
+      deja a la demo muda cuando el residente cae. Pinned by
+      tests/test_aurora_fallback_policy_contract.py
+      (test_la_key_demos_cae_a_alibaba_y_solo_ella).
