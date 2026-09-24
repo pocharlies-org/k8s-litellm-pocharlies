@@ -1797,6 +1797,7 @@ data:
     # falla (fallbacks del Router por petición); el resto de keys sigue sin salida
     # externa. Cuando dispara, el prompt sale a Alibaba (plan Team): en una demo solo
     # viajan preguntas sobre la propia propuesta, nunca datos de clientes.
+    # CONTRACT: dgx.litellm.key-fallbacks.demos.v1
     KEY_TOOLING_FALLBACKS = {"demos": ("alibaba-q38-flash",)}
     # Alias que significan «el residente del perfil vivo» y por eso se reescriben
     # al nombre directo antes de enrutar. `tooling` = sin pensar; high/max = el
@@ -8844,7 +8845,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c448b425d484
+        config.k8s.e-dani.com/revision: config-a68a4837fb67
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
