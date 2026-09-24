@@ -1663,13 +1663,42 @@ data:
         )
 
         _orig_add_cache_control = _MessagesAdapter._add_cache_control_if_applicable
+        _cache_control_models = {"names": None}
+
+        def _cache_control_model_names():
+            # Detras del Router el adaptador NO ve el alias: ve el `model` del
+            # deployment (`openai/qwen3.8-flash`, medido con un espia el
+            # 24-09). Se resuelve alias -> litellm_params.model una vez, cuando
+            # el router ya esta cargado.
+            names = _cache_control_models["names"]
+            if names is not None:
+                return names
+            from litellm.proxy.proxy_server import llm_router
+
+            if llm_router is None:
+                return frozenset()
+            routed = session_router.ROUTED_MODELS if session_router is not None else frozenset()
+            names = set()
+            for dep in llm_router.model_list or []:
+                alias = dep.get("model_name") or ""
+                if alias.startswith("alibaba-") or alias in routed:
+                    names.add(alias)
+                    model = (dep.get("litellm_params") or {}).get("model")
+                    if model:
+                        names.add(model)
+            names = frozenset(names)
+            _cache_control_models["names"] = names
+            return names
 
         def _keeps_cache_control(model):
             if not model:
                 return False
             if model.startswith("alibaba-"):
                 return True
-            return session_router is not None and model in session_router.ROUTED_MODELS
+            try:
+                return model in _cache_control_model_names()
+            except Exception:
+                return False
 
         def _add_cache_control_if_applicable(self, source, target, model):
             _orig_add_cache_control(self, source, target, model)
@@ -8792,7 +8821,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9842c00e1f8d
+        config.k8s.e-dani.com/revision: config-b5888e3c7380
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
