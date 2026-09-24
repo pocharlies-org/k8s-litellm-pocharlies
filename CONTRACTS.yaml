@@ -152,6 +152,25 @@ contracts:
       Same recipe for `tooling`/`tooling-uncensored` since 2026-09-23. The
       thinking-off aliases `qwen38-off`/`qwen38-u-off` advertise only [none]
       and the hook forces them off whatever effort the client sends.
+  - id: dgx.litellm.tooling-cloud-fallback.v1
+    kind: schema
+    value: TOOLING_FALLBACKS
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Routing promise of the local capability aliases (`tooling`, `qwen38-off`
+      and the censored chat profiles in CAPABILITY_CHAINS) towards every keyed
+      client (Hermes, Jarvis, Open WebUI, opencode, the voice gateway...).
+      Since 2026-09-24 (Dani, DGX-366): when NO local resident is Ready
+      (redeploy/restart, 15-20 min) the hook degrades them to their cloud twin
+      `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
+      previous fail-closed 503 `tooling_resident_not_ready`. Keys in
+      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse) keep failing closed via
+      disable_fallbacks, and the abliterated aliases have no chain. Guarded by
+      tests/test_tooling_profile_contract.py and
+      tests/test_aurora_fallback_policy_contract.py.
   - id: dgx.litellm.active-requests.v1
     kind: http-route
     value: /internal/active-requests

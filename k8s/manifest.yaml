@@ -1790,12 +1790,21 @@ data:
         "llm-tp": (("dgx1", "deepseek-worker"), ("dgx2", "deepseek-head")),
         "creative": (("dgx1", "dense-uncensored"),),
     }
-    TOOLING_FALLBACKS = ()
+    # 24-09-2026 (Dani, DGX-366): la capacidad cae a su gemelo cloud cuando NINGUN
+    # residente esta Ready, para TODAS las keys salvo NO_FALLBACK_KEY_ALIASES
+    # (aurora-rca, synapse: `disable_fallbacks`). Antes era () y falla-cerrado: cada
+    # redeploy/reinicio del residente (15-20 min) dejaba `tooling`/`qwen38-off` en 503
+    # `tooling_resident_not_ready` y Hermes, Jarvis y Open WebUI sin cerebro — el
+    # fallback del router (`qwen38-flash-next` -> `alibaba-q38-flash`) no llega a
+    # verlo porque este hook corta antes. Mismo modelo (Qwen3.8-Flash) en el plan
+    # Team. Los abliterados siguen sin cadena (_resolve_tooling_uncensored).
+    # CONTRACT: dgx.litellm.tooling-cloud-fallback.v1
+    TOOLING_FALLBACKS = ("alibaba-q38-flash",)
     # Keys de DEMOSTRACIÓN (24-09-2026, Dani): las webs de propuesta que se enseñan a un
-    # cliente (galan.e-dani.com, uriel…) no pueden quedarse mudas delante de él. SOLO
-    # estas keys caen a Alibaba cuando el residente no está (degraded) o su deployment
-    # falla (fallbacks del Router por petición); el resto de keys sigue sin salida
-    # externa. Cuando dispara, el prompt sale a Alibaba (plan Team): en una demo solo
+    # cliente (galan.e-dani.com, uriel…) no pueden quedarse mudas delante de él. Estas
+    # keys ademas llevan fallbacks del Router POR PETICION (deployment que falla con el
+    # residente publicado); el caso «sin residente» ya lo cubre TOOLING_FALLBACKS.
+    # Cuando dispara, el prompt sale a Alibaba (plan Team): en una demo solo
     # viajan preguntas sobre la propia propuesta, nunca datos de clientes.
     # CONTRACT: dgx.litellm.key-fallbacks.demos.v1
     KEY_TOOLING_FALLBACKS = {"demos": ("alibaba-q38-flash",)}
@@ -8845,7 +8854,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a68a4837fb67
+        config.k8s.e-dani.com/revision: config-b1cbdbf94058
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
