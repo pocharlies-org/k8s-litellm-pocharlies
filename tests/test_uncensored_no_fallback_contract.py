@@ -42,7 +42,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 UNCENSORED_NAMES = (
     "tooling-uncensored",
     "qwen38-flash-next-uncensored",
-    "qwen38-27b-uncensored",
+    # 26-09: fuera `qwen38-27b-uncensored` con su alias del model_list.
 )
 
 # Nombres censurados que SÍ llevan fallback declarado. El stamp no debe tocarlos:

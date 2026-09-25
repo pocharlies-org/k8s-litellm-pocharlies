@@ -87,23 +87,27 @@ def test_tooling_uses_the_tp2_resident_only_when_both_ranks_are_ready(hook):
 
 
 def test_tooling_uses_qwen_when_qwen_is_the_ready_resident(hook):
+    # 26-09-2026: `creative` perdio su destino cuando el 27B salio del
+    # model_list. El arbitro puede seguir REPORTANDO el modo (el contrato de
+    # COMPONENTS del dashboard vive aparte), pero tooling ya no tiene a quien
+    # reescribir ahi: falla en visible y la ruta degrada a la red de nube,
+    # nunca a un nombre que ya no existe.
     state = _state(qwen=True, desired="creative", effective="creative")
-    assert hook._tooling_target_for_compute_mode(state) == ("qwen38-27b", None)
-    assert hook._tooling_route_for_state(state, lambda name: name == "qwen38-27b") == (
-        "qwen38-27b",
-        "primary",
-        None,
-    )
+    assert hook._tooling_target_for_compute_mode(state) == (
+        None, "compute_mode_invalid")
+    assert hook._tooling_route_for_state(
+        state, lambda name: name == "alibaba-q38-flash") == (
+        "alibaba-q38-flash", "degraded", "compute_mode_invalid")
 
 
 def test_transition_keeps_whichever_resident_is_actually_ready(hook):
     state = _state(
-        qwen=True,
-        desired="llm-tp",
-        effective="creative",
+        deepseek=True,
+        desired="creative",
+        effective="llm-tp",
         phase="switching",
     )
-    assert hook._tooling_target_for_compute_mode(state) == ("qwen38-27b", None)
+    assert hook._tooling_target_for_compute_mode(state) == ("qwen38-flash-next", None)
 
 
 def test_no_ready_resident_degrades_to_the_cloud_twin(hook):

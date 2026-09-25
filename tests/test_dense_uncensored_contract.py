@@ -41,25 +41,25 @@ def _entradas() -> dict[str, dict]:
 
 
 def test_uncensored_is_the_creative_backend_owning_tooling_and_dense_aliases():
-    """Desde que se borraron los deployments censurados del 27B (2026-07-26), el
-    27B abliterado es el UNICO modelo denso del cluster, y por eso se queda con
-    sus dos alias: `tooling` (capacidad) y `qwen38-27b` (modelo concreto). Los
-    cuatro dense-shaped (`dense`, `dense-reasoning`, `dense-uncensored`,
-    `taxonomy`) se retiraron el 15-08 tras migrar sus consumidores."""
+    """Lapida del 27B (26-09-2026). Desde el 2026-07-26 el 27B abliterado era el
+    unico modelo denso del cluster y por eso tenia `tooling` (capacidad) y
+    `qwen38-27b` (nombre directo); los cuatro dense-shaped (`dense`,
+    `dense-reasoning`, `dense-uncensored`, `taxonomy`) se retiraron el 15-08.
+    El perfil `creative` murio el 21-09, el Deployment lleva desde entonces a
+    0 replicas y spend logs 7 dias verdes: los dos nombres del 27B salen del
+    model_list y no vuelven. `tooling` sigue siendo alias de CAPACIDAD: va al
+    Service de pool y quien contesta lo decide el perfil, no este fichero."""
     entradas = _entradas()
 
-    # El nombre directo va SIEMPRE al servidor del 27B.
-    directo = entradas["qwen38-27b"]["litellm_params"]["api_base"]
-    assert "vllm-qwen38-27b-uncensored.llm.svc.cluster.local" in directo
+    for muerto in ("qwen38-27b", "qwen38-27b-uncensored",
+                   "dense", "dense-reasoning", "dense-uncensored", "taxonomy"):
+        assert muerto not in entradas, f"{muerto} volvio al model_list"
 
     # El alias de capacidad va al Service de POOL: quien esta detras lo decide el
     # perfil activo, no este fichero.
     for capacidad in ("tooling", "tooling-uncensored"):
         base = entradas[capacidad]["litellm_params"]["api_base"]
         assert "tooling.llm.svc.cluster.local" in base, capacidad
-
-    for muerto in ("dense", "dense-reasoning", "dense-uncensored", "taxonomy"):
-        assert muerto not in entradas, f"{muerto} volvio al model_list"
 
 
 def test_qwen_direct_name_is_not_a_capability_alias():
@@ -70,8 +70,9 @@ def test_qwen_direct_name_is_not_a_capability_alias():
     assert '"dense"' not in capabilities
 
 
-def test_los_tres_backends_locales_y_sus_formas_de_exclusion():
-    """3 backends locales; los dos Spark conservan su exclusion y el RTX es independiente.
+def test_los_dos_backends_locales_y_sus_formas_de_exclusion():
+    """2 backends locales de chat: el residente TP=2 en los dos Sparks y el
+    alias de capacidad, que no nombra nodo.
 
     Actualizado 2026-08-13 (ventana RHO backend-sync): eran 4. Se retiraron
     `ornith-dgx1` y `nvidia-qwen36-dgx1`, los dos candidatos al asiento de DGX1:
@@ -79,7 +80,8 @@ def test_los_tres_backends_locales_y_sus_formas_de_exclusion():
     nvidia-qwen36-35b-a3b-nvfp4 no existe en dgx1), asi que ninguno podia arrancar.
     El asiento en si caduco el 08-08, cuando el residente TP=2 paso a ocupar los
     DOS Sparks: mientras corre no cabe residente en DGX1, no por politica sino por
-    memoria — y por eso el residente SI comparte los alias de tooling.
+    memoria. Y el 26-09 el ultimo `dgx1` de chat —`qwen38-27b`— salio del
+    model_list: el perfil `creative` llevaba retirado desde el 21-09.
     """
     entradas = _entradas()
     por_backend = {
@@ -88,8 +90,8 @@ def test_los_tres_backends_locales_y_sus_formas_de_exclusion():
         if ".llm.svc.cluster.local" in str((e.get("litellm_params") or {}).get("api_base") or "")
         and (e.get("model_info") or {}).get("mode") == "chat"
     }
-    assert set(por_backend.values()) == {"dgx1", "dgx1+dgx2", "profile-resident"}
-    assert por_backend["qwen38-27b"] == "dgx1"
+    assert set(por_backend.values()) == {"dgx1+dgx2", "profile-resident"}
+    assert "qwen38-27b" not in por_backend
     assert por_backend["qwen38-flash-next"] == "dgx1+dgx2"
     # (SC-384) `qwen35-4b` retirado: era el unico chat en la RTX.
     # El alias de capacidad no nombra un nodo a proposito: lo resuelve el perfil.
@@ -101,7 +103,9 @@ def test_los_tres_backends_locales_y_sus_formas_de_exclusion():
                  # retirado del cluster entero el 2026-08-10
                  "qwen3coder-dgx2", "qwen3coder-dgx1",
                  # 2026-08-13: sin pesos en disco, no podian arrancar
-                 "ornith-dgx1", "nvidia-qwen36-dgx1"):
+                 "ornith-dgx1", "nvidia-qwen36-dgx1",
+                 # 26-09: el 27B sale del manifiesto hasta las comillas
+                 "qwen38-27b", "qwen38-27b-uncensored"):
         assert f'"{dead}"' not in texto, f"{dead} volvio al manifiesto"
 
 

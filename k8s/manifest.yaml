@@ -147,8 +147,8 @@ data:
     #
     # DOS CLASES DE NOMBRE, y la diferencia importa:
     #
-    #  1. NOMBRE DIRECTO (deepseek-v4-flash-0731, qwen38-27b y sus
-    #     `-uncensored`): apunta al Service PROPIO del backend. Si ese backend no
+    #  1. NOMBRE DIRECTO (qwen38-flash-next y su `-uncensored`): apunta al Service
+    #     PROPIO del backend. Si ese backend no
     #     esta, el alias da 400 «Invalid model name» — visible y correcto: quien
     #     nombra un modelo concreto debe recibir ese modelo o un error, nunca otro.
     #
@@ -417,61 +417,15 @@ data:
         # de razonamiento gasta el presupuesto pensando y devuelve content
         # vacio con HTTP 200, que el bucle apunta como unhealthy.
         disable_background_health_check: true
-    # NUEVO como nombre directo. El controlador solo registraba `tooling` y
-    # `qwen38-27b-uncensored` sobre este backend, asi que el residente de
-    # `creative` no tenia nombre propio servible. Ahora lo tiene, y es el destino
-    # al que el hook reescribe `tooling` cuando el perfil vivo es `creative`.
-    #
-    # repetition_penalty 1.08 va en litellm_params porque Qwen documenta que sin
-    # ese guard degrada el tool-calling. Lo ponia extra_litellm_params del
-    # controlador con un startswith("openai/qwen38-") que ya se apago en silencio
-    # una vez (15-08) al renombrar el base_model. Escrito aqui no puede apagarse.
-    - model_name: qwen38-27b
-      litellm_params:
-        model: openai/qwen38-27b
-        api_base: http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-        repetition_penalty: 1.08
-      model_info:
-        mode: chat
-        backend: dgx1
-        max_input_tokens: 262144
-        max_output_tokens: 16384
-        supports_function_calling: true
-        supports_vision: true
-        supports_reasoning: true
-        # `low` y `medium` fuera por lo mismo que en DeepSeek, y aqui ya estaba
-        # MEDIDO en el comentario del BACKENDS: none/low/medium -> reasoning_content
-        # 0 chars; solo high y max piensan de verdad. Se declaraban igualmente.
-        supported_reasoning_efforts: [none, high, max]
-        # 02-09-2026 (STA-9): ver el flag de qwen38-flash-next — mismo residente,
-        # mismo falso rojo con la sonda de 16 tokens.
-        disable_background_health_check: true
-    - model_name: qwen38-27b-uncensored
-      litellm_params:
-        model: openai/qwen38-27b
-        api_base: http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/v1
-        api_key: not-used
-        timeout: 600
-        max_parallel_requests: 4
-        repetition_penalty: 1.08
-        extra_body: { cache_salt: "refusal:1.0" }
-      model_info:
-        mode: chat
-        backend: dgx1
-        max_input_tokens: 262144
-        max_output_tokens: 16384
-        supports_function_calling: true
-        supports_vision: true
-        supports_reasoning: true
-        # Mismo backend que el alias de arriba: mismos tiers honrados.
-        supported_reasoning_efforts: [none, high, max]
-        # 02-09-2026 (STA-9): mismo deployment detras de `qwen38-27b`; si se calla
-        # solo el otro, el bucle de fondo sigue sondeando este y el bucle deduplica
-        # por model_info.id, no por api_base (ver el comentario de bge-m3-embedding).
-        disable_background_health_check: true
+    # 26-09-2026: `qwen38-27b` / `qwen38-27b-uncensored` RETIRADOS (orden del
+    # owner). El perfil `creative` esta retirado desde el 21-09 y su Deployment
+    # `vllm-qwen38-27b-uncensored` vive a 0 replicas desde entonces; spend logs
+    # 2026-09-19..26 = 0 peticiones para los dos nombres. Un alias publicado
+    # contra un Service sin backends no da «modelo desconocido», da fallo de
+    # conexion (la lapida del puente gpt-5 lo documenta), y ademas ocupaba dos
+    # lineas del picker. El shutdown del Deployment y su Service (VRAM en dgx1)
+    # es paso aparte, como con `qwen35-4b-int4`. La caducidad del puente
+    # `q38-flash*` del renombrado corre pareja: ver model_group_alias mas abajo.
     # 14-09-2026 (SC-384): `qwen35-4b` / `qwen35-4b-fast` / `qwen3.5-4b` RETIRADOS.
     # El backend `qwen35-4b-int4` esta caido (todo su trafico = Connection error,
     # 0 replicas ready) y OpenClaw ya corre sobre `tooling`. Los consumidores del
@@ -1556,14 +1510,10 @@ data:
         alibaba-deepseek-v41-flash: alibaba-dsv41-fl
         alibaba-deepseek-v4-pro: alibaba-dsv4-pro
         alibaba-deepseek-v4-flash-0731: alibaba-dsv4f0731
-        # 22-09-2026: puente del renombrado de los perfiles de chat. Los dos
-        # `-think` mueren como nombre: su nivel (low) hoy lo da el nombre del
-        # residente que piensa. Misma regla de caducidad que los de arriba:
-        # spend logs 7 dias verdes y se borran estas cuatro lineas y su test.
-        q38-flash: qwen38-off
-        q38-flash-u: qwen38-u-off
-        q38-flash-think: qwen38-flash-next
-        q38-flash-u-think: qwen38-flash-next-uncensored
+        # 26-09-2026: RETIRADO el puente `q38-flash*` del renombrado del 22-09.
+        # Regla de caducidad cumplida: spend logs 19..26-09 = 13 peticiones,
+        # 0 con exito (todas probes fallidas). La pareja del hook
+        # (CHAT_PROFILE_RENAMES) se va con el. Test: test_chat_catalog_contract.
       # 2026-06-22: a wedged vLLM backend (EngineCore deadlock; /health still 200)
       # used to keep eating ~50% of chat traffic because it took 20 fails before
       # any cooldown and the cooldown was only 30s. Eject faster and keep it out
@@ -1779,7 +1729,9 @@ data:
         # entrada del model_list como rollback: el EndpointSlice decide quien
         # publica.
         "llm-tp": "qwen38-flash-next",
-        "creative": "qwen38-27b",
+        # 26-09-2026: fuera `creative` -> `qwen38-27b`. El alias ya no existe en
+        # el model_list (ver su lapida arriba): dejarlo aqui era un destino
+        # colgado, no un perfil en pausa.
     }
     # Componentes que prueban que un residente esta REALMENTE operativo. El
     # estado desired/effective/phase describe la transicion del arbitro, no la
@@ -1834,7 +1786,8 @@ data:
     # la entrada del nombre directo y la lambda NO es la misma en los dos:
     # 1.5 DeepSeek / 1.0 Qwen3.8, medidas y no intercambiables.
     TOOLING_UNCENSORED_MODE_TARGETS = {
-        "creative": "qwen38-27b-uncensored",
+        # 26-09-2026: fuera `creative` -> `qwen38-27b-uncensored`, pareja del que
+        # sale de TOOLING_MODE_TARGETS: el alias ya no esta en el model_list.
         # 01-09-2026: vuelve `llm-tp`. Estaba fuera desde el 26-08 porque el
         # residente era Qwen3.8-Flash-Next SIN port rank-1 y un alias que promete
         # y no cumple es peor que no tenerlo. Con el anclaje de
@@ -1858,21 +1811,13 @@ data:
         "tooling-uncensored", "qwen38-u-off",
     })
 
-    # Puente del renombrado en el HOOK (22-09-2026, pareja del `model_group_alias`
-    # del router). Hace falta los dos y no solo el del router: `model_group_alias`
-    # elige el deployment, pero este hook corre con el nombre CRUDO pedido, y todas
-    # sus tablas (CAPABILITY_CHAINS, THINKING_TIERS, el gate uncensored) miran ese
-    # nombre. Sin este mapa, un `q38-flash` puenteado salia al pool con
-    # `model: "tooling"` en el cuerpo y vLLM lo rechazaba con 404 (medido 22-09,
-    # y ademas metia el deployment en cooldown). Con la reescritura aqui delante,
-    # el trafico puenteado se comporta EXACTAMENTE como el nombre nuevo.
-    # Caduca junto con el puente del router (~27-09, spend logs 7 dias verdes).
-    CHAT_PROFILE_RENAMES = {
-        "q38-flash": "qwen38-off",
-        "q38-flash-u": "qwen38-u-off",
-        "q38-flash-think": "qwen38-flash-next",
-        "q38-flash-u-think": "qwen38-flash-next-uncensored",
-    }
+    # 26-09-2026: RETIRADO CHAT_PROFILE_RENAMES, pareja del puente `q38-flash*`
+    # del router (ver su lapida en model_group_alias). Caducidad cumplida: spend
+    # logs 19..26-09 = 0 peticiones con exito en los cuatro nombres viejos.
+    # El motivo por el que existia sigue vigente como leccion: `model_group_alias`
+    # elige el deployment pero el hook ve el nombre CRUDO, asi que un puente vive
+    # en los dos sitios o en ninguno (medido 22-09: sin el mapa del hook, el
+    # trafico puenteado salia al pool con `model: "tooling"` y vLLM lo rechazaba).
 
     def _component_is_ready(state, node, name):
         components = (state.get("components") or {}).get(node) or []
@@ -2593,8 +2538,7 @@ data:
     # `Retry-After`. Un 503 es reintentable y dice la verdad; un 500 no, y contestar
     # desde otro sitio seria servir censurado a quien pidio lo contrario.
     ABLITERATED_HEALTH_URLS = {
-        "qwen38-27b-uncensored":
-            "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000/health",
+        # 26-09-2026: fuera `qwen38-27b-uncensored` con su alias del model_list.
         # Sin esta entrada _abliterated_target_ready devuelve
         # `abliterated_health_url_missing` y el 503 persiste AUNQUE el backend
         # este sano: es el descuido que este bloque existe para cazar.
@@ -2832,29 +2776,18 @@ data:
     # LOS RUNTIMES NO COMPARTEN EL VALOR DE ENCENDIDO. Ese es el motivo de que esto
     # sea una LISTA y no el escalar unico que habia antes:
     #
-    #   qwen38-27b-nvfp4        on=1.0  1.0 reproduce el perfil POR CAPA del
-    #                                   checkpoint Ektome horneado.
     #   qwen38-flash-next       on=1.0  La ablacion de orcarouter, proyeccion
     #                                   canonica lambda=1, rechazo medido
-    #                                   64-100% -> 0-3,3%. Es el MISMO numero que
-    #                                   el de arriba y NO la misma escala: son dos
-    #                                   direcciones distintas sobre dos bases
-    #                                   distintas, y coinciden por casualidad.
+    #                                   64-100% -> 0-3,3%.
+    #   (qwen38-27b-nvfp4 llevaba on=1.0 — reproducia el perfil POR CAPA del
+    #    checkpoint Ektome horneado, el MISMO numero que flash-next y NO la misma
+    #    escala: dos direcciones distintas sobre dos bases distintas, coinciden
+    #    por casualidad. Fuera 26-09 junto con su alias del model_list.)
     #   (deepseek-v4-flash-0731 llevaba on=1.5 — lambda=1 aun rechazaba 5-7/10.
     #    Ya no esta en la lista, pero es el ejemplo de por que esto es una lista:
     #    un escalar global lo habria degradado a 1.0 en silencio, y el panel
     #    diria "uncensored" con el modelo rechazando la mitad de las veces.)
     REFUSAL_RUNTIMES_DEFAULT = [
-        {
-            "key": "qwen38-27b-nvfp4",
-            "label": "Qwen3.8-27B NVFP4 (dense)",
-            # El Service publica 8000 aunque el contenedor sirva en 8888: la URL
-            # es la del Service, no la del pod.
-            "admin_url": "http://vllm-qwen38-27b-uncensored.llm.svc.cluster.local:8000"
-                         "/admin/refusal_lambda",
-            "api_base_match": "vllm-qwen38-27b-uncensored",
-            "on_lambda": 1.0,
-        },
         {
             # 04-09: el residente de llm-tp. Estaba SIN registrar aunque la capa
             # rank-1 lleva desplegada desde el 03-09 — o sea que el unico modelo
@@ -3138,8 +3071,8 @@ data:
     def _refusal_fleet_name(rt):
         """Nombre con el que el panel conoce a ese runtime en la flota.
 
-        Se DERIVA del host del admin_url (`vllm-qwen38-27b-uncensored.llm.svc...`
-        -> `vllm-qwen38-27b-uncensored`) en vez de repetirlo a mano: si alguien
+        Se DERIVA del host del admin_url (`qwen38-flash-next.llm.svc...`
+        -> `qwen38-flash-next`) en vez de repetirlo a mano: si alguien
         repunta un runtime a otro head, la chapa del panel se mueve con el. Es la
         regla que ya usaba el dashboard cuando el dial era de un solo modelo.
         """
@@ -5628,12 +5561,6 @@ data:
 
             requested_model = data.get("model", "")
 
-            # Puente del renombrado (ver CHAT_PROFILE_RENAMES): lo primero, antes
-            # de cualquier gate, para que un nombre viejo puenteado pase por las
-            # mismas puertas y tablas que el nuevo.
-            if requested_model in CHAT_PROFILE_RENAMES:
-                requested_model = data["model"] = CHAT_PROFILE_RENAMES[requested_model]
-
             # Gate de la ruta ABLITERADA, lo primero de todo y a proposito: antes de
             # sanear sampling, de reescribir alias y de cualquier llamada al backend.
             # Si esta key no puede pedirla, no se toca nada mas y se devuelve 403.
@@ -6254,7 +6181,7 @@ data:
     # names were dropped on 2026-07-27: their deployments were deleted on 07-26.
     LOCAL_VLLM_ALIASES = {
         # 2026-08-15: retirados dense/dense-reasoning/dense-uncensored/taxonomy.
-        # Queda un solo alias local para el 27B.
+        # 26-09-2026: fuera `qwen38-27b` con su alias del model_list.
         "tooling",
         # Los perfiles de pensamiento: mismo backend residente, asi que la
         # telemetria de vLLM local tiene que contarlos igual.
@@ -6263,14 +6190,14 @@ data:
         "ornith",
         "ornith-1.0",
         "ornith-canary",
-        "qwen38-27b",
     }
 
     # ¿Sirve este alias NUESTRO vLLM? Se mira el router VIVO (como
     # _deployment_cache_salt): todas sus deployments en un servicio del namespace
     # `llm`. Cubre el residente por nombre directo y los perfiles del pool
     # (`qwen38-off`, ...) sin mantener otra lista que se quede vieja -- justo lo
-    # que le paso a LOCAL_VLLM_ALIASES, que sigue en el 27B. Cacheado: el
+    # que le paso a LOCAL_VLLM_ALIASES, una lista que hay que podar a mano.
+    # Cacheado: el
     # model_list no cambia sin reiniciar el proxy.
     _LOCAL_VLLM_SUFFIX = ".llm.svc.cluster.local"
     _served_by_local_vllm_cache = {}
@@ -9023,7 +8950,8 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-330750e40253
+
+        config.k8s.e-dani.com/revision: config-f7e7ece6b2c2
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

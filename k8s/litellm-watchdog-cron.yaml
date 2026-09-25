@@ -161,12 +161,14 @@ spec:
                   # Los dos perfiles de computo son exclusivos: uno de los dos
                   # esta siempre a 0 replicas. Se prueban los DOS y condena solo
                   # si NINGUNO contesta.
+                  # 26-09-2026: fuera `creative` -> `vllm-qwen38-27b-uncensored`.
+                  # El perfil esta retirado desde el 21-09, el Deployment vive a
+                  # 0 replicas y el hook ya no enruta ahi (ver TOOLING_MODE_TARGETS
+                  # en el manifiesto): sondearlo era ruido. Si el perfil volviera,
+                  # vuelve esta linea con el.
                   RESIDENTES = {
                       "llm-tp":
                           "http://qwen38-flash-next.llm.svc.cluster.local:8000",
-                      "creative":
-                          "http://vllm-qwen38-27b-uncensored"
-                          ".llm.svc.cluster.local:8000",
                   }
 
                   # La herramienta de busqueda que tiene que ver el Router. El nombre
@@ -420,9 +422,8 @@ spec:
                           "deepseek-v4-flash-0731": (
                               "http://deepseek-v4-flash-0731"
                               ".llm.svc.cluster.local:8000", 0.0),
-                          "qwen38-27b": (
-                              "http://vllm-qwen38-27b-uncensored"
-                              ".llm.svc.cluster.local:8000", 0.0),
+                          # 26-09-2026: fuera `qwen38-27b` con el perfil
+                          # `creative` (ver RESIDENTES mas arriba).
                       }
                       dial_alto = []
                       dial_leido = {}

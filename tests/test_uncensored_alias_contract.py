@@ -42,7 +42,7 @@ CENSURABLES = ("qwen38-flash-next", "tooling")
 # spread 0.09%) y aplicar el criterio del 27B, donde la variacion entre capas se
 # absorbe en un coef y aqui ese coef sale 1. Coincidir con DeepSeek es coincidencia.
 MODEL_SCOPED_LAMBDA = {
-    "qwen38-27b-uncensored": "refusal:1.0",
+    # 26-09: fuera `qwen38-27b-uncensored` con su alias del model_list.
     "qwen38-flash-next-uncensored": "refusal:1.0",
 }
 
@@ -115,7 +115,7 @@ def test_the_capability_alias_carries_NO_salt_of_its_own(model_list):
     y por eso `tooling-uncensored` lo hereda en el YAML. Eso no rompe el diseño:
     el uncensored no se sirve de esta entrada. El hook reescribe el alias al
     nombre de destino (TOOLING_UNCENSORED_MODE_TARGETS ->
-    qwen38-flash-next-uncensored / qwen38-27b-uncensored), y cada destino lleva
+    qwen38-flash-next-uncensored), y cada destino lleva
     su sello en su propia entrada. Se comprueba el destino, no el alias.
     """
     entry = model_list[CAPABILITY]
@@ -124,8 +124,13 @@ def test_the_capability_alias_carries_NO_salt_of_its_own(model_list):
 
 
 def test_the_uncensored_DESTINATIONS_carry_the_seal(model_list):
-    """Donde viaja de verdad el sello uncensored: los nombres de destino."""
-    for destino in ("qwen38-flash-next-uncensored", "qwen38-27b-uncensored"):
+    """Donde viaja de verdad el sello uncensored: los nombres de destino.
+
+    26-09: `qwen38-27b-uncensored` era el otro; se fue con su alias del
+    model_list. Queda un solo destino y la lista se lee del propio mapa del
+    hook: un destino nuevo sin sello propio se caza aqui, no en un literal.
+    """
+    for destino in MODEL_SCOPED_LAMBDA:
         body = model_list[destino]["litellm_params"].get("extra_body") or {}
         assert body.get("cache_salt") == "refusal:1.0", (destino, body)
 
@@ -173,8 +178,7 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
     # 21-09-2026 (OWU-50): era `== frozenset({CAPABILITY})`, o sea contaba en vez de
     # mirar el contrato. Lo que este test protege es que EL alias de capacidad sea
     # `tooling-uncensored` y resuelva al residente ABLITERADO — y eso sigue igual.
-    # Con los perfiles de chat abliterados (`qwen38-u-off` y, via puente,
-    # los viejos `q38-flash-u*`)
+    # Con los perfiles de chat abliterados (`qwen38-u-off`)
     # la igualdad exacta estorba y, peor, desvia: esos dos nombres tienen que estar
     # en este conjunto porque de él se deriva `UNCENSORED_GATED_ALIASES`, y un alias
     # uncensored fuera de la puerta es ablacion libre para cualquier key. Lo de
@@ -195,20 +199,28 @@ def test_the_capability_alias_resolves_to_the_ABLITERATED_resident(hook):
                       "desired_replicas": 1, "ready_replicas": 1}],
         },
     }
-    for mode, want in (("llm-tp", ("qwen38-flash-next-uncensored", None)),
-                       ("creative", ("qwen38-27b-uncensored", None))):
-        got = hook._tooling_uncensored_target(
-            {"effective_mode": mode, "desired_mode": mode, "phase": "ready",
-             "components": components[mode]}
-        )
-        assert got == want, (mode, got)
+    got = hook._tooling_uncensored_target(
+        {"effective_mode": "llm-tp", "desired_mode": "llm-tp", "phase": "ready",
+         "components": components["llm-tp"]}
+    )
+    assert got == ("qwen38-flash-next-uncensored", None), got
+    # 26-09-2026: `creative` sigue siendo un modo que el arbitro puede REPORTAR
+    # (el contrato de COMPONENTS del dashboard vive aparte), pero ya no tiene
+    # destino: el alias 27B salio del model_list. Resolverlo tiene que fallar en
+    # VISIBLE (compute_mode_invalid -> 503 o degradacion), nunca inventarse un
+    # residente.
+    got = hook._tooling_uncensored_target(
+        {"effective_mode": "creative", "desired_mode": "creative", "phase": "ready",
+         "components": components["creative"]}
+    )
+    assert got == (None, "compute_mode_invalid"), got
     # El cambio deseado puede estar pendiente: manda el residente que siga Ready.
     assert hook._tooling_uncensored_target({
-        "effective_mode": "creative",
-        "desired_mode": "llm-tp",
+        "effective_mode": "llm-tp",
+        "desired_mode": "creative",
         "phase": "waiting",
-        "components": components["creative"],
-    }) == ("qwen38-27b-uncensored", None)
+        "components": components["llm-tp"],
+    }) == ("qwen38-flash-next-uncensored", None)
     # Y cada destino es una entrada con sello propio, no un nombre inventado.
     assert set(hook.TOOLING_UNCENSORED_MODE_TARGETS.values()) == set(MODEL_SCOPED_LAMBDA)
 
@@ -411,7 +423,7 @@ def sealed(hook, monkeypatch):
 
 
 def test_an_alien_extra_body_does_NOT_strip_the_seal(sealed):
-    data = {"model": "qwen38-27b-uncensored",
+    data = {"model": "qwen38-flash-next-uncensored",
             "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
     sealed._preserve_uncensored_seal(data)
     assert data["extra_body"]["cache_salt"] == "refusal:1.0"
@@ -422,14 +434,14 @@ def test_an_alien_extra_body_does_NOT_strip_the_seal(sealed):
 def test_an_explicit_client_salt_WINS_over_the_deployment(sealed):
     # Es como el playground barre lambdas sobre el alias base: quitarselo seria
     # cambiarle el lambda a quien lo pidio a mano.
-    data = {"model": "qwen38-27b-uncensored",
+    data = {"model": "qwen38-flash-next-uncensored",
             "extra_body": {"cache_salt": "refusal:2.0"}}
     sealed._preserve_uncensored_seal(data)
     assert data["extra_body"]["cache_salt"] == "refusal:2.0"
 
 
 def test_a_censored_alias_never_gains_a_seal(sealed):
-    data = {"model": "qwen38-27b", "extra_body": {"chat_template_kwargs": {}}}
+    data = {"model": "qwen38-flash-next", "extra_body": {"chat_template_kwargs": {}}}
     sealed._preserve_uncensored_seal(data)
     assert "cache_salt" not in data["extra_body"]
 
@@ -437,7 +449,7 @@ def test_a_censored_alias_never_gains_a_seal(sealed):
 def test_without_extra_body_nothing_is_created(sealed):
     # Sin extra_body propio, el de la deployment llega intacto por si solo: crear
     # uno aqui seria trabajo de mas y una via nueva por la que equivocarse.
-    data = {"model": "qwen38-27b-uncensored"}
+    data = {"model": "qwen38-flash-next-uncensored"}
     sealed._preserve_uncensored_seal(data)
     assert "extra_body" not in data
 

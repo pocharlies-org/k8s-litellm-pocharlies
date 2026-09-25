@@ -33,7 +33,6 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
 # La ventana que sirve de verdad cada checkpoint. Si alguien cambia un
 # --max-model-len, este numero y el del model_list tienen que moverse juntos.
-DENSO_27B = "qwen38-27b"
 QWEN38_FLASH_NEXT = "qwen38-flash-next"
 
 
@@ -90,12 +89,6 @@ def test_ningun_alias_hereda_sus_limites(locales):
     assert not sin_limites, f"alias locales sin limites propios: {sin_limites}"
 
 
-def test_el_27b_declara_la_ventana_que_sirve(locales):
-    info = locales[DENSO_27B]["model_info"]
-    assert info["max_input_tokens"] == 262144
-    assert info["max_output_tokens"] == 16384
-
-
 def test_qwen38_flash_next_publica_la_ventana_operativa_de_256k(locales):
     info = locales[QWEN38_FLASH_NEXT]["model_info"]
     assert info["max_input_tokens"] == 262144
@@ -121,9 +114,12 @@ def test_qwen38_flash_next_publica_su_nombre_directo_solo_en_su_backend(locales)
 
 def test_los_nombres_dense_retirados_no_vuelven(config):
     """`dense`, `dense-reasoning`, `dense-uncensored` y `taxonomy` se retiraron el
-    15-08 tras migrar sus consumidores. Eran alias del 27B; hoy ese backend se
-    sirve por `tooling` (capacidad) y `qwen38-27b` (nombre directo)."""
+    15-08 tras migrar sus consumidores. Eran alias del 27B; `qwen38-27b` y su
+    gemelo abliterado corrieron la misma suerte el 26-09 (perfil `creative`
+    retirado el 21-09, Deployment a 0 replicas, spend logs 7 dias verdes). Hoy
+    la capacidad local la sirve `tooling` y el residente por su nombre directo."""
     publicados = {e["model_name"] for e in config["model_list"]}
-    for muerto in ("dense", "dense-reasoning", "dense-uncensored", "taxonomy"):
+    for muerto in ("dense", "dense-reasoning", "dense-uncensored", "taxonomy",
+                   "qwen38-27b", "qwen38-27b-uncensored"):
         assert muerto not in publicados, f"{muerto} volvio al model_list"
-    assert {"tooling", "qwen38-27b"} <= publicados
+    assert "tooling" in publicados
