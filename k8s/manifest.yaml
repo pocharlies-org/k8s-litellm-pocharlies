@@ -6353,10 +6353,18 @@ data:
     SIDECAR_POLL_TIMEOUT_SECONDS = 2.0
     # Sin lectura buena en este tiempo el dato de pares no vale: solo cuenta este pod.
     SIDECAR_STALE_SECONDS = 3.0
-    # 23-09-2026 (Dani): 10 min DE INACTIVIDAD. El vínculo se RENUEVA en cada petición
-    # de la sesión (local o alibaba): mientras la sesión trabaja se queda donde está su
-    # caché; tras 10 min sin peticiones caduca y la siguiente vuelve a decidirse.
-    STICKY_TTL_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_S", "600"))
+    # 23-09-2026 (Dani): TTL DE INACTIVIDAD. El vínculo se RENUEVA en cada petición
+    # de la sesión: mientras la sesión trabaja se queda donde está su caché; cuando
+    # caduca, la siguiente petición vuelve a decidirse.
+    # 26-09-2026 (Dani): distinto por destino (antes 10 min para los dos).
+    #   local   30 min: la caché de prefijo del vLLM es gratis; una sesión local
+    #           sigue en local tras una pausa.
+    #   alibaba  5 min: tras una pausa la sesión vuelve a decidirse y regresa al
+    #           local si hay hueco. La caché implícita de Alibaba no aguanta pausas
+    #           largas, así que tras la pausa llegaría fría igual. Sin pausa se
+    #           renueva y no se mueve: nunca se trae al local a mitad de ráfaga.
+    STICKY_TTL_LOCAL_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_LOCAL_S", "1800"))
+    STICKY_TTL_ALIBABA_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_ALIBABA_S", "300"))
     # CONTRACT: dgx.session-router.sticky-key.v1
     STICKY_KEY_PREFIX = "session-router:sticky:"
     DEFAULT_LOCAL_SLOTS = 8
@@ -6761,13 +6769,18 @@ data:
         _schedule(_sticky_set_bg(sid, plan))
 
 
+    def _sticky_ttl(plan):
+        """TTL de inactividad del vínculo según su destino (ver STICKY_TTL_*)."""
+        return STICKY_TTL_ALIBABA_SECONDS if plan == "alibaba" else STICKY_TTL_LOCAL_SECONDS
+
+
     async def _sticky_set_bg(sid, plan):
         try:
             client = await _redis()
             if client is None:
                 return
             await asyncio.wait_for(
-                client.set(f"{STICKY_KEY_PREFIX}{sid}", plan, ex=STICKY_TTL_SECONDS),
+                client.set(f"{STICKY_KEY_PREFIX}{sid}", plan, ex=_sticky_ttl(plan)),
                 timeout=STICKY_WRITE_TIMEOUT_SECONDS,
             )
         except Exception as exc:
@@ -8935,7 +8948,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-ab7908e060e7
+        config.k8s.e-dani.com/revision: config-da1efc9d678e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

@@ -559,8 +559,32 @@ def test_sticky_alibaba_ligada_renueva_el_vinculo(router_mod):
     assert env.writes == [(SID, "alibaba")]
 
 
-def test_ttl_es_de_inactividad_10_min(router_mod):
-    assert router_mod.STICKY_TTL_SECONDS == 600
+def test_ttl_de_inactividad_por_destino(router_mod):
+    """26-09-2026 (Dani): local 30 min, alibaba 5 min (antes 10 min los dos)."""
+    assert router_mod.STICKY_TTL_LOCAL_SECONDS == 1800
+    assert router_mod.STICKY_TTL_ALIBABA_SECONDS == 300
+    assert router_mod._sticky_ttl("local") == 1800
+    assert router_mod._sticky_ttl("alibaba") == 300
+
+
+def test_escritura_sticky_usa_el_ttl_de_su_destino(fresh_mod, monkeypatch):
+    m = fresh_mod
+    escritas = []
+
+    class Cli:
+        async def set(self, key, value, ex=None):
+            escritas.append((key, value, ex))
+
+    async def redis():
+        return Cli()
+
+    monkeypatch.setattr(m, "_redis", redis)
+    asyncio.run(m._sticky_set_bg("s1", "local"))
+    asyncio.run(m._sticky_set_bg("s2", "alibaba"))
+    assert escritas == [
+        (m.STICKY_KEY_PREFIX + "s1", "local", 1800),
+        (m.STICKY_KEY_PREFIX + "s2", "alibaba", 300),
+    ]
 
 
 def test_sticky_local_con_hueco_se_revincula_a_alibaba(router_mod):
