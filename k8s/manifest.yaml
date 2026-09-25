@@ -1003,9 +1003,43 @@ data:
         description: Sonda de estado de la cuenta Grok - 200 = paga, 402/403 = sin creditos. No es para chatear.
         input_cost_per_token: 0.00000125
         output_cost_per_token: 0.0000025
-    # ── Alibaba Model Studio — plan Team (token plan) de info@e-dani.com ──────
+    # ── Alibaba Model Studio — Token Plan Individual PRO de info@e-dani.com ──
     #
     # Alta 20-09-2026. Segundo upstream de pago que sale a Internet tras OpenRouter.
+    #
+    # PRECIO TARIFICADO EN ESTE PROXY (25-09-2026): prorrateo del pack. La
+    # suscripcion real es PERSONAL Pro, no Team: el pedido de BSS 518016570950293
+    # dice commodity `sfm_tokenplansolo_public_intl` / subscription_type `pro` /
+    # 3 meses por $195 pre-tax ($240 de lista menos $45 de promo) = $65/mes, y la
+    # pagina del plan (docs Token Plan overview, 23-09) fija la cuota Pro en
+    # 180.000 Creditos/mes. El plan no publica creditos-por-token ("dinamico"),
+    # asi que las tarifas de cada alias se CALIBRAN contra la propia ventana:
+    #   - La consola leia 47,5 % consumido (85.500 creditos = $30,875 a $65/mes).
+    #   - Los SpendLogs daban la mezcla de tokens de esa ventana por modelo:
+    #     619,5 M entrada sin cache + 3.905,9 M cache-read + 32,2 M salida en
+    #     qwen3.8-flash; 20,5/187,9/1,4 M en qwen3.8-max; resto despreciable.
+    #     (Contaminacion medida: 0 eventos Alibaba de AI Studio/galan en la
+    #     ventana, el % de la consola es todo trafico de este gateway.)
+    #   - Forma de precios: la tabla internacional oficial (help/model-studio/
+    #     model-pricing, 25-09): flash $0,15/$0,47, max $2/$6, plus $0,4/$1,6,
+    #     q37-max $2,5/$7,5, q36-flash $0,25/$1,5, dsv4-pro $2,4/$4,8,
+    #     dsv4-flash-0731 $0,44/$1,32, dsv4.1-flash $0,3/$1,2, glm-5.2/5.3
+    #     $1,4/$4,4 (por M; deepseek a precio "busy").
+    #   - Cache: la doc Context Cache (18-09) da el ratio implicito por modelo:
+    #     20 % del input para todos, 10 % para deepseek-v4.1-flash. El cache del
+    #     token plan es implicito (no manda cache_control), y la respuesta trae
+    #     prompt_tokens_details.cached_tokens, que es lo que come
+    #     cache_read_input_token_cost en LiteLLM (leido en el source 1.100.0:
+    #     generic_cost_per_token descuenta los cache-hit del input y los tarifica
+    #     aparte). Sin write aparte: la creacion implicita se cobra como input.
+    #   - Escala k = $30,875 / $350,07 de coste de lista equivalente = 0,0882:
+    #     cada alias lleva lista x k, o sea el pack sale por ~1/11,3 de tarifa
+    #     API. Con esas cifras la ventana recalculada da $30,875 exactos.
+    #   - NO esta medido que los Creditos del plan sean proporcionales al precio
+    #     de lista; es el supuesto de la calibracion (y el unico shape publicado).
+    #     El descuento nocturno promo (-60 % creditos en q38-max/flash, 22-08
+    #     UTC+8) NO se modela: LiteLLM no varifa tarifa por hora. Recalibrar si
+    #     cambia el plan, la mezcla de trafico o la cuota.
     #
     # EL ENDPOINT NO ES EL DE DASHSCOPE NORMAL. Una suscripcion "token plan" tiene
     # host propio, y la key SOLO vale ahi: contra `dashscope-intl.aliyuncs.com` y
@@ -1073,6 +1107,11 @@ data:
         description: Qwen3.8-Max - texto + razonamiento + vision. El mayor del plan.
         mode: chat
         backend: alibaba-model-studio
+        # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000017639273
+        cache_read_input_token_cost: 0.00000003527855
+        output_cost_per_token: 0.00000052917818
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
@@ -1141,6 +1180,10 @@ data:
         description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000001322945
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000004145229
         # 20-09-2026: la otra mitad del cooldown asimetrico (ver `qwen38-flash-next`).
         # Este aparca CORTO porque es el ULTIMO recurso: si se expulsa a este y el
         # residente sigue caido, no queda a donde ir y la peticion muere. Un 429 o un
@@ -1171,6 +1214,10 @@ data:
         description: Qwen3.7-Plus - texto + razonamiento + vision.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000003527855
+        cache_read_input_token_cost: 0.00000000705571
+        output_cost_per_token: 0.00000014111418
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
@@ -1187,6 +1234,10 @@ data:
         description: Qwen3.7-Max - texto + razonamiento. Sin vision.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000022049091
+        cache_read_input_token_cost: 0.00000004409818
+        output_cost_per_token: 0.00000066147272
         supports_function_calling: true
         supports_vision: false
         supports_reasoning: true
@@ -1203,6 +1254,10 @@ data:
         description: Qwen3.6-Flash - texto + razonamiento + vision. Generacion anterior.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002204909
+        cache_read_input_token_cost: 0.00000000440982
+        output_cost_per_token: 0.00000013229454
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
@@ -1219,6 +1274,10 @@ data:
         description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
@@ -1235,6 +1294,10 @@ data:
         description: DeepSeek-V4-Pro servido por Alibaba - texto + razonamiento.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000021167127
+        cache_read_input_token_cost: 0.00000004233425
+        output_cost_per_token: 0.00000042334254
         supports_function_calling: true
         supports_vision: false
         supports_reasoning: true
@@ -1251,6 +1314,10 @@ data:
         description: DeepSeek-V4-Flash snapshot 0731 - pin de version.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.0000000388064
+        cache_read_input_token_cost: 0.00000000776128
+        output_cost_per_token: 0.0000001164192
         supports_function_calling: true
         supports_vision: false
         supports_reasoning: true
@@ -1267,6 +1334,10 @@ data:
         description: GLM-5.3 de Zhipu AI servido por Alibaba - texto + razonamiento.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
         supports_function_calling: true
         supports_vision: false
         supports_reasoning: true
@@ -1283,6 +1354,10 @@ data:
         description: GLM-5.2 de Zhipu AI servido por Alibaba - texto + razonamiento.
         mode: chat
         backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
         supports_function_calling: true
         supports_vision: false
         supports_reasoning: true
@@ -1734,7 +1809,7 @@ data:
     # cliente (galan.e-dani.com, uriel…) no pueden quedarse mudas delante de él. Estas
     # keys ademas llevan fallbacks del Router POR PETICION (deployment que falla con el
     # residente publicado); el caso «sin residente» ya lo cubre TOOLING_FALLBACKS.
-    # Cuando dispara, el prompt sale a Alibaba (plan Team): en una demo solo
+    # Cuando dispara, el prompt sale a Alibaba (plan Individual Pro): en una demo solo
     # viajan preguntas sobre la propia propuesta, nunca datos de clientes.
     # CONTRACT: dgx.litellm.key-fallbacks.demos.v1
     KEY_TOOLING_FALLBACKS = {"demos": ("alibaba-q38-flash",)}
@@ -8794,7 +8869,7 @@ spec:
     - secretKey: auth.json
       remoteRef: { key: litellm/XAI_OAUTH_AUTH_JSON }
 ---
-# Key del plan Team de Alibaba Model Studio (cuenta info@e-dani.com), para los
+# Key del plan Individual Pro de Alibaba Model Studio (cuenta info@e-dani.com), para los
 # alias `ali-*`. Sembrar/rotar SOLO ese campo, nunca con `--template`:
 #   op item edit litellm DASHSCOPE_API_KEY=sk-...
 #
@@ -8948,7 +9023,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-da1efc9d678e
+        config.k8s.e-dani.com/revision: config-330750e40253
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -9135,7 +9210,7 @@ spec:
             # sale a Internet; el model_list lo consume como `os.environ/`.
             - name: OPENROUTER_API_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: OPENROUTER_API_KEY } }
-            # Credencial del plan Team de Alibaba Model Studio para los alias
+            # Credencial del plan Individual Pro de Alibaba Model Studio para los alias
             # `ali-*`. `optional: true` A PROPOSITO: mientras el Secret no exista
             # (campo aun sin sembrar en 1Password, o el rate limit de 1Password
             # impidiendo el refresco) el pod ARRANCA igual y solo los `ali-*`
