@@ -101,15 +101,13 @@ contracts:
       resident. Hermes groups picker rows by (base_url, credential,
       api_mode), so the distinct host is the whole point. Not a backend:
       routing stays by model name.
-      Since 2026-09-24 (additive) `cache_control` markers sent on
-      /v1/messages survive the anthropic->openai translation for `alibaba-*`
-      and the session_router ROUTED_MODELS, so DashScope applies EXPLICIT
-      cache (cache_creation/cached_tokens) instead of implicit. Patch lives in
-      litellm_strip_params.py; /v1/chat/completions already forwarded them.
-      The adapter sees the DEPLOYMENT model (`openai/qwen3.8-flash`), not the
-      alias, so the patch resolves alias -> litellm_params.model via the router.
-      Also covers TOOLING_PROFILE_ALIASES (`tooling`, `qwen38-off`), rewritten
-      to the resident after translation and able to fall back to Alibaba.
+      2026-09-24 -> 2026-09-25: `cache_control` markers on /v1/messages were
+      forwarded to DashScope (EXPLICIT cache) and then withdrawn: the Claude
+      CLI moves its markers between turns and its forks (`agent_summary`,
+      `skipCacheWrite`) only matched the system marker, so Claude Code traffic
+      fell from ~93 % to ~70 % cached. /v1/messages is back on DashScope's
+      IMPLICIT (text-prefix) cache; /v1/chat/completions still forwards the
+      markers a client sends.
 
   - id: litellm.reasoning-effort.v1
     kind: schema
