@@ -143,6 +143,22 @@ COMPANY_CLASS = "company"
 ALIBABA_PREFIX = "alibaba-"
 DEFAULT_COMPANY = {"claude": True, "alibaba": True}
 
+# Interruptores «Fallbacks a Alibaba» (25-09-2026, Dani: poder dejar de usar Alibaba sin
+# PR). Los guarda el panel /inferencia (tarjeta ALIBABA · TOKEN PLAN) en el campo ADITIVO
+# `alibaba` de /api/model-routing/config. Uno por cada camino por el que el tráfico acaba
+# en Alibaba sin pedirlo por nombre:
+#   router_fallback  — el fallback del Router qwen38-flash-next -> alibaba-q38-flash
+#                      (strip_params estampa `fallbacks: []` por petición)
+#   tooling_fallback — TOOLING_FALLBACKS de strip_params (tooling sin residente Ready)
+#   demos_fallback   — KEY_TOOLING_FALLBACKS de strip_params (key `demos`)
+#   overflow         — TODA reescritura residente -> Alibaba de ESTE módulo (sticky,
+#                      válvulas de capacidad, planes alibaba por defecto o por sesión)
+# Solo un false bool apaga; ausente, null o basura = encendido (= antes del 25-09).
+DEFAULT_ALIBABA = {
+    "router_fallback": True, "tooling_fallback": True,
+    "demos_fallback": True, "overflow": True,
+}
+
 # ── Sin esperas en el residente (23-09-2026, Dani: "no quiero que nunca se espere") ──
 # Medido ese día: el semáforo de LiteLLM casi no espera (p99 0,25 s); la espera es la
 # COLA DE vLLM (p50 8 s, p95 94 s en 6 h), y con 3-5 peticiones en marcha también: el
@@ -186,6 +202,7 @@ DEFAULT_CONFIG = {
     "default_plan": "local",
     "session_plans": {},
     "company": dict(DEFAULT_COMPANY),
+    "alibaba": dict(DEFAULT_ALIBABA),
 }
 
 _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
@@ -358,6 +375,8 @@ def _sanitize(raw):
     # Solo un false bool apaga un interruptor de la compañía: ausente, null o basura = hoy.
     company = raw.get("company") if isinstance(raw.get("company"), dict) else {}
     config["company"] = {k: company.get(k) is not False for k in DEFAULT_COMPANY}
+    alibaba = raw.get("alibaba") if isinstance(raw.get("alibaba"), dict) else {}
+    config["alibaba"] = {k: alibaba.get(k) is not False for k in DEFAULT_ALIBABA}
     slots = raw.get("local_slots")
     if isinstance(slots, int) and not isinstance(slots, bool) and 0 <= slots <= LOCAL_SLOTS_CAP:
         config["local_slots"] = slots
@@ -665,6 +684,19 @@ def _rewrite(data, sid, reason):
     )
 
 
+async def alibaba_switches():
+    """Los cuatro interruptores «Fallbacks a Alibaba» (DEFAULT_ALIBABA) tal como los
+    ve este módulo: caché SWR de la config del panel, sin I/O en el camino de la
+    petición. Fail-open: cualquier fallo = todos encendidos (= antes del 25-09)."""
+    try:
+        config = await _config()
+        sw = config.get("alibaba") if isinstance(config.get("alibaba"), dict) else {}
+        return {k: sw.get(k) is not False for k in DEFAULT_ALIBABA}
+    except Exception as exc:
+        _warn_throttled("alibaba_switches", f"alibaba_switches falló ({exc}); fail-open")
+        return dict(DEFAULT_ALIBABA)
+
+
 async def apply_company_policy(data, requested_model):
     """Interruptor «Fallback Alibaba» de la compañía. Lo llama litellm_strip_params en su
     async_pre_call_hook justo después de la política de fallbacks por key, ANTES de
@@ -783,6 +815,12 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         config["sticky"] or config["instant_reject"]
         or config["default_plan"] != "local" or config["session_plans"]
     )
+    # Interruptor global «Desborde del session-router» (25-09-2026): apagado, ninguna
+    # reescritura a Alibaba de este módulo — ni plan explícito, ni sticky, ni válvula
+    # (tampoco la de la compañía). La petición se queda en el residente y encola.
+    if (config.get("alibaba") or {}).get("overflow", True) is False:
+        info["decision"] = "desborde_alibaba_apagado"
+        return False
 
     # ── Precedencia 3: plan EXPLÍCITO del panel (decisión del operador) ──
     # Vive ANTES del corte por flags: un plan explícito es una orden directa

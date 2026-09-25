@@ -283,3 +283,15 @@ def test_el_puente_de_renombrado_no_apunta_a_la_nada():
     # y el destino corto es el que de verdad se sirve (no un tercer nombre)
     assert all(dest.startswith("alibaba-") for k, dest in puente.items()
                if k.startswith("alibaba-"))
+
+
+def test_tooling_switch_off_fails_closed_but_keeps_key_fallbacks(hook):
+    """Interruptor «tooling sin residente» apagado (25-09-2026): base_fallbacks=()
+    quita TOOLING_FALLBACKS; la lista de la key (demos) la gobierna su propio
+    interruptor y sigue valiendo si llega."""
+    live = lambda name: name == "alibaba-q38-flash"  # noqa: E731
+    assert hook._tooling_route_for_state(_state(), live, base_fallbacks=()) == (
+        None, "dry", "tooling_resident_not_ready")
+    assert hook._tooling_route_for_state(
+        _state(), live, base_fallbacks=(), extra_fallbacks=("alibaba-q38-flash",)
+    ) == ("alibaba-q38-flash", "degraded", "tooling_resident_not_ready")

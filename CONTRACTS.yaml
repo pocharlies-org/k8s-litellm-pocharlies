@@ -86,6 +86,12 @@ contracts:
       instant_reject, local_slots, default_plan, session_plans and, since
       2026-09-23, the additive company = {claude, alibaba} (only an explicit
       false switches anything off).
+      Since 2026-09-25 it also reads the ADDITIVE field alibaba =
+      {router_fallback, tooling_fallback, demos_fallback, overflow} (bools,
+      only an explicit false switches one off): overflow=false stops every
+      session_router rewrite to Alibaba, and alibaba_switches() hands the
+      other three to litellm_strip_params.py (fallbacks:[] per request,
+      TOOLING_FALLBACKS and KEY_TOOLING_FALLBACKS emptied).
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba
@@ -169,6 +175,11 @@ contracts:
       disable_fallbacks, and the abliterated aliases have no chain. Guarded by
       tests/test_tooling_profile_contract.py and
       tests/test_aurora_fallback_policy_contract.py.
+      Since 2026-09-25 it can be switched off at runtime, without a deploy,
+      from the /inferencia panel (ALIBABA · TOKEN PLAN, field
+      alibaba.tooling_fallback of /api/model-routing/config): off, the list is
+      treated as empty and the aliases fail closed with the 503. Default and
+      fail-open: on.
   - id: dgx.litellm.active-requests.v1
     kind: http-route
     value: /internal/active-requests
@@ -246,3 +257,7 @@ contracts:
       deja a la demo muda cuando el residente cae. Pinned by
       tests/test_aurora_fallback_policy_contract.py
       (test_la_key_demos_cae_a_alibaba_y_solo_ella).
+      Desde el 2026-09-25 se puede apagar en caliente, sin despliegue, desde
+      el panel /inferencia (ALIBABA · TOKEN PLAN, campo alibaba.demos_fallback
+      de /api/model-routing/config): apagado, la key demos se queda sin salida
+      externa. Por defecto y en fail-open: encendido.
