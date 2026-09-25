@@ -1182,3 +1182,71 @@ def test_con_sid_manda_el_sid(router_mod):
     data = _conv(); data["litellm_trace_id"] = SID
     env.run(data)
     assert env.writes == [(SID, "alibaba")]
+
+
+# ── Interruptores «Fallbacks a Alibaba» (25-09-2026) ─────────────────────────
+# Panel /inferencia (tarjeta ALIBABA · TOKEN PLAN) -> campo aditivo `alibaba` de
+# /api/model-routing/config. Este módulo aplica `overflow` y expone los cuatro a
+# strip_params por alibaba_switches().
+
+ALIBABA_ON = {"router_fallback": True, "tooling_fallback": True,
+              "demos_fallback": True, "overflow": True}
+
+
+def test_alibaba_sanitize_solo_un_false_bool_apaga(router_mod):
+    assert router_mod._sanitize({})["alibaba"] == ALIBABA_ON
+    assert router_mod._sanitize({"alibaba": "off"})["alibaba"] == ALIBABA_ON
+    assert router_mod._sanitize({"alibaba": {"overflow": 0, "router_fallback": "false"}})["alibaba"] == ALIBABA_ON
+    assert router_mod._sanitize({"alibaba": {"overflow": False}})["alibaba"] == {**ALIBABA_ON, "overflow": False}
+    assert router_mod.DEFAULT_CONFIG["alibaba"] == ALIBABA_ON
+
+
+@pytest.mark.parametrize("cfg,company", [
+    (_cfg(sticky=True, instant_reject=True, local_slots=0), False),
+    (_cfg(default_plan="alibaba"), False),
+    (_cfg(session_plans={SID: "alibaba"}), False),
+    (_cfg(sticky=True, local_slots=0, company={"claude": True, "alibaba": True}), True),
+])
+def test_overflow_apagado_no_reescribe_por_ningun_camino(router_mod, cfg, company):
+    env = _Env(router_mod, {**cfg, "alibaba": {**ALIBABA_ON, "overflow": False}}, inflight=99)
+    data = _company_data() if company else _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert "_session_routing_rerouted" not in data["metadata"]
+    assert all(v != "alibaba" for _, v in env.writes)
+
+
+def test_overflow_encendido_sigue_como_antes(router_mod):
+    env = _Env(router_mod, {**_cfg(session_plans={SID: "alibaba"}), "alibaba": ALIBABA_ON}, inflight=0)
+    data = _data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+
+
+def test_alibaba_switches_lee_la_cache_y_hace_fail_open(router_mod):
+    async def cfg_off():
+        return router_mod._sanitize({"alibaba": {"router_fallback": False}})
+
+    async def boom():
+        raise RuntimeError("caída")
+
+    anterior = router_mod._config
+    try:
+        router_mod._config = cfg_off
+        assert asyncio.run(router_mod.alibaba_switches()) == {**ALIBABA_ON, "router_fallback": False}
+        router_mod._config = boom
+        assert asyncio.run(router_mod.alibaba_switches()) == ALIBABA_ON
+    finally:
+        router_mod._config = anterior
+
+
+def test_strip_params_aplica_los_interruptores(strip_src):
+    """Los tres de strip_params: demos vacía la lista por key, router estampa
+    fallbacks:[] (sin sellar: el desborde tiene su propio interruptor) y tooling
+    pasa base_fallbacks=() a la resolución del residente."""
+    assert 'getattr(session_router, "alibaba_switches", None)' in strip_src
+    assert 'not _alibaba_sw["demos_fallback"]' in strip_src
+    i = strip_src.index('if not _alibaba_sw["router_fallback"] and "fallbacks" not in data:')
+    assert strip_src[i:].split("\n")[1].strip() == 'data["fallbacks"] = []'
+    assert "disable_fallbacks" not in strip_src[i:].split("\n")[1]
+    assert 'base_fallbacks=None if _alibaba_sw["tooling_fallback"] else ()' in strip_src
