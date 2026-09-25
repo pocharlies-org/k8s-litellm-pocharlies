@@ -102,7 +102,21 @@ STICKY_WRITE_TIMEOUT_SECONDS = 2.0
 # PING de keepalive del pool de redis: mantiene la conexión caliente y evita
 # pagar DNS+TCP+AUTH en la siguiente operación (que sí va en camino de petición).
 REDIS_HEALTH_CHECK_INTERVAL = 30
-SIDECAR_TIMEOUT_SECONDS = 0.1
+# 25-09-2026: el recuento de las OTRAS réplicas sale del camino de la petición.
+# Medido en producción: el agregado del sidecar tarda ~160 ms (resuelve por DNS el
+# Service headless de pares y CoreDNS vive en ks5-cp-2/3, que desde el x86 van por
+# el relay DERP de Tailscale). Con el tope síncrono de 100 ms fallaba SIEMPRE, cada
+# pod solo se contaba a sí mismo y el tope real era local_slots × réplicas. Ahora lo
+# refresca un sondeo en background (mismo patrón que el de la cola de vLLM) y la
+# válvula lee la última lectura buena: 0 ms en el camino de la petición.
+SIDECAR_LOCAL_URL = os.environ.get(
+    "SESSION_ROUTER_SIDECAR_LOCAL_URL",
+    "http://127.0.0.1:4001/internal/active-requests/local",
+)
+SIDECAR_POLL_SECONDS = 0.5
+SIDECAR_POLL_TIMEOUT_SECONDS = 2.0
+# Sin lectura buena en este tiempo el dato de pares no vale: solo cuenta este pod.
+SIDECAR_STALE_SECONDS = 3.0
 # 23-09-2026 (Dani): 10 min DE INACTIVIDAD. El vínculo se RENUEVA en cada petición
 # de la sesión (local o alibaba): mientras la sesión trabaja se queda donde está su
 # caché; tras 10 min sin peticiones caduca y la siguiente vuelve a decidirse.
@@ -189,6 +203,10 @@ VLLM_POLL_TIMEOUT_SECONDS = 0.8
 VLLM_STALE_SECONDS = 5.0
 _vllm_queue = {"waiting": None, "running": None, "since": None, "read_at": None}
 _vllm_poller = None
+# Filas en vuelo de las OTRAS réplicas (agregado del sidecar menos las de este pod,
+# leídas en el mismo ciclo) y cuándo se leyeron.
+_sidecar_remote = {"rows": None, "read_at": None}
+_sidecar_poller = None
 
 # Ambos flags off (default, y estado mientras el panel no exista o no esté
 # alcanzable): los mecanismos AUTOMÁTICOS duermen y llamar a
@@ -577,6 +595,41 @@ def _ensure_vllm_poller():
         _vllm_poller = asyncio.create_task(_poll_vllm_forever())
 
 
+async def _poll_sidecar_forever():
+    headers = {}
+    master_key = os.environ.get("LITELLM_MASTER_KEY") or ""
+    if master_key:
+        headers["Authorization"] = f"Bearer {master_key}"
+    client = httpx.AsyncClient(timeout=SIDECAR_POLL_TIMEOUT_SECONDS)
+    while True:
+        try:
+            aggregate = await client.get(SIDECAR_URL, headers=headers)
+            aggregate.raise_for_status()
+            own = await client.get(SIDECAR_LOCAL_URL, headers=headers)
+            own.raise_for_status()
+            own_ids = {
+                row.get("request_id")
+                for row in ((own.json() or {}).get("active") or [])
+                if isinstance(row, dict)
+            }
+            _sidecar_remote["rows"] = [
+                row
+                for row in ((aggregate.json() or {}).get("active") or [])
+                if isinstance(row, dict) and row.get("request_id") not in own_ids
+            ]
+            _sidecar_remote["read_at"] = time.monotonic()
+        except Exception as exc:
+            _warn_throttled("sidecar_poll", f"sondeo del sidecar de peticiones en vuelo falló ({exc.__class__.__name__}); solo cuento este pod")
+        await asyncio.sleep(SIDECAR_POLL_SECONDS)
+
+
+def _ensure_sidecar_poller():
+    """Arranca el sondeo del sidecar la primera vez que hace falta (y lo rearranca si murió)."""
+    global _sidecar_poller
+    if _sidecar_poller is None or _sidecar_poller.done():
+        _sidecar_poller = asyncio.create_task(_poll_sidecar_forever())
+
+
 def _queue_stuck(now=None):
     """True si la cola de vLLM lleva >= WAIT_TOLERANCE_SECONDS sin vaciarse; False si
     no; None si no hay lectura fresca (=> la válvula de cola no actúa)."""
@@ -590,9 +643,9 @@ def _queue_stuck(now=None):
 
 async def _inflight_resident(tracker):
     """Peticiones en vuelo al residente (mandato 1): este pod por el tracker
-    in-process (exacto) + las OTRAS réplicas por el sidecar :4001, deduplicando
-    por request_id (el agregado del sidecar incluye las filas de su propio
-    fichero, que son este pod con hasta 0,25 s de retardo). None => contador
+    in-process (exacto) + las OTRAS réplicas por la última lectura del sondeo del
+    sidecar :4001 (agregado menos /local, ver _poll_sidecar_forever), deduplicando
+    por request_id. None => contador
     desconocido => la válvula NO actúa (fail-open hacia admitir local, con el
     semaphore duro de 8 del Router detrás protegiendo igual)."""
     local_ids = set()
@@ -607,26 +660,16 @@ async def _inflight_resident(tracker):
         log.warning("session_router: tracker snapshot falló (%s); sin válvula", exc)
         return None
     remote_n = 0
-    try:
-        headers = {}
-        master_key = os.environ.get("LITELLM_MASTER_KEY") or ""
-        if master_key:
-            headers["Authorization"] = f"Bearer {master_key}"
-        async with httpx.AsyncClient(timeout=SIDECAR_TIMEOUT_SECONDS) as client:
-            response = await client.get(SIDECAR_URL, headers=headers)
-        response.raise_for_status()
-        rows = (response.json() or {}).get("active") or []
+    _ensure_sidecar_poller()
+    rows = _sidecar_remote["rows"]
+    read_at = _sidecar_remote["read_at"]
+    if rows is not None and read_at is not None and time.monotonic() - read_at <= SIDECAR_STALE_SECONDS:
         for row in rows:
-            if (
-                isinstance(row, dict)
-                and row.get("model") in RESIDENT_FAMILY
-                and row.get("request_id") not in local_ids
-            ):
+            if row.get("model") in RESIDENT_FAMILY and row.get("request_id") not in local_ids:
                 remote_n += 1
-    except Exception:
-        # Sidecar mudo/par caído: solo lo local, que subestima => admite de más
-        # en local, la dirección fail-open. El semaphore 8 por pod sigue topando.
-        remote_n = 0
+    # Sin lectura fresca (sidecar mudo, par caído, recién arrancado): solo lo local,
+    # que subestima => admite de más en local, la dirección fail-open. El semaphore
+    # 8 por pod sigue topando.
     return local_n + remote_n
 
 
