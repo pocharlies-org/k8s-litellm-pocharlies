@@ -270,3 +270,29 @@ contracts:
       el panel /inferencia (ALIBABA · TOKEN PLAN, campo alibaba.demos_fallback
       de /api/model-routing/config): apagado, la key demos se queda sin salida
       externa. Por defecto y en fail-open: encendido.
+  - id: dgx.litellm.alibaba-pack-pricing.v1
+    kind: schema
+    # `cache_read_input_token_cost` es el literal nuevo de la superficie: los
+    # tres campos de precio viven en el model_info de los alias alibaba-* del
+    # manifiesto y el proxy los lee al arrancar (generic_cost_per_token en
+    # LiteLLM 1.100.0 tarifica los cache-hit aparte).
+    value: cache_read_input_token_cost
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-25 (Dani: "prorrateo del pack"). Los 10 alias alibaba-* llevan
+      input_cost_per_token / cache_read_input_token_cost /
+      output_cost_per_token = precio de lista internacional x k, con k
+      calibrado contra la ventana real del plan: pack Individual Pro $65/mes
+      (pedido BSS 518016570950293, 3 meses por $195 pre-tax), 180.000
+      creditos/mes, 47,5 % consumido = $30,875, mezcla de tokens de
+      LiteLLM_SpendLogs del periodo (contaminacion AI Studio/galan medida: 0).
+      Ratio de cache segun doc Context Cache de Alibaba: 20 % del input
+      (implicito), 10 % en deepseek-v4.1-flash. k = 30,875/350,07 = 0,0882;
+      la ventana recalculada da $30,875 exactos. Consumidor: el spend que
+      publican SpendLogs y /v2/model/info (paneles del dashboard, Grafana).
+      El supuesto creditos~lista es inspeccionable en la cabecera de la
+      seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
+      cuota.
