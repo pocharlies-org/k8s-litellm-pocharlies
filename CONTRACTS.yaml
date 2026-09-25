@@ -212,6 +212,13 @@ contracts:
       so a request still in queue/prefill shows its size before the first
       token. It never replaces prompt_tokens, which stays backend-only.
       Pinned by tests/test_prompt_tokens_estimate_contract.py.
+      Since 2026-09-25 session_router.py (same pod, other process) reads this
+      route and /internal/active-requests/local from a background poll every
+      0.5 s instead of synchronously per request (remote = aggregate minus
+      local of the same cycle); a read older than 3 s counts only this pod.
+      The sidecar caches peer discovery (DNS of litellm-active-peers) for
+      15 s and serves the last good list up to 120 s if DNS fails. Shape and
+      paths unchanged. Pinned by tests/test_session_routing_contract.py.
   - id: dgx.litellm.refusal-probe-stamp.v1
     # Claves que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de refusal. Mismo kind que class-header: es una

@@ -208,10 +208,21 @@ def test_timeouts_del_camino_de_peticion_hasta_100ms(router_src):
             for target in node.targets:
                 if getattr(target, "id", "").endswith("TIMEOUT_SECONDS"):
                     constantes[target.id] = node.value.value
-    for nombre in (
-        "REDIS_OP_TIMEOUT_SECONDS", "SIDECAR_TIMEOUT_SECONDS", "CONFIG_TIMEOUT_SECONDS"
-    ):
+    for nombre in ("REDIS_OP_TIMEOUT_SECONDS", "CONFIG_TIMEOUT_SECONDS"):
         assert constantes[nombre] <= 0.1, f"{nombre} = {constantes[nombre]} > 100 ms"
+    # 25-09-2026: el sidecar salió del camino de la petición. Su agregado tarda
+    # ~160 ms (DNS de pares vía relay) y con el tope síncrono de 100 ms fallaba
+    # SIEMPRE: cada pod solo se contaba a sí mismo. Ahora lo lee un sondeo en
+    # background; SIDECAR_POLL_TIMEOUT_SECONDS puede ser holgado SOLO porque
+    # _inflight_resident no hace NINGUNA I/O de red (se comprueba abajo).
+    assert "SIDECAR_TIMEOUT_SECONDS" not in constantes
+    assert 0.1 < constantes["SIDECAR_POLL_TIMEOUT_SECONDS"] <= 5.0
+    inflight = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_inflight_resident"
+    )
+    inflight_src = ast.get_source_segment(router_src, inflight)
+    assert "httpx" not in inflight_src and "SIDECAR_URL" not in inflight_src
     # 21-09 (post-deploy): CONFIG_REFRESH_TIMEOUT_SECONDS puede ser holgado SOLO
     # porque vive fuera del camino de la petición — _config() no hace NINGUNA I/O
     # (stale-while-revalidate). El backend tarda 130-300 ms (subprocess kubectl)
@@ -1108,32 +1119,60 @@ def test_presupuesto_unico_cuenta_toda_la_familia_del_residente(fresh_mod):
             return {"a": {"model": RESIDENT}, "b": {"model": RESIDENT + "-uncensored"},
                     "c": {"model": OVERFLOW}}
 
+    # 25-09-2026: las otras réplicas salen de la última lectura del sondeo en
+    # background (agregado del sidecar menos /local), no de una llamada síncrona.
+    m._ensure_sidecar_poller = lambda: None
+    m._sidecar_remote["rows"] = [
+        {"request_id": "a", "model": RESIDENT},                  # ya contado (este pod)
+        {"request_id": "x", "model": RESIDENT + "-uncensored"},  # otra réplica
+        {"request_id": "y", "model": OVERFLOW},
+    ]
+    m._sidecar_remote["read_at"] = m.time.monotonic()
+    assert asyncio.run(m._inflight_resident(T())) == 3
+
+    # Lectura vieja => solo este pod (fail-open, como con el sidecar mudo).
+    m._sidecar_remote["read_at"] = m.time.monotonic() - m.SIDECAR_STALE_SECONDS - 1
+    assert asyncio.run(m._inflight_resident(T())) == 2
+
+
+def test_sondeo_del_sidecar_resta_las_filas_de_este_pod(fresh_mod, monkeypatch):
+    """Una vuelta del sondeo: remoto = agregado menos /local del mismo ciclo."""
+    m = fresh_mod
+
     class Resp:
+        def __init__(self, rows):
+            self.rows = rows
+
         def raise_for_status(self):
             return None
 
         def json(self):
-            return {"active": [
-                {"request_id": "a", "model": RESIDENT},                  # ya contado (este pod)
-                {"request_id": "x", "model": RESIDENT + "-uncensored"},  # otra réplica
-                {"request_id": "y", "model": OVERFLOW},
-            ]}
+            return {"active": self.rows}
 
     class Cli:
         def __init__(self, *a, **k):
             pass
 
-        async def __aenter__(self):
-            return self
+        async def get(self, url, **k):
+            if url == m.SIDECAR_LOCAL_URL:
+                return Resp([{"request_id": "a", "model": RESIDENT}])
+            return Resp([
+                {"request_id": "a", "model": RESIDENT},
+                {"request_id": "x", "model": RESIDENT},
+            ])
 
-        async def __aexit__(self, *a):
-            return False
+    class Stop(Exception):
+        pass
 
-        async def get(self, *a, **k):
-            return Resp()
+    async def stop(*a, **k):
+        raise Stop()
 
-    m.httpx.AsyncClient = Cli
-    assert asyncio.run(m._inflight_resident(T())) == 3
+    monkeypatch.setattr(m.httpx, "AsyncClient", Cli, raising=False)
+    monkeypatch.setattr(m.asyncio, "sleep", stop)
+    with pytest.raises(Stop):
+        asyncio.run(m._poll_sidecar_forever())
+    assert [r["request_id"] for r in m._sidecar_remote["rows"]] == ["x"]
+    assert m._sidecar_remote["read_at"] is not None
 
 
 
