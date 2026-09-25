@@ -1638,89 +1638,19 @@ data:
     except Exception:  # pragma: no cover
         session_router = None
 
-    # 24-09-2026: `cache_control` de `/v1/messages` hasta Alibaba (cache EXPLICITA).
+    # 25-09-2026: `cache_control` de `/v1/messages` NO llega a Alibaba (cache IMPLICITA).
     #
-    # El flag global LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES
-    # traduce todo `/v1/messages` a chat completions, y el adaptador de LiteLLM
-    # (`LiteLLMAnthropicMessagesAdapter._add_cache_control_if_applicable`) SOLO
-    # conserva el marcador si el modelo es Claude o un ARN de Bedrock. Para
-    # `alibaba-*` y el residente lo tiraba, asi que el Claude CLI caia en la cache
-    # IMPLICITA de DashScope. Medido hoy, mismo prefijo de ~38k contra
-    # `alibaba-q38-flash`:
-    #   /v1/chat/completions con marcador -> create 38303, read 38303 (explicita)
-    #   /v1/messages         con marcador -> sin create, read 37888  (implicita)
-    # El plano OpenAI de DashScope SI entiende `cache_control` en los bloques de
-    # contenido, y `openai/` con api_base que no es openai.com ya no lo quita
-    # (`_should_preserve_cache_control_for_endpoint`): el unico hueco era este.
-    #
-    # Alcance: los `alibaba-*` y los ROUTED_MODELS del session_router — el
-    # residente, porque la traduccion ocurre ANTES de enrutar y su caida a
-    # Alibaba lleva el mensaje ya traducido. vLLM acepta el campo y lo ignora
-    # (probado contra `qwen38-flash-next` con marcadores en system y user: 200).
-    try:
-        from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
-            LiteLLMAnthropicMessagesAdapter as _MessagesAdapter,
-        )
-
-        _orig_add_cache_control = _MessagesAdapter._add_cache_control_if_applicable
-        _cache_control_models = {"names": None}
-
-        def _cache_control_model_names():
-            # Detras del Router el adaptador NO ve el alias: ve el `model` del
-            # deployment (`openai/qwen3.8-flash`, medido con un espia el
-            # 24-09). Se resuelve alias -> litellm_params.model una vez, cuando
-            # el router ya esta cargado.
-            names = _cache_control_models["names"]
-            if names is not None:
-                return names
-            from litellm.proxy.proxy_server import llm_router
-
-            if llm_router is None:
-                return frozenset()
-            routed = session_router.ROUTED_MODELS if session_router is not None else frozenset()
-            # `tooling`/`qwen38-off` (deployment `openai/tooling`): el hook los
-            # reescribe al residente DESPUES de traducir, y de ahi pueden caer a
-            # Alibaba. Sin esto llegaban alli sin marcador.
-            routed = routed | TOOLING_PROFILE_ALIASES
-            names = set()
-            for dep in llm_router.model_list or []:
-                alias = dep.get("model_name") or ""
-                if alias.startswith("alibaba-") or alias in routed:
-                    names.add(alias)
-                    model = (dep.get("litellm_params") or {}).get("model")
-                    if model:
-                        names.add(model)
-            names = frozenset(names)
-            _cache_control_models["names"] = names
-            return names
-
-        def _keeps_cache_control(model):
-            if not model:
-                return False
-            if model.startswith("alibaba-"):
-                return True
-            try:
-                return model in _cache_control_model_names()
-            except Exception:
-                return False
-
-        def _add_cache_control_if_applicable(self, source, target, model):
-            _orig_add_cache_control(self, source, target, model)
-            if not _keeps_cache_control(model) or not isinstance(target, dict):
-                return
-            cache_control = (
-                source.get("cache_control")
-                if isinstance(source, dict)
-                else getattr(source, "cache_control", None)
-            )
-            if cache_control:
-                target["cache_control"] = cache_control
-
-        _MessagesAdapter._add_cache_control_if_applicable = _add_cache_control_if_applicable
-    except Exception as exc:  # pragma: no cover - sin parche, cache implicita
-        logging.getLogger("litellm.cache_control").warning(
-            "parche cache_control /v1/messages no aplicado: %s", exc
-        )
+    # El 24-09 (#145/#147/#149) se conservo el marcador hasta DashScope para usar
+    # su cache EXPLICITA. En una sonda de dos llamadas va igual; con el Claude CLI
+    # real, no: la explicita solo acierta donde hay una marca ya creada, y el CLI
+    # mueve las marcas. Los forks del CLI (`agent_summary` de cada subagente en
+    # background, cada 30 s, `skipCacheWrite`) ponen la marca un mensaje ANTES y
+    # solo casaban la del system. Medido en SpendLogs, key `claude-local`:
+    #   forks        implicita 98,9 % cacheado (2092/2106)  ->  explicita 33,1 %
+    #   resto        implicita 90,2 %                       ->  explicita 81,5 %
+    #   hermes/opencode (sin marcas) sin cambio.
+    # La implicita casa por prefijo de texto y le dan igual las marcas: el
+    # adaptador de LiteLLM las tira para `alibaba-*` y el residente, y asi se queda.
 
     log = logging.getLogger("litellm.active_tracking")
     router_log = logging.getLogger("litellm.smart_router")
@@ -8854,7 +8784,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b1cbdbf94058
+        config.k8s.e-dani.com/revision: config-f54e942dc5d3
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
