@@ -184,6 +184,23 @@ def _data(model, sid=None, metadata=None):
     return data
 
 
+@pytest.fixture(autouse=True)
+def _cuenta2_por_defecto(monkeypatch):
+    """Los tests del stamp describen el estado ACTIVADO (dos cuentas)."""
+    monkeypatch.setenv("DASHSCOPE_API_KEY_2", "sk-segunda-cuenta")
+
+
+def test_sin_cuenta2_no_estampa_ni_pinea(router_mod, monkeypatch):
+    """Sin key 2 no hay sid: el filtro de afinidad corre ANTES que el de order
+    y un pin nacido en un cooldown del -k1 atrapaba la sesion en el -k2."""
+    monkeypatch.delenv("DASHSCOPE_API_KEY_2", raising=False)
+    router_mod.ensure_affinity_redis = lambda: None
+    monkeypatch.setattr(router_mod, "ensure_alibaba_key2_active", lambda: None)
+    data = _data("alibaba-q38-flash", sid="sesion-abc")
+    assert router_mod.stamp_alibaba_session_affinity(data) is None
+    assert "session_id" not in (data.get("metadata") or {})
+
+
 def test_estampa_sid_propio_en_alibaba(router_mod):
     router_mod.ensure_affinity_redis = lambda: None
     data = _data("alibaba-q38-flash", sid="sesion-abc")
@@ -269,6 +286,12 @@ class _RouterFalso:
              "model_info": {"id": "alibaba-q36-flash-k2"}},
         ]
 
+    def delete_deployment(self, id):
+        for i, d in enumerate(self.model_list):
+            if d["model_info"]["id"] == id:
+                return self.model_list.pop(i)
+        return None
+
 
 def _con_router_falso(monkeypatch, router):
     import types as _t
@@ -283,13 +306,14 @@ def _con_router_falso(monkeypatch, router):
         monkeypatch.setitem(sys.modules, nombre, modulo)
 
 
-def test_sin_key_los_k2_quedan_inertes(router_mod, monkeypatch):
+def test_sin_key_los_k2_se_retiran_del_router(router_mod, monkeypatch):
     router = _RouterFalso()
     _con_router_falso(monkeypatch, router)
     monkeypatch.delenv("DASHSCOPE_API_KEY_2", raising=False)
     router_mod._alibaba_key2_checked = False
     router_mod.ensure_alibaba_key2_active()
-    assert router.model_list[1]["litellm_params"]["order"] == 2, "sin key, el -k2 NO entra al reparto"
+    ids = [d["model_info"]["id"] for d in router.model_list]
+    assert ids == ["alibaba-q36-flash-k1"], "sin key, el -k2 no puede quedar cargado (trampa de afinidad -> 401)"
 
 
 def test_con_key_el_hook_activa_los_k2(router_mod, monkeypatch):
