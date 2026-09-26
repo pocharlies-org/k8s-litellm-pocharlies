@@ -42,10 +42,14 @@ PERFILES = {
 REESCRITOS = ("qwen38-off", "qwen38-u-off")
 CENSURADOS = ("qwen38-off",)
 ABLITERADOS = ("qwen38-u-off",)
-# Los cuatro nombres viejos del renombrado del 22-09. El puente caduco el
-# 26-09 (spend logs 19..26-09: 13 peticiones, 0 con exito): no deben volver ni
-# al model_list ni a `model_group_alias` ni al hook. Su ausencia es el contrato.
-VIEJOS_RETIRADOS = ("q38-flash", "q38-flash-think", "q38-flash-u", "q38-flash-u-think")
+# Los cuatro nombres viejos: retirados del model_list, vivos solo como puente.
+PUENTE_VIEJO = ("q38-flash", "q38-flash-think", "q38-flash-u", "q38-flash-u-think")
+PUENTE = {
+    "q38-flash": "qwen38-off",
+    "q38-flash-u": "qwen38-u-off",
+    "q38-flash-think": "qwen38-flash-next",
+    "q38-flash-u-think": "qwen38-flash-next-uncensored",
+}
 
 
 @pytest.fixture(scope="module")
@@ -69,7 +73,7 @@ WANT_CONST = {
     "TOOLING_MODE_TARGETS",
     "TOOLING_UNCENSORED_MODE_TARGETS", "UNCENSORED_GATED_ALIASES",
     "CAPABILITY_CHAINS", "TOOLING_FALLBACKS",
-    "THINKING_TIERS", "SWAPPABLE_ALIASES",
+    "THINKING_TIERS", "SWAPPABLE_ALIASES", "CHAT_PROFILE_RENAMES",
 }
 
 
@@ -100,7 +104,10 @@ def test_los_cuatro_perfiles_estan_publicados_en_el_model_list(config):
     publicados = {e["model_name"] for e in config["model_list"]}
     faltan = sorted(set(PERFILES) - publicados)
     assert not faltan, f"Open WebUI dejaria de ofrecer {faltan}: {sorted(PERFILES)}"
-    reaparecen = sorted(v for v in VIEJOS_RETIRADOS if v in publicados)
+    puente = (config.get("router_settings") or {}).get("model_group_alias") or {}
+    colgados = sorted(v for v in PUENTE_VIEJO if puente.get(v) != PUENTE[v])
+    assert not colgados, f"nombres viejos sin puente correcto (404 para sesiones fijadas): {colgados}"
+    reaparecen = sorted(v for v in PUENTE_VIEJO if v in publicados)
     assert not reaparecen, f"un nombre retirado volvio al model_list: {reaparecen}"
 
 
@@ -136,7 +143,7 @@ def fallbacks(config):
     Ahi vive el fallback de verdad, no en `TOOLING_FALLBACKS` del hook — esa cadena
     esta en `()` desde que la red se declaro en el router. Y la clave es el nombre
     DIRECTO del residente, porque el hook reescribe el alias ANTES de enrutar: pedir
-    `qwen38-off` acaba pidiendo `qwen38-flash-next`, y esa es la clave que mira
+    `q38-flash` acaba pidiendo `qwen38-flash-next`, y esa es la clave que mira
     LiteLLM. Eso es lo que hace que los cuatro perfiles hereden la red (o se queden
     sin ella) sin declararla ellos.
     """
@@ -188,42 +195,23 @@ def test_los_abliterados_estan_detras_de_la_puerta_de_keys(hook):
         assert alias in hook.UNCENSORED_GATED_ALIASES, alias
 
 
-def test_el_puente_q38_flash_quedo_borrado_en_los_dos_sitios(config):
-    """Lapida del puente (26-09): ni el del router (`model_group_alias`) ni el del
-    hook (`CHAT_PROFILE_RENAMES`) pueden volver a existir.
+def test_el_puente_del_hook_y_el_del_router_coinciden(config, hook):
+    """Los DOS puentes del renombrado tienen que decir lo mismo.
 
-    El puente vivo tenia que decir lo mismo en los DOS sitios; retirado, la
-    exigencia es simetrica: un nombre viejo resucitado en solo uno de los dos
-    era justo el fallo que aquella pareja cubria — `model_group_alias` elige el
-    deployment pero el hook ve el nombre CRUDO, y medio puente manda el trafico
-    al pool con `model: "tooling"` (404 medido 22-09). Caducidad cumplida: spend
-    logs 19..26-09 = 0 peticiones con exito en los cuatro nombres.
+    `model_group_alias` elige el deployment, pero el hook ve el nombre CRUDO
+    pedido y sus tablas (CAPABILITY_CHAINS, THINKING_TIERS, el gate uncensored)
+    lo miran a el. Si alguien toca uno y no el otro, el trafico puenteado sale
+    al pool con `model: "tooling"` y vLLM lo rechaza con 404 — y de paso mete el
+    deployment en cooldown (medido 22-09).
     """
     puente = (config.get("router_settings") or {}).get("model_group_alias") or {}
-    vivos = sorted(k for k in puente if k in VIEJOS_RETIRADOS)
-    assert not vivos, f"el puente del router volvio: {vivos}"
+    viejos = {k: v for k, v in puente.items() if k.startswith("q38-flash")}
+    assert viejos == hook.CHAT_PROFILE_RENAMES, (
+        f"puente del router {viejos} != puente del hook {hook.CHAT_PROFILE_RENAMES}"
+    )
     publicados = {e["model_name"] for e in config["model_list"]}
-    reaparecen = sorted(v for v in VIEJOS_RETIRADOS if v in publicados)
-    assert not reaparecen, f"un nombre retirado volvio al model_list: {reaparecen}"
-    src = next(
-        d["data"]["litellm_strip_params.py"]
-        for d in yaml.safe_load_all(MANIFEST.read_text())
-        if d and d.get("kind") == "ConfigMap"
-        and d["metadata"]["name"] == "litellm-config"
-    )
-    asignados = {
-        t.id for n in ast.parse(src).body
-        if isinstance(n, ast.Assign) for t in n.targets
-        if getattr(t, "id", "")
-    }
-    assert "CHAT_PROFILE_RENAMES" not in asignados, (
-        "el puente del hook resucito sin su pareja del router: mitad de puente")
-    viejos_en_hook = sorted(
-        node.value for node in ast.walk(ast.parse(src))
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str) and node.value in VIEJOS_RETIRADOS
-    )
-    assert not viejos_en_hook, f"nombres viejos literales en el hook: {viejos_en_hook}"
+    colgados = {k: v for k, v in viejos.items() if v not in publicados}
+    assert not colgados, f"puentes apuntando a un grupo no publicado: {colgados}"
 
 
 def test_los_reescritos_son_reescritos_al_residente_vivo(hook):

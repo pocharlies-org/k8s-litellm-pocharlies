@@ -1929,10 +1929,18 @@ data:
         alibaba-deepseek-v41-flash: alibaba-dsv41-fl
         alibaba-deepseek-v4-pro: alibaba-dsv4-pro
         alibaba-deepseek-v4-flash-0731: alibaba-dsv4f0731
-        # 26-09-2026: RETIRADO el puente `q38-flash*` del renombrado del 22-09.
-        # Regla de caducidad cumplida: spend logs 19..26-09 = 13 peticiones,
-        # 0 con exito (todas probes fallidas). La pareja del hook
-        # (CHAT_PROFILE_RENAMES) se va con el. Test: test_chat_catalog_contract.
+        # 22-09-2026: puente del renombrado de los perfiles de chat.
+        # 26-09-2026: RETIRADO y RESTAURADO el mismo dia. Open WebUI
+        # (chat.e-dani.com) sigue publicando estos cuatro nombres: su catalogo
+        # vive en dgx-infra (tests/chat-catalog, CronJob reconcile-chat-catalog,
+        # regex ^q38-flash(-u)?(-think)?$ y filas `model` de su BD) y nunca se
+        # migro. Sin el puente, el chat da 400 "Invalid model name". El spend log
+        # no lo veia: el trafico puenteado se apunta con el nombre NUEVO. Antes de
+        # retirarlo otra vez: migrar el catalogo del chat y grep de consumidores.
+        q38-flash: qwen38-off
+        q38-flash-u: qwen38-u-off
+        q38-flash-think: qwen38-flash-next
+        q38-flash-u-think: qwen38-flash-next-uncensored
       # 2026-06-22: a wedged vLLM backend (EngineCore deadlock; /health still 200)
       # used to keep eating ~50% of chat traffic because it took 20 fails before
       # any cooldown and the cooldown was only 30s. Eject faster and keep it out
@@ -2230,13 +2238,20 @@ data:
         "tooling-uncensored", "qwen38-u-off",
     })
 
-    # 26-09-2026: RETIRADO CHAT_PROFILE_RENAMES, pareja del puente `q38-flash*`
-    # del router (ver su lapida en model_group_alias). Caducidad cumplida: spend
-    # logs 19..26-09 = 0 peticiones con exito en los cuatro nombres viejos.
-    # El motivo por el que existia sigue vigente como leccion: `model_group_alias`
-    # elige el deployment pero el hook ve el nombre CRUDO, asi que un puente vive
-    # en los dos sitios o en ninguno (medido 22-09: sin el mapa del hook, el
-    # trafico puenteado salia al pool con `model: "tooling"` y vLLM lo rechazaba).
+    # Puente del renombrado en el HOOK (22-09-2026, pareja del `model_group_alias`
+    # del router). Hace falta los dos y no solo el del router: `model_group_alias`
+    # elige el deployment, pero este hook corre con el nombre CRUDO pedido, y todas
+    # sus tablas (CAPABILITY_CHAINS, THINKING_TIERS, el gate uncensored) miran ese
+    # nombre. Sin este mapa, un `q38-flash` puenteado salia al pool con
+    # `model: "tooling"` en el cuerpo y vLLM lo rechazaba con 404 (medido 22-09).
+    # 26-09-2026: retirado y restaurado — Open WebUI sigue en los nombres viejos
+    # (ver la nota del puente en model_group_alias).
+    CHAT_PROFILE_RENAMES = {
+        "q38-flash": "qwen38-off",
+        "q38-flash-u": "qwen38-u-off",
+        "q38-flash-think": "qwen38-flash-next",
+        "q38-flash-u-think": "qwen38-flash-next-uncensored",
+    }
 
     def _component_is_ready(state, node, name):
         components = (state.get("components") or {}).get(node) or []
@@ -5980,6 +5995,12 @@ data:
 
             requested_model = data.get("model", "")
 
+            # Puente del renombrado (ver CHAT_PROFILE_RENAMES): lo primero, antes
+            # de cualquier gate, para que un nombre viejo puenteado pase por las
+            # mismas puertas y tablas que el nuevo.
+            if requested_model in CHAT_PROFILE_RENAMES:
+                requested_model = data["model"] = CHAT_PROFILE_RENAMES[requested_model]
+
             # Gate de la ruta ABLITERADA, lo primero de todo y a proposito: antes de
             # sanear sampling, de reescribir alias y de cualquier llamada al backend.
             # Si esta key no puede pedirla, no se toca nada mas y se devuelve 403.
@@ -9511,7 +9532,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-5470276d6bba
+        config.k8s.e-dani.com/revision: config-3a880903af29
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
