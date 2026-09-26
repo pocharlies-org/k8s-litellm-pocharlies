@@ -9912,6 +9912,9 @@ spec:
             - name: DASHSCOPE_API_KEY
               valueFrom:
                 secretKeyRef: { name: litellm-alibaba, key: DASHSCOPE_API_KEY, optional: true }
+            # CONTRACT: dgx.litellm.alibaba-second-account.v1 (DGX-444: el ES
+            # `litellm-alibaba-2` esta gateado fuera del manifiesto hasta que
+            # exista el item 1Password; no renombrar Secret, env ni titulo).
             # Key de la segunda cuenta del plan Team (deployments `-k2`). Sin
             # Secret no existe la variable: `os.environ/DASHSCOPE_API_KEY_2`
             # no resuelve y esos deployments dan 401 — pero con `order: 2`
