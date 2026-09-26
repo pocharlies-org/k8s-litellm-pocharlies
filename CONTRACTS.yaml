@@ -72,6 +72,32 @@ contracts:
       is computed AFTER the hook strips Claude Code's x-anthropic-billing-header
       system block (2026-09-23), so it no longer carries that per-conversation
       suffix.
+  - id: dgx.session-router.deployment-affinity-key.v1
+    kind: schema
+    value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>
+    anchor: "deployment_affinity:v1:"
+    role: consumer
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-26 (segunda cuenta de Alibaba). Clava cada sesion a UN
+      deployment (cuenta) dentro de un grupo alibaba-*: el cache de contexto
+      de Model Studio es por cuenta y partir una conversacion entre las dos
+      pagaria el prefijo en cada salto. Publisher y lector: el
+      DeploymentAffinityCheck de litellm v1.100.0 (proceso del proxy) —
+      nuestro hook NO escribe estas claves; solo alimenta el
+      metadata["session_id"] que las indexa (pisando el id inestable que
+      manda el cliente) y monta la Valkey sobre el DualCache del Router
+      (ensure_affinity_redis), sin lo cual el pin vive solo por pod.
+      Valkey litellm-valkey db 0; valor {"model_id": "<grupo>-k1|<grupo>-k2"}
+      — ids explicitos y estables del manifiesto, vigentes por
+      test_alibaba_second_key_affinity_contract; TTL =
+      deployment_affinity_ttl_seconds (3600 s de inactividad, renovado en
+      cada peticion, claim first-writer-wins). Mientras los -k2 llevan
+      `order: 2` el pin solo clava la cuenta 1; activar el reparto = quitar
+      ese order (ver ExternalSecret litellm-alibaba-2).
   - id: dgx.model-routing.config.v1
     kind: http-route
     value: /api/model-routing/config
@@ -303,4 +329,8 @@ contracts:
       publican SpendLogs y /v2/model/info (paneles del dashboard, Grafana).
       El supuesto creditos~lista es inspeccionable en la cabecera de la
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
-      cuota.
+      cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
+      (segunda cuenta del plan) que ESPEJA estos tres campos — el espejo lo
+      vigila test_alibaba_second_key_affinity_contract; si el plan de la
+      cuenta 2 se paga distinto, revisar los campos al activar (quitar
+      `order: 2`).

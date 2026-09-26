@@ -740,6 +740,83 @@ def _rewrite(data, sid, reason):
     )
 
 
+# ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026) ────────────────
+# Cada grupo `alibaba-*` tiene dos deployments (dos planes Team). El cache
+# de contexto de Model Studio es POR CUENTA: partir una conversacion entre
+# las dos paga el prefijo entero en cada salto. El mecanismo es el nativo
+# del Router (DeploymentAffinityCheck, activado por grupo en
+# router_settings.model_group_affinity_config, verificado en la fuente
+# pineada v1.100.0); este modulo solo lo alimenta:
+#   (a) estampa metadata["session_id"] con el sid PROPIO del hook en toda
+#       peticion que va a un grupo `alibaba-*`. El id que manda el cliente
+#       no vale — se PISA deliberadamente (AFFINITY_CHARS: opencode manda
+#       22 distintos por conversacion).
+#   (b) monta una vez la Valkey del namespace sobre el DualCache del
+#       Router, sin la cual el pin vive solo en el pod y con dos replicas
+#       la afinidad se rompe entre pods.
+# Fail-open en los dos: sin sid no se estampa nada (shuffle puro, como
+# hoy); sin Valkey el pin queda por replica y el router sigue sirviendo.
+
+# CONTRACT: dgx.session-router.deployment-affinity-key.v1
+# (ancla: deployment_affinity:v1:) Las claves de afinidad en Valkey db 0
+# las escribe el DeploymentAffinityCheck de litellm SOBRE EL TIER que
+# monta ensure_affinity_redis: cambiar la URL/db o quitar el tier las
+# mata todas (afinidad perdida en silencio, no error).
+
+_affinity_redis_tried = False
+
+
+def ensure_affinity_redis():
+    """Una vez por proceso: si el DualCache del Router no tiene tier de
+    redis, montar la Valkey del namespace (misma URL y password que el
+    sticky). No se reintenta: el precio de fallar es afinidad por pod, no
+    error. `_update_redis_cache` solo escribe si el tier esta vacio, asi
+    que dos replicas del hook montando a la vez no se pisan."""
+    global _affinity_redis_tried
+    if _affinity_redis_tried:
+        return
+    _affinity_redis_tried = True
+    try:
+        from litellm.proxy.proxy_server import llm_router
+        if llm_router is None or llm_router.cache.redis_cache is not None:
+            return
+        from litellm.caching.redis_cache import RedisCache
+        parts = urlsplit(REDIS_URL)
+        cache = RedisCache(
+            host=parts.hostname or "localhost",
+            port=parts.port or 6379,
+            password=os.environ.get("SESSION_ROUTER_REDIS_PASSWORD") or None,
+            db=int((parts.path or "/0").lstrip("/") or 0),
+            # El claim y la lectura del pin van EN el camino de la peticion
+            # (litellm los espera): tope duro y corto, Valkey colgada no
+            # puede estirar un chat. 5 s era el default de RedisCache.
+            socket_timeout=0.5,
+            socket_connect_timeout=0.5,
+        )
+        llm_router._update_redis_cache(cache=cache)
+        log.warning("session_router: tier redis montado en el DualCache del Router (afinidad cross-pod)")
+    except Exception as exc:
+        _warn_throttled("affinity_redis", f"tier redis no montado ({exc.__class__.__name__}); pines por pod")
+
+
+def stamp_alibaba_session_affinity(data):
+    """metadata["session_id"] = sid del hook para peticiones `alibaba-*`
+    (incluida la reescrita residente->Alibaba, que ya ve el nombre final).
+    Devuelve el sid estampado o None. Sin sid no se toca nada."""
+    if not str(data.get("model") or "").startswith(ALIBABA_PREFIX):
+        return None
+    ensure_affinity_redis()
+    sid = _session_id(data) or _prefix_affinity_key(data)
+    if not sid:
+        return None
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        data["metadata"] = metadata
+    metadata["session_id"] = str(sid)
+    return metadata["session_id"]
+
+
 async def alibaba_switches():
     """Los cuatro interruptores «Fallbacks a Alibaba» (DEFAULT_ALIBABA) tal como los
     ve este módulo: caché SWR de la config del panel, sin I/O en el camino de la
