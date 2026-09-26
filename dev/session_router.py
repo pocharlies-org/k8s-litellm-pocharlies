@@ -773,23 +773,35 @@ _affinity_redis_tried = False
 
 
 def ensure_alibaba_key2_active():
-    """Una vez por proceso: con DASHSCOPE_API_KEY_2 en el entorno, sube
-    los diez -k2 de order 2 a order 1 EN MEMORIA (el minimo de orders las
-    incluye entonces en el reparto; la afinidad por sesion decide cual).
-    Sin la key no toca nada: el order: 2 del YAML es el estado inerte, y
-    tambien lo es si este hook no carga (el fallo peor sigue siendo
-    inercia, no 401). La key llega por env del pod: sembrar en 1Password
-    + rollout restart = activado, sin tocar git."""
+    """Una vez por proceso, dos estados:
+
+    - Con DASHSCOPE_API_KEY_2: sube los diez -k2 de order 2 a order 1 EN
+      MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
+      por sesion decide cual).
+    - Sin ella: RETIRA los -k2 del Router (delete_deployment). Motivo,
+      verificado en la fuente v1.100.0: el filtro de afinidad corre ANTES
+      que el de `order` (router.py async_get_healthy_deployments) y el pin
+      se reclama en el pre-call. Una sesion nueva que naciera durante un
+      cooldown del -k1 quedaba clavada al -k2 SIN key: 401 en cada vuelta,
+      y el pin se renovaba solo (keepalive) mientras la sesion viviera.
+      Sin -k2 cargado, un cooldown del -k1 sigue la cadena de fallback
+      normal en vez de estrellarse contra un 401 seguro.
+
+    Si este hook no carga, el order: 2 del YAML sigue siendo la inercia.
+    La key llega por env del pod: sembrar en 1Password + rollout restart
+    = activado, sin tocar git."""
     global _alibaba_key2_checked
-    if _alibaba_key2_checked or not os.environ.get("DASHSCOPE_API_KEY_2"):
+    if _alibaba_key2_checked:
         return
     _alibaba_key2_checked = True
+    con_key = bool(os.environ.get("DASHSCOPE_API_KEY_2"))
     try:
         from litellm.proxy.proxy_server import llm_router
         if llm_router is None:
+            _alibaba_key2_checked = False  # router aun sin montar: reintentar
             return
-        activados = 0
-        for entry in getattr(llm_router, "model_list", []):
+        k2 = []
+        for entry in list(getattr(llm_router, "model_list", [])):
             if isinstance(entry, dict):
                 info = entry.get("model_info") or {}
                 params = entry.get("litellm_params")
@@ -797,16 +809,24 @@ def ensure_alibaba_key2_active():
                 info = getattr(entry, "model_info", None)
                 params = getattr(entry, "litellm_params", None)
             info_id = info.get("id") if isinstance(info, dict) else getattr(info, "id", None)
-            if not (isinstance(info_id, str) and info_id.endswith("-k2")):
-                continue
-            if isinstance(params, dict):
-                params["order"] = 1
-            elif params is not None:
-                params.order = 1
-            activados += 1
-        log.warning("session_router: DASHSCOPE_API_KEY_2 presente -> %s deployments -k2 en el reparto (order 1)", activados)
+            if isinstance(info_id, str) and info_id.endswith("-k2"):
+                k2.append((info_id, params))
+        if con_key:
+            for _, params in k2:
+                if isinstance(params, dict):
+                    params["order"] = 1
+                elif params is not None:
+                    params.order = 1
+            log.warning("session_router: DASHSCOPE_API_KEY_2 presente -> %s deployments -k2 en el reparto (order 1)", len(k2))
+        else:
+            retirados = sum(1 for info_id, _ in k2 if llm_router.delete_deployment(id=info_id) is not None)
+            log.warning("session_router: sin DASHSCOPE_API_KEY_2 -> %s deployments -k2 retirados del Router", retirados)
     except Exception as exc:
-        _warn_throttled("alibaba_k2", f"activacion -k2 fallida ({exc.__class__.__name__}); cuenta 2 queda inerte (order 2)")
+        _warn_throttled("alibaba_k2", f"gestion -k2 fallida ({exc.__class__.__name__}); queda el order 2 del YAML")
+
+
+def alibaba_key2_disponible():
+    return bool(os.environ.get("DASHSCOPE_API_KEY_2"))
 
 
 def ensure_affinity_redis():
@@ -845,9 +865,14 @@ def ensure_affinity_redis():
 def stamp_alibaba_session_affinity(data):
     """metadata["session_id"] = sid del hook para peticiones `alibaba-*`
     (incluida la reescrita residente->Alibaba, que ya ve el nombre final).
-    Devuelve el sid estampado o None. Sin sid no se toca nada."""
+    Devuelve el sid estampado o None. Sin sid, o sin cuenta 2, no se toca nada."""
     ensure_alibaba_key2_active()
     if not str(data.get("model") or "").startswith(ALIBABA_PREFIX):
+        return None
+    # Con UNA cuenta la afinidad no aporta nada y es la que puede atrapar
+    # una sesion en el -k2 sin key (ver ensure_alibaba_key2_active): sin
+    # key no hay sid, no hay pin, y manda el filtro de `order`.
+    if not alibaba_key2_disponible():
         return None
     ensure_affinity_redis()
     sid = _session_id(data) or _prefix_affinity_key(data)
