@@ -351,3 +351,36 @@ contracts:
       vigila test_alibaba_second_key_affinity_contract; si el plan de la
       cuenta 2 se paga distinto, revisar los campos al activar (quitar
       `order: 2`).
+  - id: dgx.litellm.alibaba-second-account.v1
+    kind: schema
+    # `DASHSCOPE_API_KEY_2` es el literal que comparten las dos mitades de la
+    # superficie: el ExternalSecret GATEADO (ver nota) que materializa el
+    # Secret `litellm-alibaba-2` y el env `optional: true` del Deployment que
+    # alimenta `os.environ/DASHSCOPE_API_KEY_2` de los diez `-k2`.
+    value: DASHSCOPE_API_KEY_2
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-26 (DGX-444). Superficie de la segunda cuenta del plan Team de
+      Alibaba Model Studio: ExternalSecret `litellm-alibaba-2` -> Secret del
+      mismo nombre -> env `DASHSCOPE_API_KEY_2` (optional: true) -> el hook
+      ensure_alibaba_key2_active sube los diez `-k2` de order 2 a order 1 en
+      memoria cuando la key existe (afinidad por sesion:
+      dgx.session-router.deployment-affinity-key.v1). GATE DGX-444: el
+      ExternalSecret queda COMENTADO FUERA del despliegue porque el item
+      1Password `alibaba-model-studio-2/password` no existe; desplegado entra
+      en `could not get secret data from provider`, quema ~74 llamadas de
+      ERROR/dia a 1Password y degrada la Application ArgoCD `litellm`. Sin
+      Secret el env no resuelve, el hook retira los `-k2` del Router y siguen
+      inertes (order: 2) — el comportamiento sin key ya lo cubria esa nota;
+      esta entrada registra la superficie del Secret/env, que no se renombra
+      ni se elimina. Mientras el gate este puesto NO reanimar el ES a mano:
+      el sembrado del item es trabajo aparte, tras decision de Dani (es
+      dinero). Reactivacion = descomentar el documento ES del manifiesto +
+      devolver test_externalsecret_gateado_y_env_optional a su forma original
+      (tests/test_alibaba_second_key_affinity_contract.py) + deploy por
+      GitOps; ningun paso manual. Nombres congelados: Secret, env y titulo
+      1Password (el provider onepasswordSDK convierte el titulo en op:// y
+      solo admite [A-Za-z0-9_.-]).

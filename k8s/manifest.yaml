@@ -9519,64 +9519,87 @@ spec:
       # alimenta un ExternalSecret solo puede llevar [A-Za-z0-9_.-].
       remoteRef: { key: alibaba-model-studio/password }
 ---
-# Segunda cuenta del plan Team de Alibaba Model Studio (26-09-2026). Desde hoy
-# cada grupo `alibaba-*` tiene DOS deployments: este Secret alimenta el segundo
-# (`DASHSCOPE_API_KEY_2`). El reparto NO es round-robin: es afinidad por sesion
-# (router_settings.model_group_affinity_config), porque el cache de contexto de
-# Model Studio es POR CUENTA y partir una conversacion entre las dos pagaria el
-# prefijo entero en cada salto. Reparto por hora del dia: no hace falta — la
-# afinidad ya reparte, y cualquier re-sorteo periodico recalentaria prefijos.
+# GATE DGX-444 (26-09-2026): el ExternalSecret de abajo esta COMENTADO FUERA
+# del despliegue porque el item 1Password `alibaba-model-studio-2/password`
+# NO existe (el vault k8s-pocharlies solo tiene `alibaba-model-studio`). Un ES
+# apuntando a un item inexistente no es inerte: entra en `could not get secret
+# data from provider`, reintenta contra 1Password ~74 veces al dia y degrada
+# la Application ArgoCD `litellm`. El ES se declaro a proposito "sembrar y
+# activar" pero el item nunca se sembro: la segunda cuenta del plan Team es
+# decision de Dani (es dinero). Mientras el gate este puesto NO hay que
+# reanimar el ES a mano: el resto de la app funciona sin el (`order: 2` =
+# inercia, env `optional: true` intacto en el Deployment).
 #
-# PRECIOS: los `-k2` heredan por espejo el prorrateo del pack de la cuenta 1
-# (dgx.litellm.alibaba-pack-pricing.v1). Si el plan de la cuenta 2 se paga
-# distinto, revisar los tres campos de los diez `-k2` al activar.
+# REACTIVACION, cuando el item `alibaba-model-studio-2` exista en el vault
+# (el sembrado del item es trabajo aparte, tras la decision de Dani):
+#   1. Descomentar el bloque de abajo (documento completo, del `apiVersion:`
+#      al `remoteRef:`) y borrar esta cabecera GATE.
+#   2. Devolver el test a su forma original: en
+#      tests/test_alibaba_second_key_affinity_contract.py,
+#      `test_externalsecret_gateado_y_env_optional` lleva en el docstring la
+#      asercion del ES restaurada.
+#   3. Tras el merge entra el ES por GitOps; el env `DASHSCOPE_API_KEY_2`
+#      (optional: true) coge valor y el hook activa los `-k2` — ver
+#      ACTIVACION dentro del bloque.
 #
-# RECURSO PROPIO, no una entrada mas en `litellm-alibaba`: mismo criterio
-# documentado alli — un campo que falte en 1Password solo rompe ESTE
-# ExternalSecret; la key 1 y el resto del proxy siguen intactos.
-#
-# MIENTRAS LA CUENTA NO EXISTA TODO ESTO YA ESTA DESPLEGADO E INERTE: el
-# deployment 2 lleva `order: 2`, o sea que no entra en el reparto — solo
-# hereda trafico si la cuenta 1 entra en cooldown (ahi dara 401 visible, ni
-# peor ni mejor que el hoy: hoy esa peticion tampoco tiene a donde ir). El
-# env es `optional: true`: sin Secret no hay variable y solo el `-k2` sufre.
-#
-# SEMBRAR, cuando la cuenta este dada de alta (NUNCA con --template sobre el
-# item `litellm`, ver el aviso de arriba):
-#   op item create --category password --title alibaba-model-studio-2 \
-#       --vault <el de litellm-alibaba> password=sk-...
-# El TITULO solo [A-Za-z0-9_.-]: el provider onepasswordSDK de ESO convierte
-# el titulo en una referencia op:// y con espacios o @ el recurso NO resuelve
-# (fallo del 20-09 documentado en litellm-alibaba).
-#
-# ACTIVACION: sin paso manual ni PR. Cuando este Secret exista, el env
-# DASHSCOPE_API_KEY_2 del pod tendra valor y el hook, al arrancar
-# (session_router.ensure_alibaba_key2_active), sube los diez `-k2` de
-# order 2 a order 1 EN MEMORIA: entran al reparto con afinidad por sesion.
-# O sea: sembrar + `kubectl -n litellm rollout restart deploy/litellm` =
-# activado. Las sesiones nuevas se clavan desde su primera peticion; las
-# clavadas en la cuenta 1 se quedan hasta que su pin muera de inactividad
-# (1 h) — migracion suave, cada conversacion se mueve solo cuando su cache
-# ya estaba fria. Quitar la key y re-rollear = los -k2 vuelven a su inercia
-# (order: 2 del repo). Si el plan de la cuenta 2 se paga distinto, revisar
-# los tres campos de precio espejados antes de activar.
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata:
-  name: litellm-alibaba-2
-  namespace: litellm
-spec:
-  refreshInterval: 24h
-  secretStoreRef:
-    name: onepassword
-    kind: ClusterSecretStore
-  target:
-    name: litellm-alibaba-2
-    creationPolicy: Owner
-    deletionPolicy: Retain
-  data:
-    - secretKey: DASHSCOPE_API_KEY_2
-      remoteRef: { key: alibaba-model-studio-2/password }
+## Segunda cuenta del plan Team de Alibaba Model Studio (26-09-2026). Desde hoy
+## cada grupo `alibaba-*` tiene DOS deployments: este Secret alimenta el segundo
+## (`DASHSCOPE_API_KEY_2`). El reparto NO es round-robin: es afinidad por sesion
+## (router_settings.model_group_affinity_config), porque el cache de contexto de
+## Model Studio es POR CUENTA y partir una conversacion entre las dos pagaria el
+## prefijo entero en cada salto. Reparto por hora del dia: no hace falta — la
+## afinidad ya reparte, y cualquier re-sorteo periodico recalentaria prefijos.
+##
+## PRECIOS: los `-k2` heredan por espejo el prorrateo del pack de la cuenta 1
+## (dgx.litellm.alibaba-pack-pricing.v1). Si el plan de la cuenta 2 se paga
+## distinto, revisar los tres campos de los diez `-k2` al activar.
+##
+## RECURSO PROPIO, no una entrada mas en `litellm-alibaba`: mismo criterio
+## documentado alli — un campo que falte en 1Password solo rompe ESTE
+## ExternalSecret; la key 1 y el resto del proxy siguen intactos.
+##
+## MIENTRAS LA CUENTA NO EXISTA TODO ESTO YA ESTA DESPLEGADO E INERTE: el
+## deployment 2 lleva `order: 2`, o sea que no entra en el reparto — solo
+## hereda trafico si la cuenta 1 entra en cooldown (ahi dara 401 visible, ni
+## peor ni mejor que el hoy: hoy esa peticion tampoco tiene a donde ir). El
+## env es `optional: true`: sin Secret no hay variable y solo el `-k2` sufre.
+##
+## SEMBRAR, cuando la cuenta este dada de alta (NUNCA con --template sobre el
+## item `litellm`, ver el aviso de arriba):
+##   op item create --category password --title alibaba-model-studio-2 \
+##       --vault <el de litellm-alibaba> password=sk-...
+## El TITULO solo [A-Za-z0-9_.-]: el provider onepasswordSDK de ESO convierte
+## el titulo en una referencia op:// y con espacios o @ el recurso NO resuelve
+## (fallo del 20-09 documentado en litellm-alibaba).
+##
+## ACTIVACION: sin paso manual ni PR. Cuando este Secret exista, el env
+## DASHSCOPE_API_KEY_2 del pod tendra valor y el hook, al arrancar
+## (session_router.ensure_alibaba_key2_active), sube los diez `-k2` de
+## order 2 a order 1 EN MEMORIA: entran al reparto con afinidad por sesion.
+## O sea: sembrar + `kubectl -n litellm rollout restart deploy/litellm` =
+## activado. Las sesiones nuevas se clavan desde su primera peticion; las
+## clavadas en la cuenta 1 se quedan hasta que su pin muera de inactividad
+## (1 h) — migracion suave, cada conversacion se mueve solo cuando su cache
+## ya estaba fria. Quitar la key y re-rollear = los -k2 vuelven a su inercia
+## (order: 2 del repo). Si el plan de la cuenta 2 se paga distinto, revisar
+## los tres campos de precio espejados antes de activar.
+#apiVersion: external-secrets.io/v1
+#kind: ExternalSecret
+#metadata:
+#  name: litellm-alibaba-2
+#  namespace: litellm
+#spec:
+#  refreshInterval: 24h
+#  secretStoreRef:
+#    name: onepassword
+#    kind: ClusterSecretStore
+#  target:
+#    name: litellm-alibaba-2
+#    creationPolicy: Owner
+#    deletionPolicy: Retain
+#  data:
+#    - secretKey: DASHSCOPE_API_KEY_2
+#      remoteRef: { key: alibaba-model-studio-2/password }
 ---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.
@@ -9889,6 +9912,9 @@ spec:
             - name: DASHSCOPE_API_KEY
               valueFrom:
                 secretKeyRef: { name: litellm-alibaba, key: DASHSCOPE_API_KEY, optional: true }
+            # CONTRACT: dgx.litellm.alibaba-second-account.v1 (DGX-444: el ES
+            # `litellm-alibaba-2` esta gateado fuera del manifiesto hasta que
+            # exista el item 1Password; no renombrar Secret, env ni titulo).
             # Key de la segunda cuenta del plan Team (deployments `-k2`). Sin
             # Secret no existe la variable: `os.environ/DASHSCOPE_API_KEY_2`
             # no resuelve y esos deployments dan 401 — pero con `order: 2`
