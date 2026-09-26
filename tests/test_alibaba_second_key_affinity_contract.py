@@ -330,6 +330,26 @@ def test_con_key_el_hook_activa_los_k2(router_mod, monkeypatch):
     assert router.model_list[1]["litellm_params"]["order"] == 99, "la guarda de una-sola-vez no re-ejecuta"
 
 
+def test_tier_afinidad_anclado_al_mismo_nodo_que_litellm(docs):
+    """El claim de afinidad se paga por peticion: con la Valkey en otro
+    nodo el RTT del overlay (Tailscale) salio medido p50 27 ms — un
+    impuesto sobre cada peticion alibaba. La prueba exige que el Deployment
+    litellm-valkey comparta el nodo al que el proxy esta anclado."""
+    vk = next(d for d in docs
+              if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm-valkey")
+    lite = next(d for d in docs
+                if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm")
+    anclaje = (lite["spec"]["template"]["spec"]["affinity"]
+               ["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+               ["nodeSelectorTerms"][0]["matchExpressions"])
+    nodos_proxy = next(e["values"] for e in anclaje
+                       if e["key"] == "kubernetes.io/hostname")
+    sel = vk["spec"]["template"]["spec"].get("nodeSelector") or {}
+    assert sel.get("kubernetes.io/hostname") in nodos_proxy, (
+        f"Valkey en {sel.get('kubernetes.io/hostname')!r}, proxy en {nodos_proxy}: "
+        "cada peticion alibaba pagaria el RTT del overlay por el claim")
+
+
 def test_stamp_activa_antes_de_cualquier_cosa(router_src):
     tree = ast.parse(router_src)
     fn = next(n for n in ast.walk(tree)

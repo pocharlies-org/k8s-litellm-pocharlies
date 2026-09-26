@@ -10181,6 +10181,18 @@ spec:
     metadata:
       labels: { app: litellm-valkey }
     spec:
+      # 26-09-2026, medido: este tier se lee UNA vez por peticion alibaba
+      # (el claim del DeploymentAffinityCheck). Sin fijar nodo, la scheduler
+      # lo puso en ks5-cp-1 y el RTT por el overlay de Tailscale salio
+      # p50 27.2 ms / p99 257 ms desde el pod del proxy — cada peticion
+      # pagaba ~27 ms solo por preguntar "a que cuenta me toca". litellm
+      # esta anclado a `ubuntu` (nodeAffinity arriba) y el UNICO consumidor
+      # de esta Valkey es litellm (SESSION_ROUTER_REDIS_URL), asi que el
+      # anclaje conjunto deja el RTT en terminos de loopback. El riesgo es
+      # la decision ya tomada para el proxy (ubuntu es unico nodo): si
+      # ubuntu cae, cae todo litellm igualmente; y los pins son efimeros
+      # (TTL 1 h, allkeys-lru) — se rehacen solos en el siguiente arranque.
+      nodeSelector: { kubernetes.io/hostname: ubuntu }
       containers:
         - name: valkey
           image: redis:7-alpine
