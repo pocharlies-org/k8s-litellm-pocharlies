@@ -1056,6 +1056,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-q38-max-k1
         name: Qwen3.8 Max · gama alta (Alibaba)
@@ -1080,8 +1085,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q38-max
       litellm_params:
         model: openai/qwen3.8-max
@@ -1089,8 +1094,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-q38-max-k2
@@ -1166,6 +1173,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-q38-flash-k1
         name: Qwen3.8 Flash · gemelo cloud del residente
@@ -1196,8 +1208,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q38-flash
       litellm_params:
         model: openai/qwen3.8-flash
@@ -1205,8 +1217,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-q38-flash-k2
@@ -1243,6 +1257,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-q37-plus-k1
         name: Qwen3.7 Plus (Alibaba)
@@ -1259,8 +1278,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q37-plus
       litellm_params:
         model: openai/qwen3.7-plus
@@ -1268,8 +1287,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-q37-plus-k2
@@ -1292,6 +1313,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-q37-max-k1
         name: Qwen3.7 Max (Alibaba)
@@ -1308,8 +1334,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q37-max
       litellm_params:
         model: openai/qwen3.7-max
@@ -1317,8 +1343,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-q37-max-k2
@@ -1341,6 +1369,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-q36-flash-k1
         name: Qwen3.6 Flash (Alibaba)
@@ -1357,8 +1390,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q36-flash
       litellm_params:
         model: openai/qwen3.6-flash
@@ -1366,8 +1399,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-q36-flash-k2
@@ -1390,6 +1425,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-dsv41-fl-k1
         name: DeepSeek V4.1 Flash (Alibaba)
@@ -1406,8 +1446,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv41-fl
       litellm_params:
         model: openai/deepseek-v4.1-flash
@@ -1415,8 +1455,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-dsv41-fl-k2
@@ -1439,6 +1481,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-dsv4-pro-k1
         name: DeepSeek V4 Pro (Alibaba)
@@ -1455,8 +1502,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv4-pro
       litellm_params:
         model: openai/deepseek-v4-pro
@@ -1464,8 +1511,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-dsv4-pro-k2
@@ -1488,6 +1537,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-dsv4f0731-k1
         name: DeepSeek V4 Flash 0731 (Alibaba)
@@ -1504,8 +1558,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv4f0731
       litellm_params:
         model: openai/deepseek-v4-flash-0731
@@ -1513,8 +1567,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-dsv4f0731-k2
@@ -1537,6 +1593,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-glm-53-k1
         name: GLM-5.3 · Zhipu (Alibaba)
@@ -1553,8 +1614,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-glm-53
       litellm_params:
         model: openai/glm-5.3
@@ -1562,8 +1623,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-glm-53-k2
@@ -1586,6 +1649,11 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 600
         num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
       model_info:
         id: alibaba-glm-52-k1
         name: GLM-5.2 · Zhipu (Alibaba)
@@ -1602,8 +1670,8 @@ data:
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
-    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
-    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-glm-52
       litellm_params:
         model: openai/glm-5.2
@@ -1611,8 +1679,10 @@ data:
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 600
         num_retries: 0
-        # Failover puro mientras la cuenta 2 no se active (order mayor
-        # solo se usa si no queda ninguno sano en el order minimo).
+        # Failover puro mientras la cuenta 2 no se active: el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada).
         order: 2
       model_info:
         id: alibaba-glm-52-k2
@@ -9301,9 +9371,12 @@ spec:
 # el titulo en una referencia op:// y con espacios o @ el recurso NO resuelve
 # (fallo del 20-09 documentado en litellm-alibaba).
 #
-# ACTIVAR el reparto real (un PR de una linea por grupo): quitar `order: 2`
-# de los diez deployments `-k2` del model_list. Las sesiones nuevas se
-# clavan desde su primera peticion; las clavadas en la cuenta 1 se quedan
+# ACTIVAR el reparto real (un PR de una linea por grupo): CAMBIAR `order: 2`
+# por `order: 1` en los diez deployments `-k2` del model_list. NO vale
+# quitarlo: el minimo de orders se calcula solo entre los DECLARADOS, y con
+# el -k1 en 1 y el -k2 sin order el reparto volveria entero al -k1 (medido
+# en la v1.100.0 pineada). Las sesiones nuevas se clavan desde su primera
+# peticion; las clavadas en la cuenta 1 se quedan
 # hasta que su pin muera de inactividad (1 h) — migracion suave, cada
 # conversacion se mueve solo cuando su cache ya estaba fria.
 apiVersion: external-secrets.io/v1
@@ -9438,7 +9511,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-098d836d481a
+        config.k8s.e-dani.com/revision: config-5470276d6bba
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
