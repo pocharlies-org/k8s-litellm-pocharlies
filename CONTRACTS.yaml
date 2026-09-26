@@ -97,8 +97,11 @@ contracts:
       deployment_affinity_ttl_seconds (3600 s de inactividad, renovado en
       cada peticion, claim first-writer-wins). Los -k2 nacen con `order: 2`
       (inertes): el hook los sube a order 1 en memoria SOLO si
-      DASHSCOPE_API_KEY_2 existe (ensure_alibaba_key2_active); sin la key, o
-      si el hook no carga, el order: 2 del YAML es la inercia. El minimo de
+      DASHSCOPE_API_KEY_2 existe (ensure_alibaba_key2_active); sin la key
+      el hook RETIRA los -k2 del Router y no estampa sid (la afinidad corre
+      antes que el filtro de order: un pin nacido en un cooldown del -k1
+      atrapaba la sesion en un -k2 sin key, 401 en bucle). Si el hook no
+      carga, el order: 2 del YAML es la inercia. El minimo de
       orders se calcula solo entre declarados, por eso el -k1 declara 1.
   - id: dgx.model-routing.config.v1
     kind: http-route
