@@ -128,6 +128,12 @@ contracts:
       session_router rewrite to Alibaba, and alibaba_switches() hands the
       other three to litellm_strip_params.py (fallbacks:[] per request,
       TOOLING_FALLBACKS and KEY_TOOLING_FALLBACKS emptied).
+      Since 2026-09-26 it also reads the ADDITIVE field overflow_exempt =
+      {classes: [x-claude-class values], keys: [virtual key aliases]}: an
+      exempt request skips the capacity valve (queues on the resident) and a
+      non-operator sticky binding to Alibaba is released back to the
+      resident. Absent or malformed = {classes: [company], keys: []}; an
+      empty list saved from the panel = nobody exempt.
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba
