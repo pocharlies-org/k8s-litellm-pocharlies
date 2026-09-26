@@ -134,9 +134,9 @@ def test_the_watchdog_reads_the_global_dial():
     # para no pasar del ancho YAML, y un literal contiguo dejaria de casar sin
     # que el watchdog hubiera cambiado (fue justo como este test se quedo viejo).
     bloque = src[src.index("DIALES = {"):src.index("dial_alto = []")]
+    # 26-09: `qwen38-27b` sale con el perfil `creative` (lapida en el cron).
     for nombre in ("qwen38-flash-next",
-                   "deepseek-v4-flash-0731",
-                   "qwen38-27b"):
+                   "deepseek-v4-flash-0731"):
         assert '"%s"' % nombre in bloque, nombre
 
 

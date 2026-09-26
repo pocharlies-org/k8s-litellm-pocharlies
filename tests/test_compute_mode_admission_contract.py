@@ -60,7 +60,10 @@ def test_tooling_admission_follows_the_ready_resident_during_transitions():
         False, "tooling_resident_not_ready"
     )
     assert gate(qwen_ready, "tooling") == (True, None)
-    assert gate(qwen_ready, "qwen38-27b") == (True, None)
+    # 26-09: `qwen38-27b` ya no es residente de ningun perfil (salió del
+    # model_list con `creative` sin destino): cae a la puerta historica, como
+    # cualquier nombre que no sea residente.
+    assert gate(qwen_ready, "qwen38-27b") == (False, "compute_mode_transition")
     # 26-08: el nombre directo del residente llm-tp es qwen38-flash-next.
     assert gate(qwen_ready, "qwen38-flash-next") == (
         False, "tooling_resident_not_ready"

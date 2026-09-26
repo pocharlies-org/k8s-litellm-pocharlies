@@ -44,9 +44,8 @@ SA = "/tmp/paperclip-sta9-sa"
 
 # L1 pregunta a los Services del DEPLOYMENT de cada perfil de computo (fix #56):
 # el Service de POOL `tooling` no publica 8000 (sus endpoints publican 8888) y
-# daba Connection refused con el residente sano. Son los DOS a la vez porque los
-# perfiles son exclusivos: uno esta siempre a 0 replicas, y un refused en UNO es
-# el estado normal. Condena solo si NINGUNO contesta.
+# daba Connection refused con el residente sano. 26-09: queda UNO — `creative`
+# y su 27B salieron del manifiesto (constante abajo, vive para afirmar ausencia).
 RESIDENTE_LLM_TP = "qwen38-flash-next.llm.svc.cluster.local"
 RESIDENTE_CREATIVE = "vllm-qwen38-27b-uncensored.llm.svc.cluster.local"
 
@@ -272,11 +271,17 @@ def test_L1_pregunta_al_residente_no_al_catalogo_de_litellm():
     a LiteLLM por sus modelos diria "si" justo cuando no hay nadie detras.
 
     Desde #56 ademas NO es el Service de pool `tooling` (publica 8888, no 8000):
-    pregunta al Service del DEPLOYMENT de cada perfil, a los dos."""
+    pregunta al Service del DEPLOYMENT de cada perfil.
+
+    26-09: queda UNO. `creative` y su 27B salieron del manifiesto (perfil
+    retirado el 21-09, Deployment a 0 replicas): sondearlo era preguntar a una
+    fila muerta. Si el perfil volviera, vuelve su linea en RESIDENTES y aqui
+    el `not any` con ella."""
     _, llamadas = _run(_verde)
     modelos = [u for u in llamadas if "/v1/models" in u]
     assert any(RESIDENTE_LLM_TP in u for u in modelos)
-    assert any(RESIDENTE_CREATIVE in u for u in modelos)
+    assert not any(RESIDENTE_CREATIVE in u for u in llamadas), (
+        "el watchdog volvio a sondear el residente `creative` retirado")
     assert not any("tooling.llm.svc" in u for u in llamadas), (
         "L1 ha vuelto a preguntar al Service de pool, que no publica 8000")
 

@@ -55,7 +55,7 @@ sys.modules["litellm.proxy.proxy_server"] = proxy_server
 # --que cada uno sella SU lambda, con su cache y su TTL, sin contaminar al
 # otro-- necesitan dos para poder fallar. Se inyecta el segundo por el override
 # de entorno, que es la via soportada. El registro de verdad se fija aparte, en
-# `test_el_registro_real_de_produccion_tiene_un_solo_runtime`, que lee
+# `test_el_registro_real_de_produccion_es_el_backend_con_capa`, que lee
 # REFUSAL_RUNTIMES_DEFAULT sin override.
 SYNTH = [
     {"key": "qwen38-27b-nvfp4",
@@ -187,8 +187,8 @@ class DialTest(unittest.TestCase):
     def test_env_override_con_json_roto_cae_al_default(self):
         os.environ["LITELLM_REFUSAL_RUNTIMES"] = "{no json"
         try:
-            # El default de produccion: dos runtimes desde el 04-09.
-            self.assertEqual(len(ns["_load_refusal_runtimes"]()), 2)
+            # El default de produccion: un runtime desde el 26-09 (fuera 27b).
+            self.assertEqual(len(ns["_load_refusal_runtimes"]()), 1)
         finally:
             del os.environ["LITELLM_REFUSAL_RUNTIMES"]
 
@@ -229,7 +229,7 @@ class DialTest(unittest.TestCase):
         self.assertIsNone(st["enabled"])
         self.assertFalse(st["stamping"])
 
-    def test_el_registro_real_de_produccion_son_los_dos_backends_con_capa(self):
+    def test_el_registro_real_de_produccion_es_el_backend_con_capa(self):
         # Sin override: lo que corre en el cluster. La regla NO es "los modelos
         # que nos gustaria abliterar" sino "los que SIRVEN
         # /admin/refusal_lambda": un dial que no puede leer publicaria "no
@@ -238,20 +238,18 @@ class DialTest(unittest.TestCase):
         # DeepSeek se retiro el 01-09 y su dial se fue con el. qwen38-flash-next
         # entro el 04-09, cuando dejo de ser cierto que no servia el endpoint:
         # corre la imagen rank1 -g desde el 03-09 (k8s-ai#40) y responde 200.
-        # El comentario que decia lo contrario se quedo cuatro dias de mas, y
-        # mientras tanto el UNICO runtime con dial vivo era el que no estaba
-        # aqui — el 27b registrado vive a 0 replicas fuera de `creative`.
+        # 26-09: `qwen38-27b-nvfp4` sale con el alias del 27B — vivia a 0
+        # replicas fuera de `creative` desde el 21-09; registrar el dial de un
+        # backend que ya no tiene nombre en el catalog es pintar una fila muerta
+        # en el panel.
         real = ns["REFUSAL_RUNTIMES_DEFAULT"]
         self.assertEqual(
             sorted(r["key"] for r in real),
-            ["qwen38-27b-nvfp4", "qwen38-flash-next"])
-        # 1.0 en los dos, y no es la misma escala: son dos direcciones sobre dos
-        # bases distintas que coinciden por casualidad. Se afirma por key, no por
-        # indice, para que reordenar la lista no cambie lo que se comprueba.
+            ["qwen38-flash-next"])
         by = {r["key"]: r for r in real}
-        self.assertEqual(by["qwen38-27b-nvfp4"]["on_lambda"], 1.0)
         self.assertEqual(by["qwen38-flash-next"]["on_lambda"], 1.0)
         self.assertNotIn("deepseek", json.dumps(real).lower())
+        self.assertNotIn("27b", json.dumps(real).lower())
 
     def test_el_admin_url_de_flash_next_es_el_del_par_no_el_del_head(self):
         # Existen los DOS Services (`qwen38-flash-next` y

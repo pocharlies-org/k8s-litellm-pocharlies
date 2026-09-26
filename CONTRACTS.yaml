@@ -182,6 +182,14 @@ contracts:
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
       treated as empty and the aliases fail closed with the 503. Default and
       fail-open: on.
+      2026-09-26 (PR 156, retirement of the 27B and the q38-flash* bridge):
+      the chain now also catches the retired `creative` profile. The hook no
+      longer has a target for that mode, so _tooling_target_for_compute_mode
+      returns compute_mode_invalid and these fallbacks degrade to
+      `alibaba-q38-flash` (route_state=degraded) where before the request was
+      rewritten to the 27B alias and died as a 500 Connection error against a
+      0-replica Service. The value `TOOLING_FALLBACKS` itself is unchanged;
+      abliterated aliases keep having no chain and answer 503.
   - id: dgx.litellm.active-requests.v1
     kind: http-route
     value: /internal/active-requests
