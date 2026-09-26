@@ -809,9 +809,12 @@ def _rewrite(data, sid, reason):
 #       la afinidad se rompe entre pods.
 #   (c) activa la cuenta 2 SOLO si existe: ensure_alibaba_key2_active
 #       sube los -k2 de order 2 a 1 en memoria cuando
-#       DASHSCOPE_API_KEY_2 esta en el entorno. Sin la key, o si este
-#       hook no carga (el fallo peor), el order: 2 del YAML sigue siendo
-#       la inercia: sembrar + rollout = activado, sin paso manual.
+#       DASHSCOPE_API_KEY_2 esta en el entorno. Sin la key RETIRA los -k2
+#       del Router y no estampa sid (la afinidad corre antes que el filtro
+#       de order: con un -k2 sin key cargado, una sesion nacida en un
+#       cooldown del -k1 quedaba clavada a un 401). Si este hook no carga
+#       (el fallo peor), el order: 2 del YAML sigue siendo la inercia:
+#       sembrar + rollout = activado, sin paso manual.
 # Fail-open en los dos: sin sid no se estampa nada (shuffle puro, como
 # hoy); sin Valkey el pin queda por replica y el router sigue sirviendo.
 
