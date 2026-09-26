@@ -754,6 +754,11 @@ def _rewrite(data, sid, reason):
 #   (b) monta una vez la Valkey del namespace sobre el DualCache del
 #       Router, sin la cual el pin vive solo en el pod y con dos replicas
 #       la afinidad se rompe entre pods.
+#   (c) activa la cuenta 2 SOLO si existe: ensure_alibaba_key2_active
+#       sube los -k2 de order 2 a 1 en memoria cuando
+#       DASHSCOPE_API_KEY_2 esta en el entorno. Sin la key, o si este
+#       hook no carga (el fallo peor), el order: 2 del YAML sigue siendo
+#       la inercia: sembrar + rollout = activado, sin paso manual.
 # Fail-open en los dos: sin sid no se estampa nada (shuffle puro, como
 # hoy); sin Valkey el pin queda por replica y el router sigue sirviendo.
 
@@ -763,7 +768,45 @@ def _rewrite(data, sid, reason):
 # monta ensure_affinity_redis: cambiar la URL/db o quitar el tier las
 # mata todas (afinidad perdida en silencio, no error).
 
+_alibaba_key2_checked = False
 _affinity_redis_tried = False
+
+
+def ensure_alibaba_key2_active():
+    """Una vez por proceso: con DASHSCOPE_API_KEY_2 en el entorno, sube
+    los diez -k2 de order 2 a order 1 EN MEMORIA (el minimo de orders las
+    incluye entonces en el reparto; la afinidad por sesion decide cual).
+    Sin la key no toca nada: el order: 2 del YAML es el estado inerte, y
+    tambien lo es si este hook no carga (el fallo peor sigue siendo
+    inercia, no 401). La key llega por env del pod: sembrar en 1Password
+    + rollout restart = activado, sin tocar git."""
+    global _alibaba_key2_checked
+    if _alibaba_key2_checked or not os.environ.get("DASHSCOPE_API_KEY_2"):
+        return
+    _alibaba_key2_checked = True
+    try:
+        from litellm.proxy.proxy_server import llm_router
+        if llm_router is None:
+            return
+        activados = 0
+        for entry in getattr(llm_router, "model_list", []):
+            if isinstance(entry, dict):
+                info = entry.get("model_info") or {}
+                params = entry.get("litellm_params")
+            else:
+                info = getattr(entry, "model_info", None)
+                params = getattr(entry, "litellm_params", None)
+            info_id = info.get("id") if isinstance(info, dict) else getattr(info, "id", None)
+            if not (isinstance(info_id, str) and info_id.endswith("-k2")):
+                continue
+            if isinstance(params, dict):
+                params["order"] = 1
+            elif params is not None:
+                params.order = 1
+            activados += 1
+        log.warning("session_router: DASHSCOPE_API_KEY_2 presente -> %s deployments -k2 en el reparto (order 1)", activados)
+    except Exception as exc:
+        _warn_throttled("alibaba_k2", f"activacion -k2 fallida ({exc.__class__.__name__}); cuenta 2 queda inerte (order 2)")
 
 
 def ensure_affinity_redis():
@@ -803,6 +846,7 @@ def stamp_alibaba_session_affinity(data):
     """metadata["session_id"] = sid del hook para peticiones `alibaba-*`
     (incluida la reescrita residente->Alibaba, que ya ve el nombre final).
     Devuelve el sid estampado o None. Sin sid no se toca nada."""
+    ensure_alibaba_key2_active()
     if not str(data.get("model") or "").startswith(ALIBABA_PREFIX):
         return None
     ensure_affinity_redis()
