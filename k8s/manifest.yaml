@@ -1057,6 +1057,43 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-q38-max-k1
+        name: Qwen3.8 Max · gama alta (Alibaba)
+        description: Qwen3.8-Max - texto + razonamiento + vision. El mayor del plan.
+        mode: chat
+        backend: alibaba-model-studio
+        # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000017639273
+        cache_read_input_token_cost: 0.00000003527855
+        output_cost_per_token: 0.00000052917818
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
+        # pregunta, /v1/chat/completions): `none` -> reasoning_content 0;
+        # low/medium/high/max/xhigh -> reasoning_content 358/418/420/557/512
+        # chars. Los seis se aceptan con 200 y gradiente. Sin esto, opencode
+        # (que filtra sus variantes de effort por esta lista) no pinta ningun
+        # nivel para el alias.
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-q38-max
+      litellm_params:
+        model: openai/qwen3.8-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-q38-max-k2
         name: Qwen3.8 Max · gama alta (Alibaba)
         description: Qwen3.8-Max - texto + razonamiento + vision. El mayor del plan.
         mode: chat
@@ -1130,6 +1167,49 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-q38-flash-k1
+        name: Qwen3.8 Flash · gemelo cloud del residente
+        description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000001322945
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000004145229
+        # 20-09-2026: la otra mitad del cooldown asimetrico (ver `qwen38-flash-next`).
+        # Este aparca CORTO porque es el ULTIMO recurso: si se expulsa a este y el
+        # residente sigue caido, no queda a donde ir y la peticion muere. Un 429 o un
+        # corte de red de Alibaba no debe dejarnos 15 min sin red de seguridad. 60 s
+        # basta para no martillear a un upstream que dice que no, y es lo bastante
+        # corto para que la red vuelva enseguida.
+        # (Un `Retry-After` suyo manda sobre esto: si Alibaba pide mas, se le da.)
+        cooldown_time: 60
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
+        # pregunta, /v1/chat/completions): `none` -> reasoning 0; low/medium/
+        # high/max/xhigh -> reasoning_content presente (343/355/337/286/327
+        # chars). Es lo que filtra los variants del picker de opencode
+        # (plugin opencode-litellm, mapping.ts).
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-q38-flash
+      litellm_params:
+        model: openai/qwen3.8-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-q38-flash-k2
         name: Qwen3.8 Flash · gemelo cloud del residente
         description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
         mode: chat
@@ -1164,6 +1244,35 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-q37-plus-k1
+        name: Qwen3.7 Plus (Alibaba)
+        description: Qwen3.7-Plus - texto + razonamiento + vision.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000003527855
+        cache_read_input_token_cost: 0.00000000705571
+        output_cost_per_token: 0.00000014111418
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-q37-plus
+      litellm_params:
+        model: openai/qwen3.7-plus
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-q37-plus-k2
         name: Qwen3.7 Plus (Alibaba)
         description: Qwen3.7-Plus - texto + razonamiento + vision.
         mode: chat
@@ -1184,6 +1293,35 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-q37-max-k1
+        name: Qwen3.7 Max (Alibaba)
+        description: Qwen3.7-Max - texto + razonamiento. Sin vision.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000022049091
+        cache_read_input_token_cost: 0.00000004409818
+        output_cost_per_token: 0.00000066147272
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-q37-max
+      litellm_params:
+        model: openai/qwen3.7-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-q37-max-k2
         name: Qwen3.7 Max (Alibaba)
         description: Qwen3.7-Max - texto + razonamiento. Sin vision.
         mode: chat
@@ -1204,6 +1342,35 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-q36-flash-k1
+        name: Qwen3.6 Flash (Alibaba)
+        description: Qwen3.6-Flash - texto + razonamiento + vision. Generacion anterior.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002204909
+        cache_read_input_token_cost: 0.00000000440982
+        output_cost_per_token: 0.00000013229454
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-q36-flash
+      litellm_params:
+        model: openai/qwen3.6-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-q36-flash-k2
         name: Qwen3.6 Flash (Alibaba)
         description: Qwen3.6-Flash - texto + razonamiento + vision. Generacion anterior.
         mode: chat
@@ -1224,6 +1391,35 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-dsv41-fl-k1
+        name: DeepSeek V4.1 Flash (Alibaba)
+        description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-dsv41-fl
+      litellm_params:
+        model: openai/deepseek-v4.1-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-dsv41-fl-k2
         name: DeepSeek V4.1 Flash (Alibaba)
         description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
         mode: chat
@@ -1244,6 +1440,35 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-dsv4-pro-k1
+        name: DeepSeek V4 Pro (Alibaba)
+        description: DeepSeek-V4-Pro servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000021167127
+        cache_read_input_token_cost: 0.00000004233425
+        output_cost_per_token: 0.00000042334254
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-dsv4-pro
+      litellm_params:
+        model: openai/deepseek-v4-pro
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-dsv4-pro-k2
         name: DeepSeek V4 Pro (Alibaba)
         description: DeepSeek-V4-Pro servido por Alibaba - texto + razonamiento.
         mode: chat
@@ -1264,6 +1489,35 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-dsv4f0731-k1
+        name: DeepSeek V4 Flash 0731 (Alibaba)
+        description: DeepSeek-V4-Flash snapshot 0731 - pin de version.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.0000000388064
+        cache_read_input_token_cost: 0.00000000776128
+        output_cost_per_token: 0.0000001164192
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-dsv4f0731
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-dsv4f0731-k2
         name: DeepSeek V4 Flash 0731 (Alibaba)
         description: DeepSeek-V4-Flash snapshot 0731 - pin de version.
         mode: chat
@@ -1284,6 +1538,35 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-glm-53-k1
+        name: GLM-5.3 · Zhipu (Alibaba)
+        description: GLM-5.3 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-glm-53
+      litellm_params:
+        model: openai/glm-5.3
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-glm-53-k2
         name: GLM-5.3 · Zhipu (Alibaba)
         description: GLM-5.3 de Zhipu AI servido por Alibaba - texto + razonamiento.
         mode: chat
@@ -1304,6 +1587,35 @@ data:
         timeout: 600
         num_retries: 0
       model_info:
+        id: alibaba-glm-52-k1
+        name: GLM-5.2 · Zhipu (Alibaba)
+        description: GLM-5.2 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (quitar `order: 2`
+    # en los diez `-k2`): ver ExternalSecret litellm-alibaba-2.
+    - model_name: alibaba-glm-52
+      litellm_params:
+        model: openai/glm-5.2
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro mientras la cuenta 2 no se active (order mayor
+        # solo se usa si no queda ninguno sano en el order minimo).
+        order: 2
+      model_info:
+        id: alibaba-glm-52-k2
         name: GLM-5.2 · Zhipu (Alibaba)
         description: GLM-5.2 de Zhipu AI servido por Alibaba - texto + razonamiento.
         mode: chat
@@ -1481,6 +1793,43 @@ data:
       routing_strategy: simple-shuffle
       timeout: 600
       num_retries: 1
+      # ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026) ──────────────
+      #
+      # Cada grupo `alibaba-*` tiene DOS deployments (dos planes Team del mismo
+      # modelo). El cache de contexto de Model Studio es POR CUENTA: una
+      # conversacion repartida entre las dos paga el prefijo ENTERO en cada
+      # salto (medido 23-09 con el residente: sesion saltando entre destinos =
+      # 22% de acierto de cache). session_affinity clava cada sesion a UNA
+      # cuenta desde su primera peticion.
+      #
+      # Verificado en la fuente pineada (v1.100.0, deployment_affinity_check.py
+      # y router.py): el filtro aplica sobre los deployments SANOS — un pin cuya
+      # cuenta entra en cooldown NO ata: la peticion cae a la otra y el pin se
+      # re-clava al recuperarla. El claim es first-writer-wins con TTL renovado
+      # en cada peticion (keepalive), y el `session_id` que lo alimenta lo
+      # estampa session_router sobre metadata: el que manda el cliente no vale
+      # (opencode manda 22 distintos por conversacion, ver AFFINITY_CHARS).
+      #
+      # El pin vive en el DualCache del Router; session_router le monta encima
+      # la Valkey del namespace (ensure_affinity_redis) para que las dos
+      # replicas compartan el reparto. Sin Valkey degrada a pin por pod: la
+      # afinidad se pierde entre replicas pero nada se rompe.
+      #
+      # El TTL acota INACTIVIDAD, no duracion (se renueva en cada peticion):
+      # tras 1 h sin trafico la cache del proveedor enfrio hace rato y
+      # re-sortear la sesion no cuesta nada.
+      model_group_affinity_config:
+        alibaba-q38-max: [session_affinity]
+        alibaba-q38-flash: [session_affinity]
+        alibaba-q37-plus: [session_affinity]
+        alibaba-q37-max: [session_affinity]
+        alibaba-q36-flash: [session_affinity]
+        alibaba-dsv41-fl: [session_affinity]
+        alibaba-dsv4-pro: [session_affinity]
+        alibaba-dsv4f0731: [session_affinity]
+        alibaba-glm-53: [session_affinity]
+        alibaba-glm-52: [session_affinity]
+      deployment_affinity_ttl_seconds: 3600
       # ── PUENTE de renombrado (20-09): los alias largos de Alibaba siguen viva ──
       #
       # Al acortar los alias a <=17 caracteres (para que quepan en un boton de
@@ -5804,6 +6153,15 @@ data:
                     resident_ready=_sr_ready,
                 )
 
+            # Afinidad por cuenta de Alibaba: el Router clava cada sesion a un
+            # deployment a partir de metadata["session_id"], y ese id lo pone
+            # aqui (el del cliente no es estable). INCONDICIONAL, no dentro del
+            # gate de ROUTED_MODELS: un `alibaba-*` pedido explicitamente nunca
+            # pasa por apply_session_routing y tambien necesita su pin. Es no-op
+            # para cualquier otro modelo (un startswith).
+            if session_router is not None:
+                session_router.stamp_alibaba_session_affinity(data)
+
             # Sampling por FAMILIA del backend, con el modelo YA resuelto: aqui
             # data["model"] es el alias que de verdad va a atender (tras el salto
             # de CAPABILITY_CHAINS), no el que pidio el
@@ -6976,6 +7334,83 @@ data:
             "session_router: %r -> %r (razon=%s, sid=%s)",
             original, OVERFLOW_MODEL, reason, sid or "-",
         )
+
+
+    # ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026) ────────────────
+    # Cada grupo `alibaba-*` tiene dos deployments (dos planes Team). El cache
+    # de contexto de Model Studio es POR CUENTA: partir una conversacion entre
+    # las dos paga el prefijo entero en cada salto. El mecanismo es el nativo
+    # del Router (DeploymentAffinityCheck, activado por grupo en
+    # router_settings.model_group_affinity_config, verificado en la fuente
+    # pineada v1.100.0); este modulo solo lo alimenta:
+    #   (a) estampa metadata["session_id"] con el sid PROPIO del hook en toda
+    #       peticion que va a un grupo `alibaba-*`. El id que manda el cliente
+    #       no vale — se PISA deliberadamente (AFFINITY_CHARS: opencode manda
+    #       22 distintos por conversacion).
+    #   (b) monta una vez la Valkey del namespace sobre el DualCache del
+    #       Router, sin la cual el pin vive solo en el pod y con dos replicas
+    #       la afinidad se rompe entre pods.
+    # Fail-open en los dos: sin sid no se estampa nada (shuffle puro, como
+    # hoy); sin Valkey el pin queda por replica y el router sigue sirviendo.
+
+    # CONTRACT: dgx.session-router.deployment-affinity-key.v1
+    # (ancla: deployment_affinity:v1:) Las claves de afinidad en Valkey db 0
+    # las escribe el DeploymentAffinityCheck de litellm SOBRE EL TIER que
+    # monta ensure_affinity_redis: cambiar la URL/db o quitar el tier las
+    # mata todas (afinidad perdida en silencio, no error).
+
+    _affinity_redis_tried = False
+
+
+    def ensure_affinity_redis():
+        """Una vez por proceso: si el DualCache del Router no tiene tier de
+        redis, montar la Valkey del namespace (misma URL y password que el
+        sticky). No se reintenta: el precio de fallar es afinidad por pod, no
+        error. `_update_redis_cache` solo escribe si el tier esta vacio, asi
+        que dos replicas del hook montando a la vez no se pisan."""
+        global _affinity_redis_tried
+        if _affinity_redis_tried:
+            return
+        _affinity_redis_tried = True
+        try:
+            from litellm.proxy.proxy_server import llm_router
+            if llm_router is None or llm_router.cache.redis_cache is not None:
+                return
+            from litellm.caching.redis_cache import RedisCache
+            parts = urlsplit(REDIS_URL)
+            cache = RedisCache(
+                host=parts.hostname or "localhost",
+                port=parts.port or 6379,
+                password=os.environ.get("SESSION_ROUTER_REDIS_PASSWORD") or None,
+                db=int((parts.path or "/0").lstrip("/") or 0),
+                # El claim y la lectura del pin van EN el camino de la peticion
+                # (litellm los espera): tope duro y corto, Valkey colgada no
+                # puede estirar un chat. 5 s era el default de RedisCache.
+                socket_timeout=0.5,
+                socket_connect_timeout=0.5,
+            )
+            llm_router._update_redis_cache(cache=cache)
+            log.warning("session_router: tier redis montado en el DualCache del Router (afinidad cross-pod)")
+        except Exception as exc:
+            _warn_throttled("affinity_redis", f"tier redis no montado ({exc.__class__.__name__}); pines por pod")
+
+
+    def stamp_alibaba_session_affinity(data):
+        """metadata["session_id"] = sid del hook para peticiones `alibaba-*`
+        (incluida la reescrita residente->Alibaba, que ya ve el nombre final).
+        Devuelve el sid estampado o None. Sin sid no se toca nada."""
+        if not str(data.get("model") or "").startswith(ALIBABA_PREFIX):
+            return None
+        ensure_affinity_redis()
+        sid = _session_id(data) or _prefix_affinity_key(data)
+        if not sid:
+            return None
+        metadata = data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            data["metadata"] = metadata
+        metadata["session_id"] = str(sid)
+        return metadata["session_id"]
 
 
     async def alibaba_switches():
@@ -8836,6 +9271,59 @@ spec:
       # alimenta un ExternalSecret solo puede llevar [A-Za-z0-9_.-].
       remoteRef: { key: alibaba-model-studio/password }
 ---
+# Segunda cuenta del plan Team de Alibaba Model Studio (26-09-2026). Desde hoy
+# cada grupo `alibaba-*` tiene DOS deployments: este Secret alimenta el segundo
+# (`DASHSCOPE_API_KEY_2`). El reparto NO es round-robin: es afinidad por sesion
+# (router_settings.model_group_affinity_config), porque el cache de contexto de
+# Model Studio es POR CUENTA y partir una conversacion entre las dos pagaria el
+# prefijo entero en cada salto. Reparto por hora del dia: no hace falta — la
+# afinidad ya reparte, y cualquier re-sorteo periodico recalentaria prefijos.
+#
+# PRECIOS: los `-k2` heredan por espejo el prorrateo del pack de la cuenta 1
+# (dgx.litellm.alibaba-pack-pricing.v1). Si el plan de la cuenta 2 se paga
+# distinto, revisar los tres campos de los diez `-k2` al activar.
+#
+# RECURSO PROPIO, no una entrada mas en `litellm-alibaba`: mismo criterio
+# documentado alli — un campo que falte en 1Password solo rompe ESTE
+# ExternalSecret; la key 1 y el resto del proxy siguen intactos.
+#
+# MIENTRAS LA CUENTA NO EXISTA TODO ESTO YA ESTA DESPLEGADO E INERTE: el
+# deployment 2 lleva `order: 2`, o sea que no entra en el reparto — solo
+# hereda trafico si la cuenta 1 entra en cooldown (ahi dara 401 visible, ni
+# peor ni mejor que el hoy: hoy esa peticion tampoco tiene a donde ir). El
+# env es `optional: true`: sin Secret no hay variable y solo el `-k2` sufre.
+#
+# SEMBRAR, cuando la cuenta este dada de alta (NUNCA con --template sobre el
+# item `litellm`, ver el aviso de arriba):
+#   op item create --category password --title alibaba-model-studio-2 \
+#       --vault <el de litellm-alibaba> password=sk-...
+# El TITULO solo [A-Za-z0-9_.-]: el provider onepasswordSDK de ESO convierte
+# el titulo en una referencia op:// y con espacios o @ el recurso NO resuelve
+# (fallo del 20-09 documentado en litellm-alibaba).
+#
+# ACTIVAR el reparto real (un PR de una linea por grupo): quitar `order: 2`
+# de los diez deployments `-k2` del model_list. Las sesiones nuevas se
+# clavan desde su primera peticion; las clavadas en la cuenta 1 se quedan
+# hasta que su pin muera de inactividad (1 h) — migracion suave, cada
+# conversacion se mueve solo cuando su cache ya estaba fria.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-alibaba-2
+  namespace: litellm
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: onepassword
+    kind: ClusterSecretStore
+  target:
+    name: litellm-alibaba-2
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: DASHSCOPE_API_KEY_2
+      remoteRef: { key: alibaba-model-studio-2/password }
+---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.
 #
@@ -8950,8 +9438,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-
-        config.k8s.e-dani.com/revision: config-f7e7ece6b2c2
+        config.k8s.e-dani.com/revision: config-098d836d481a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -9148,6 +9635,13 @@ spec:
             - name: DASHSCOPE_API_KEY
               valueFrom:
                 secretKeyRef: { name: litellm-alibaba, key: DASHSCOPE_API_KEY, optional: true }
+            # Key de la segunda cuenta del plan Team (deployments `-k2`). Sin
+            # Secret no existe la variable: `os.environ/DASHSCOPE_API_KEY_2`
+            # no resuelve y esos deployments dan 401 — pero con `order: 2`
+            # no reciben trafico salvo failover. Ver litellm-alibaba-2.
+            - name: DASHSCOPE_API_KEY_2
+              valueFrom:
+                secretKeyRef: { name: litellm-alibaba-2, key: DASHSCOPE_API_KEY_2, optional: true }
             # Keys autorizadas a pedir los alias `or-*`. Falla CERRADO, al reves que
             # el gate abliterado. Si la variable llega vacia
             # se deniega a todo el mundo, incluida la master. Hace falta porque el
