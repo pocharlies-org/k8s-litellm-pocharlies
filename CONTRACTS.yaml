@@ -95,10 +95,11 @@ contracts:
       — ids explicitos y estables del manifiesto, vigentes por
       test_alibaba_second_key_affinity_contract; TTL =
       deployment_affinity_ttl_seconds (3600 s de inactividad, renovado en
-      cada peticion, claim first-writer-wins). Mientras los -k2 llevan
-      `order: 2` el pin solo clava la cuenta 1; activar el reparto =
-      cambiar ese order a 1 (no quitarlo: el minimo se calcula solo entre
-      orders declarados).
+      cada peticion, claim first-writer-wins). Los -k2 nacen con `order: 2`
+      (inertes): el hook los sube a order 1 en memoria SOLO si
+      DASHSCOPE_API_KEY_2 existe (ensure_alibaba_key2_active); sin la key, o
+      si el hook no carga, el order: 2 del YAML es la inercia. El minimo de
+      orders se calcula solo entre declarados, por eso el -k1 declara 1.
   - id: dgx.model-routing.config.v1
     kind: http-route
     value: /api/model-routing/config

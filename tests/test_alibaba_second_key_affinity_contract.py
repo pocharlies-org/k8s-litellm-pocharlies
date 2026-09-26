@@ -255,6 +255,72 @@ def test_stamp_llama_al_tier_antes_de_estampar(router_src):
     assert "ensure_affinity_redis" in llamados
 
 
+# ── 4b. activacion automatica de la cuenta 2 (solo si la key existe) ────────
+
+
+class _RouterFalso:
+    def __init__(self):
+        self.model_list = [
+            {"model_name": "alibaba-q36-flash",
+             "litellm_params": {"model": "openai/qwen3.6-flash", "order": 1},
+             "model_info": {"id": "alibaba-q36-flash-k1"}},
+            {"model_name": "alibaba-q36-flash",
+             "litellm_params": {"model": "openai/qwen3.6-flash", "order": 2},
+             "model_info": {"id": "alibaba-q36-flash-k2"}},
+        ]
+
+
+def _con_router_falso(monkeypatch, router):
+    import types as _t
+    raiz = _t.ModuleType("litellm")
+    proxy = _t.ModuleType("litellm.proxy")
+    servidor = _t.ModuleType("litellm.proxy.proxy_server")
+    servidor.llm_router = router
+    raiz.proxy = proxy
+    proxy.proxy_server = servidor
+    for nombre, modulo in (("litellm", raiz), ("litellm.proxy", proxy),
+                           ("litellm.proxy.proxy_server", servidor)):
+        monkeypatch.setitem(sys.modules, nombre, modulo)
+
+
+def test_sin_key_los_k2_quedan_inertes(router_mod, monkeypatch):
+    router = _RouterFalso()
+    _con_router_falso(monkeypatch, router)
+    monkeypatch.delenv("DASHSCOPE_API_KEY_2", raising=False)
+    router_mod._alibaba_key2_checked = False
+    router_mod.ensure_alibaba_key2_active()
+    assert router.model_list[1]["litellm_params"]["order"] == 2, "sin key, el -k2 NO entra al reparto"
+
+
+def test_con_key_el_hook_activa_los_k2(router_mod, monkeypatch):
+    router = _RouterFalso()
+    _con_router_falso(monkeypatch, router)
+    monkeypatch.setenv("DASHSCOPE_API_KEY_2", "sk-segunda-cuenta")
+    router_mod._alibaba_key2_checked = False
+    router_mod.ensure_alibaba_key2_active()
+    assert router.model_list[1]["litellm_params"]["order"] == 1, "con key, el -k2 entra al reparto"
+    assert router.model_list[0]["litellm_params"]["order"] == 1, "el -k1 no se toca"
+    # una-sola-vez: una segunda llamada no vuelve a iterar (ni a loggear)
+    router.model_list[1]["litellm_params"]["order"] = 99
+    router_mod.ensure_alibaba_key2_active()
+    assert router.model_list[1]["litellm_params"]["order"] == 99, "la guarda de una-sola-vez no re-ejecuta"
+
+
+def test_stamp_activa_antes_de_cualquier_cosa(router_src):
+    tree = ast.parse(router_src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "stamp_alibaba_session_affinity")
+    cuerpo = fn.body
+    if cuerpo and isinstance(cuerpo[0], ast.Expr) and isinstance(cuerpo[0].value, ast.Constant) \
+            and isinstance(cuerpo[0].value.value, str):
+        cuerpo = cuerpo[1:]  # saltar el docstring
+    primero = cuerpo[0]
+    assert isinstance(primero, ast.Expr) and isinstance(primero.value, ast.Call) \
+        and isinstance(primero.value.func, ast.Name) \
+        and primero.value.func.id == "ensure_alibaba_key2_active", \
+        "la activacion debe ser la PRIMERA linea del stamp (se llama en toda peticion)"
+
+
 # ── 5. cableado en strip_params ──────────────────────────────────────────────
 
 
