@@ -96,8 +96,9 @@ contracts:
       test_alibaba_second_key_affinity_contract; TTL =
       deployment_affinity_ttl_seconds (3600 s de inactividad, renovado en
       cada peticion, claim first-writer-wins). Mientras los -k2 llevan
-      `order: 2` el pin solo clava la cuenta 1; activar el reparto = quitar
-      ese order (ver ExternalSecret litellm-alibaba-2).
+      `order: 2` el pin solo clava la cuenta 1; activar el reparto =
+      cambiar ese order a 1 (no quitarlo: el minimo se calcula solo entre
+      orders declarados).
   - id: dgx.model-routing.config.v1
     kind: http-route
     value: /api/model-routing/config

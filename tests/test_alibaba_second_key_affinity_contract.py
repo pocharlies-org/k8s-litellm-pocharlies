@@ -131,12 +131,13 @@ def test_k1_una_key_k2_la_segunda(deployments_by_group):
 
 
 def test_k2_inerte_hasta_activacion_order2(deployments_by_group):
-    """`order: 2` = failover puro: el filtro del Router se queda con el order
-    MINIMO de los sanos, asi que mientras la cuenta 1 este sana el -k2 no
-    recibe NADA. La activacion es quitar esta linea (10 grupos)."""
+    """`order: 2` = failover puro — PERO el minimo se calcula SOLO entre los
+    orders DECLARADOS (medido en la v1.100.0 pineada: sin order en el k1 el
+    unico order del grupo era el 2 y el reparto se iba 20/20 al -k2). Por eso
+    el -k1 declara `order: 1` explicitamente."""
     for g in GROUPS:
         k1, k2 = deployments_by_group[g]
-        assert "order" not in k1["litellm_params"], f"{g}: k1 no puede llevar order"
+        assert k1["litellm_params"].get("order") == 1, f"{g}: k1 DEBE declarar order: 1 (el minimo solo mira orders declarados)"
         assert k2["litellm_params"].get("order") == 2, f"{g}: k2 debe nacer con order: 2"
 
 
