@@ -216,6 +216,57 @@ _vllm_poller = None
 _sidecar_remote = {"rows": None, "read_at": None}
 _sidecar_poller = None
 
+# ── Exentos del desborde (26-09-2026, Dani: "eximir a la compañía del desborde") ──
+# Medido el 26-09: el 57 % de las peticiones de 24 h acabaron en Alibaba y el grueso
+# lo ponían los roles autónomos de la compañía (company-architect/cto, 1.300-1.700
+# peticiones/día cada uno). La válvula los mudaba a Alibaba y el sticky (TTL renovado
+# en cada petición) no los devolvía nunca, con el residente ya libre. Un rol que corre
+# en segundo plano puede esperar en la cola del Spark; quien no debe esperar es el
+# operador interactivo. Campo ADITIVO `overflow_exempt` de /api/model-routing/config:
+#   classes — valores de x-claude-class (hoy solo `company`)
+#   keys    — alias de virtual key de LiteLLM (opencode-20260630-local, hermes, ...)
+# Una petición exenta (a) no pasa por la válvula (ni instant_reject ni la de la
+# compañía): encola en el residente; y (b) si trae un binding sticky a Alibaba que no
+# es una orden del operador (plan explícito o default_plan=alibaba), se re-vincula al
+# residente — así se sueltan las sesiones ya capturadas. NO toca el camino de avería
+# (residente no Ready -> rebind_alibaba) ni los fallbacks del Router: exento = no
+# desborda por capacidad, no = sin red. Ausente o no-dict = DEFAULT (la compañía
+# exenta); una lista vacía guardada desde el panel = nadie exento (= antes del 26-09).
+DEFAULT_OVERFLOW_EXEMPT = {"classes": ["company"], "keys": []}
+
+
+def _sanitize_exempt(raw):
+    if not isinstance(raw, dict):
+        return {k: list(v) for k, v in DEFAULT_OVERFLOW_EXEMPT.items()}
+    out = {}
+    for k in DEFAULT_OVERFLOW_EXEMPT:
+        v = raw.get(k)
+        if isinstance(v, list):
+            out[k] = sorted({str(x).strip().lower() for x in v if isinstance(x, str) and x.strip()})
+        else:
+            out[k] = list(DEFAULT_OVERFLOW_EXEMPT[k])
+    return out
+
+
+def _key_alias(data):
+    """Alias de la virtual key que hizo la petición (metadata o litellm_metadata,
+    según la ruta — mismo criterio que _claude_class). None si no hay."""
+    for meta in (data.get("metadata"), data.get("litellm_metadata")):
+        if isinstance(meta, dict) and meta.get("user_api_key_alias"):
+            return str(meta["user_api_key_alias"]).strip().lower() or None
+    return None
+
+
+def _overflow_exempt(config, claude_class, key_alias):
+    ex = config.get("overflow_exempt")
+    if not isinstance(ex, dict):
+        ex = DEFAULT_OVERFLOW_EXEMPT
+    return bool(
+        (claude_class and claude_class in (ex.get("classes") or ()))
+        or (key_alias and key_alias in (ex.get("keys") or ()))
+    )
+
+
 # Ambos flags off (default, y estado mientras el panel no exista o no esté
 # alcanzable): los mecanismos AUTOMÁTICOS duermen y llamar a
 # apply_session_routing es un no-op exacto del comportamiento anterior. Un plan
@@ -229,6 +280,7 @@ DEFAULT_CONFIG = {
     "session_plans": {},
     "company": dict(DEFAULT_COMPANY),
     "alibaba": dict(DEFAULT_ALIBABA),
+    "overflow_exempt": {k: list(v) for k, v in DEFAULT_OVERFLOW_EXEMPT.items()},
 }
 
 _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
@@ -403,6 +455,7 @@ def _sanitize(raw):
     config["company"] = {k: company.get(k) is not False for k in DEFAULT_COMPANY}
     alibaba = raw.get("alibaba") if isinstance(raw.get("alibaba"), dict) else {}
     config["alibaba"] = {k: alibaba.get(k) is not False for k in DEFAULT_ALIBABA}
+    config["overflow_exempt"] = _sanitize_exempt(raw.get("overflow_exempt"))
     slots = raw.get("local_slots")
     if isinstance(slots, int) and not isinstance(slots, bool) and 0 <= slots <= LOCAL_SLOTS_CAP:
         config["local_slots"] = slots
@@ -756,9 +809,12 @@ def _rewrite(data, sid, reason):
 #       la afinidad se rompe entre pods.
 #   (c) activa la cuenta 2 SOLO si existe: ensure_alibaba_key2_active
 #       sube los -k2 de order 2 a 1 en memoria cuando
-#       DASHSCOPE_API_KEY_2 esta en el entorno. Sin la key, o si este
-#       hook no carga (el fallo peor), el order: 2 del YAML sigue siendo
-#       la inercia: sembrar + rollout = activado, sin paso manual.
+#       DASHSCOPE_API_KEY_2 esta en el entorno. Sin la key RETIRA los -k2
+#       del Router y no estampa sid (la afinidad corre antes que el filtro
+#       de order: con un -k2 sin key cargado, una sesion nacida en un
+#       cooldown del -k1 quedaba clavada a un 401). Si este hook no carga
+#       (el fallo peor), el order: 2 del YAML sigue siendo la inercia:
+#       sembrar + rollout = activado, sin paso manual.
 # Fail-open en los dos: sin sid no se estampa nada (shuffle puro, como
 # hoy); sin Valkey el pin queda por replica y el router sigue sirviendo.
 
@@ -948,7 +1004,7 @@ async def apply_session_routing(data, requested_model, tracker=None, resident_re
     info = {
         "model": str(data.get("model") or ""), "sid": None, "bound": None,
         "fresh": None, "plan": None, "cool": None, "inflight": None,
-        "class": None,
+        "class": None, "exempt": None,
         "decision": "fail-open", "active": False,
     }
     try:
@@ -967,9 +1023,9 @@ async def apply_session_routing(data, requested_model, tracker=None, resident_re
         notable = rewrote or "degradado" in str(info["decision"])
         emit = log.warning if notable else log.info
         emit(
-            "session_router decision: model=%s sid=%s class=%s bound=%s plan=%s "
+            "session_router decision: model=%s sid=%s class=%s exempt=%s bound=%s plan=%s "
             "cool=%s inflight=%s -> %s%s",
-            info["model"] or "-", info["sid"] or "-", info["class"] or "-",
+            info["model"] or "-", info["sid"] or "-", info["class"] or "-", info["exempt"],
             info["bound"], info["plan"],
             info["cool"], info["inflight"], info["decision"],
             " (REESCRITA)" if rewrote else "",
@@ -1013,6 +1069,8 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     # desborda a Alibaba al llenarse el residente (su propia válvula, abajo); desactivado,
     # ni llega aquí — apply_company_policy la sella antes y la precedencia 1 la deja pasar.
     company_overflow = company and (config.get("company") or {}).get("alibaba", True) is not False
+    exempt = _overflow_exempt(config, claude_class, _key_alias(data))
+    info["exempt"] = exempt
     info["active"] = bool(
         config["sticky"] or config["instant_reject"]
         or config["default_plan"] != "local" or config["session_plans"]
@@ -1069,6 +1127,16 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         plan = config["default_plan"] if config["sticky"] else "local"
     else:
         plan = bound
+    # Exento (26-09-2026): un binding a Alibaba que NO viene de una orden del
+    # operador (default_plan=alibaba) se suelta al residente si está Ready. Sin
+    # esto la exención no liberaría a las sesiones ya capturadas por la válvula.
+    if (exempt and not fresh and plan == "alibaba" and resident_ready
+            and config["default_plan"] != "alibaba"):
+        # (el binding a local lo escribe el final del camino local, abajo)
+        log.warning("session_router: sesion exenta sid=%s class=%s soltada de alibaba -> residente",
+                    sid, claude_class or "-")
+        plan = "local"
+        bound = "local(soltada)"
     info["bound"] = bound
     info["fresh"] = fresh
     info["plan"] = plan
@@ -1130,7 +1198,8 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     # 22 % de acierto de caché, 198 M tokens en 4 h). Con la sesión quieta la caché
     # funciona en los dos lados — medido el mismo día: Alibaba 19.712/20.553 y
     # 20.480/20.803 tokens cacheados en turnos seguidos; vLLM 22.400/28.046.
-    valvula = (company and company_overflow) or (not company and config["instant_reject"])
+    valvula = not exempt and (
+        (company and company_overflow) or (not company and config["instant_reject"]))
     if valvula and model == RESIDENT_MODEL:
         _ensure_vllm_poller()
         inflight = await _inflight_resident(tracker)

@@ -682,6 +682,13 @@ def test_fallo_interno_devuelve_false_sin_tocar_data(router_mod):
 # plans/company-class-instant-reject-plan.md.
 
 
+# 26-09-2026: la compañía está EXENTA del desborde por defecto (overflow_exempt).
+# Los tests del interruptor company.alibaba (válvula propia de la compañía) fijan
+# la exención vacía = el comportamiento del 23-09 al 26-09, que sigue disponible
+# desde el panel.
+NADIE_EXENTO = {"classes": [], "keys": []}
+
+
 def _company_data(**extra):
     """data como la que entrega add_litellm_data_to_request en litellm
     v1.100.0: las cabeceras del request, con la caja del cable, viven en
@@ -712,7 +719,8 @@ def test_c1_company_con_alibaba_activado_desborda_aunque_instant_reject_este_apa
     activado, la compañía desborda a Alibaba al llenarse el residente, gobernada por
     SU interruptor y no por instant_reject (que sigue siendo el del resto)."""
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=2,
-                                company={"claude": True, "alibaba": True}), inflight=2)
+                                company={"claude": True, "alibaba": True},
+                                overflow_exempt=NADIE_EXENTO), inflight=2)
     data = _company_data()
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
@@ -722,7 +730,8 @@ def test_c1_company_con_alibaba_activado_desborda_aunque_instant_reject_este_apa
 
 def test_c1_company_sin_campo_company_es_activado(router_mod):
     """Config sin el campo `company` (dashboard viejo): el interruptor cuenta como activado."""
-    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=2), inflight=5)
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=2,
+                                overflow_exempt=NADIE_EXENTO), inflight=5)
     data = _company_data()
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
@@ -739,7 +748,8 @@ def test_c1_company_con_hueco_se_queda_en_local(router_mod):
 def test_c1_company_sin_sticky_desborda_por_peticion_sin_escribir(router_mod):
     """Con sticky apagado e instant_reject apagado la compañía sigue teniendo su válvula:
     por petición, sin binding."""
-    env = _Env(router_mod, _cfg(sticky=False, instant_reject=False, local_slots=2), inflight=99)
+    env = _Env(router_mod, _cfg(sticky=False, instant_reject=False, local_slots=2,
+                                overflow_exempt=NADIE_EXENTO), inflight=99)
     data = _company_data()
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
@@ -763,8 +773,8 @@ def test_c1_company_case_insensitive_por_clave_y_valor(router_mod, clave, valor)
     """clean_headers (v1.100.0) guarda las claves con la caja del cable: un
     get() a pelo por la minúscula sería el bug. La lectura es case-insensitive.
     Con instant_reject apagado solo la compañía desborda: si salta, se reconoció."""
-    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=2),
-               inflight=99)
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=2,
+                                overflow_exempt=NADIE_EXENTO), inflight=99)
     data = _data(metadata={"headers": {clave: valor}})
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
@@ -830,14 +840,96 @@ def test_c3_plan_exPLICITO_alibaba_gana_a_la_clase(router_mod):
     assert data["model"] == OVERFLOW
 
 
-def test_c3_sticky_ya_ligado_a_alibaba_sigue_ligado(router_mod):
-    """Binding previo (default_plan=alibaba, o escrito antes de desplegar,
-    TTL 1 h): company solo apaga la VALVULA, no deshace destinos."""
-    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0),
+def test_c3_sticky_ya_ligado_a_alibaba_sigue_ligado_sin_exencion(router_mod):
+    """Sin exención (lista vacía desde el panel): company solo gobierna la
+    VALVULA, no deshace destinos."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0,
+                                overflow_exempt=NADIE_EXENTO),
                bound="alibaba", inflight=99)
     data = _company_data()
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
+
+
+# ── Exentos del desborde (26-09-2026): overflow_exempt {classes, keys} ─────────
+
+
+def test_ex_company_exenta_por_defecto_encola(router_mod):
+    """Sin campo overflow_exempt (dashboard viejo): la compañía está exenta y
+    encola en el residente aunque esté lleno y su interruptor Alibaba activado."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2,
+                                company={"claude": True, "alibaba": True}), inflight=99)
+    data = _company_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+
+
+def test_ex_company_exenta_suelta_el_binding_alibaba(router_mod):
+    """La trampa del sticky: una sesión capturada por la válvula se devuelve al
+    residente en su siguiente petición."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2),
+               bound="alibaba", inflight=0)
+    data = _company_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+
+
+def test_ex_default_plan_alibaba_no_se_suelta(router_mod):
+    """default_plan=alibaba es orden del operador: la exención no la deshace."""
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"),
+               bound="alibaba", inflight=0)
+    data = _company_data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+
+
+def test_ex_plan_explicito_alibaba_gana_a_la_exencion(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, session_plans={SID: "alibaba"}), inflight=0)
+    data = _company_data()
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+
+
+def test_ex_residente_no_ready_sigue_rebindeando(router_mod):
+    """Exento = no desborda por CAPACIDAD; sin residente sigue habiendo red."""
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True), bound="local", inflight=0)
+    data = _company_data()
+    assert env.run(data, resident_ready=False) is True
+    assert data["model"] == OVERFLOW
+
+
+@pytest.mark.parametrize("meta_key", ["metadata", "litellm_metadata"])
+def test_ex_por_alias_de_key(router_mod, meta_key):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2,
+                                overflow_exempt={"classes": [], "keys": ["opencode-20260630-local"]}),
+               inflight=99)
+    data = _data(**{meta_key: {"user_api_key_alias": "OpenCode-20260630-local"}})
+    if meta_key == "litellm_metadata":
+        data["metadata"] = {}
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_ex_key_no_listada_sigue_desbordando(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2,
+                                overflow_exempt={"classes": ["company"], "keys": ["hermes"]}),
+               inflight=99)
+    data = _data(metadata={"user_api_key_alias": "claude-local"})
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+
+
+@pytest.mark.parametrize("raw,esperado", [
+    (None, {"classes": ["company"], "keys": []}),
+    ("basura", {"classes": ["company"], "keys": []}),
+    ({"classes": [], "keys": []}, {"classes": [], "keys": []}),
+    ({"classes": ["Company", 3, " "], "keys": "x"}, {"classes": ["company"], "keys": []}),
+    ({"keys": ["Hermes", "hermes"]}, {"classes": ["company"], "keys": ["hermes"]}),
+])
+def test_ex_sanitize(router_mod, raw, esperado):
+    assert router_mod._sanitize({"overflow_exempt": raw})["overflow_exempt"] == esperado
 
 
 def test_c3_residente_no_ready_sigue_rebindeando(router_mod):
@@ -896,7 +988,8 @@ def test_class_aparece_en_la_linea_de_decision(router_mod, caplog):
     import logging
 
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=2,
-                                company={"claude": True, "alibaba": True}), inflight=99)
+                                company={"claude": True, "alibaba": True},
+                                overflow_exempt=NADIE_EXENTO), inflight=99)
     data = _company_data()
     with caplog.at_level(logging.INFO, logger="session_router"):
         assert env.run(data) is True
@@ -922,7 +1015,8 @@ def test_gate_de_valvula_exacto_y_helper_robusto(router_src):
     """La válvula: la compañía por SU interruptor, el resto por instant_reject, y
     siempre solo sobre el residente (no se ensancha a otras rutas). La lectura de la
     clase es case-insensitive por clave y el marcador de contrato está en el sitio."""
-    assert ('valvula = (company and company_overflow) or (not company and config["instant_reject"])'
+    assert ('valvula = not exempt and (\n'
+            '        (company and company_overflow) or (not company and config["instant_reject"]))'
             in router_src)
     assert "if valvula and model == RESIDENT_MODEL:" in router_src
     tree = ast.parse(router_src)
@@ -1056,7 +1150,8 @@ def test_cola_de_vllm_atascada_muda_la_sesion(router_mod):
     """Con pocas en vuelo pero la cola de vLLM atascada >= tolerancia, la sesión sale a
     Alibaba y se QUEDA allí (sticky): desviar petición a petición la dejaba fría en los
     dos lados (medido el 23-09: 22 % de acierto en Alibaba)."""
-    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=16),
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=False, local_slots=16,
+                                overflow_exempt=NADIE_EXENTO),
                inflight=3, stuck=True, bound="local")
     data = _company_data()
     assert env.run(data) is True
