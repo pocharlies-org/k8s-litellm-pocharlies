@@ -230,6 +230,9 @@ contracts:
       rewritten to the 27B alias and died as a 500 Connection error against a
       0-replica Service. The value `TOOLING_FALLBACKS` itself is unchanged;
       abliterated aliases keep having no chain and answer 503.
+      2026-09-26 (PR 159 restored the q38-flash* bridge because Open WebUI
+      still requested those names; PR 164 retires it again once dgx-infra#678
+      moved the chat catalog to qwen38-*). No change to TOOLING_FALLBACKS.
   - id: dgx.litellm.active-requests.v1
     kind: http-route
     value: /internal/active-requests
