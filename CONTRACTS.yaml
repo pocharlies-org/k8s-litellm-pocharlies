@@ -46,7 +46,9 @@ contracts:
       the diversion instead of preventing it — keeping an interactive session
       on the resident is overflow_exempt's job, not T's. The overflow moves the whole session
       (sticky, TTL renewed on every request: since 2026-09-26 30 min of
-      inactivity bound local, 5 min bound to Alibaba) so its
+      inactivity bound local, 5 min bound to Alibaba; since 2026-09-27 60 min
+      bound to Alibaba — the return became a rule of the KV token-budget
+      valve, not a TTL expiry) so its
       prefix cache stays warm on one side; switch off, it is sealed.
       The header cannot bypass sealed requests, uncensored aliases, explicit
       panel plans or admission; it is forgeable by any keyed client, whose
@@ -76,13 +78,48 @@ contracts:
       litellm-valkey db 0, value local|alibaba, only for default-plan
       sessions. Since 2026-09-23 the TTL is of INACTIVITY (renewed on every
       request of the session); since 2026-09-26 it depends on the value:
-      local 1800 s, alibaba 300 s (was 600 s for both). <sid> is the client session id when
+      local 1800 s, alibaba 300 s (was 600 s for both); since 2026-09-27
+      alibaba 3600 s — the KV token-budget valve (dgx.session-router.sessions-hash.v1)
+      made the return from Alibaba a RULE (compacted and fits, or born at
+      least alibaba_return_after_s ago and fits) instead of a TTL expiry:
+      a 5-minute pause must not drag a 150k-token session back cold
+      mid-conversation. <sid> is the client session id when
       there is one, or pfx-<24 hex> — a hash of api-key alias + system + first
       user message — for clients that send none (opencode, hermes), so a
       whole conversation keeps its affinity. Values unchanged. The pfx- hash
       is computed AFTER the hook strips Claude Code's x-anthropic-billing-header
       system block (2026-09-23), so it no longer carries that per-conversation
       suffix.
+  - id: dgx.session-router.sessions-hash.v1
+    kind: schema
+    value: session-router:sessions
+    anchor: "session-router:sessions"
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      KV token-budget ledger (2026-09-27, precedence 4b/4c). Valkey
+      litellm-valkey db 0, one HASH: field <sid> -> json {"t": estimated
+      prompt tokens, "ts": epoch}. Written (HSET, fire-and-forget) by every
+      request the router sends to the resident — default-plan sessions and
+      explicit local-plan sessions (they occupy cache alike); read by a
+      background poller (HGETALL + prune-on-read HDEL) that sums the LIVE
+      sessions (activity within session_idle_s) across all LiteLLM replicas.
+      A NEW session whose estimate plus that sum exceeds kv_budget_pct of the
+      engine's KV capacity is bound to Alibaba instead of cold-evicting an
+      idle session's prefix; capacity is discovered at runtime from
+      vllm:cache_config_info (num_gpu_blocks x block_size) — the budget is a
+      PERCENTAGE, never a fixed token count, because it changes with the
+      resident model. Companion key session-router:albind:<sid> (SETNX, TTL
+      24 h, deleted on return to local): epoch when the session was born in
+      Alibaba, the clock for the return rule alibaba_return_after_s. No
+      INCR/DECR/ZSET anywhere (mandate 1 stands): each pod rewrites its own
+      session's entry idempotently and the total is a read-time sum; an
+      empty or lost Valkey rebuilds itself from the next requests
+      (fail-open). Consumer today: this module only (the dashboard reads
+      sticky keys, not this hash).
   - id: dgx.session-router.deployment-affinity-key.v1
     kind: schema
     value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>
@@ -145,6 +182,21 @@ contracts:
       non-operator sticky binding to Alibaba is released back to the
       resident. Absent or malformed = {classes: [company], keys: []}; an
       empty list saved from the panel = nobody exempt.
+      Since 2026-09-27 it also reads the ADDITIVE KV-budget fields
+      (precedence 4b/4c, defaults in the module so an old dashboard is fine):
+      kv_budget_pct (int 1-100, 85) and bot_budget_pct (int 1-100, 60) — the
+      percentage of the resident's discovered KV capacity that live local
+      sessions may occupy, bots (x-claude-class company or key alias listed
+      in bot_keys) held to the lower threshold; session_idle_s (int 30-86400,
+      600) — a session counts as live while it shows activity inside this
+      window; return_max_tokens (int 1000-1000000, 30000) and
+      alibaba_return_after_s (int 60-86400, 3600) — the rules that let an
+      Alibaba-bound session come back (compacted and fits / born long enough
+      ago and fits); bot_keys (list of lower-cased key aliases, default
+      [hermes, aurora-rca]) — which keys are bots for the threshold. Unknown
+      or malformed field = module default; the valve additionally stays off
+      until KV capacity is discovered and the sessions hash has a fresh read
+      (fail-open).
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba

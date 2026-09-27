@@ -9,8 +9,24 @@
 # tracker de peticiones activas, que ven todos el modelo final.
 #
 # QUÉ POSEE Y QUÉ NO (mandato 1):
-#   - Valkey dedicado (litellm-valkey): SOLO el mapa sticky sid -> "local" |
-#     "alibaba" con TTL 1 h. Prohibido INCR/DECR/ZSET: no hay contador aquí.
+#   - Valkey dedicado (litellm-valkey): el mapa sticky sid -> "local" |
+#     "alibaba", el HASH de sesiones `session-router:sessions` (sid ->
+#     json{t,ts}: prompt estimado y última actividad de las peticiones
+#     servidas por el residente — válvula de presupuesto KV, 27-09-2026) y
+#     las claves de nacimiento `session-router:albind:<sid>` (SETNX, TTL 24 h:
+#     desde cuándo la sesión está ligada a Alibaba — regla de retorno).
+#     Prohibido INCR/DECR/ZSET: no hay contador aquí. RELAJACIÓN DEL MANDATO
+#     (27-09-2026, lo pidió Dani): el HASH NO es un contador — cada entrada
+#     la ESCRIBE el propio pod que enruta (HSET, idempotente por sid, con su
+#     marca de tiempo) y el total se saca LEYENDO (HGETALL en un sondeo en
+#     background + poda por HDEL de las entradas muertas). No existe ningún
+#     acumulador repartido entre pods: si Valkey se vacía, el presupuesto se
+#     reconstruye solo con las siguientes peticiones. Justificación: el tope
+#     local_slots cuenta peticiones EN VUELO; las sesiones ociosas con un
+#     prefijo de 150k en la KV cache no cuentan y vLLM las expulsa del LRU
+#     igualmente — al volver re-prefrían frías (decenas de segundos, decode
+#     1-3 tok/s) y montan un bucle de thrash. Quién ocupa la cache lo sabe
+#     solo quien enruta, así que se anota al enrutar.
 #   - Peticiones en vuelo al residente: la fuente es el ActiveRequestTracker
 #     que YA existe (in-process en este pod, exacto, sin el throttle de 0,25 s
 #     del fichero) + el sidecar :4001 para las OTRAS réplicas, deduplicando por
@@ -32,9 +48,35 @@
 #   4. sticky (solo sesiones de plan default): binding en Valkey; destino solo
 #      si está sano (residente: compute-mode listo y, con la válvula activa,
 #      hueco < local_slots; alibaba: sin cooldown); si hay hueco se re-vincula.
+#   4b. VÁLVULA DE PRESUPUESTO KV (27-09-2026): una sesión NUEVA (sin binding)
+#      que pediría el residente se liga a Alibaba si su prompt estimado + la
+#      suma de los prompts de las sesiones locales VIVAS (actividad en los
+#      últimos session_idle_s) supera kv_budget_pct de la capacidad KV total
+#      del motor. La capacidad se descubre en runtime (vllm:cache_config_info:
+#      num_gpu_blocks × block_size, en el MISMO sondeo de /metrics que ya lee
+#      la cola; último-bueno, nunca un número fijo — al cambiar el residente
+#      cambia la cache). Sin capacidad conocida o sin lectura fresca del HASH
+#      la válvula está APAGADA (fail-open = comportamiento actual). Una sesión
+#      YA ligada a local NUNCA la expulsa esta válvula: desalojar un prefijo
+#      caliente paga el re-prefrío de quien se va y el de quien vuelve. Las
+#      sesiones BOT (clase company o key alias en bot_keys: hermes,
+#      aurora-rca) solo se admiten bajo el umbral más bajo bot_budget_pct:
+#      el interactivo (claude-cli, opencode, open-webui) va primero.
+#   4c. RETORNO desde Alibaba (27-09-2026): una sesión ligada a Alibaba vuelve
+#      al residente SOLO si (a) su prompt actual es pequeño (<=
+#      return_max_tokens, o sea compactó) y cabe en el presupuesto, o (c)
+#      nació en Alibaba hace >= alibaba_return_after_s y cabe. El TTL sticky
+#      de Alibaba subió de 300 s a 3600 s para que una pausa corta no devuelva
+#      fría a una sesión de 150k a mitad de conversación. Nunca vuelve con el
+#      residente no Ready, con default_plan=alibaba o con un plan EXPLÍCITO
+#      del operador (ni pasa por aquí: sale antes por precedencia 3).
 #   5. default con instant_reject: al llegar a local_slots en vuelo, reescribe
 #      al instante a alibaba-q38-flash. SOLO sesiones de plan default.
 #   El sticky en Valkey se escribe ÚNICAMENTE para sesiones de plan default.
+#   El HASH de sesiones y las claves albind se escriben TAMBIÉN solo para
+#   sesiones de plan default, salvo la anotación de consumo de una plan
+#   EXPLÍCITO local (ocupa cache igual que cualquier sesión y debe contar en
+#   la suma; su binding no se toca).
 #
 # REESCRIBIR, NO EXCEPCIÓN (respuesta D del arquitecto): las excepciones de un
 # pre_call hook llegan al cliente tal cual; el fallback vive aguas abajo en
@@ -55,6 +97,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -123,17 +166,74 @@ SIDECAR_STALE_SECONDS = 3.0
 # 26-09-2026 (Dani): distinto por destino (antes 10 min para los dos).
 #   local   30 min: la caché de prefijo del vLLM es gratis; una sesión local
 #           sigue en local tras una pausa.
-#   alibaba  5 min: tras una pausa la sesión vuelve a decidirse y regresa al
-#           local si hay hueco. La caché implícita de Alibaba no aguanta pausas
-#           largas, así que tras la pausa llegaría fría igual. Sin pausa se
-#           renueva y no se mueve: nunca se trae al local a mitad de ráfaga.
+#   alibaba 60 min (27-09-2026; antes 5 min): con la válvula de presupuesto
+#           KV (precedencia 4b) una sesión de 150k que pausaba 5 min volvía al
+#           local FRÍA a mitad de conversación y pagaba el re-prefill expulsando
+#           a otra. El retorno desde Alibaba es ahora una REGLA (compactó y
+#           cabe, o nació hace >= alibaba_return_after_s y cabe), no el
+#           vencimiento del TTL. La caché implícita de Alibaba no aguanta
+#           pausas largas de todas formas; sin pausa se renueva y no se mueve.
 STICKY_TTL_LOCAL_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_LOCAL_S", "1800"))
-STICKY_TTL_ALIBABA_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_ALIBABA_S", "300"))
+STICKY_TTL_ALIBABA_SECONDS = int(os.environ.get("SESSION_ROUTER_STICKY_TTL_ALIBABA_S", "3600"))
 # CONTRACT: dgx.session-router.sticky-key.v1
 STICKY_KEY_PREFIX = "session-router:sticky:"
 DEFAULT_LOCAL_SLOTS = 8
 LOCAL_SLOTS_CAP = 64
 PLANES = ("local", "alibaba", "claude")
+
+# ── Válvula de presupuesto KV por sesión (27-09-2026, precedencia 4b/4c) ────
+# local_slots cuenta peticiones EN VUELO; una sesión ociosa con su prefijo de
+# 150k en la KV cache no cuenta y vLLM la expulsa del LRU cuando entran más de
+# las que caben (27-09: 2.775.211 tokens en el residente TP=2). Al volver
+# re-prefría fría. Esta válvula presupuesta la cache por SESIÓN: cada
+# petición servida por el residente anota su prompt estimado en el HASH
+# `session-router:sessions` (sid -> json{t,ts}); un sondeo en background lo
+# suma (solo las activas en session_idle_s) y una sesión NUEVA que no quepa en
+# kv_budget_pct de la capacidad nace en Alibaba. La capacidad llega de
+# vllm:cache_config_info (num_gpu_blocks × block_size), leída en el MISMO
+# sondeo de /metrics que ya mira la cola: el presupuesto es un PORCENTAJE,
+# nunca un número fijo de tokens, porque al cambiar el residente cambia la
+# cache. Sin capacidad conocida o sin lectura fresca del HASH => válvula
+# APAGADA (fail-open = comportamiento actual). Los sondeos viven fuera del
+# camino de la petición (0 ms); la decisión lee solo cachés en memoria.
+# CONTRACT: dgx.session-router.sessions-hash.v1
+SESSIONS_HASH_KEY = "session-router:sessions"
+# Nacimiento de la sesión en Alibaba (regla de retorno 4c): SETNX — el primer
+# vínculo manda y se renueva el TTL; se BORRA al volver a local. Medido desde
+# el nacimiento, no desde la última actividad.
+ALBIND_KEY_PREFIX = "session-router:albind:"
+ALBIND_TTL_SECONDS = 86400
+KV_POLL_SECONDS = float(os.environ.get("SESSION_ROUTER_KV_POLL_S", "1"))
+KV_POLL_TIMEOUT_SECONDS = 2.0
+# Sin lectura buena del HASH en este tiempo la válvula no actúa (como la cola).
+KV_STALE_SECONDS = 5.0
+DEFAULT_KV_BUDGET_PCT = 85
+DEFAULT_BOT_BUDGET_PCT = 60
+DEFAULT_SESSION_IDLE_S = 600
+DEFAULT_RETURN_MAX_TOKENS = 30000
+DEFAULT_ALIBABA_RETURN_AFTER_S = 3600
+# Bots por alias de virtual key (medido en SpendLogs; los interactivos —
+# claude-local SIN clase company, opencode-*, open-webui — NO están). La
+# identificación es fiable para los listados: cada bot usa su key. Una key
+# nueva sin listar se trata como interactiva (fail-open hacia local).
+DEFAULT_BOT_KEYS = ("hermes", "aurora-rca")
+# Punto de partida del estimador; el tracker aprende el real por modelo
+# (active_request_tracking.py: chars_per_token arranca en 3,5).
+FALLBACK_CHARS_PER_TOKEN = 3.5
+# Estado en memoria: lo escriben los sondeos en background, el camino de la
+# petición SOLO lee. tokens=None => capacidad desconocida => válvula apagada.
+_kv_capacity = {"tokens": None, "read_at": None}
+_kv_sessions = {"total": None, "n": None, "read_at": None}
+_kv_poller = None
+_kv_no_capacity_logged = False
+
+
+def _cfg_int(config, key, default):
+    """Entero de la config saneada, con default si falta o tiene otra forma
+    (los cfg de los tests no traen los campos nuevos: misma segunda red que
+    _sanitize, pero en el lector)."""
+    value = config.get(key, default)
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 # Mandato 4b: los alias abliterados NUNCA caen a Alibaba (sello de #101, que
 # se estampa en strip_params DESPUÉS de este punto de inserción — por eso la
@@ -281,6 +381,15 @@ DEFAULT_CONFIG = {
     "company": dict(DEFAULT_COMPANY),
     "alibaba": dict(DEFAULT_ALIBABA),
     "overflow_exempt": {k: list(v) for k, v in DEFAULT_OVERFLOW_EXEMPT.items()},
+    # Presupuesto KV (27-09-2026, ADITIVOS): con el panel viejo estos defaults
+    # ya valen; la válvula además necesita capacidad descubierta y HASH fresco
+    # para actuar, así que estrenar el código no cambia el routing de nadie.
+    "kv_budget_pct": DEFAULT_KV_BUDGET_PCT,
+    "bot_budget_pct": DEFAULT_BOT_BUDGET_PCT,
+    "session_idle_s": DEFAULT_SESSION_IDLE_S,
+    "return_max_tokens": DEFAULT_RETURN_MAX_TOKENS,
+    "alibaba_return_after_s": DEFAULT_ALIBABA_RETURN_AFTER_S,
+    "bot_keys": list(DEFAULT_BOT_KEYS),
 }
 
 _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
@@ -459,6 +568,25 @@ def _sanitize(raw):
     slots = raw.get("local_slots")
     if isinstance(slots, int) and not isinstance(slots, bool) and 0 <= slots <= LOCAL_SLOTS_CAP:
         config["local_slots"] = slots
+    # Presupuesto KV (27-09-2026, ADITIVOS): campo inválido o ausente => default,
+    # nunca excepción (segunda red del consumidor fail-open, como el resto).
+    for key, default, lo, hi in (
+        ("kv_budget_pct", DEFAULT_KV_BUDGET_PCT, 1, 100),
+        ("bot_budget_pct", DEFAULT_BOT_BUDGET_PCT, 1, 100),
+        ("session_idle_s", DEFAULT_SESSION_IDLE_S, 30, 86400),
+        ("return_max_tokens", DEFAULT_RETURN_MAX_TOKENS, 1000, 1000000),
+        ("alibaba_return_after_s", DEFAULT_ALIBABA_RETURN_AFTER_S, 60, 86400),
+    ):
+        value = raw.get(key)
+        config[key] = (
+            value if isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi
+            else default
+        )
+    bots = raw.get("bot_keys")
+    config["bot_keys"] = (
+        sorted({str(x).strip().lower() for x in bots if isinstance(x, str) and x.strip()})
+        if isinstance(bots, list) else list(DEFAULT_BOT_KEYS)
+    )
     return config
 
 
@@ -627,6 +755,32 @@ def _parse_vllm_gauges(text, model_name=None):
     return waiting, running
 
 
+def _parse_cache_capacity(text):
+    """Capacidad KV total en TOKENS desde vllm:cache_config_info: un gauge-INFO
+    (valor 1.0) cuyos LABELLES llevan num_gpu_blocks y block_size; el producto
+    es la cache que ve el motor (con TP=2 el head reporta los bloques LÓGICOS
+    del grupo, ya partidos entre las dos GPUs — cuadra con el log de arranque
+    «GPU KV cache size: 2,775,211 tokens» del 27-09). None si la línea no está
+    (motor sin arrancar, vLLM cambió el métrico, o num_gpu_blocks="None" antes
+    de la profilaxis): la válvula de presupuesto se APAGA (fail-open). Si
+    hubiera varias líneas (varios engines) manda la mayor."""
+    best = None
+    for line in (text or "").splitlines():
+        if line.startswith("#") or "vllm:cache_config_info" not in line:
+            continue
+        m_blocks = re.search(r'num_gpu_blocks="(\d+)"', line)
+        m_size = re.search(r'block_size="(\d+)"', line)
+        if not (m_blocks and m_size):
+            continue
+        try:
+            tokens = int(m_blocks.group(1)) * int(m_size.group(1))
+        except ValueError:
+            continue
+        if tokens > 0 and (best is None or tokens > best):
+            best = tokens
+    return best
+
+
 def _note_vllm_sample(waiting, running, now=None):
     """Registra una lectura. `since` = desde cuándo la cola NO se ha vaciado."""
     now = time.monotonic() if now is None else now
@@ -649,6 +803,14 @@ async def _poll_vllm_forever():
             waiting, running = _parse_vllm_gauges(response.text)
             if waiting is not None:
                 _note_vllm_sample(waiting, running)
+            # Capacidad KV (27-09): MISMA lectura que la cola, cero I/O extra.
+            # Último-bueno: la cache solo cambia al reiniciar el motor, y el
+            # siguiente sondeo bueno la sustituye; sin sondeo la válvula sigue
+            # decidiendo con el último valor conocido.
+            capacity = _parse_cache_capacity(response.text)
+            if capacity:
+                _kv_capacity["tokens"] = capacity
+                _kv_capacity["read_at"] = time.monotonic()
         except Exception as exc:
             _warn_throttled("vllm_poll", f"sondeo de la cola de vLLM falló ({exc.__class__.__name__}); sin válvula de cola")
         await asyncio.sleep(VLLM_POLL_SECONDS)
@@ -659,6 +821,211 @@ def _ensure_vllm_poller():
     global _vllm_poller
     if _vllm_poller is None or _vllm_poller.done():
         _vllm_poller = asyncio.create_task(_poll_vllm_forever())
+
+
+# ── Presupuesto KV: HASH de sesiones (27-09-2026) ───────────────────────────
+
+
+def _estimate_prompt_tokens(data, tracker=None):
+    """Tokens del prompt, ESTIMADOS: caracteres / chars_per_token. El número
+    real lo manda vLLM al acabar el prefill — tarde para decidir dónde se
+    sirve. Mismo criterio que prompt_chars() del tracker
+    (active_request_tracking.py, duplicado a propósito para no acoplar el
+    import): recorre el body sin serializarlo, no cuenta el base64 de los
+    adjuntos (sus tokens no salen de sus caracteres) e ignora cache_control.
+    chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales
+    (arranca en 3,5); sin tracker o con dato roto, 3,5. Un turno de Claude
+    Code son ~300 KB: la misma vuelta que el tracker ya da por petición,
+    sub-milisegundos, dentro del presupuesto (mandato 10). Cualquier forma
+    rara => None => la válvula no bloquea (fail-open)."""
+    try:
+        if not isinstance(data, dict):
+            return None
+        total = 0
+        stack = [data.get(key) for key in (
+            "system", "instructions", "messages", "input", "prompt", "tools")]
+        media = frozenset(("image", "image_url", "input_image", "input_audio",
+                           "document", "file"))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, str):
+                if node.startswith("data:") and len(node) > 1024:
+                    continue
+                total += len(node)
+            elif isinstance(node, dict):
+                if node.get("type") in media:
+                    continue
+                for key, value in node.items():
+                    if key == "cache_control":
+                        continue
+                    total += len(key)
+                    stack.append(value)
+            elif isinstance(node, (list, tuple)):
+                stack.extend(node)
+        if total <= 0:
+            return None
+        cpc = getattr(tracker, "chars_per_token", None) or FALLBACK_CHARS_PER_TOKEN
+        return int(total / float(cpc)) + 1
+    except Exception:
+        return None
+
+
+def _sessions_aggregate(raw, now=None, idle_s=None, prune_s=None):
+    """De un HGETALL {sid: json{t,ts}}: (suma de las sesiones VIVAS, nº vivas,
+    campos a podar). Viva = actividad en los últimos idle_s (precedencia 4b).
+    Se poda lo muerto hace más de prune_s — por encima de cualquier TTL
+    sticky: la entrada ya no sirve (la sesión que vuelva se re-anota como
+    nueva o como fresh). La poda por HDEL es idempotente entre réplicas; la
+    carrera (otro pod renueva el campo entre el HGETALL y el HDEL) a lo sumo
+    borra una entrada viva que la siguiente petición reescribe: subestima
+    brevemente, la dirección fail-open de siempre."""
+    now = time.time() if now is None else now
+    idle_s = DEFAULT_SESSION_IDLE_S if idle_s is None else idle_s
+    if prune_s is None:
+        prune_s = max(STICKY_TTL_ALIBABA_SECONDS, STICKY_TTL_LOCAL_SECONDS, idle_s) + 60
+    total = 0
+    n = 0
+    stale = []
+    for sid, value in (raw or {}).items():
+        try:
+            entry = json.loads(value)
+            ts = float(entry["ts"])
+            tokens = int(entry["t"])
+        except (TypeError, ValueError, KeyError):
+            stale.append(str(sid))
+            continue
+        if now - ts > prune_s:
+            stale.append(str(sid))
+            continue
+        if now - ts <= idle_s:
+            total += tokens
+            n += 1
+    return total, n, stale
+
+
+async def _sessions_write_bg(sid, tokens):
+    try:
+        client = await _redis()
+        if client is None:
+            return
+        await asyncio.wait_for(
+            client.hset(SESSIONS_HASH_KEY, sid,
+                        json.dumps({"t": int(tokens), "ts": time.time()})),
+            timeout=STICKY_WRITE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        _warn_throttled("sessions_write", f"registro de sesión en el HASH falló ({exc.__class__.__name__}); fail-open")
+
+
+def _sessions_write(sid, tokens):
+    """Fire-and-forget (como _sticky_set): el camino de la petición no espera
+    a Valkey. Solo peticiones servidas por el residente: son las que ocupan
+    la KV cache local."""
+    if sid and tokens:
+        _schedule(_sessions_write_bg(sid, tokens))
+
+
+async def _poll_sessions_forever():
+    while True:
+        try:
+            client = await _redis()
+            if client is not None:
+                config = await _config()
+                raw = await asyncio.wait_for(
+                    client.hgetall(SESSIONS_HASH_KEY),
+                    timeout=KV_POLL_TIMEOUT_SECONDS,
+                )
+                total, n, stale = _sessions_aggregate(
+                    raw, idle_s=_cfg_int(config, "session_idle_s", DEFAULT_SESSION_IDLE_S))
+                if stale:
+                    try:
+                        await asyncio.wait_for(
+                            client.hdel(SESSIONS_HASH_KEY, *stale),
+                            timeout=KV_POLL_TIMEOUT_SECONDS,
+                        )
+                    except Exception as exc:
+                        _warn_throttled("sessions_prune", f"poda del HASH falló ({exc.__class__.__name__}); sigue viva la última suma")
+                _kv_sessions["total"] = total
+                _kv_sessions["n"] = n
+                _kv_sessions["read_at"] = time.monotonic()
+        except Exception as exc:
+            _warn_throttled("sessions_poll", f"sondeo del HASH de sesiones falló ({exc.__class__.__name__}); válvula KV apagada")
+        await asyncio.sleep(KV_POLL_SECONDS)
+
+
+def _ensure_sessions_poller():
+    """Arranca el sondeo del HASH la primera vez que hace falta (y lo rearranca si murió)."""
+    global _kv_poller
+    if _kv_poller is None or _kv_poller.done():
+        _kv_poller = asyncio.create_task(_poll_sessions_forever())
+
+
+# ── Nacimiento en Alibaba (regla de retorno 4c) ─────────────────────────────
+
+
+async def _albind_touch_bg(sid):
+    try:
+        client = await _redis()
+        if client is None:
+            return
+
+        async def _touch():
+            key = f"{ALBIND_KEY_PREFIX}{sid}"
+            # SETNX: el primer vínculo manda (se mide DESDE el nacimiento, no
+            # desde la última actividad). Si la key ya existe solo se empuja
+            # su TTL (EXPIRE, el valor NO se toca): una sesión ligada a
+            # Alibaba más de 24 h no puede quedarse sin reloj porque la key
+            # venza.
+            if not await client.set(key, time.time(), ex=ALBIND_TTL_SECONDS, nx=True):
+                await client.expire(key, ALBIND_TTL_SECONDS)
+
+        await asyncio.wait_for(_touch(), timeout=STICKY_WRITE_TIMEOUT_SECONDS)
+    except Exception as exc:
+        _warn_throttled("albind_touch", f"registro de nacimiento en Alibaba falló ({exc.__class__.__name__}); fail-open")
+
+
+def _albind_touch(sid):
+    if sid:
+        _schedule(_albind_touch_bg(sid))
+
+
+async def _albind_clear_bg(sid):
+    try:
+        client = await _redis()
+        if client is None:
+            return
+        await asyncio.wait_for(
+            client.delete(f"{ALBIND_KEY_PREFIX}{sid}"),
+            timeout=STICKY_WRITE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        _warn_throttled("albind_clear", f"borrado de nacimiento en Alibaba falló ({exc.__class__.__name__}); fail-open")
+
+
+def _albind_clear(sid):
+    """Al volver a local la sesión deja de estar «nacida en Alibaba»: la
+    próxima mudanza mide el reloj desde cero."""
+    if sid:
+        _schedule(_albind_clear_bg(sid))
+
+
+async def _albind_get(sid):
+    """Época de nacimiento en Alibaba o None. Va EN el camino de la petición
+    (la regla de retorno decide ahora) con el presupuesto de 100 ms de
+    _sticky_get: sin dato, el retorno por tiempo NO actúa y la sesión sigue
+    en Alibaba = comportamiento de hoy (fail-open)."""
+    try:
+        client = await _redis()
+        if client is None:
+            return None
+        value = await asyncio.wait_for(
+            client.get(f"{ALBIND_KEY_PREFIX}{sid}"),
+            timeout=REDIS_OP_TIMEOUT_SECONDS,
+        )
+        return float(value) if value else None
+    except Exception as exc:
+        _warn_throttled("albind_get", f"albind_get falló ({exc.__class__.__name__}); sin retorno por tiempo")
+        return None
 
 
 async def _poll_sidecar_forever():
@@ -737,6 +1104,89 @@ async def _inflight_resident(tracker):
     # que subestima => admite de más en local, la dirección fail-open. El semaphore
     # 8 por pod sigue topando.
     return local_n + remote_n
+
+
+def _is_bot_session(config, claude_class, key_alias):
+    """Prioridad (27-09-2026): el interactivo va primero. Bot = clase company
+    (los roles autónomos de la compañía corren en segundo plano) o alias de
+    virtual key en bot_keys (hermes, aurora-rca). claude-cli/opencode/
+    open-webui NO son bot. Sin key alias o config vieja: no bot (fail-open
+    hacia local). La clase es falsificable (dgx.claude.class-header.v1) y el
+    alias lo pone la key: el único efecto de mentir es que la sesión se
+    admita con el umbral alto en vez del bajo — auto-perjuicio, sin escalar
+    privilegios."""
+    if claude_class == COMPANY_CLASS:
+        return True
+    if not key_alias:
+        return False
+    bots = config.get("bot_keys")
+    if not isinstance(bots, (list, tuple, set)):
+        bots = DEFAULT_BOT_KEYS
+    return key_alias in bots
+
+
+def _kv_budget_state(config, est, is_bot):
+    """(limite_tokens, capacidad, suma_viva) o None si la válvula no puede
+    decidir: capacidad desconocida (el residente no expone
+    cache_config_info — p.ej. tras un cambio de modelo aún sin sondeo), HASH
+    sin lectura fresca, o prompt sin estimar. El camino de la petición NO
+    hace I/O: lee los cachés que escriben los sondeos. None = APAGADA =
+    comportamiento actual (fail-open). El límite es un PORCENTAJE de la
+    capacidad descubierta, nunca un número fijo de tokens: al cambiar el
+    residente cambia la cache (27-09: 2.775.211 tokens con qwen38-flash-next
+    TP=2)."""
+    global _kv_no_capacity_logged
+    capacity = _kv_capacity["tokens"]
+    if capacity is None:
+        if not _kv_no_capacity_logged:
+            _kv_no_capacity_logged = True
+            log.warning(
+                "session_router: capacidad KV desconocida (vllm:cache_config_info no visto); "
+                "válvula de presupuesto APAGADA (fail-open)")
+        return None
+    total = _kv_sessions["total"]
+    read_at = _kv_sessions["read_at"]
+    if total is None or read_at is None or time.monotonic() - read_at > KV_STALE_SECONDS:
+        return None
+    if est is None:
+        return None
+    pct = _cfg_int(
+        config, "bot_budget_pct" if is_bot else "kv_budget_pct",
+        DEFAULT_BOT_BUDGET_PCT if is_bot else DEFAULT_KV_BUDGET_PCT,
+    )
+    return capacity * pct / 100.0, capacity, total
+
+
+def _kv_blocks(config, est, is_bot):
+    """True => una sesión NUEVA no cabe en el residente: nace en Alibaba
+    (precedencia 4b). Nunca expulsa una sesión ya ligada a local: eso es
+    decisión del llamador (solo llama con fresh)."""
+    state = _kv_budget_state(config, est, is_bot)
+    if state is None:
+        return False
+    limit, _capacity, total = state
+    return est + total > limit
+
+
+async def _may_return_local(config, sid, est, is_bot):
+    """Regla de retorno (precedencia 4c) para una sesión ya ligada a Alibaba:
+    motivo de retorno o None (sigue en Alibaba). Vuelve si (a) compactó — su
+    prompt actual <= return_max_tokens — y cabe, o (c) nació en Alibaba hace
+    >= alibaba_return_after_s y cabe. «Cabe» = prompt actual + sesiones
+    locales vivas <= umbral; sin datos de presupuesto se admite el retorno
+    (fail-open hacia local, la dirección de todo el módulo). El (b) «sesión
+    nueva» no vive aquí: una sesión sin binding entra fresh por 4b."""
+    state = _kv_budget_state(config, est, is_bot)
+    if state is not None and est is not None and est + state[2] > state[0]:
+        return None
+    return_max = _cfg_int(config, "return_max_tokens", DEFAULT_RETURN_MAX_TOKENS)
+    if est is not None and est <= return_max:
+        return "compactada"
+    after_s = _cfg_int(config, "alibaba_return_after_s", DEFAULT_ALIBABA_RETURN_AFTER_S)
+    born = await _albind_get(sid)
+    if born is not None and time.time() - born >= after_s:
+        return "temporizada"
+    return None
 
 
 def _group_in_cooldown(model_name):
@@ -1004,7 +1454,7 @@ async def apply_session_routing(data, requested_model, tracker=None, resident_re
     info = {
         "model": str(data.get("model") or ""), "sid": None, "bound": None,
         "fresh": None, "plan": None, "cool": None, "inflight": None,
-        "class": None, "exempt": None,
+        "class": None, "exempt": None, "est": None, "kv": None,
         "decision": "fail-open", "active": False,
     }
     try:
@@ -1024,10 +1474,10 @@ async def apply_session_routing(data, requested_model, tracker=None, resident_re
         emit = log.warning if notable else log.info
         emit(
             "session_router decision: model=%s sid=%s class=%s exempt=%s bound=%s plan=%s "
-            "cool=%s inflight=%s -> %s%s",
+            "cool=%s inflight=%s est=%s kv=%s -> %s%s",
             info["model"] or "-", info["sid"] or "-", info["class"] or "-", info["exempt"],
             info["bound"], info["plan"],
-            info["cool"], info["inflight"], info["decision"],
+            info["cool"], info["inflight"], info["est"], info["kv"], info["decision"],
             " (REESCRITA)" if rewrote else "",
         )
     return rewrote
@@ -1069,12 +1519,27 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     # desborda a Alibaba al llenarse el residente (su propia válvula, abajo); desactivado,
     # ni llega aquí — apply_company_policy la sella antes y la precedencia 1 la deja pasar.
     company_overflow = company and (config.get("company") or {}).get("alibaba", True) is not False
-    exempt = _overflow_exempt(config, claude_class, _key_alias(data))
+    key_alias = _key_alias(data)
+    exempt = _overflow_exempt(config, claude_class, key_alias)
     info["exempt"] = exempt
     info["active"] = bool(
         config["sticky"] or config["instant_reject"]
         or config["default_plan"] != "local" or config["session_plans"]
     )
+    # Presupuesto KV (27-09-2026, precedencia 4b/4c): los sondeos que lo
+    # alimentan (capacidad en /metrics, suma de sesiones en el HASH) se
+    # aseguran aquí; fuera del camino de la petición, duermen si el routing de
+    # sesión no está en juego. La estimación del prompt se hace UNA vez por
+    # petición residente y solo con sticky activo (sin binding no hay válvula
+    # que la use ni retorno que decidir).
+    if config["sticky"]:
+        _ensure_vllm_poller()
+        _ensure_sessions_poller()
+    est = None
+    if config["sticky"] and sid and model == RESIDENT_MODEL:
+        est = _estimate_prompt_tokens(data, tracker)
+        info["est"] = est
+    is_bot = _is_bot_session(config, claude_class, key_alias)
     # Interruptor global «Desborde del session-router» (25-09-2026): apagado, ninguna
     # reescritura a Alibaba de este módulo — ni plan explícito, ni sticky, ni válvula
     # (tampoco la de la compañía). La petición se queda en el residente y encola.
@@ -1096,6 +1561,11 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         # Al residente y ENCOLA si está lleno: nunca rechazo instantáneo.
         info["plan"] = "local(explicito)"
         info["decision"] = "plan_explicito_local"
+        if est is not None:
+            # Ocupa cache igual que cualquier sesión de plan default: cuenta
+            # en la suma del presupuesto (4b). Su binding NO se escribe: el
+            # sticky es solo para sesiones de plan default (mandato 6).
+            _sessions_write(sid, est)
         return False
     if explicit == "claude":
         # No aplica en este hook: Anthropic ni pasa por LiteLLM. La puerta vive
@@ -1150,11 +1620,36 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
             # sticky y el residente admite, se re-vincula (hueco).
             if config["sticky"] and sid and not fresh and resident_ready:
                 await _sticky_set(sid, "local")
+                _albind_clear(sid)
+                if est is not None:
+                    _sessions_write(sid, est)
             info["decision"] = "plan_alibaba_degradado_por_cooldown"
             return False
+        # Regla de retorno (4c, 27-09-2026): una sesión ligada a Alibaba NO
+        # vuelve por vencimiento de TTL (subió de 300 s a 3600 s para que una
+        # pausa corta no la traiga fría a mitad de conversación); vuelve solo
+        # si compactó (prompt <= return_max_tokens) y cabe, o si nació en
+        # Alibaba hace >= alibaba_return_after_s y cabe. default_plan=alibaba
+        # es orden del operador y no se deshace (criterio igual que exentos);
+        # un plan EXPLÍCITO alibaba ni llega aquí (precedencia 3).
+        if (not fresh and config["sticky"] and sid and resident_ready
+                and model == RESIDENT_MODEL and config["default_plan"] != "alibaba"):
+            motivo = await _may_return_local(config, sid, est, is_bot)
+            if motivo:
+                await _sticky_set(sid, "local")
+                _albind_clear(sid)
+                if est is not None:
+                    _sessions_write(sid, est)
+                info["decision"] = "retorno_local_" + motivo
+                log.warning(
+                    "session_router: retorno a local sid=%s motivo=%s est=%s bot=%s",
+                    sid, motivo, est, is_bot,
+                )
+                return False
         if config["sticky"] and sid:
             # fresh: vincula; ligada: renueva el TTL (afinidad = caché de Alibaba)
             await _sticky_set(sid, "alibaba")
+            _albind_touch(sid)
         if model == RESIDENT_MODEL:
             info["decision"] = "sticky_alibaba" if not fresh else "default_alibaba"
             _rewrite(data, sid, "sticky_alibaba" if not fresh else "default_alibaba")
@@ -1170,6 +1665,7 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         if _overflow_ok_info(info):
             if config["sticky"] and sid:
                 await _sticky_set(sid, "alibaba")
+                _albind_touch(sid)
             if model == RESIDENT_MODEL:
                 info["decision"] = "rebind_alibaba"
                 _rewrite(data, sid, "rebind_alibaba")
@@ -1209,6 +1705,7 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         if (lleno or stuck) and _overflow_ok_info(info):
             if config["sticky"] and sid:
                 await _sticky_set(sid, "alibaba")
+                _albind_touch(sid)
             razon = "company_overflow" if company else "instant_reject"
             motivo = "lleno" if lleno else "cola"
             info["decision"] = f"{razon}_{motivo}"
@@ -1221,8 +1718,42 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
             )
             return True
 
+    # ── Válvula de presupuesto KV (4b, 27-09-2026) ──
+    # SOLO sesiones NUEVAS (fresh): una ya ligada a local sigue en local —
+    # expulsar un prefijo caliente paga el re-prefrío de quien se va y el de
+    # quien vuelve, que es exactamente el bucle de thrash que esta válvula
+    # evita. Exentas: encolan (overflow_exempt = no desborda por CAPACIDAD, y
+    # esto es capacidad). Sin capacidad descubierta, sin HASH fresco o sin
+    # estimación: apagada (fail-open = comportamiento actual). Va DESPUÉS de
+    # la válvula en-vuelo/cola: si esa ya mudó la sesión, esta no decide.
+    if fresh and config["sticky"] and sid and not exempt and model == RESIDENT_MODEL:
+        state = _kv_budget_state(config, est, is_bot)
+        if state is not None:
+            limit, capacity, total = state
+            info["kv"] = f"{int(total)}/{int(limit)}"
+            if est + total > limit and _overflow_ok_info(info):
+                await _sticky_set(sid, "alibaba")
+                _albind_touch(sid)
+                info["decision"] = "kv_budget_alibaba"
+                _rewrite(data, sid, "kv_budget")
+                data["metadata"]["_session_routing_trigger"] = "presupuesto"
+                log.warning(
+                    "session_router: presupuesto KV (%s) sid=%s est=%s suma_vivas=%s/%s cap=%s n=%s -> %s",
+                    "bot" if is_bot else "default", sid, est, int(total), int(limit),
+                    capacity, _kv_sessions["n"], OVERFLOW_MODEL,
+                )
+                return True
+
     if config["sticky"] and sid:
         # fresh: vincula; ligada: renueva el TTL (afinidad = caché del local)
         await _sticky_set(sid, "local")
+        if not fresh and bound != "local":
+            # Volvió de Alibaba (soltada por exención o re-bind): el reloj de
+            # nacimiento (4c) empieza de cero en la próxima mudanza.
+            _albind_clear(sid)
+    if est is not None:
+        # Anotación de consumo: esta petición ocupará (o ya ocupa) su prefijo
+        # en la KV cache del residente; es la suma que lee 4b/4c.
+        _sessions_write(sid, est)
     info["decision"] = "local"
     return False
