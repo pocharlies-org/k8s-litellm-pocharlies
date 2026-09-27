@@ -32,8 +32,19 @@ contracts:
       2026-09-23, superseding the 2026-09-21 "company never overflows"):
       switch on, it overflows to Alibaba once local_slots are in flight at
       the resident (all resident names counted as one budget) or the vLLM
-      queue has not emptied for SESSION_ROUTER_WAIT_TOLERANCE_S (default 5 s),
-      whatever instant_reject says; the overflow moves the whole session
+      queue has not emptied for SESSION_ROUTER_WAIT_TOLERANCE_S, whatever
+      instant_reject says. Deployed tolerance since 2026-09-27 is 20 s via
+      that env on the litellm Deployment; the code default is still 5 s, so a
+      pod without the env would use 5. Measured 2026-09-27 21:11: the valve
+      diverted a session with en_vuelo=5 of slots=12 and cola_vllm=4.0 — with
+      MAX_NUM_SEQS=16 and MAX_MODEL_LEN=262144 a ~20-28k-token agent context
+      takes more than 5 s per batch to prefill, so a non-empty queue is normal
+      operation and 5 s diverted sessions on noise, worst right after a
+      resident rollout (cold engine, empty prefix cache). What the knob does
+      NOT do: _queue_stuck measures "queue continuously non-empty for T", not
+      "this request has waited T", so under sustained load raising T delays
+      the diversion instead of preventing it — keeping an interactive session
+      on the resident is overflow_exempt's job, not T's. The overflow moves the whole session
       (sticky, TTL renewed on every request: since 2026-09-26 30 min of
       inactivity bound local, 5 min bound to Alibaba) so its
       prefix cache stays warm on one side; switch off, it is sealed.

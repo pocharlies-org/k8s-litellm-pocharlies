@@ -9888,6 +9888,23 @@ spec:
             - name: SESSION_ROUTER_REDIS_PASSWORD
               valueFrom:
                 secretKeyRef: { name: litellm-valkey-creds, key: password, optional: true }
+            # Válvula de cola del session_router (27-09-2026): 5 s -> 20 s.
+            # Medido el 27-09 a las 21:11 con el default de 5: la válvula desvió
+            # una sesión con `en_vuelo=5 slots=12 cola_vllm=4.0` — el residente a
+            # MEDIA de su presupuesto y aun así saltó a Alibaba. Con
+            # MAX_NUM_SEQS=16 y MAX_MODEL_LEN=262144, un prefill de los ~20-28k
+            # tokens de contexto de OpenCode tarda más de 5 s por lote, así que
+            # la cola está no-vacía en funcionamiento NORMAL y el umbral salta
+            # por ruido, sobre todo tras un rollout del residente (motor frío,
+            # caché de prefijo vacía). 20 s es el p50 de la cola medido el 23-09
+            # (nota en session_router.py): se desvía ante congestión sostenida,
+            # no ante un lote en curso.
+            # OJO a lo que NO hace: `_queue_stuck` mide «cola no vacía de forma
+            # CONTINUA desde hace T», no «esta petición lleva T esperando». Con
+            # carga sostenida la cola nunca se vacía, así que subir T RETARDA el
+            # desvío pero no lo evita. Quien no debe desviarse nunca es el
+            # interactivo: para eso está `overflow_exempt` (panel), no T.
+            - { name: SESSION_ROUTER_WAIT_TOLERANCE_S, value: "20" }
             - name: LITELLM_MASTER_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY } }
             # Langfuse native callback (LLM tracing). Points at the in-cluster web
