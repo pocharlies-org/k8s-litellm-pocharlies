@@ -22,10 +22,9 @@ Que vigila este contrato:
      corto (el claim va en el camino de la peticion).
   5. Cableado: strip_params llama al stamp FUERA del gate de ROUTED_MODELS
      (un `alibaba-*` explicito nunca pasa por apply_session_routing).
-  6. Plomada: ExternalSecret `litellm-alibaba-2` GATEADO fuera del
-     despliegue (DGX-444: el item 1Password no existe; ver cabecera GATE en
-     k8s/manifest.yaml) y env `optional: true` — sin Secret el pod arranca y
-     el `-k2` queda inerte.
+  6. Plomada: ExternalSecret `litellm-alibaba-2` propio (item 1Password
+     `alibaba-model-studio-2` sembrado el 28-09-2026) y env `optional: true`
+     — sin Secret el pod arranca y el `-k2` queda inerte.
 """
 import ast
 import sys
@@ -387,33 +386,18 @@ def test_strip_llama_el_stamp_fuera_del_gate_routed(strip_src):
 # ── 6. plomada de secretos ───────────────────────────────────────────────────
 
 
-def test_externalsecret_gateado_y_env_optional(docs):
-    """DGX-444 (26-09-2026): el ES `litellm-alibaba-2` esta GATEADO fuera del
-    despliegue (bloque comentado con cabecera GATE en k8s/manifest.yaml)
-    porque el item 1Password `alibaba-model-studio-2/password` NO existe:
-    desplegado, el ES entra en `could not get secret data from provider`,
-    quema ~74 llamadas de ERROR/dia a 1Password y degrada la Application
-    ArgoCD `litellm`. Este test vigila el gate: el ES NO debe estar en el
-    manifiesto, y el env del Deployment sigue `optional: true` (sin Secret el
-    pod arranca y el `-k2` queda inerte, nunca toca la key 1).
-
-    AL REACTIVAR el ES (item sembrado — ver cabecera GATE DGX-444 en
-    k8s/manifest.yaml) restaurar la asercion original del recurso:
-
-        es = next(d for d in docs
-                  if d.get("kind") == "ExternalSecret"
-                  and d["metadata"]["name"] == "litellm-alibaba-2")
-        assert es["spec"]["data"] == [
-            {"secretKey": "DASHSCOPE_API_KEY_2",
-             "remoteRef": {"key": "alibaba-model-studio-2/password"}}], \\
-            "recurso propio y aislado: un campo que falte no puede romper la key 1"
-    """
-    es = [d for d in docs
-          if d.get("kind") == "ExternalSecret" and d["metadata"]["name"] == "litellm-alibaba-2"]
-    assert not es, \
-        ("DGX-444: el ES litellm-alibaba-2 debe estar FUERA del despliegue "
-         "mientras el item 1Password alibaba-model-studio-2 no exista "
-         "(cabecera GATE en k8s/manifest.yaml)")
+def test_externalsecret_y_env_optional(docs):
+    """28-09-2026: item 1Password `alibaba-model-studio-2` sembrado (cuenta 2,
+    me@e-dani.com) y gate DGX-444 retirado. El ES es recurso propio y aislado,
+    y el env del Deployment sigue `optional: true` (si el Secret faltara el pod
+    arranca y el `-k2` queda inerte, nunca toca la key 1)."""
+    es = next(d for d in docs
+              if d.get("kind") == "ExternalSecret"
+              and d["metadata"]["name"] == "litellm-alibaba-2")
+    assert es["spec"]["data"] == [
+        {"secretKey": "DASHSCOPE_API_KEY_2",
+         "remoteRef": {"key": "alibaba-model-studio-2/password"}}], \
+        "recurso propio y aislado: un campo que falte no puede romper la key 1"
     dep = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm")
     envs = {e["name"]: e for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]}
     ref = envs["DASHSCOPE_API_KEY_2"]["valueFrom"]["secretKeyRef"]
