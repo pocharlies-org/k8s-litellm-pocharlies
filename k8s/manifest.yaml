@@ -4334,6 +4334,7 @@ data:
             data["messages"] = out
 
 
+    # CONTRACT: dgx.litellm.tool-call-arguments-json.v1
     # 27-09-2026: `function.arguments` de un `tool_calls` del HISTORIAL tiene que
     # ser una cadena con un OBJETO JSON, y eso no lo acepta ningún backend si no lo
     # es. Medido el 27-09 con el mismo historial contra los dos backends (sonda:
@@ -10359,7 +10360,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f126b8399cc2
+        config.k8s.e-dani.com/revision: config-b9cf12fc68f6
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

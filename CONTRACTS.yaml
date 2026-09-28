@@ -447,3 +447,37 @@ contracts:
       GitOps; ningun paso manual. Nombres congelados: Secret, env y titulo
       1Password (el provider onepasswordSDK convierte el titulo en op:// y
       solo admite [A-Za-z0-9_.-]).
+  - id: dgx.litellm.tool-call-arguments-json.v1
+    kind: schema
+    # El `value` es el campo del wire de OpenAI que el hook garantiza, no un
+    # nombre nuestro: `arguments` del `function` de cada `tool_calls` de
+    # `messages`. Se pone como literal `function.arguments` porque el checker
+    # exige que el value aparezca tal cual en los ficheros listados.
+    value: function.arguments
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+      - tests/test_tool_call_arguments_json_contract.py
+    status: active
+    note: >-
+      2026-09-27. El hook (`litellm_strip_params.py`, `async_pre_call_hook`)
+      GARANTIZA que todo `function.arguments` de un `tool_calls` del historial
+      sale hacia el backend como cadena con un OBJETO JSON. Lo que no lo es se
+      reescribe a `{"_raw": <texto original>}` y se loguea con el prefijo
+      `tool_arguments:` (WARNING: el proceso proxy filtra INFO). Medido ese dia
+      con el mismo historial contra los dos backends: `'{"path": ...}'`, `''` y
+      `'{}'` dan 200 en ambos; `'no-es-json'`, `'"no-es-json"'` y `'[1,2]'`
+      fallan en los DOS (residente 500, Alibaba 400) con el mismo texto
+      `The "function.arguments" parameter of the code model must be in JSON
+      format`. De ahi que la garantia sea INDEPENDIENTE del backend y del alias
+      resuelto, y que ni un fallback `alibaba-q38-flash` -> residente ni dejar
+      de declarar `tools` arreglen el caso: el valor viaja en `messages` y el
+      otro backend lo rechaza igual. La reescritura es deliberadamente minima y
+      eso es parte del contrato: NO toca cadena vacia, dict real, `None`, ni
+      ninguna cadena que empiece por `{` (incluido JSON truncado, que Alibaba
+      acepta medido), de modo que una peticion que hoy funciona sale byte a byte
+      igual; el contrato de CI fija esa propiedad de no-regresion y fija ademas
+      que el helper este LLAMADO desde `async_pre_call_hook`. El log
+      `tool_arguments:` es superficie tambien: es la unica atribucion del origen
+      del valor roto, porque el `failure_callback` de Langfuse NO traza estos
+      400 (medido: 258 trazas a Alibaba, ninguna con error registrado).
