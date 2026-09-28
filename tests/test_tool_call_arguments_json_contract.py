@@ -94,6 +94,14 @@ def hook():
     mod = types.ModuleType("argumentspure")
     mod.json = json
     mod.log = logging.getLogger("test.hook.arguments")
+    # El aviso saca el sid de `session_router._session_id` (no de
+    # metadata["session_id"], que estampa el propio hook mas tarde). Sin este
+    # sustituto el nombre no existe en el modulo recortado, el NameError cae en
+    # el try y el test pasaria con `sid=None`: habria que comprobar justo lo
+    # contrario para detectar la regresion.
+    mod.session_router = types.SimpleNamespace(
+        _session_id=lambda d: d.get("__sid_probe")
+    )
     exec(compile(ast.Module(body=keep, type_ignores=[]), "<hook>", "exec"), mod.__dict__)
     return mod
 
@@ -162,9 +170,17 @@ def test_avisa_cuando_reescribe(hook, caplog):
     """
     with caplog.at_level(logging.WARNING, logger="test.hook.arguments"):
         data = _data_with("no-es-json")
+        data["__sid_probe"] = "ses_prueba123"
         hook._normalize_tool_call_arguments(data)
-    assert any("tool_arguments" in r.getMessage() for r in caplog.records), (
+    mensajes = [r.getMessage() for r in caplog.records]
+    assert any("tool_arguments" in m for m in mensajes), (
         "reescribe en silencio: no habra forma de saber quien manda el veneno"
+    )
+    # El sid ES el dato que buscamos (quien manda el arguments roto). Si vuelve
+    # a leerse de metadata["session_id"], sale None y el aviso no atribuye nada:
+    # medido en produccion el 28-09, pasaba exactamente eso.
+    assert any("sid=ses_prueba123" in m for m in mensajes), (
+        "el aviso no lleva el sid del hook: se queda sin atribucion"
     )
 
 

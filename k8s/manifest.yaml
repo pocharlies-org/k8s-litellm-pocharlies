@@ -1903,6 +1903,43 @@ data:
       routing_strategy: simple-shuffle
       timeout: 600
       num_retries: 1
+      # ── Reintentos del 400 de `function.arguments`, SOLO en Alibaba ─────────
+      #
+      # 27-09-2026. Medido en los spend logs (postgres-shared/litellm, tabla
+      # LiteLLM_SpendLogs): 23 peticiones fallidas contra `alibaba-q38-flash` en
+      # 12 h, todas con la key `opencode-20260630-local`, y el texto
+      # `The "function.arguments" parameter of the code model must be in JSON
+      # format`. Lo que NO es: un historial envenenado que mande OpenCode. Tres
+      # mediciones lo descartan — (a) 2424 `input` almacenados en las 6 sesiones
+      # afectadas, TODOS dict, y el wire se construye con
+      # `JSON.stringify(part.input)`, o sea objeto siempre; (b) 5252 tool_calls
+      # de 400 trazas en Langfuse, todos con arguments de objeto valido; (c) el
+      # fallo es TRANSITORIO: en ses_f342de2bdffe falla 19:07:28 y la MISMA
+      # sesion sirve bien 19:07:35, con el mismo historial mas un mensaje. Un
+      # valor corrupto en `messages` habria tumbado tambien la segunda.
+      #
+      # Lo que si cuadra con (c): Model Studio valida los arguments que GENERA su
+      # propio modelo y devuelve 400 en vez de una generacion defectuosa. Es un
+      # fallo de muestreo, no del request: por eso la siguiente peticion pasa.
+      #
+      # El `num_retries: 1` de arriba ya cubre el primer reintento (en el
+      # metadata de esos fallos se lee `max_retries: 1`), o sea que las dos
+      # intentonas cayeron. Aqui se sube el presupuesto PARA ESTE GRUPO y para
+      # esta clase de error, no global: `model_group_retry_policy` se resuelve
+      # por modelo en get_retry_from_policy.py:51 y el proxy la reenvia al Router
+      # porque es argumento valido de Router.__init__ (proxy_server.py:5722-5732
+      # filtra por get_valid_args(); si no lo fuera, avisaria e ignoraria la
+      # clave en vez de tragarsela). Dos reintentos = tres generaciones nuevas
+      # por turno, que es lo que cambia cuando el fallo es de muestreo.
+      #
+      # Alcance y lo que cuesta: aplica a TODOS los 400 del grupo, incluidos los
+      # de peticion realmente invalida, que pagarian 3 intentos en vez de 2. Con
+      # 23 fallos en 12 h y un 400 legitimo mucho mas raro, el coste es
+      # despreciable; lo que se compra es que un 400 transitorio no reventel
+      # turno del usuario. No lo extenderia a otros grupos sin medirlo.
+      model_group_retry_policy:
+        alibaba-q38-flash:
+          BadRequestErrorRetries: 2
       # ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026) ──────────────
       #
       # Cada grupo `alibaba-*` tiene DOS deployments (dos planes Team del mismo
@@ -4404,6 +4441,15 @@ data:
             msgs = data.get("messages")
             if not isinstance(msgs, list):
                 return 0
+            # El sid sale del extractor del hook, NO de metadata["session_id"]:
+            # esa clave la estampa el PROPIO hook mas adelante en el pipeline,
+            # asi que aqui aun no existe. Medido en el pod el 28-09 con el
+            # primer reescrito real: el aviso salia `sid=None`, o sea sin la
+            # atribucion que es su razon de ser.
+            try:
+                _sid = session_router._session_id(data) if session_router else None
+            except Exception:  # pragma: no cover
+                _sid = None
             fixed = 0
             for i, m in enumerate(msgs):
                 if not isinstance(m, dict):
@@ -4430,8 +4476,7 @@ data:
                     log.warning(
                         "tool_arguments: reescrito arguments no-objeto "
                         "sid=%s msg=%d role=%s tool=%s antes=%r",
-                        data.get("metadata", {}).get("session_id")
-                        if isinstance(data.get("metadata"), dict) else None,
+                        _sid,
                         i, m.get("role"), fn.get("name"), str(value)[:160],
                     )
             return fixed
@@ -10360,7 +10405,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b9cf12fc68f6
+        config.k8s.e-dani.com/revision: config-a6bad790a910
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
