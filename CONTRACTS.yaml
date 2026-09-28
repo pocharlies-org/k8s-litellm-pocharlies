@@ -458,6 +458,7 @@ contracts:
     files:
       - k8s/manifest.yaml
       - tests/test_tool_call_arguments_json_contract.py
+      - tests/test_alibaba_400_retry_policy_contract.py
     status: active
     note: >-
       2026-09-27. El hook (`litellm_strip_params.py`, `async_pre_call_hook`)
@@ -480,4 +481,16 @@ contracts:
       que el helper este LLAMADO desde `async_pre_call_hook`. El log
       `tool_arguments:` es superficie tambien: es la unica atribucion del origen
       del valor roto, porque el `failure_callback` de Langfuse NO traza estos
-      400 (medido: 258 trazas a Alibaba, ninguna con error registrado).
+      400 (medido: 258 trazas a Alibaba, ninguna con error registrado). El sid
+      de ese log sale de `session_router._session_id(data)`, NO de
+      `metadata["session_id"]`: esa clave la estampa el propio hook mas tarde y
+      el aviso salia `sid=None` (medido en el pod el 2026-09-28). 2026-09-28:
+      se midio que los 400 de `alibaba-q38-flash` NO venian de un valor roto en
+      el request (2424 `input` almacenados de las 6 sesiones afectadas, todos
+      dict; 5252 tool_calls trazados, todos objeto; y el fallo es transitorio:
+      la misma sesion sirve bien 7 s despues con el mismo historial). Lo que
+      cuadra es que Model Studio invalide los arguments que GENERA su modelo,
+      de ahi el `model_group_retry_policy` del manifest
+      (`alibaba-q38-flash: BadRequestErrorRetries: 2`), que da tres
+      generaciones nuevas por turno SOLO en ese grupo; lo fija
+      tests/test_alibaba_400_retry_policy_contract.py.
