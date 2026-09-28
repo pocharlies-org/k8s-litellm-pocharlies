@@ -13,8 +13,9 @@ Que vigila este contrato:
      failover puro, no reparto); ids estables `<grupo>-k1/-k2`; los flags de
      capacidad y los precios del pack van ESPEJADOS (un twin desincronizado es
      el riesgo del patron).
-  2. router_settings: `model_group_affinity_config` activa session_affinity en
-     exactamente los grupos `alibaba-*`, y TTL explicito.
+  2. router_settings: el session_affinity NATIVO por grupo esta retirado
+     (28-09-2026); la afinidad es por cuenta — ver
+     tests/test_alibaba_account_affinity.py.
   3. Hook: `stamp_alibaba_session_affinity` estampa el sid del hook SOLO en
      modelos `alibaba-*`, PISANDO el session_id del cliente, con el hash de
      prefijo como red de estabilidad; sin sid no escribe nada.
@@ -164,13 +165,15 @@ def test_la_key_2_solo_aparece_en_los_k2(config):
 # ── 2. router_settings ───────────────────────────────────────────────────────
 
 
-def test_affinity_config_solo_para_alibaba_y_completa(config):
+def test_afinidad_nativa_por_grupo_retirada(config):
+    """28-09-2026: la afinidad es POR CUENTA (session_router.alibaba_account_filter).
+    El session_affinity nativo clavaba por grupo y soltaba la sesion a la otra
+    cuenta en un cooldown; activado a la vez que el filtro de cuenta, los dos
+    filtrarian con pines distintos. Tiene que seguir fuera."""
     rs = config["router_settings"]
-    mgac = rs.get("model_group_affinity_config")
-    assert mgac == {g: ["session_affinity"] for g in GROUPS}, (
-        "session_affinity debe estar activado exactamente en los grupos alibaba-*"
-    )
-    assert rs.get("deployment_affinity_ttl_seconds") == 3600
+    assert "model_group_affinity_config" not in rs
+    assert "deployment_affinity_ttl_seconds" not in rs
+    assert "session_affinity" not in (rs.get("optional_pre_call_checks") or [])
 
 
 # ── 3. comportamiento del stamp ──────────────────────────────────────────────

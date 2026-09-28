@@ -123,6 +123,31 @@ contracts:
       empty or lost Valkey rebuilds itself from the next requests
       (fail-open). Consumer today: this module only (the dashboard reads
       sticky keys, not this hash).
+  - id: dgx.session-router.alibaba-account-pin.v1
+    kind: schema
+    value: alibaba_account_pin:v1:<api-key-hash>:<sid>
+    anchor: "alibaba_account_pin:v1:"
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-28. Una sesion vive en UNA cuenta de Alibaba en TODOS los grupos
+      alibaba-*. Publisher y lector: session_router.alibaba_account_filter,
+      llamado por el Router en cada eleccion de deployment a traves de
+      StripUnsupportedParams.async_filter_deployments. Valkey del session
+      router (litellm-valkey, db de REDIS_URL); valor "k1" | "k2" (sufijo del
+      model_info.id estable `<grupo>-kN`); TTL
+      ALIBABA_ACCOUNT_PIN_TTL_SECONDS (30 dias de inactividad, keepalive en
+      cada acierto); SET NX = gana el primero. Cuenta de una sesion nueva =
+      sha256(api-key-hash:sid) % cuentas, la misma en todas las replicas sin
+      Valkey. Unica forma de cambiar de cuenta: la suya sin deployment sano en
+      el grupo pedido (cooldown/retirada) -> mudanza ENTERA y el pin se
+      reescribe (sin vuelta). <api-key-hash> = user_api_key_hash (sha256).
+      Tests: tests/test_alibaba_account_affinity.py (unitarios) y
+      tests/integration/run_alibaba_account_affinity.sh (Router real de la
+      imagen pineada + Valkey real + dos pods, job de CI).
   - id: dgx.session-router.deployment-affinity-key.v1
     kind: schema
     value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>
@@ -131,8 +156,15 @@ contracts:
     files:
       - dev/session_router.py
       - k8s/manifest.yaml
-    status: active
+    status: deprecated
     note: >-
+      DEPRECATED 2026-09-28: sustituido por dgx.session-router.alibaba-account-pin.v1.
+      El session_affinity nativo por grupo quedo retirado (auditoria: pin por
+      GRUPO, soltaba la sesion a la otra cuenta en un cooldown y volvia, TTL
+      de 1 h; con el Router real v1.100.0, 100 de 100 sesiones que usaban
+      varios grupos acababan en las dos cuentas). Estas claves ya no las
+      escribe nadie; session_router solo las LEE para sembrar la cuenta de
+      las sesiones que ya tenian pin (expiran solas en 1 h). Historia:
       2026-09-26 (segunda cuenta de Alibaba). Clava cada sesion a UN
       deployment (cuenta) dentro de un grupo alibaba-*: el cache de contexto
       de Model Studio es por cuenta y partir una conversacion entre las dos
