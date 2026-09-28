@@ -1255,20 +1255,19 @@ def _rewrite(data, sid, reason):
     )
 
 
-# ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026) ────────────────
+# ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026, rehecha 28-09) ──
 # Cada grupo `alibaba-*` tiene dos deployments (dos planes Team). El cache
 # de contexto de Model Studio es POR CUENTA: partir una conversacion entre
-# las dos paga el prefijo entero en cada salto. El mecanismo es el nativo
-# del Router (DeploymentAffinityCheck, activado por grupo en
-# router_settings.model_group_affinity_config, verificado en la fuente
-# pineada v1.100.0); este modulo solo lo alimenta:
+# las dos paga el prefijo entero en cada salto. Desde el 28-09 el filtro es
+# PROPIO (alibaba_account_filter, mas abajo: un pin sesion -> cuenta para
+# todos los grupos); el session_affinity nativo por grupo quedo retirado.
+# Este modulo:
 #   (a) estampa metadata["session_id"] con el sid PROPIO del hook en toda
 #       peticion que va a un grupo `alibaba-*`. El id que manda el cliente
 #       no vale — se PISA deliberadamente (AFFINITY_CHARS: opencode manda
-#       22 distintos por conversacion).
+#       22 distintos por conversacion). Es la llave del pin de cuenta.
 #   (b) monta una vez la Valkey del namespace sobre el DualCache del
-#       Router, sin la cual el pin vive solo en el pod y con dos replicas
-#       la afinidad se rompe entre pods.
+#       Router (cooldowns compartidos entre replicas).
 #   (c) activa la cuenta 2 SOLO si existe: ensure_alibaba_key2_active
 #       sube los -k2 de order 2 a 1 en memoria cuando
 #       DASHSCOPE_API_KEY_2 esta en el entorno. Sin la key RETIRA los -k2
@@ -1277,14 +1276,12 @@ def _rewrite(data, sid, reason):
 #       cooldown del -k1 quedaba clavada a un 401). Si este hook no carga
 #       (el fallo peor), el order: 2 del YAML sigue siendo la inercia:
 #       sembrar + rollout = activado, sin paso manual.
-# Fail-open en los dos: sin sid no se estampa nada (shuffle puro, como
-# hoy); sin Valkey el pin queda por replica y el router sigue sirviendo.
+# Fail-open: sin sid no se filtra (shuffle puro); sin Valkey la cuenta de una
+# sesion nueva sigue siendo la misma en los dos pods (eleccion determinista).
 
-# CONTRACT: dgx.session-router.deployment-affinity-key.v1
-# (ancla: deployment_affinity:v1:) Las claves de afinidad en Valkey db 0
-# las escribe el DeploymentAffinityCheck de litellm SOBRE EL TIER que
-# monta ensure_affinity_redis: cambiar la URL/db o quitar el tier las
-# mata todas (afinidad perdida en silencio, no error).
+# CONTRACT: dgx.session-router.deployment-affinity-key.v1 (DEPRECATED 28-09)
+# (ancla: deployment_affinity:v1:) Solo se LEE, para sembrar la cuenta de las
+# sesiones que ya tenian pin nativo por grupo; nadie las escribe ya.
 
 _alibaba_key2_checked = False
 _affinity_redis_tried = False
@@ -1402,6 +1399,215 @@ def stamp_alibaba_session_affinity(data):
         data["metadata"] = metadata
     metadata["session_id"] = str(sid)
     return metadata["session_id"]
+
+
+# ── Afinidad por CUENTA de Alibaba (28-09-2026) ──────────────────────────────
+#
+# Una sesion vive en UNA cuenta, en TODOS los grupos `alibaba-*`, y no se mezcla.
+# Sustituye al session_affinity nativo del Router (DeploymentAffinityCheck), que
+# auditado el 28-09 contra la fuente pineada v1.100.0 tenia tres huecos:
+#   1. El pin era POR GRUPO (`deployment_affinity:v1:session:<grupo>:...`): la
+#      misma conversacion en `alibaba-q38-max` y en `alibaba-q38-flash` podia
+#      quedar en cuentas distintas.
+#   2. Con el deployment clavado en cooldown, el filtro devolvia TODOS los sanos:
+#      esa peticion iba a la otra cuenta, el pin seguia en la primera y la
+#      sesion volvia a ella al acabar el cooldown — ida y vuelta, fria las dos.
+#   3. TTL de 1 h de inactividad: una sesion que vuelve tras comer se re-sortea.
+#
+# Aqui:
+#   - Clave `alibaba_account_pin:v1:<api-key-hash>:<sid>` -> "k1" | "k2" en la
+#     Valkey del session router (misma URL/password). TTL largo con keepalive.
+#   - Cuenta de una sesion NUEVA = hash(api-key-hash, sid) % cuentas: las dos
+#     replicas eligen LA MISMA sin hablar entre si, asi que ni un corte de
+#     Valkey ni una carrera entre pods mezclan una sesion nueva. El SET NX solo
+#     guarda la eleccion (y las mudanzas).
+#   - Si la cuenta de la sesion no tiene deployment SANO en el grupo pedido
+#     (cooldown, retirada), la sesion se MUDA entera a la otra cuenta y el pin
+#     se reescribe: no hay ida y vuelta. Es la unica forma de cambiar de cuenta,
+#     queda en el log y en `ACCOUNT_AFFINITY_STATS["moves"]`.
+#   - Sesiones que ya tenian pin nativo por grupo: se respeta esa cuenta la
+#     primera vez (siembra), para que el cambio de mecanismo no mueva a nadie.
+#   - Sin sid (ni cabecera ni prefijo) no se filtra: no hay sesion que clavar.
+# CONTRACT: dgx.session-router.alibaba-account-pin.v1
+# (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
+ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
+# 30 dias de INACTIVIDAD (se renueva en cada peticion): el plan es mensual, y una
+# sesion no debe cambiar de cuenta por dormir una semana.
+ALIBABA_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("ALIBABA_ACCOUNT_PIN_TTL_SECONDS", str(30 * 86400)))
+_NATIVE_PIN_PREFIX = "deployment_affinity:v1:session"
+_ACCOUNT_RE = re.compile(r"-(k[0-9]+)$")
+# Pines conocidos por ESTE proceso: si Valkey no contesta a tiempo, una sesion
+# que ya se vio aqui sigue en su cuenta (incluida una mudanza reciente).
+_account_pins_local = {}
+_ACCOUNT_PINS_LOCAL_MAX = 20000
+
+
+def _remember_pin(key, account):
+    """Memoria local acotada (orden de insercion: se cae lo mas viejo)."""
+    _account_pins_local.pop(key, None)
+    _account_pins_local[key] = account
+    while len(_account_pins_local) > _ACCOUNT_PINS_LOCAL_MAX:
+        _account_pins_local.pop(next(iter(_account_pins_local)))
+ACCOUNT_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "seeded": 0, "redis_errors": 0}
+
+
+def _deployment_account(deployment):
+    """"k1" / "k2" del id estable del deployment (`<grupo>-kN`), o None."""
+    info = deployment.get("model_info") if isinstance(deployment, dict) else None
+    model_id = info.get("id") if isinstance(info, dict) else None
+    m = _ACCOUNT_RE.search(str(model_id or ""))
+    return m.group(1) if m else None
+
+
+def _affinity_user_key(request_kwargs):
+    """Mismo hash de key que el DeploymentAffinityCheck: sha256 salvo que ya lo sea."""
+    for name in ("litellm_metadata", "metadata"):
+        md = request_kwargs.get(name)
+        if isinstance(md, dict) and md.get("user_api_key_hash") is not None:
+            raw = str(md["user_api_key_hash"])
+            if re.fullmatch(r"[0-9a-fA-F]{64}", raw):
+                return raw.lower()
+            return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return "unscoped"
+
+
+def _affinity_session_id(request_kwargs):
+    for name in ("litellm_metadata", "metadata"):
+        md = request_kwargs.get(name)
+        if isinstance(md, dict) and md.get("session_id") is not None:
+            return str(md["session_id"])
+    return None
+
+
+def account_pin_key(user_key, sid):
+    return f"{ALIBABA_ACCOUNT_PIN_PREFIX}:{user_key}:{sid}"
+
+
+def preferred_account(user_key, sid, accounts):
+    """Cuenta determinista para una sesion nueva: la misma en todos los pods."""
+    ordered = sorted(accounts)
+    digest = hashlib.sha256(f"{user_key}:{sid}".encode("utf-8")).digest()
+    return ordered[int.from_bytes(digest[:8], "big") % len(ordered)]
+
+
+async def _pin_get(client, key):
+    return await asyncio.wait_for(client.get(key), timeout=REDIS_OP_TIMEOUT_SECONDS)
+
+
+async def _pin_claim(client, key, account):
+    """SET NX: gana el primero. Devuelve la cuenta que queda guardada."""
+    ok = await asyncio.wait_for(
+        client.set(key, account, nx=True, ex=ALIBABA_ACCOUNT_PIN_TTL_SECONDS),
+        timeout=REDIS_OP_TIMEOUT_SECONDS,
+    )
+    if ok:
+        return account
+    current = await _pin_get(client, key)
+    return current or account
+
+
+async def _pin_keepalive(client, key):
+    try:
+        await asyncio.wait_for(client.expire(key, ALIBABA_ACCOUNT_PIN_TTL_SECONDS),
+                               timeout=STICKY_WRITE_TIMEOUT_SECONDS)
+    except Exception:
+        ACCOUNT_AFFINITY_STATS["redis_errors"] += 1
+
+
+async def _native_pin_account(client, model_group, user_key, sid):
+    """Cuenta del pin nativo por grupo (anterior al 28-09), para sembrar sin mover."""
+    try:
+        raw = await _pin_get(client, f"{_NATIVE_PIN_PREFIX}:{model_group}:{user_key}:{sid}")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+        model_id = value.get("model_id") if isinstance(value, dict) else value
+    except ValueError:
+        model_id = raw
+    m = _ACCOUNT_RE.search(str(model_id or ""))
+    return m.group(1) if m else None
+
+
+async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
+    """Deja en `healthy_deployments` solo los de la cuenta de la sesion.
+
+    Lo llama el Router en CADA eleccion de deployment, reintentos incluidos, a
+    traves de StripUnsupportedParams.async_filter_deployments (el callback que
+    ya existe: este modulo no es un callback de litellm, mandato 2). Fail-open: cualquier
+    cosa que no sea un grupo `alibaba-*` con ids `-kN` y un sid pasa intacta."""
+    if not str(model or "").startswith(ALIBABA_PREFIX) or not healthy_deployments:
+        return healthy_deployments
+    by_account = {}
+    for dep in healthy_deployments:
+        account = _deployment_account(dep)
+        if account is None:
+            return healthy_deployments
+        by_account.setdefault(account, []).append(dep)
+    request_kwargs = request_kwargs or {}
+    sid = _affinity_session_id(request_kwargs)
+    if not sid:
+        return healthy_deployments
+    user_key = _affinity_user_key(request_kwargs)
+    key = account_pin_key(user_key, sid)
+
+    client = None
+    pinned = None
+    try:
+        client = await _redis()
+        if client is not None:
+            pinned = await _pin_get(client, key)
+    except Exception:
+        ACCOUNT_AFFINITY_STATS["redis_errors"] += 1
+        client = None
+    if pinned is None:
+        pinned = _account_pins_local.get(key)
+
+    if pinned in by_account:
+        ACCOUNT_AFFINITY_STATS["hits"] += 1
+        _remember_pin(key, pinned)
+        if client is not None:
+            _schedule(_pin_keepalive(client, key))
+        return by_account[pinned]
+
+    if pinned is not None:
+        # Su cuenta no tiene deployment sano en este grupo: mudanza ENTERA.
+        target = preferred_account(user_key, sid, by_account)
+        ACCOUNT_AFFINITY_STATS["moves"] += 1
+        log.warning("session_router: sesion %s muda de cuenta Alibaba %s -> %s (%s sin deployment sano)",
+                    sid[:24], pinned, target, model)
+        _remember_pin(key, target)
+        if client is not None:
+            try:
+                await asyncio.wait_for(
+                    client.set(key, target, ex=ALIBABA_ACCOUNT_PIN_TTL_SECONDS),
+                    timeout=REDIS_OP_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                ACCOUNT_AFFINITY_STATS["redis_errors"] += 1
+        return by_account[target]
+
+    # Sesion sin pin: la cuenta que ya tenia con el pin nativo, o la determinista.
+    choice = None
+    if client is not None:
+        seeded = await _native_pin_account(client, model, user_key, sid)
+        if seeded in by_account:
+            choice = seeded
+            ACCOUNT_AFFINITY_STATS["seeded"] += 1
+    if choice is None:
+        choice = preferred_account(user_key, sid, by_account)
+    if client is not None:
+        try:
+            won = await _pin_claim(client, key, choice)
+            if won in by_account:
+                choice = won
+        except Exception:
+            ACCOUNT_AFFINITY_STATS["redis_errors"] += 1
+    ACCOUNT_AFFINITY_STATS["claims"] += 1
+    _remember_pin(key, choice)
+    return by_account[choice]
 
 
 async def alibaba_switches():
