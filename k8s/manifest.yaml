@@ -6919,17 +6919,17 @@ data:
     import re
     import time
     from urllib.parse import quote, urlsplit, urlunsplit
-    
+
     import httpx
-    
+
     log = logging.getLogger("session_router")
-    
+
     RESIDENT_MODEL = os.environ.get("SESSION_ROUTER_RESIDENT_MODEL", "qwen38-flash-next")
     OVERFLOW_MODEL = os.environ.get("SESSION_ROUTER_OVERFLOW_MODEL", "alibaba-q38-flash")
     # Los únicos dos nombres sobre los que este módulo decide. Todo lo demás
     # (tooling sin resolver, or-*, claude-*, *-uncensored, 27b...) pasa de largo.
     ROUTED_MODELS = frozenset({RESIDENT_MODEL, OVERFLOW_MODEL})
-    
+
     REDIS_URL = os.environ.get(
         "SESSION_ROUTER_REDIS_URL",
         "redis://litellm-valkey.litellm.svc.cluster.local:6379/0",
@@ -6943,7 +6943,7 @@ data:
         "SESSION_ROUTER_SIDECAR_URL",
         "http://127.0.0.1:4001/internal/active-requests",
     )
-    
+
     CONFIG_TTL_SECONDS = 5.0
     # ≤100 ms por operación en el camino de la petición (mandato 10). La config ya
     # NO está en el camino de la petición (stale-while-revalidate, ver _config);
@@ -6999,7 +6999,7 @@ data:
     DEFAULT_LOCAL_SLOTS = 8
     LOCAL_SLOTS_CAP = 64
     PLANES = ("local", "alibaba", "claude")
-    
+
     # ── Válvula de presupuesto KV por sesión (27-09-2026, precedencia 4b/4c) ────
     # local_slots cuenta peticiones EN VUELO; una sesión ociosa con su prefijo de
     # 150k en la KV cache no cuenta y vLLM la expulsa del LRU cuando entran más de
@@ -7045,15 +7045,15 @@ data:
     _kv_sessions = {"total": None, "n": None, "read_at": None}
     _kv_poller = None
     _kv_no_capacity_logged = False
-    
-    
+
+
     def _cfg_int(config, key, default):
         """Entero de la config saneada, con default si falta o tiene otra forma
         (los cfg de los tests no traen los campos nuevos: misma segunda red que
         _sanitize, pero en el lector)."""
         value = config.get(key, default)
         return value if isinstance(value, int) and not isinstance(value, bool) else default
-    
+
     # Mandato 4b: los alias abliterados NUNCA caen a Alibaba (sello de #101, que
     # se estampa en strip_params DESPUÉS de este punto de inserción — por eso la
     # comprobación por NOMBRE aquí es obligatoria, el sello aún no existe).
@@ -7061,7 +7061,7 @@ data:
         "tooling-uncensored", "qwen38-u-off",
     })
     UNCENSORED_SUFFIX = "-uncensored"
-    
+
     # INFRA-208 (22-09): clase de sesión. El wrapper de la compañía (x86-
     # host-runtime) estampa x-claude-class: company; con ese valor la válvula
     # instant_reject NO aplica — la sesión sigue a la admisión de strip_params,
@@ -7071,7 +7071,7 @@ data:
     # consumer: este hook).
     CLASS_HEADER = "x-claude-class"
     COMPANY_CLASS = "company"
-    
+
     # Interruptor «Fallback Alibaba» de la compañía (23-09-2026). El panel Settings de
     # /claude-sessions lo guarda en control-nexus/company-control y el dashboard lo sirve
     # en el campo ADITIVO `company` de /api/model-routing/config (contrato
@@ -7083,7 +7083,7 @@ data:
     # por LiteLLM): lo aplica el claude-router del x86.
     ALIBABA_PREFIX = "alibaba-"
     DEFAULT_COMPANY = {"claude": True, "alibaba": True}
-    
+
     # Interruptores «Fallbacks a Alibaba» (25-09-2026, Dani: poder dejar de usar Alibaba sin
     # PR). Los guarda el panel /inferencia (tarjeta ALIBABA · TOKEN PLAN) en el campo ADITIVO
     # `alibaba` de /api/model-routing/config. Uno por cada camino por el que el tráfico acaba
@@ -7099,7 +7099,7 @@ data:
         "router_fallback": True, "tooling_fallback": True,
         "demos_fallback": True, "overflow": True,
     }
-    
+
     # ── Sin esperas en el residente (23-09-2026, Dani: "no quiero que nunca se espere") ──
     # Medido ese día: el semáforo de LiteLLM casi no espera (p99 0,25 s); la espera es la
     # COLA DE vLLM (p50 8 s, p95 94 s en 6 h), y con 3-5 peticiones en marcha también: el
@@ -7134,7 +7134,7 @@ data:
     # leídas en el mismo ciclo) y cuándo se leyeron.
     _sidecar_remote = {"rows": None, "read_at": None}
     _sidecar_poller = None
-    
+
     # ── Exentos del desborde (26-09-2026, Dani: "eximir a la compañía del desborde") ──
     # Medido el 26-09: el 57 % de las peticiones de 24 h acabaron en Alibaba y el grueso
     # lo ponían los roles autónomos de la compañía (company-architect/cto, 1.300-1.700
@@ -7152,8 +7152,8 @@ data:
     # desborda por capacidad, no = sin red. Ausente o no-dict = DEFAULT (la compañía
     # exenta); una lista vacía guardada desde el panel = nadie exento (= antes del 26-09).
     DEFAULT_OVERFLOW_EXEMPT = {"classes": ["company"], "keys": []}
-    
-    
+
+
     def _sanitize_exempt(raw):
         if not isinstance(raw, dict):
             return {k: list(v) for k, v in DEFAULT_OVERFLOW_EXEMPT.items()}
@@ -7165,8 +7165,8 @@ data:
             else:
                 out[k] = list(DEFAULT_OVERFLOW_EXEMPT[k])
         return out
-    
-    
+
+
     def _key_alias(data):
         """Alias de la virtual key que hizo la petición (metadata o litellm_metadata,
         según la ruta — mismo criterio que _claude_class). None si no hay."""
@@ -7174,8 +7174,8 @@ data:
             if isinstance(meta, dict) and meta.get("user_api_key_alias"):
                 return str(meta["user_api_key_alias"]).strip().lower() or None
         return None
-    
-    
+
+
     def _overflow_exempt(config, claude_class, key_alias):
         ex = config.get("overflow_exempt")
         if not isinstance(ex, dict):
@@ -7184,8 +7184,8 @@ data:
             (claude_class and claude_class in (ex.get("classes") or ()))
             or (key_alias and key_alias in (ex.get("keys") or ()))
         )
-    
-    
+
+
     # Ambos flags off (default, y estado mientras el panel no exista o no esté
     # alcanzable): los mecanismos AUTOMÁTICOS duermen y llamar a
     # apply_session_routing es un no-op exacto del comportamiento anterior. Un plan
@@ -7210,7 +7210,7 @@ data:
         "alibaba_return_after_s": DEFAULT_ALIBABA_RETURN_AFTER_S,
         "bot_keys": list(DEFAULT_BOT_KEYS),
     }
-    
+
     _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
     _config_refresh_task = None
     _config_client = None
@@ -7218,16 +7218,16 @@ data:
     _redis_lock = asyncio.Lock()
     _bg_tasks = set()
     _warn_state = {}
-    
-    
+
+
     def _schedule(coro):
         """Lanza una tarea en background sin perder la referencia (un task sin
         referencia puede ser recolectado a medias por el GC de asyncio)."""
         task = asyncio.create_task(coro)
         _bg_tasks.add(task)
         task.add_done_callback(_bg_tasks.discard)
-    
-    
+
+
     def _warn_throttled(key, mensaje):
         """Warning como mucho 1/min por clave con cuenta acumulada: un fallo
         sistemático (p.ej. valkey saturado bajo carga) no puede inundar el log —
@@ -7239,13 +7239,13 @@ data:
             _warn_state[key] = (now, 0)
         else:
             _warn_state[key] = (prev[0], prev[1] + 1)
-    
-    
+
+
     def _is_uncensored(name):
         name = str(name or "")
         return name.endswith(UNCENSORED_SUFFIX) or name in UNCENSORED_ALIASES
-    
-    
+
+
     def _session_id(data):
         """El sid de la sesión cliente, con las mismas fuentes que
         litellm_pre_call_utils usa para litellm_trace_id (x-claude-code-session-id
@@ -7269,8 +7269,8 @@ data:
         if isinstance(user_id, str) and user_id.startswith("_session_"):
             return user_id
         return None
-    
-    
+
+
     # Llave de afinidad para clientes SIN id de sesión (23-09-2026). Medido ese día:
     # opencode manda 22 peticiones con 22 session_id distintos en 10 min (y hermes igual):
     # sin id estable no hay sticky, cada petición se decide suelta y la conversación salta
@@ -7278,16 +7278,16 @@ data:
     # usuario NO cambian en toda la conversación: su hash (con el cliente) la identifica.
     # Las marcas cache_control se ignoran (los clientes las mueven entre turnos).
     AFFINITY_CHARS = 20000
-    
-    
+
+
     def _sin_cache_control(obj):
         if isinstance(obj, dict):
             return {k: _sin_cache_control(v) for k, v in obj.items() if k != "cache_control"}
         if isinstance(obj, list):
             return [_sin_cache_control(v) for v in obj]
         return obj
-    
-    
+
+
     def _prefix_affinity_key(data):
         """`pfx-<hash>` estable para toda una conversación sin id, o None."""
         try:
@@ -7298,12 +7298,12 @@ data:
             alias = next((m.get("user_api_key_alias") or m.get("user_api_key_hash")
                           for m in metas if isinstance(m, dict)
                           and (m.get("user_api_key_alias") or m.get("user_api_key_hash"))), "")
-    
+
             def trozo(x):
                 x = _sin_cache_control(x)
                 texto = x if isinstance(x, str) else json.dumps(x, ensure_ascii=False, sort_keys=True, default=str)
                 return texto[:AFFINITY_CHARS]
-    
+
             partes = [str(alias), trozo(data.get("system") or "")]
             for m in msgs:
                 if not isinstance(m, dict):
@@ -7314,8 +7314,8 @@ data:
             return "pfx-" + hashlib.sha1("\x1f".join(partes).encode("utf-8", "replace")).hexdigest()[:24]
         except Exception:
             return None
-    
-    
+
+
     def _claude_class(data):
         """La clase de sesión que estampa el wrapper (x-claude-class). Vía real
         verificada contra litellm v1.100.0 (la pineada) y sonda en vivo el 22-09
@@ -7328,14 +7328,14 @@ data:
         existe con forward_client_headers_to_llm_api (apagado en este
         despliegue) y llega remapeada con prefijo x-litellm-; se lee también por
         robustez, igual que en _session_id.
-    
+
         OJO (23-09-2026, medido en vivo): en las rutas de LITELLM_METADATA_ROUTES
         — `/v1/messages` entre ellas, que es por donde entra TODO Claude Code — el
         mismo add_litellm_data_to_request escribe en data["litellm_metadata"]
         ["headers"], no en data["metadata"]. Sin leer ahí, una sesión de la
         compañía por /v1/messages salía sin clase: ni la exención de la válvula ni
         el interruptor «Fallback Alibaba» la reconocían. Se leen las tres fuentes.
-    
+
         Fail-open: cualquier forma rara (no-dict, items() roto, None) => None =>
         comportamiento actual; no lanza nunca. La cabecera es falsificable por
         cualquier cliente con key: el único efecto es ENCOLAR en vez de saltar a
@@ -7360,8 +7360,8 @@ data:
             except (AttributeError, TypeError):
                 continue
         return None
-    
-    
+
+
     def _sanitize(raw):
         """El panel manda el deseado; nada de confiar en tipos. Campo inválido =>
         default, nunca excepción (el panel ya proyecta estricto, esto es la segunda
@@ -7407,8 +7407,8 @@ data:
             if isinstance(bots, list) else list(DEFAULT_BOT_KEYS)
         )
         return config
-    
-    
+
+
     async def _config():
         """Stale-while-revalidate: el camino de la petición NO hace NINGUNA I/O de
         config — devuelve la caché al instante (defaults seguros en frío) y, si está
@@ -7423,8 +7423,8 @@ data:
             if _config_refresh_task is None or _config_refresh_task.done():
                 _config_refresh_task = asyncio.create_task(_refresh_config())
         return _config_cache["config"]
-    
-    
+
+
     async def _refresh_config():
         """Refresco en background: un task a la vez (single-flight por task.done()),
         cliente persistente con keep-alive, NUNCA lanza (un task muerto no debe
@@ -7447,8 +7447,8 @@ data:
                 exc,
             )
         _config_cache["expires"] = time.monotonic() + CONFIG_TTL_SECONDS
-    
-    
+
+
     def _redis_url():
         """requirepass obligatorio (mandato A): la contraseña llega por
         ExternalSecret -> env SESSION_ROUTER_REDIS_PASSWORD y se inyecta en la URL.
@@ -7462,8 +7462,8 @@ data:
                 netloc += f":{parts.port}"
             url = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
         return url
-    
-    
+
+
     async def _redis():
         global _redis_client
         if _redis_client is not None:
@@ -7495,15 +7495,15 @@ data:
                     log.warning("session_router: redis no disponible (%s); fail-open", exc)
                     return None
         return _redis_client
-    
-    
+
+
     async def _redis_warmup(client):
         try:
             await asyncio.wait_for(client.ping(), timeout=STICKY_WRITE_TIMEOUT_SECONDS)
         except Exception as exc:
             _warn_throttled("redis_warmup", f"warmup de redis falló ({exc.__class__.__name__})")
-    
-    
+
+
     async def _sticky_get(sid):
         try:
             client = await _redis()
@@ -7520,8 +7520,8 @@ data:
             # frescas porque este timeout no dejaba rastro.
             _warn_throttled("sticky_get", f"sticky_get falló ({exc.__class__.__name__}); trato la sesión como fresca")
             return None
-    
-    
+
+
     async def _sticky_set(sid, plan):
         """Fire-and-forget: programa la escritura en background y devuelve el
         control AL INSTANTE. Fix del defecto 1 del QA live (21-09): con el
@@ -7531,13 +7531,13 @@ data:
         pérdida puntual se tolera por diseño: la siguiente petición re-intenta el
         vínculo."""
         _schedule(_sticky_set_bg(sid, plan))
-    
-    
+
+
     def _sticky_ttl(plan):
         """TTL de inactividad del vínculo según su destino (ver STICKY_TTL_*)."""
         return STICKY_TTL_ALIBABA_SECONDS if plan == "alibaba" else STICKY_TTL_LOCAL_SECONDS
-    
-    
+
+
     async def _sticky_set_bg(sid, plan):
         try:
             client = await _redis()
@@ -7549,8 +7549,8 @@ data:
             )
         except Exception as exc:
             _warn_throttled("sticky_set", f"sticky_set falló ({exc.__class__.__name__}); fail-open")
-    
-    
+
+
     def _parse_vllm_gauges(text, model_name=None):
         """(waiting, running) del texto Prometheus de vLLM para `model_name`, sumando
         las series que haya (una por engine). (None, None) si no aparece ninguna."""
@@ -7572,8 +7572,8 @@ data:
             else:
                 running = (running or 0.0) + valor
         return waiting, running
-    
-    
+
+
     def _parse_cache_capacity(text):
         """Capacidad KV total en TOKENS desde vllm:cache_config_info: un gauge-INFO
         (valor 1.0) cuyos LABELLES llevan num_gpu_blocks y block_size; el producto
@@ -7598,8 +7598,8 @@ data:
             if tokens > 0 and (best is None or tokens > best):
                 best = tokens
         return best
-    
-    
+
+
     def _note_vllm_sample(waiting, running, now=None):
         """Registra una lectura. `since` = desde cuándo la cola NO se ha vaciado."""
         now = time.monotonic() if now is None else now
@@ -7611,8 +7611,8 @@ data:
                 _vllm_queue["since"] = now
         else:
             _vllm_queue["since"] = None
-    
-    
+
+
     async def _poll_vllm_forever():
         client = httpx.AsyncClient(timeout=httpx.Timeout(VLLM_POLL_TIMEOUT_SECONDS))
         while True:
@@ -7633,18 +7633,18 @@ data:
             except Exception as exc:
                 _warn_throttled("vllm_poll", f"sondeo de la cola de vLLM falló ({exc.__class__.__name__}); sin válvula de cola")
             await asyncio.sleep(VLLM_POLL_SECONDS)
-    
-    
+
+
     def _ensure_vllm_poller():
         """Arranca el sondeo la primera vez que hace falta (y lo rearranca si murió)."""
         global _vllm_poller
         if _vllm_poller is None or _vllm_poller.done():
             _vllm_poller = asyncio.create_task(_poll_vllm_forever())
-    
-    
+
+
     # ── Presupuesto KV: HASH de sesiones (27-09-2026) ───────────────────────────
-    
-    
+
+
     def _estimate_prompt_tokens(data, tracker=None):
         """Tokens del prompt, ESTIMADOS: caracteres / chars_per_token. El número
         real lo manda vLLM al acabar el prefill — tarde para decidir dónde se
@@ -7687,8 +7687,8 @@ data:
             return int(total / float(cpc)) + 1
         except Exception:
             return None
-    
-    
+
+
     def _sessions_aggregate(raw, now=None, idle_s=None, prune_s=None):
         """De un HGETALL {sid: json{t,ts}}: (suma de las sesiones VIVAS, nº vivas,
         campos a podar). Viva = actividad en los últimos idle_s (precedencia 4b).
@@ -7720,8 +7720,8 @@ data:
                 total += tokens
                 n += 1
         return total, n, stale
-    
-    
+
+
     async def _sessions_write_bg(sid, tokens):
         try:
             client = await _redis()
@@ -7734,16 +7734,16 @@ data:
             )
         except Exception as exc:
             _warn_throttled("sessions_write", f"registro de sesión en el HASH falló ({exc.__class__.__name__}); fail-open")
-    
-    
+
+
     def _sessions_write(sid, tokens):
         """Fire-and-forget (como _sticky_set): el camino de la petición no espera
         a Valkey. Solo peticiones servidas por el residente: son las que ocupan
         la KV cache local."""
         if sid and tokens:
             _schedule(_sessions_write_bg(sid, tokens))
-    
-    
+
+
     async def _poll_sessions_forever():
         while True:
             try:
@@ -7770,24 +7770,24 @@ data:
             except Exception as exc:
                 _warn_throttled("sessions_poll", f"sondeo del HASH de sesiones falló ({exc.__class__.__name__}); válvula KV apagada")
             await asyncio.sleep(KV_POLL_SECONDS)
-    
-    
+
+
     def _ensure_sessions_poller():
         """Arranca el sondeo del HASH la primera vez que hace falta (y lo rearranca si murió)."""
         global _kv_poller
         if _kv_poller is None or _kv_poller.done():
             _kv_poller = asyncio.create_task(_poll_sessions_forever())
-    
-    
+
+
     # ── Nacimiento en Alibaba (regla de retorno 4c) ─────────────────────────────
-    
-    
+
+
     async def _albind_touch_bg(sid):
         try:
             client = await _redis()
             if client is None:
                 return
-    
+
             async def _touch():
                 key = f"{ALBIND_KEY_PREFIX}{sid}"
                 # SETNX: el primer vínculo manda (se mide DESDE el nacimiento, no
@@ -7797,17 +7797,17 @@ data:
                 # venza.
                 if not await client.set(key, time.time(), ex=ALBIND_TTL_SECONDS, nx=True):
                     await client.expire(key, ALBIND_TTL_SECONDS)
-    
+
             await asyncio.wait_for(_touch(), timeout=STICKY_WRITE_TIMEOUT_SECONDS)
         except Exception as exc:
             _warn_throttled("albind_touch", f"registro de nacimiento en Alibaba falló ({exc.__class__.__name__}); fail-open")
-    
-    
+
+
     def _albind_touch(sid):
         if sid:
             _schedule(_albind_touch_bg(sid))
-    
-    
+
+
     async def _albind_clear_bg(sid):
         try:
             client = await _redis()
@@ -7819,15 +7819,15 @@ data:
             )
         except Exception as exc:
             _warn_throttled("albind_clear", f"borrado de nacimiento en Alibaba falló ({exc.__class__.__name__}); fail-open")
-    
-    
+
+
     def _albind_clear(sid):
         """Al volver a local la sesión deja de estar «nacida en Alibaba»: la
         próxima mudanza mide el reloj desde cero."""
         if sid:
             _schedule(_albind_clear_bg(sid))
-    
-    
+
+
     async def _albind_get(sid):
         """Época de nacimiento en Alibaba o None. Va EN el camino de la petición
         (la regla de retorno decide ahora) con el presupuesto de 100 ms de
@@ -7845,8 +7845,8 @@ data:
         except Exception as exc:
             _warn_throttled("albind_get", f"albind_get falló ({exc.__class__.__name__}); sin retorno por tiempo")
             return None
-    
-    
+
+
     async def _poll_sidecar_forever():
         headers = {}
         master_key = os.environ.get("LITELLM_MASTER_KEY") or ""
@@ -7873,15 +7873,15 @@ data:
             except Exception as exc:
                 _warn_throttled("sidecar_poll", f"sondeo del sidecar de peticiones en vuelo falló ({exc.__class__.__name__}); solo cuento este pod")
             await asyncio.sleep(SIDECAR_POLL_SECONDS)
-    
-    
+
+
     def _ensure_sidecar_poller():
         """Arranca el sondeo del sidecar la primera vez que hace falta (y lo rearranca si murió)."""
         global _sidecar_poller
         if _sidecar_poller is None or _sidecar_poller.done():
             _sidecar_poller = asyncio.create_task(_poll_sidecar_forever())
-    
-    
+
+
     def _queue_stuck(now=None):
         """True si la cola de vLLM lleva >= WAIT_TOLERANCE_SECONDS sin vaciarse; False si
         no; None si no hay lectura fresca (=> la válvula de cola no actúa)."""
@@ -7891,8 +7891,8 @@ data:
             return None
         since = _vllm_queue["since"]
         return since is not None and now - since >= WAIT_TOLERANCE_SECONDS
-    
-    
+
+
     async def _inflight_resident(tracker):
         """Peticiones en vuelo al residente (mandato 1): este pod por el tracker
         in-process (exacto) + las OTRAS réplicas por la última lectura del sondeo del
@@ -7923,8 +7923,8 @@ data:
         # que subestima => admite de más en local, la dirección fail-open. El semaphore
         # 8 por pod sigue topando.
         return local_n + remote_n
-    
-    
+
+
     def _is_bot_session(config, claude_class, key_alias):
         """Prioridad (27-09-2026): el interactivo va primero. Bot = clase company
         (los roles autónomos de la compañía corren en segundo plano) o alias de
@@ -7942,8 +7942,8 @@ data:
         if not isinstance(bots, (list, tuple, set)):
             bots = DEFAULT_BOT_KEYS
         return key_alias in bots
-    
-    
+
+
     def _kv_budget_state(config, est, is_bot):
         """(limite_tokens, capacidad, suma_viva) o None si la válvula no puede
         decidir: capacidad desconocida (el residente no expone
@@ -7974,8 +7974,8 @@ data:
             DEFAULT_BOT_BUDGET_PCT if is_bot else DEFAULT_KV_BUDGET_PCT,
         )
         return capacity * pct / 100.0, capacity, total
-    
-    
+
+
     def _kv_blocks(config, est, is_bot):
         """True => una sesión NUEVA no cabe en el residente: nace en Alibaba
         (precedencia 4b). Nunca expulsa una sesión ya ligada a local: eso es
@@ -7985,8 +7985,8 @@ data:
             return False
         limit, _capacity, total = state
         return est + total > limit
-    
-    
+
+
     async def _may_return_local(config, sid, est, is_bot):
         """Regla de retorno (precedencia 4c) para una sesión ya ligada a Alibaba:
         motivo de retorno o None (sigue en Alibaba). Vuelve si (a) compactó — su
@@ -8006,8 +8006,8 @@ data:
         if born is not None and time.time() - born >= after_s:
             return "temporizada"
         return None
-    
-    
+
+
     def _group_in_cooldown(model_name):
         """True si TODO el grupo está en cooldown; False si queda algún deployment
         utilizable; None si no se pudo saber (=> degradar, mandato 5). API pública
@@ -8030,14 +8030,14 @@ data:
         except Exception as exc:
             log.warning("session_router: consulta de cooldown falló (%s); degrado", exc)
             return None
-    
-    
+
+
     def _overflow_ok():
         """¿Puede este hook enviar tráfico a Alibaba AHORA? Solo con respuesta
         inequívoca: cooldown activo o desconocido => False (no enrutar, no pegar)."""
         return _group_in_cooldown(OVERFLOW_MODEL) is False
-    
-    
+
+
     def _rewrite(data, sid, reason):
         """Residente -> Alibaba. Espejo del desvío de visión: se limpian api_base/
         api_key (el grupo de Alibaba lleva los suyos en el model_list) y se marcan
@@ -8060,8 +8060,8 @@ data:
             "session_router: %r -> %r (razon=%s, sid=%s)",
             original, OVERFLOW_MODEL, reason, sid or "-",
         )
-    
-    
+
+
     # ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026) ────────────────
     # Cada grupo `alibaba-*` tiene dos deployments (dos planes Team). El cache
     # de contexto de Model Studio es POR CUENTA: partir una conversacion entre
@@ -8086,20 +8086,20 @@ data:
     #       sembrar + rollout = activado, sin paso manual.
     # Fail-open en los dos: sin sid no se estampa nada (shuffle puro, como
     # hoy); sin Valkey el pin queda por replica y el router sigue sirviendo.
-    
+
     # CONTRACT: dgx.session-router.deployment-affinity-key.v1
     # (ancla: deployment_affinity:v1:) Las claves de afinidad en Valkey db 0
     # las escribe el DeploymentAffinityCheck de litellm SOBRE EL TIER que
     # monta ensure_affinity_redis: cambiar la URL/db o quitar el tier las
     # mata todas (afinidad perdida en silencio, no error).
-    
+
     _alibaba_key2_checked = False
     _affinity_redis_tried = False
-    
-    
+
+
     def ensure_alibaba_key2_active():
         """Una vez por proceso, dos estados:
-    
+
         - Con DASHSCOPE_API_KEY_2: sube los diez -k2 de order 2 a order 1 EN
           MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
           por sesion decide cual).
@@ -8111,7 +8111,7 @@ data:
           y el pin se renovaba solo (keepalive) mientras la sesion viviera.
           Sin -k2 cargado, un cooldown del -k1 sigue la cadena de fallback
           normal en vez de estrellarse contra un 401 seguro.
-    
+
         Si este hook no carga, el order: 2 del YAML sigue siendo la inercia.
         La key llega por env del pod: sembrar en 1Password + rollout restart
         = activado, sin tocar git."""
@@ -8148,12 +8148,12 @@ data:
                 log.warning("session_router: sin DASHSCOPE_API_KEY_2 -> %s deployments -k2 retirados del Router", retirados)
         except Exception as exc:
             _warn_throttled("alibaba_k2", f"gestion -k2 fallida ({exc.__class__.__name__}); queda el order 2 del YAML")
-    
-    
+
+
     def alibaba_key2_disponible():
         return bool(os.environ.get("DASHSCOPE_API_KEY_2"))
-    
-    
+
+
     def ensure_affinity_redis():
         """Una vez por proceso: si el DualCache del Router no tiene tier de
         redis, montar la Valkey del namespace (misma URL y password que el
@@ -8185,8 +8185,8 @@ data:
             log.warning("session_router: tier redis montado en el DualCache del Router (afinidad cross-pod)")
         except Exception as exc:
             _warn_throttled("affinity_redis", f"tier redis no montado ({exc.__class__.__name__}); pines por pod")
-    
-    
+
+
     def stamp_alibaba_session_affinity(data):
         """metadata["session_id"] = sid del hook para peticiones `alibaba-*`
         (incluida la reescrita residente->Alibaba, que ya ve el nombre final).
@@ -8209,8 +8209,8 @@ data:
             data["metadata"] = metadata
         metadata["session_id"] = str(sid)
         return metadata["session_id"]
-    
-    
+
+
     async def alibaba_switches():
         """Los cuatro interruptores «Fallbacks a Alibaba» (DEFAULT_ALIBABA) tal como los
         ve este módulo: caché SWR de la config del panel, sin I/O en el camino de la
@@ -8222,13 +8222,13 @@ data:
         except Exception as exc:
             _warn_throttled("alibaba_switches", f"alibaba_switches falló ({exc}); fail-open")
             return dict(DEFAULT_ALIBABA)
-    
-    
+
+
     async def apply_company_policy(data, requested_model):
         """Interruptor «Fallback Alibaba» de la compañía. Lo llama litellm_strip_params en su
         async_pre_call_hook justo después de la política de fallbacks por key, ANTES de
         resolver alias y de apply_session_routing.
-    
+
         Devuelve (denegada, detalle). Sin clase company o con Alibaba permitido: (False, None)
         sin tocar nada. Con Alibaba desactivado: un `alibaba-*` pedido o resuelto -> (True,
         detalle para un 403); cualquier otro -> sella `disable_fallbacks` y (False, None).
@@ -8256,16 +8256,16 @@ data:
         except Exception as exc:
             _warn_throttled("company_policy", f"apply_company_policy falló ({exc}); fail-open")
             return False, None
-    
-    
+
+
     async def apply_session_routing(data, requested_model, tracker=None, resident_ready=True):
         """Punto de entrada único (lo llama litellm_strip_params.async_pre_call_hook
         tras la red final de visión y antes del sampling por familia).
-    
+
         Devuelve True SI Y SOLO SI reescribió la petición residente -> alibaba; el
         llamador usa ese booleano como marcador `_session_routing_rerouted` para que
         la admisión compute-mode no 503-e el desvío (mandato 3).
-    
+
         `resident_ready` lo aporta el llamador desde su propia cache de compute-mode
         (_compute_mode_state + _compute_mode_allows_local): mandato 9, no montar
         aquí una tercera cache del árbitro.
@@ -8300,15 +8300,15 @@ data:
                 " (REESCRITA)" if rewrote else "",
             )
         return rewrote
-    
-    
+
+
     def _overflow_ok_info(info):
         """_overflow_ok() dejando rastro del estado de cooldown en la decisión."""
         cool = _group_in_cooldown(OVERFLOW_MODEL)
         info["cool"] = cool
         return cool is False
-    
-    
+
+
     async def _apply(data, requested_model, tracker, resident_ready, info):
         model = str(data.get("model") or "")
         if model not in ROUTED_MODELS:
@@ -8324,7 +8324,7 @@ data:
         if _is_uncensored(requested_model) or _is_uncensored(model):
             info["decision"] = "uncensored"
             return False
-    
+
         config = await _config()
         sid = _session_id(data) or _prefix_affinity_key(data)
         info["sid"] = sid
@@ -8365,7 +8365,7 @@ data:
         if (config.get("alibaba") or {}).get("overflow", True) is False:
             info["decision"] = "desborde_alibaba_apagado"
             return False
-    
+
         # ── Precedencia 3: plan EXPLÍCITO del panel (decisión del operador) ──
         # Vive ANTES del corte por flags: un plan explícito es una orden directa
         # del operador y aplica aunque sticky/instant_reject estén apagados. Lo que
@@ -8402,11 +8402,11 @@ data:
                 "plan_explicito_alibaba_degradado" if info["cool"] is not False
                 else "plan_explicito_alibaba_modelo_no_residente")
             return False
-    
+
         if not config["sticky"] and not config["instant_reject"] and not company_overflow:
             info["decision"] = "flags_apagados"
             return False
-    
+
         # ── Precedencia 4/5: sesiones de plan DEFAULT (sticky > válvula) ──
         bound = None
         if config["sticky"] and sid:
@@ -8432,7 +8432,7 @@ data:
         if plan == "claude":
             info["decision"] = "plan_claude_puerta_en_router"
             return False
-    
+
         if plan == "alibaba":
             if not _overflow_ok_info(info):
                 # Alibaba en cooldown o desconocido: degradar. Si el binding era
@@ -8475,7 +8475,7 @@ data:
                 return True
             info["decision"] = "plan_alibaba_modelo_no_residente"
             return False
-    
+
         # plan == "local"
         if not resident_ready:
             # Hueco: compute-mode no admite el residente ahora mismo. Re-vincula a
@@ -8491,7 +8491,7 @@ data:
                     return True
             info["decision"] = "residente_no_ready_degradado"
             return False
-    
+
         # Válvula de capacidad (precedencia 5) — solo plan default. Con sticky
         # activo, el disparo RE-VINCULA la sesión (destino sano = hueco libre);
         # con sticky apagado es una válvula por petición que no escribe nada.
@@ -8536,7 +8536,7 @@ data:
                     _vllm_queue["waiting"], OVERFLOW_MODEL,
                 )
                 return True
-    
+
         # ── Válvula de presupuesto KV (4b, 27-09-2026) ──
         # SOLO sesiones NUEVAS (fresh): una ya ligada a local sigue en local —
         # expulsar un prefijo caliente paga el re-prefrío de quien se va y el de
@@ -8562,7 +8562,7 @@ data:
                         capacity, _kv_sessions["n"], OVERFLOW_MODEL,
                     )
                     return True
-    
+
         if config["sticky"] and sid:
             # fresh: vincula; ligada: renueva el TTL (afinidad = caché del local)
             await _sticky_set(sid, "local")
