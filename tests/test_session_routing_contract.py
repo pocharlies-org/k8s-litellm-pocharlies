@@ -1679,6 +1679,22 @@ def test_parse_cache_capacity_desde_metrics(fresh_mod):
     assert fresh_mod._parse_cache_capacity(doble) == 173451 * 16
 
 
+def test_parse_cache_capacity_etiqueta_exacta_manda_sobre_el_producto(fresh_mod):
+    """Línea REAL del head híbrido (28-09): kv_cache_size_tokens="2775211" es el
+    número del log de arranque; num_gpu_blocks × block_size daría 1895 × 1664 =
+    3,153,280 (+14 %: el estado Mamba come cache). La etiqueta exacta manda, y
+    el guard `(?<![a-z_])block_size` no puede pescar mamba_block_size="16"."""
+    linea = ('vllm:cache_config_info{_block_size_resolved="True",block_size="1664",'
+             'cache_dtype="fp8_e4m3",kv_cache_size_tokens="2775211",'
+             'mamba_block_size="16",num_cpu_blocks="None",num_gpu_blocks="1895",'
+             'num_gpu_blocks_override="None",user_specified_block_size="False"} 1.0')
+    assert fresh_mod._parse_cache_capacity(linea) == 2775211
+    # sin la etiqueta (vLLM viejo), el producto sigue valiendo y mamba no engaña
+    vieja = ('vllm:cache_config_info{block_size="1664",mamba_block_size="16",'
+             'num_gpu_blocks="1895"} 1.0')
+    assert fresh_mod._parse_cache_capacity(vieja) == 1895 * 1664
+
+
 def test_sondeo_de_vllm_alimenta_la_capacidad(router_src):
     """La capacidad se descubre en el MISMO sondeo de /metrics que lee la cola
     (cero I/O extra) y con último-bueno: sin sondeo nuevo la válvula sigue

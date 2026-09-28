@@ -6918,7 +6918,9 @@ data:
     #      suma de los prompts de las sesiones locales VIVAS (actividad en los
     #      últimos session_idle_s) supera kv_budget_pct de la capacidad KV total
     #      del motor. La capacidad se descubre en runtime (vllm:cache_config_info:
-    #      num_gpu_blocks × block_size, en el MISMO sondeo de /metrics que ya lee
+    #      la etiqueta kv_cache_size_tokens — en el híbrido el producto
+    #      num_gpu_blocks × block_size sobreestima ~14 %, el estado Mamba come
+    #      cache —, en el MISMO sondeo de /metrics que ya lee
     #      la cola; último-bueno, nunca un número fijo — al cambiar el residente
     #      cambia la cache). Sin capacidad conocida o sin lectura fresca del HASH
     #      la válvula está APAGADA (fail-open = comportamiento actual). Una sesión
@@ -7055,7 +7057,8 @@ data:
     # `session-router:sessions` (sid -> json{t,ts}); un sondeo en background lo
     # suma (solo las activas en session_idle_s) y una sesión NUEVA que no quepa en
     # kv_budget_pct de la capacidad nace en Alibaba. La capacidad llega de
-    # vllm:cache_config_info (num_gpu_blocks × block_size), leída en el MISMO
+    # vllm:cache_config_info (la etiqueta exacta kv_cache_size_tokens; el producto
+    # num_gpu_blocks × block_size solo como fallback de vLLM viejos), leída en el MISMO
     # sondeo de /metrics que ya mira la cola: el presupuesto es un PORCENTAJE,
     # nunca un número fijo de tokens, porque al cambiar el residente cambia la
     # cache. Sin capacidad conocida o sin lectura fresca del HASH => válvula
@@ -7622,25 +7625,34 @@ data:
 
     def _parse_cache_capacity(text):
         """Capacidad KV total en TOKENS desde vllm:cache_config_info: un gauge-INFO
-        (valor 1.0) cuyos LABELLES llevan num_gpu_blocks y block_size; el producto
-        es la cache que ve el motor (con TP=2 el head reporta los bloques LÓGICOS
-        del grupo, ya partidos entre las dos GPUs — cuadra con el log de arranque
-        «GPU KV cache size: 2,775,211 tokens» del 27-09). None si la línea no está
-        (motor sin arrancar, vLLM cambió el métrico, o num_gpu_blocks="None" antes
-        de la profilaxis): la válvula de presupuesto se APAGA (fail-open). Si
-        hubiera varias líneas (varios engines) manda la mayor."""
+        (valor 1.0) cuya capacidad vive en los LABELLES. Medido en el head del
+        residente el 28-09: la línea lleva `kv_cache_size_tokens="2775211"` — el
+        número EXACTO del log de arranque «GPU KV cache size: 2,775,211 tokens» —
+        y ESE manda. El producto num_gpu_blocks × block_size (1895 × 1664 =
+        3.15M) SOBREESTIMA ~14 % en el modelo híbrido: el estado Mamba se come una
+        parte de la cache, así que el producto queda como fallback para vLLM viejos
+        sin la etiqueta. None si la línea no está (motor sin arrancar, vLLM cambió
+        el métrico, o num_gpu_blocks="None" antes de la profilaxis): la válvula de
+        presupuesto se APAGA (fail-open). Si hubiera varias líneas (varios engines)
+        manda la mayor."""
         best = None
         for line in (text or "").splitlines():
             if line.startswith("#") or "vllm:cache_config_info" not in line:
                 continue
-            m_blocks = re.search(r'num_gpu_blocks="(\d+)"', line)
-            m_size = re.search(r'block_size="(\d+)"', line)
-            if not (m_blocks and m_size):
-                continue
-            try:
-                tokens = int(m_blocks.group(1)) * int(m_size.group(1))
-            except ValueError:
-                continue
+            m_exact = re.search(r'kv_cache_size_tokens="(\d+)"', line)
+            if m_exact:
+                tokens = int(m_exact.group(1))
+            else:
+                # `(?<![a-z_])` porque la línea híbrida trae también
+                # mamba_block_size="16": sin el guard, re.search lo pescaría.
+                m_blocks = re.search(r'num_gpu_blocks="(\d+)"', line)
+                m_size = re.search(r'(?<![a-z_])block_size="(\d+)"', line)
+                if not (m_blocks and m_size):
+                    continue
+                try:
+                    tokens = int(m_blocks.group(1)) * int(m_size.group(1))
+                except ValueError:
+                    continue
             if tokens > 0 and (best is None or tokens > best):
                 best = tokens
         return best
@@ -10405,7 +10417,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a6bad790a910
+        config.k8s.e-dani.com/revision: config-f44053d0bf36
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

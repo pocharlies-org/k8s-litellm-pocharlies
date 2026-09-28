@@ -110,7 +110,10 @@ contracts:
       A NEW session whose estimate plus that sum exceeds kv_budget_pct of the
       engine's KV capacity is bound to Alibaba instead of cold-evicting an
       idle session's prefix; capacity is discovered at runtime from
-      vllm:cache_config_info (num_gpu_blocks x block_size) — the budget is a
+      vllm:cache_config_info (the exact kv_cache_size_tokens label, which on
+      the hybrid resident equals the startup log's "GPU KV cache size"; the
+      num_gpu_blocks x block_size product overestimates ~14% there and is the
+      fallback for older vLLM) — the budget is a
       PERCENTAGE, never a fixed token count, because it changes with the
       resident model. Companion key session-router:albind:<sid> (SETNX, TTL
       24 h, deleted on return to local): epoch when the session was born in
