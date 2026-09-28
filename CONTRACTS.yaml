@@ -420,7 +420,7 @@ contracts:
   - id: dgx.litellm.alibaba-second-account.v1
     kind: schema
     # `DASHSCOPE_API_KEY_2` es el literal que comparten las dos mitades de la
-    # superficie: el ExternalSecret GATEADO (ver nota) que materializa el
+    # superficie: el ExternalSecret que materializa el
     # Secret `litellm-alibaba-2` y el env `optional: true` del Deployment que
     # alimenta `os.environ/DASHSCOPE_API_KEY_2` de los diez `-k2`.
     value: DASHSCOPE_API_KEY_2
@@ -442,12 +442,9 @@ contracts:
       Secret el env no resuelve, el hook retira los `-k2` del Router y siguen
       inertes (order: 2) — el comportamiento sin key ya lo cubria esa nota;
       esta entrada registra la superficie del Secret/env, que no se renombra
-      ni se elimina. Mientras el gate este puesto NO reanimar el ES a mano:
-      el sembrado del item es trabajo aparte, tras decision de Dani (es
-      dinero). Reactivacion = descomentar el documento ES del manifiesto +
-      devolver test_externalsecret_gateado_y_env_optional a su forma original
-      (tests/test_alibaba_second_key_affinity_contract.py) + deploy por
-      GitOps; ningun paso manual. Nombres congelados: Secret, env y titulo
+      ni se elimina. 2026-09-28: item sembrado (cuenta me@e-dani.com, Token
+      Plan) y gate retirado — el ES vuelve al manifiesto y el test vigila su
+      forma (test_externalsecret_y_env_optional). Nombres congelados: Secret, env y titulo
       1Password (el provider onepasswordSDK convierte el titulo en op:// y
       solo admite [A-Za-z0-9_.-]).
   - id: dgx.litellm.tool-call-arguments-json.v1
