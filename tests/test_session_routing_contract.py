@@ -24,7 +24,9 @@ Fail-open: timeouts del camino de petición <= 100 ms y redis.asyncio.
 """
 import ast
 import asyncio
+import json
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -427,14 +429,33 @@ def _cfg(**over):
 
 
 class _Env:
-    """Stubbea las cuatro E/S del módulo (config, sticky, cooldown, contador)
-    y graba lo que se escribe en Valkey."""
+    """Stubbea las E/S del módulo (config, sticky, cooldown, contador, y desde
+    el 27-09 el presupuesto KV: HASH de sesiones, albind y cachés de los
+    sondeos) y graba lo que se escribe en Valkey.
 
-    def __init__(self, mod, cfg, bound=None, cooldown=False, inflight=0, stuck=False):
+    Presupuesto KV: por defecto APAGADO (capacidad None, HASH sin lectura),
+    que es el fail-open que deja los tests previos exactamente como estaban.
+    kv_cap/kv_total activan la válvula; kv_born simula el nacimiento en
+    Alibaba (regla de retorno 4c)."""
+
+    def __init__(self, mod, cfg, bound=None, cooldown=False, inflight=0, stuck=False,
+                 kv_cap=None, kv_total=None, kv_born=None):
         self.writes = []
+        self.ledger = []
+        self.albind_touches = []
+        self.albind_clears = []
         self.mod = mod
         mod._ensure_vllm_poller = lambda: None
+        mod._ensure_sessions_poller = lambda: None
         mod._queue_stuck = lambda now=None: stuck
+        # Cachés de los sondeos: reset SIEMPRE (el módulo es scope=module y
+        # comparte estado entre tests; sin esto un test con capacidad filtraría
+        # al siguiente).
+        mod._kv_capacity["tokens"] = kv_cap
+        mod._kv_capacity["read_at"] = 9e18 if kv_cap else None
+        mod._kv_sessions["total"] = kv_total
+        mod._kv_sessions["n"] = 0 if kv_total is not None else None
+        mod._kv_sessions["read_at"] = 9e18 if kv_total is not None else None
 
         async def config():
             return cfg
@@ -451,11 +472,18 @@ class _Env:
         async def inflight_resident(tracker):
             return inflight
 
+        async def albind_get(sid):
+            return kv_born
+
         mod._config = config
         mod._sticky_get = sticky_get
         mod._sticky_set = sticky_set
         mod._group_in_cooldown = group_in_cooldown
         mod._inflight_resident = inflight_resident
+        mod._sessions_write = lambda sid, tokens: self.ledger.append((sid, tokens))
+        mod._albind_touch = lambda sid: self.albind_touches.append(sid)
+        mod._albind_clear = lambda sid: self.albind_clears.append(sid)
+        mod._albind_get = albind_get
 
     def run(self, data, requested="tooling", resident_ready=True):
         return asyncio.run(self.mod.apply_session_routing(
@@ -560,11 +588,15 @@ def test_sticky_alibaba_ligada_renueva_el_vinculo(router_mod):
 
 
 def test_ttl_de_inactividad_por_destino(router_mod):
-    """26-09-2026 (Dani): local 30 min, alibaba 5 min (antes 10 min los dos)."""
+    """26-09-2026 (Dani): local 30 min, alibaba 5 min (antes 10 min los dos).
+    27-09-2026: alibaba 5 min -> 60 min — con la válvula de presupuesto KV el
+    retorno desde Alibaba es una REGLA (compactó y cabe / nació hace
+    alibaba_return_after_s y cabe), no el vencimiento del TTL: una pausa de
+    5 min no debe traer fría a una sesión de 150k a mitad de conversación."""
     assert router_mod.STICKY_TTL_LOCAL_SECONDS == 1800
-    assert router_mod.STICKY_TTL_ALIBABA_SECONDS == 300
+    assert router_mod.STICKY_TTL_ALIBABA_SECONDS == 3600
     assert router_mod._sticky_ttl("local") == 1800
-    assert router_mod._sticky_ttl("alibaba") == 300
+    assert router_mod._sticky_ttl("alibaba") == 3600
 
 
 def test_escritura_sticky_usa_el_ttl_de_su_destino(fresh_mod, monkeypatch):
@@ -583,7 +615,7 @@ def test_escritura_sticky_usa_el_ttl_de_su_destino(fresh_mod, monkeypatch):
     asyncio.run(m._sticky_set_bg("s2", "alibaba"))
     assert escritas == [
         (m.STICKY_KEY_PREFIX + "s1", "local", 1800),
-        (m.STICKY_KEY_PREFIX + "s2", "alibaba", 300),
+        (m.STICKY_KEY_PREFIX + "s2", "alibaba", 3600),
     ]
 
 
@@ -1408,3 +1440,359 @@ def test_strip_params_aplica_los_interruptores(strip_src):
     assert strip_src[i:].split("\n")[1].strip() == 'data["fallbacks"] = []'
     assert "disable_fallbacks" not in strip_src[i:].split("\n")[1]
     assert 'base_fallbacks=None if _alibaba_sw["tooling_fallback"] else ()' in strip_src
+
+
+# ── Válvula de presupuesto KV por sesión (27-09-2026, precedencia 4b/4c) ─────
+# local_slots cuenta peticiones EN VUELO; las sesiones ociosas con prefijo
+# grande no cuentan y vLLM las expulsa del LRU (thrash: al volver re-prefrían
+# frías). El presupuesto cuenta TOKENOS por sesión viva contra un PORCENTAJE
+# de la capacidad del motor (vllm:cache_config_info, descubierta en runtime).
+# Capacity 1.000.000 y pct 85 => límite 850.000 en los tests de abajo.
+
+
+def _big_msg(tokens):
+    """messages cuyo prompt estimado sale ~tokens (chars/3,5 + claves del dict)."""
+    return [{"role": "user", "content": "a" * int(tokens * 3.5)}]
+
+
+def test_kv_nueva_sesion_que_cabe_se_queda_local(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True), kv_cap=1_000_000, kv_total=100_000)
+    data = _data(messages=_big_msg(50_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+    assert len(env.ledger) == 1 and abs(env.ledger[0][1] - 50_000) < 200
+
+
+def test_kv_nueva_sesion_que_no_cabe_nace_en_alibaba(router_mod):
+    env = _Env(router_mod, _cfg(sticky=True), kv_cap=1_000_000, kv_total=820_000)
+    data = _data(messages=_big_msg(50_000))
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_rerouted"] is True
+    assert data["metadata"]["_session_routing_reason"] == "kv_budget"
+    assert data["metadata"]["_session_routing_trigger"] == "presupuesto"
+    assert env.writes == [(SID, "alibaba")]
+    assert env.albind_touches == [SID]
+
+
+def test_kv_capacidad_desconocida_fail_open(router_mod):
+    """Sin vllm:cache_config_info (motor sin arrancar, modelo sin métrico):
+    la válvula está APAGADA — con la suma desbordada la sesión sigue local
+    (comportamiento anterior, fail-open)."""
+    env = _Env(router_mod, _cfg(sticky=True), kv_cap=None, kv_total=999_000)
+    data = _data(messages=_big_msg(50_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_kv_sin_suma_fresca_no_actua(router_mod):
+    """Capacidad conocida pero HASH sin lectura buena (sondeo caído, Valkey
+    mudo): válvula apagada, la sesión entra igual."""
+    env = _Env(router_mod, _cfg(sticky=True), kv_cap=1_000_000, kv_total=None)
+    data = _data(messages=_big_msg(50_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_kv_el_porcentaje_manda_no_un_numero_fijo(router_mod):
+    """Misma cuenta que el test de desborde, con kv_budget_pct=95: el límite
+    sube de 850.000 a 950.000 y la sesión cabe. El presupuesto es un
+    PORCENTAJE de la capacidad descubierta: al cambiar el residente cambia
+    la cache y el límite se recalcula solo."""
+    env = _Env(router_mod, _cfg(sticky=True, kv_budget_pct=95),
+               kv_cap=1_000_000, kv_total=820_000)
+    data = _data(messages=_big_msg(50_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_kv_no_expulsa_una_sesion_ya_ligada_a_local(router_mod):
+    """Precedencia 4b: la válvula decide SOLO sesiones nuevas. Una ligada a
+    local con el presupuesto desbordado sigue en local (desalojar su prefijo
+    caliente es justo el thrash que se quiere evitar; expulsarla la traería
+    fría a ella y a quien entre)."""
+    env = _Env(router_mod, _cfg(sticky=True), bound="local",
+               kv_cap=1_000_000, kv_total=820_000)
+    data = _data(messages=_big_msg(50_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+
+
+def test_kv_bot_umbral_bajo_interactivo_alto(router_mod):
+    """Prioridad 3: el interactivo va primero. Suma viva 700.000 de 1.000.000
+    (70 %): bajo bot_budget_pct=60 el bot (key hermes) no cabe y nace en
+    Alibaba; la sesión interactiva (opencode) cabe bajo kv_budget_pct=85."""
+    cfg = _cfg(sticky=True)
+    env = _Env(router_mod, cfg, kv_cap=1_000_000, kv_total=700_000)
+    data = _data(metadata={"user_api_key_alias": "hermes"}, messages=_big_msg(50_000))
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    env = _Env(router_mod, cfg, kv_cap=1_000_000, kv_total=700_000)
+    data = _data(metadata={"user_api_key_alias": "opencode-20260630-local"},
+                 messages=_big_msg(50_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_kv_company_es_bot_por_clase(router_mod):
+    """Sin exención, la clase company cuenta como bot (umbral bajo) aunque su
+    key alias sea claude-local (la key la comparten CLI interactivo y compañía)."""
+    env = _Env(router_mod, _cfg(sticky=True, overflow_exempt=NADIE_EXENTO),
+               kv_cap=1_000_000, kv_total=700_000)
+    data = _company_data(messages=_big_msg(50_000))
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+
+
+def test_kv_exenta_no_pasa_por_la_valvula(router_mod):
+    """overflow_exempt = no desborda por CAPACIDAD, y el presupuesto ES
+    capacidad: la exenta encola en el residente con el presupuesto desbordado."""
+    env = _Env(router_mod, _cfg(sticky=True), kv_cap=1_000_000, kv_total=820_000)
+    data = _company_data(messages=_big_msg(50_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_retorno_local_tras_compactacion(router_mod):
+    """4c(a): sesión ligada a Alibaba cuyo prompt actual es pequeño
+    (compactó: <= return_max_tokens=30.000) y cabe => vuelve al residente,
+    renueva el binding a local, borra el reloj de nacimiento y se anota en
+    el HASH."""
+    env = _Env(router_mod, _cfg(sticky=True), bound="alibaba",
+               kv_cap=1_000_000, kv_total=100_000)
+    data = _data(messages=_big_msg(10_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+    assert env.albind_clears == [SID]
+    assert len(env.ledger) == 1
+
+
+def test_retorno_bloqueado_por_presupuesto(router_mod):
+    """Compactó, pero ya no cabe (845.000 vivos + 10.000 > 850.000): sigue en
+    Alibaba. El retorno respeta el mismo presupuesto que la admisión."""
+    env = _Env(router_mod, _cfg(sticky=True), bound="alibaba",
+               kv_cap=1_000_000, kv_total=845_000)
+    data = _data(messages=_big_msg(10_000))
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]
+
+
+def test_retorno_local_por_tiempo(router_mod):
+    """4c(c): prompt grande (150.000 > return_max) PERO nació en Alibaba hace
+    >= alibaba_return_after_s (3.600 s) y cabe => vuelve. Se mide desde el
+    NACIMIENTO (albind), no desde la última actividad."""
+    env = _Env(router_mod, _cfg(sticky=True), bound="alibaba",
+               kv_cap=1_000_000, kv_total=100_000, kv_born=time.time() - 3700)
+    data = _data(messages=_big_msg(150_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+    assert env.albind_clears == [SID]
+
+
+def test_gran_recien_ligada_no_vuelve_a_medio_rollo(router_mod):
+    """El caso que motivó el cambio: sesión de 150.000 en Alibaba, pausa de
+    2 min, TTL alibaba ya NO la devuelve (antes: 300 s y vuelta a empezar
+    fría). Ni compactada ni temporizada => sigue en Alibaba."""
+    env = _Env(router_mod, _cfg(sticky=True), bound="alibaba",
+               kv_cap=1_000_000, kv_total=100_000, kv_born=time.time() - 120)
+    data = _data(messages=_big_msg(150_000))
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]
+    assert env.albind_touches == [SID]  # renueva el TTL del nacimiento, no el valor
+
+
+def test_default_plan_alibaba_no_autoretorna(router_mod):
+    """default_plan=alibaba es orden del operador: la regla de retorno no la
+    deshace (criterio igual que el de exentos)."""
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"), bound="alibaba",
+               kv_cap=1_000_000, kv_total=100_000)
+    data = _data(messages=_big_msg(10_000))
+    assert env.run(data) is True
+    assert data["model"] == OVERFLOW
+
+
+def test_retorno_respeta_residente_no_ready(router_mod):
+    """Sin residente no hay retorno: volver a local sería un 503 seguro; la
+    ruta de disponibilidad (rebind_alibaba) manda."""
+    env = _Env(router_mod, _cfg(sticky=True), bound="alibaba",
+               kv_cap=1_000_000, kv_total=100_000)
+    data = _data(messages=_big_msg(10_000))
+    assert env.run(data, resident_ready=False) is True
+    assert data["model"] == OVERFLOW
+
+
+@pytest.mark.parametrize("raw,esperado", [
+    ({}, {"kv_budget_pct": 85, "bot_budget_pct": 60, "session_idle_s": 600,
+          "return_max_tokens": 30000, "alibaba_return_after_s": 3600,
+          "bot_keys": ["hermes", "aurora-rca"]}),
+    ({"kv_budget_pct": "85"}, {"kv_budget_pct": 85}),   # string => default
+    ({"kv_budget_pct": True}, {"kv_budget_pct": 85}),   # bool => default
+    ({"kv_budget_pct": 0}, {"kv_budget_pct": 85}),      # fuera de rango
+    ({"kv_budget_pct": 95, "bot_budget_pct": 40}, {"kv_budget_pct": 95, "bot_budget_pct": 40}),
+    ({"session_idle_s": 3600}, {"session_idle_s": 3600}),
+    ({"session_idle_s": 10**9}, {"session_idle_s": 600}),
+    ({"bot_keys": ["Hermes", " aurora-rca ", 5]}, {"bot_keys": ["aurora-rca", "hermes"]}),
+    # no-lista => default (los bots conocidos), NUNCA vacía: vacía significaría
+    # "nadie es bot" guardado a propósito desde el panel.
+    ({"bot_keys": "hermes"}, {"bot_keys": ["hermes", "aurora-rca"]}),
+    ({"bot_keys": []}, {"bot_keys": []}),               # lista vacía legítima
+])
+def test_kv_sanitize_formas(router_mod, raw, esperado):
+    cfg = router_mod._sanitize(raw)
+    for key, value in esperado.items():
+        assert cfg[key] == value, (key, cfg[key], value)
+
+
+def test_kv_sanitize_defaults_explicitos(router_mod):
+    cfg = router_mod._sanitize({})
+    assert cfg["kv_budget_pct"] == router_mod.DEFAULT_KV_BUDGET_PCT == 85
+    assert cfg["bot_budget_pct"] == router_mod.DEFAULT_BOT_BUDGET_PCT == 60
+    assert cfg["session_idle_s"] == router_mod.DEFAULT_SESSION_IDLE_S == 600
+    assert cfg["return_max_tokens"] == router_mod.DEFAULT_RETURN_MAX_TOKENS == 30000
+    assert cfg["alibaba_return_after_s"] == router_mod.DEFAULT_ALIBABA_RETURN_AFTER_S == 3600
+    assert cfg["bot_keys"] == list(router_mod.DEFAULT_BOT_KEYS)
+    assert router_mod.DEFAULT_CONFIG["kv_budget_pct"] == 85
+
+
+def test_parse_cache_capacity_desde_metrics(fresh_mod):
+    """vllm:cache_config_info es un gauge-INFO: el valor es 1.0 y la capacidad
+    vive en los LABELS (num_gpu_blocks × block_size). Formato verificado contra
+    el head del residente (27-09)."""
+    texto = "\n".join([
+        "# HELP vllm:cache_config_info Information of the LLMEngine CacheConfig",
+        "# TYPE vllm:cache_config_info gauge",
+        'vllm:cache_config_info{block_size="16",cache_dtype="auto",gpu_memory_cache_size_bytes="0",'
+        'num_cpu_blocks="0",num_gpu_blocks="173451",some_other="x"} 1.0',
+        'vllm:num_requests_waiting{model_name="qwen38-flash-next"} 2.0',
+    ])
+    assert fresh_mod._parse_cache_capacity(texto) == 173451 * 16
+    assert fresh_mod._parse_cache_capacity("") is None
+    assert fresh_mod._parse_cache_capacity('vllm:cache_config_info{num_gpu_blocks="None",block_size="16"} 1.0') is None
+    # varias líneas (varios engines): la mayor
+    doble = texto + "\n" + 'vllm:cache_config_info{block_size="16",num_gpu_blocks="1000"} 1.0'
+    assert fresh_mod._parse_cache_capacity(doble) == 173451 * 16
+
+
+def test_sondeo_de_vllm_alimenta_la_capacidad(router_src):
+    """La capacidad se descubre en el MISMO sondeo de /metrics que lee la cola
+    (cero I/O extra) y con último-bueno: sin sondeo nuevo la válvula sigue
+    decidiendo con el último valor conocido."""
+    assert "_parse_cache_capacity(response.text)" in router_src
+    assert '_kv_capacity["tokens"] = capacity' in router_src
+
+
+def test_estimacion_prompt_tokens(fresh_mod):
+    m = fresh_mod
+    data = {"messages": [{"role": "user", "content": "x" * 3500}]}
+    assert abs(m._estimate_prompt_tokens(data) - 1000) <= 20
+    assert m._estimate_prompt_tokens({"model": RESIDENT}) is None       # sin body
+    assert m._estimate_prompt_tokens("no-dict") is None
+    # adjuntos base64: no cuentan sus caracteres (sus tokens no salen de ahí)
+    con_media = {"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "hola"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 5000}},
+    ]}]}
+    assert m._estimate_prompt_tokens(con_media) < 50
+    # chars_per_token aprendido del tracker: 7 chars/token => la mitad
+    class Tracker:
+        chars_per_token = 7.0
+    assert abs(m._estimate_prompt_tokens(data, Tracker()) - 500) <= 15
+
+
+def test_sessions_aggregate_suma_vivas_y_poda(fresh_mod):
+    m = fresh_mod
+    now = 1_000_000.0
+    raw = {
+        "viva1": json.dumps({"t": 100, "ts": now - 10}),
+        "viva2": json.dumps({"t": 200, "ts": now - 590}),
+        "ociosa": json.dumps({"t": 999, "ts": now - 601}),   # fuera de idle: no suma, no poda
+        "muerta": json.dumps({"t": 50, "ts": now - 4000}),   # fuera de prune: poda
+        "rota": "no-es-json",                                # basura: poda
+    }
+    total, n, stale = m._sessions_aggregate(raw, now=now, idle_s=600)
+    assert total == 300 and n == 2
+    assert sorted(stale) == ["muerta", "rota"]
+    assert m._sessions_aggregate({}, now=now) == (0, 0, [])
+
+
+def test_albind_setnx_conserva_el_nacimiento(fresh_mod, monkeypatch):
+    """SETNX: la primera ligada escribe el nacimiento; las siguientes solo
+    empujan el TTL (EXPIRE) — el valor NO se toca (se mide desde el
+    nacimiento, no desde la última petición)."""
+    m = fresh_mod
+    llamadas = []
+
+    creadas = set()
+
+    class Cli:
+        async def set(self, key, value, ex=None, nx=None):
+            llamadas.append(("set", key, value, ex, nx))
+            # semántica SETNX real: la primera crea, luego existe => False
+            if key in creadas:
+                return False
+            creadas.add(key)
+            return True
+
+        async def expire(self, key, seconds):
+            llamadas.append(("expire", key, seconds))
+
+        async def delete(self, key):
+            llamadas.append(("delete", key))
+
+        async def get(self, key):
+            llamadas.append(("get", key))
+            return "123.5"
+
+    async def redis():
+        return Cli()
+
+    monkeypatch.setattr(m, "_redis", redis)
+    asyncio.run(m._albind_touch_bg("s1"))          # crea (SETNX)
+    asyncio.run(m._albind_touch_bg("s1"))          # existe => solo EXPIRE
+    asyncio.run(m._albind_clear_bg("s1"))
+    assert asyncio.run(m._albind_get("s1")) == 123.5
+    clave = m.ALBIND_KEY_PREFIX + "s1"
+    assert llamadas[0][:1] == llamadas[1][:1] == ("set",) and llamadas[0][1] == clave
+    assert llamadas[0][3] == llamadas[1][3] == m.ALBIND_TTL_SECONDS and llamadas[0][4] is True
+    # el nacimiento NO se sobreescribe: la segunda pasada empuja TTL con EXPIRE
+    assert llamadas[2] == ("expire", clave, m.ALBIND_TTL_SECONDS)
+    assert llamadas[3] == ("delete", clave)
+    assert llamadas[4] == ("get", clave)
+
+
+def test_escritura_del_hash_de_sesiones(fresh_mod, monkeypatch):
+    """La anotación de consumo es un HSET al HASH con {t, ts} (sin contadores:
+    mandato 1 relajado a HASH con poda por lectura, ver cabecera)."""
+    m = fresh_mod
+    escritas = []
+
+    class Cli:
+        async def hset(self, key, field, value):
+            escritas.append((key, field, json.loads(value)))
+
+    async def redis():
+        return Cli()
+
+    monkeypatch.setattr(m, "_redis", redis)
+    asyncio.run(m._sessions_write_bg("s9", 12345))
+    assert escritas[0][0] == m.SESSIONS_HASH_KEY == "session-router:sessions"
+    assert escritas[0][1] == "s9"
+    assert escritas[0][2]["t"] == 12345 and escritas[0][2]["ts"] > 0
+
+
+def test_anotada_la_plan_local_exlicita(router_mod):
+    """Un plan EXPLÍCITO local ocupa cache igual que cualquier sesión: se
+    anota en el HASH (su binding sticky NO se escribe)."""
+    env = _Env(router_mod, _cfg(sticky=True, session_plans={SID: "local"}),
+               kv_cap=1_000_000, kv_total=100_000)
+    data = _data(messages=_big_msg(50_000))
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == []            # sticky solo para sesiones de plan default
+    assert len(env.ledger) == 1        # pero el consumo se anota
