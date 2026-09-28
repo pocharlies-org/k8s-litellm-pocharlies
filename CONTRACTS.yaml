@@ -157,6 +157,8 @@ contracts:
       - dev/session_router.py
       - k8s/manifest.yaml
     status: deprecated
+    replaced_by: dgx.session-router.alibaba-account-pin.v1
+    remove_after: "2026-10-31"
     note: >-
       DEPRECATED 2026-09-28: sustituido por dgx.session-router.alibaba-account-pin.v1.
       El session_affinity nativo por grupo quedo retirado (auditoria: pin por
