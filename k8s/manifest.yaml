@@ -6102,6 +6102,32 @@ data:
             container["spend_logs_metadata"] = _slm
         _slm.update(fields)
 
+    def _stamp_claude_class(data, claude_class) -> bool:
+        """Sella spend_logs_metadata.claude_class (29-09-2026).
+
+        `x-claude-class` (hoy solo `company`) llegaba al router pero no a
+        LiteLLM_SpendLogs: el panel no podia separar los bots de la compania del
+        resto de la key `hermes`. Misma via y mismo dict que el sello de lambda
+        (`spend_logs_metadata`; la allowlist de SpendLogsMetadata tira en
+        silencio cualquier clave plana). "metadata" en chat/completions,
+        "litellm_metadata" en /v1/messages: se respeta el que traiga la peticion.
+        Sin clase no se escribe nada. True si sello."""
+        if not claude_class or not isinstance(data, dict):
+            return False
+        _mvar = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+        _meta = data.get(_mvar)
+        if not isinstance(_meta, dict):
+            _meta = {}
+            data[_mvar] = _meta
+        _slm = _meta.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            _meta["spend_logs_metadata"] = _slm
+        # CONTRACT: dgx.litellm.spendlogs-claude-class.v1
+        _slm["claude_class"] = str(claude_class).strip().lower()
+        return True
+
+
     def _stamp_refusal_probe(request_data, obj) -> bool:
         """Sella la sonda si `obj` la trae. Mismas dos vias que _stamp_refusal_text
         (request_data y logging_obj vivo), por el mismo motivo. True si sello."""
@@ -6573,6 +6599,14 @@ data:
                     _slm["refusal_runtime"] = str(_rt_key)
             except Exception as e:
                 log.warning("refusal stamp error: %s", e)
+            # Sello de clase para el HISTORICO (29-09-2026): ver _stamp_claude_class.
+            try:
+                _stamp_claude_class(
+                    data,
+                    session_router._claude_class(data) if session_router is not None else None,
+                )
+            except Exception as e:
+                log.warning("class stamp error: %s", e)
             try:
                 _route_meta = data.get("metadata")
                 if not isinstance(_route_meta, dict):
@@ -10589,7 +10623,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9584976772fa
+        config.k8s.e-dani.com/revision: config-4bb45662b6fc
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
