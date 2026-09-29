@@ -126,17 +126,24 @@ spec:
         metadata:
           labels: { app: litellm-watchdog }
         spec:
-          # 2026-08-21: todo litellm corre EXCLUSIVAMENTE en `ubuntu` (el x86 de la
-          # RTX). Estos Jobs no tenian restriccion y caian en cualquier ks5. Aqui no se
-          # pierde HA: son tareas puntuales, no servicio. Se tolera el taint blando
-          # pool=dev:PreferNoSchedule del nodo para no penalizarlo en la puntuacion.
+          # 29-09-2026: sigue a litellm (manifest.yaml): prefiere `ubuntu` y cae en
+          # `sauvage` si el x86 no esta. Anclado solo a `ubuntu`, el watchdog se
+          # apagaba justo cuando mas falta hacia: con el x86 caido.
           tolerations:
             - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+            - { key: role, operator: Equal, value: edge, effect: NoSchedule }
           affinity:
             nodeAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:
                 nodeSelectorTerms:
                   - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values: [ubuntu, sauvage]
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
                       - key: kubernetes.io/hostname
                         operator: In
                         values: [ubuntu]

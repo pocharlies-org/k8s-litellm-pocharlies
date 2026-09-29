@@ -194,13 +194,13 @@ def test_ac10_lo_que_no_se_toca_sigue_intacto():
     env = {e["name"]: e["value"] for e in litellm["env"] if "value" in e}
     assert env["LITELLM_DRAIN_TIMEOUT_SEC"] == "660"
 
-    # AC10 es tambien un "no se ensancha": la afinidad sigue anclada a ubuntu
-    # (eso es H3/SC-404, y un PR que la ensanche aqui se rechaza).
+    # AC10: la afinidad no se ensancha mas alla de ubuntu (preferido) y sauvage
+    # (failover, 29-09-2026); el detalle lo guarda test_litellm_rollout_shape_contract.
     terms = template["affinity"]["nodeAffinity"][
         "requiredDuringSchedulingIgnoredDuringExecution"
     ]["nodeSelectorTerms"]
     assert terms[0]["matchExpressions"] == [
-        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu"]}
+        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu", "sauvage"]}
     ]
 
 

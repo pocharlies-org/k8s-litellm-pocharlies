@@ -1,3 +1,32 @@
+# Afinidad de litellm: prefiere `ubuntu`, failover a `sauvage` (29-09-2026)
+
+**Vigente desde el 29-09-2026.** Tras un corte de luz en el x86 (apagado limpio
+por el SAI a las 09:23, 1 h 26 min fuera) todo el trafico LLM se quedo sin proxy
+con los Sparks sirviendo. Decision del owner: `ubuntu` sigue siendo el sitio
+(latencia a la LAN y a los Sparks), pero ya no es el unico.
+
+- `required`: `kubernetes.io/hostname In [ubuntu, sauvage]` + toleracion
+  `role=edge:NoSchedule`. Los Sparks y los ks5 siguen fuera por los motivos de
+  abajo.
+- `preferred` weight 100 a `ubuntu`: en reposo las 2 replicas y el Valkey viven
+  en el x86.
+- `unreachable`/`not-ready` con `tolerationSeconds: 30`: el failover tarda la
+  gracia del nodo + 30 s + el arranque, no 5 min.
+- Vuelta: el descheduler de `k8s-gitops-pocharlies` (`infra/descheduler`),
+  opt-in por la etiqueta `e-dani.com/vuelve-a-x86: "true"`, desaloja cada 2 min
+  lo que podria estar en `ubuntu`, respetando el PDB (una replica por pasada).
+- Sin `topologySpreadConstraints`: con `sauvage` elegible mandaria una replica
+  a OVH en cada rollout.
+- Medido desde un pod en `sauvage`: qwen38-flash-next, tooling y stt responden
+  (200, ~0,15-0,30 s por peticion); postgres-shared y shared-valkey estan en ks5.
+- Limite: los clientes de LAN entran por `traefik-lan` (en el x86); el failover
+  cubre a los consumidores dentro del cluster (Hermes vive en ks5).
+
+Lo que sigue es el razonamiento de SC-404 (09-09), historico: por que ni los
+Sparks ni los ks5.
+
+---
+
 # Por que litellm esta anclado a `ubuntu` (SC-404, 2026-09-09)
 
 El Deployment `litellm` fija `kubernetes.io/hostname In [ubuntu]`. SC-404 pidio

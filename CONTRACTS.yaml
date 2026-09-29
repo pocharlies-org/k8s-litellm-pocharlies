@@ -193,9 +193,11 @@ contracts:
       antes que el filtro de order: un pin nacido en un cooldown del -k1
       atrapaba la sesion en un -k2 sin key, 401 en bucle). Si el hook no
       carga, el order: 2 del YAML es la inercia.
-      La Valkey (litellm-valkey) va anclada al mismo nodo que el proxy
-      (nodeSelector hostname: ubuntu): el claim se paga en cada peticion y
-      el RTT del overlay entre nodos es ~27 ms p50 (medido 26-09). El minimo de
+      La Valkey (litellm-valkey) lleva la MISMA afinidad que el proxy: el
+      claim se paga en cada peticion y el RTT del overlay entre nodos es
+      ~27 ms p50 (medido 26-09). Desde 2026-09-29 esa afinidad es preferred
+      ubuntu con failover a sauvage (y vuelta por descheduler): valor, Service
+      y puerto no cambian; en failover ambos saltan juntos. El minimo de
       orders se calcula solo entre declarados, por eso el -k1 declara 1.
   - id: dgx.model-routing.config.v1
     kind: http-route

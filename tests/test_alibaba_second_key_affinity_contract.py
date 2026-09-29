@@ -338,20 +338,20 @@ def test_tier_afinidad_anclado_al_mismo_nodo_que_litellm(docs):
     """El claim de afinidad se paga por peticion: con la Valkey en otro
     nodo el RTT del overlay (Tailscale) salio medido p50 27 ms — un
     impuesto sobre cada peticion alibaba. La prueba exige que el Deployment
-    litellm-valkey comparta el nodo al que el proxy esta anclado."""
+    litellm-valkey lleve la misma afinidad que el proxy (29-09: preferencia por
+    ubuntu con failover a sauvage), para que ambos vivan y salten juntos."""
     vk = next(d for d in docs
               if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm-valkey")
     lite = next(d for d in docs
                 if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm")
-    anclaje = (lite["spec"]["template"]["spec"]["affinity"]
-               ["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
-               ["nodeSelectorTerms"][0]["matchExpressions"])
-    nodos_proxy = next(e["values"] for e in anclaje
-                       if e["key"] == "kubernetes.io/hostname")
-    sel = vk["spec"]["template"]["spec"].get("nodeSelector") or {}
-    assert sel.get("kubernetes.io/hostname") in nodos_proxy, (
-        f"Valkey en {sel.get('kubernetes.io/hostname')!r}, proxy en {nodos_proxy}: "
-        "cada peticion alibaba pagaria el RTT del overlay por el claim")
+    vsp, lsp = vk["spec"]["template"]["spec"], lite["spec"]["template"]["spec"]
+    assert vsp.get("affinity") == lsp["affinity"], (
+        "Valkey con otra afinidad que el proxy: en reposo o en failover acabarian "
+        "en nodos distintos y cada peticion alibaba pagaria el RTT del overlay")
+    assert vsp.get("tolerations") == lsp["tolerations"], (
+        "sin las mismas tolerancias el Valkey no puede seguir al proxy a sauvage")
+    assert (vk["spec"]["template"]["metadata"]["labels"].get("e-dani.com/vuelve-a-x86")
+            == "true"), "sin la etiqueta el descheduler no lo devuelve al x86"
 
 
 def test_stamp_activa_antes_de_cualquier_cosa(router_src):
