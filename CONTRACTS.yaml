@@ -383,6 +383,28 @@ contracts:
       The sidecar caches peer discovery (DNS of litellm-active-peers) for
       15 s and serves the last good list up to 120 s if DNS fails. Shape and
       paths unchanged. Pinned by tests/test_session_routing_contract.py.
+      Since 2026-09-29 each row also carries the additive `profile`: the
+      Hermes profile from the x-hermes-profile header
+      (dgx.hermes.profile-header.v1), null when the request has none. Pinned
+      by tests/test_active_request_profile_contract.py.
+  - id: dgx.hermes.profile-header.v1
+    # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
+    kind: schema
+    value: x-hermes-profile
+    role: consumer
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-29. Request header stamped by the Hermes seed
+      (k8s-openclaw-qwen36-pocharlies helm/hermes/files/hermes_seed.py,
+      con_perfil) on every provider of every Hermes profile: all profiles
+      share the `hermes` key, so this is the only way to tell them apart.
+      The strip_params hook reads it (case-insensitive key, lowercased value,
+      anything not matching [a-z0-9][a-z0-9_.-]{0,63} is dropped) and the
+      tracker serves it as `profile` on /internal/active-requests. Label only:
+      no routing, admission or billing decision depends on it. Pinned by
+      tests/test_active_request_profile_contract.py.
   - id: dgx.litellm.refusal-probe-stamp.v1
     # Claves que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de refusal. Mismo kind que class-header: es una
