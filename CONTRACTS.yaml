@@ -440,6 +440,31 @@ contracts:
       el panel /inferencia (ALIBABA · TOKEN PLAN, campo alibaba.demos_fallback
       de /api/model-routing/config): apagado, la key demos se queda sin salida
       externa. Por defecto y en fail-open: encendido.
+  - id: dgx.litellm.virtual-key.hermes-batch.v1
+    # kind allowlist: la superficie es la key virtual por key_alias y las dos
+    # puertas del hook que la listan igual que a su gemela de chat.
+    kind: allowlist
+    value: hermes-batch
+    anchor: opencode-20260630-local,hermes,hermes-batch
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-29 (DGX-454, epica DGX-451). Clave virtual de LiteLLM para los
+      perfiles de compania de Hermes (trabajo en segundo plano: el Kanban la
+      paga); los chats (hogar, agentic-link, secretaria) siguen con `hermes`.
+      Creada por /key/generate con models: [] (= todos los modelos, identico a
+      hermes) y sembrada en 1Password (item `litellm`, campo HERMES_BATCH_KEY);
+      la reparte el ExternalSecret hermes-secrets del chart helm/hermes de
+      k8s-openclaw-qwen36-pocharlies (PR hermana DGX-454). Las dos puertas del
+      hook que prometian a `hermes` la cubren igual: LITELLM_OPENROUTER_ALLOWED_KEYS
+      (env del Deployment) y el default de UNCENSORED_ALLOWED_KEY_ALIASES; sin
+      ellas la fila del picker mentiria 403 (precedente OWU-50). El mapa
+      alias->priority y la valve bot_keys son de DGX-453/DGX-451-C7. Renombrar o
+      retirar el alias parte los .env de los bots sin ruido: pinned by
+      tests/test_openrouter_access_contract.py y
+      tests/test_uncensored_access_and_dial_alert_contract.py.
   - id: dgx.litellm.alibaba-pack-pricing.v1
     kind: schema
     # `cache_read_input_token_cost` es el literal nuevo de la superficie: los

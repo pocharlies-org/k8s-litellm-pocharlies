@@ -2414,7 +2414,7 @@ data:
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
             "openclaw-qwen36-prod,master,playground,open-webui-v3,"
-            "opencode-20260630-local,claude-local,hermes,synapse",
+            "opencode-20260630-local,claude-local,hermes,hermes-batch,synapse",
         ).split(",")
         if alias.strip()
     )
@@ -10857,7 +10857,11 @@ spec:
             # lista 16 modelos y devuelve 403 al elegirlos es peor que no tenerla:
             # el picker es una promesa de lo que se puede pedir. Sigue denegada
             # para las demas (document-intake, synapse, master...).
-            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes" }
+            # DGX-454: `hermes-batch` entra con la misma fila que `hermes` — es la clave
+            # de los perfiles de compania (trabajo en segundo plano) y el picker les
+            # promete los mismos or-* que a los de chat: fuera de la lista, la fila
+            # mentiria 403 exactamente igual que cuando falta `hermes`.
+            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes,hermes-batch" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo

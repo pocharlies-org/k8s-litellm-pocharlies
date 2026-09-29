@@ -184,7 +184,9 @@ def test_las_cuatro_superficies_del_owner_pueden_pedir_la_abliterada(hook):
     gate, y con el nombre del perfil (no el del residente): si manana se renombra
     un alias, esto lo pilla.
     """
-    for alias in ("open-webui-v3", "claude-local", "hermes", "synapse"):
+    # DGX-454: hermes-batch es la clave de los perfiles de compania y su picker
+    # promete lo mismo que el de hermes: fuera de la lista, la fila mentiria 403.
+    for alias in ("open-webui-v3", "claude-local", "hermes", "hermes-batch", "synapse"):
         assert alias in hook.UNCENSORED_ALLOWED_KEY_ALIASES, alias
         for perfil in ("qwen38-u-off", "qwen38-flash-next-uncensored"):
             denied, _ = hook._uncensored_access_denied(perfil, alias)
