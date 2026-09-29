@@ -10663,7 +10663,7 @@ spec:
   selector: { matchLabels: { app: litellm } }
   template:
     metadata:
-      labels: { app: litellm }
+      labels: { app: litellm, e-dani.com/vuelve-a-x86: "true" }
       annotations:
         # The request-policy hook lives in the mounted ConfigMap and is imported at
         # process start, so every material hook change must roll this pod.
@@ -10676,48 +10676,36 @@ spec:
     spec:
       enableServiceLinks: false
       terminationGracePeriodSeconds: 720
-      # 2026-08-21, decision del owner: TODO litellm corre EXCLUSIVAMENTE en
-      # `ubuntu` (el x86 de la RTX). La lista pasa de cuatro nodos a uno.
+      # 29-09-2026, decision del owner tras el corte de luz del x86: litellm
+      # PREFIERE `ubuntu` (latencia a la LAN y a los Sparks) pero ya no depende
+      # de el. Si el x86 cae, las replicas saltan a `sauvage`; cuando vuelve,
+      # el descheduler (k8s-gitops-pocharlies, infra/descheduler) las devuelve
+      # una a una respetando el PDB. Antes (21-08 / SC-404, doc/node-affinity-ubuntu.md)
+      # el pin era `required` a `ubuntu`: con el x86 apagado no habia proxy de
+      # NINGUN trafico LLM aunque los Sparks siguieran sirviendo.
       #
-      # LO QUE SE PIERDE, escrito para que nadie lo descubra en un incidente:
-      # con un solo nodo elegible las 2 replicas ya NO dan HA de nodo -- protegen
-      # de la caida de un pod, no de la del host. Si `ubuntu` cae, cae el proxy de
-      # TODO el trafico LLM. Y `ubuntu` deja de ser drenable sin corte: al
-      # cordonarlo el pod desalojado no tiene donde reprogramarse, se queda
-      # Pending, y el PDB (maxUnavailable 1) bloquea el desalojo del segundo. El
-      # drain se cuelga. Es inherente a fijar a un nodo, no un fallo de config.
+      # Medido el 29-09 desde un pod en `sauvage`: qwen38-flash-next, tooling y
+      # stt responden (200, ~0,15-0,30 s de conexion+peticion, la WAN por
+      # Tailscale); postgres-shared y shared-valkey viven en los ks5. Los
+      # clientes de LAN entran por traefik-lan, que sigue en el x86: el failover
+      # cubre a los consumidores dentro del cluster (Hermes, en ks5).
       #
-      # 2026-09-09, SC-404: se vuelve a considerar el reparto y el anclaje se
-      # REAFIRMA con los 7 nodos medidos ese dia. La tabla completa y el motivo
-      # de cada descarte viven en doc/node-affinity-ubuntu.md. Dos hechos
-      # medidos en esa comprobacion cambian como hay que leer este pin:
-      #   - La imagen NO es el motivo: el digest fijado (c8756e7b...) es un OCI
-      #     index con linux/amd64 Y linux/arm64 (`docker manifest inspect`), o
-      #     sea que un Spark PODRIA ejecutar el binario.
-      #   - Lo que decide es QUE TOLERA el pod, no quien esta limpio: "sin
-      #     taint" no describe bien a ninguno de los 7. Medidos: `gx10-ec3d` y
-      #     `nvidia-dgx` llevan taint DURO `dedicated=llm:NoSchedule`; `sauvage`
-      #     lleva `role=edge:NoSchedule` (y esta al otro lado de la WAN, en
-      #     OVH); `ks5-cp-1/2/3` no llevan NINGUN taint pero son plano de
-      #     control con etcd, vetados por la epica; `ubuntu` lleva
-      #     `pool=dev:PreferNoSchedule`, que es blando y este pod SI lo tolera.
-      #     El pod solo tolera `pool=dev:PreferNoSchedule`, y por eso `ubuntu`
-      #     es el unico nodo viable. Ensanchar el nodeAffinity sin tocar
-      #     tolerations no mueve nada: el scheduler seguiria eligiendo `ubuntu`
-      #     igual que hoy. Colocar de
-      #     verdad una replica en `nvidia-dgx` exige ademas meter al router en
-      #     el pool dedicado de GPU -- decision del dueno del pool, no de este
-      #     manifiesto, y dentro del radio del SystemOOM del 19-08 en memoria
-      #     unificada.
-      # Mientras no haya un segundo worker general sin taint, esto es decision
-      # consciente y no accidente; tests/test_litellm_rollout_shape_contract.py
-      # ::test_the_ubuntu_anchor_is_a_decision_not_an_accidente lo mantiene.
-      #
-      # `ubuntu` lleva un taint BLANDO pool=dev:PreferNoSchedule. Se sigue
-      # tolerando: con un unico nodo elegible no puede bloquear, pero sin la
-      # toleracion el scheduler lo penaliza en la puntuacion sin necesidad.
+      # - required ubuntu|sauvage: nunca los Sparks (dedicated=llm, memoria
+      #   unificada, SystemOOM del 19-08) ni el plano de control ks5.
+      # - preferred ubuntu weight 100: en reposo las 2 replicas viven en el x86.
+      # - Sin topologySpreadConstraints: con `sauvage` elegible, un reparto por
+      #   hostname (aunque fuera ScheduleAnyway) mandaria la segunda replica a
+      #   OVH en cada rollout y el descheduler la devolveria: ida y vuelta.
+      # - unreachable/not-ready con tolerationSeconds 30 (defecto 300): el
+      #   failover tarda ~grace del nodo (40-50 s) + 30 s + arranque del pod,
+      #   en vez de 5 min.
+      # - Etiqueta e-dani.com/vuelve-a-x86 (en labels del template): opt-in
+      #   del descheduler.
       tolerations:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+        - { key: role, operator: Equal, value: edge, effect: NoSchedule }
+        - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+        - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -10725,42 +10713,14 @@ spec:
               - matchExpressions:
                   - key: kubernetes.io/hostname
                     operator: In
+                    values: [ubuntu, sauvage]
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
                     values: [ubuntu]
-      # 2026-08-21: con UN solo dominio esta restriccion es inerte -- todos los
-      # pods caen en el mismo hostname, asi que el skew es siempre 0 y nunca puede
-      # violarse. Se conserva a proposito: si algun dia se vuelve a ensanchar el
-      # nodeAffinity, la maquinaria de reparto vuelve a funcionar sola, y los
-      # contratos de tests/test_litellm_rollout_shape_contract.py la leen.
-      #
-      # ScheduleAnyway y NO DoNotSchedule (2026-08-19). Este es el cambio que de
-      # verdad desserializa el rollout; bajar replicas por si solo NO bastaba.
-      #
-      # La aritmetica del skew con 2 replicas y maxSurge 1, sobre los 4 nodos que
-      # deja el nodeAffinity:
-      #   - regimen estable, 2 pods / 4 dominios -> 1,1,0,0 -> skew = 1-0 = 1 <= 1 OK
-      #   - durante el rollout, 2+1 = 3 pods / 4 dominios -> 1,1,1,0 -> skew = 1 OK
-      # O sea que en el papel maxSkew 1 se cumple. El problema es que en el papel
-      # no se ve el pod Terminating: sigue contando en el recuento de topologia Y
-      # sigue reservando su CPU durante los 720s del drenaje. Peor caso real:
-      #     cp-1 = 1 (Terminating)   cp-2 = 0   cp-3 = 1 (viejo)   ubuntu = 1 (nuevo)
-      # el UNICO dominio con cuenta 0 es cp-2, y cp-2 tiene 75m de CPU libre
-      # (7925m pedidos de 8000m) contra los 160m que pide el pod. Con DoNotSchedule
-      # eso es FailedScheduling y vuelve el candado de 720s, con 2 replicas igual
-      # que con 4.
-      #
-      # ScheduleAnyway convierte el reparto en puntuacion en vez de filtro: el
-      # scheduler SIGUE prefiriendo un pod por nodo (es lo que puntua), pero cuando
-      # la unica casilla que respeta el skew no tiene CPU, dobla en otro nodo en vez
-      # de quedarse en Pending. El reparto 1-por-nodo es una preferencia de HA, no
-      # una condicion de correctness: no hay estado por-nodo que lo exija.
-      # CPU libre medida para el pod de surge (150m + 10m del sidecar = 160m):
-      # cp-1 520m OK, cp-3 540m OK, ubuntu 1645m OK, cp-2 75m NO -> 3 de 4 nodos
-      # pueden aceptarlo en cualquier momento, asi que no hay deadlock posible.
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector: { matchLabels: { app: litellm } }
       initContainers:
         # Siembra el token de la cuenta Grok en un emptyDir escribible: el secret
         # montado es de solo lectura y el XAIOAuthAuthenticator necesita escribir
@@ -11228,20 +11188,35 @@ spec:
   selector: { matchLabels: { app: litellm-valkey } }
   template:
     metadata:
-      labels: { app: litellm-valkey }
+      labels: { app: litellm-valkey, e-dani.com/vuelve-a-x86: "true" }
     spec:
       # 26-09-2026, medido: este tier se lee UNA vez por peticion alibaba
-      # (el claim del DeploymentAffinityCheck). Sin fijar nodo, la scheduler
-      # lo puso en ks5-cp-1 y el RTT por el overlay de Tailscale salio
-      # p50 27.2 ms / p99 257 ms desde el pod del proxy — cada peticion
-      # pagaba ~27 ms solo por preguntar "a que cuenta me toca". litellm
-      # esta anclado a `ubuntu` (nodeAffinity arriba) y el UNICO consumidor
-      # de esta Valkey es litellm (SESSION_ROUTER_REDIS_URL), asi que el
-      # anclaje conjunto deja el RTT en terminos de loopback. El riesgo es
-      # la decision ya tomada para el proxy (ubuntu es unico nodo): si
-      # ubuntu cae, cae todo litellm igualmente; y los pins son efimeros
-      # (TTL 1 h, allkeys-lru) — se rehacen solos en el siguiente arranque.
-      nodeSelector: { kubernetes.io/hostname: ubuntu }
+      # (el claim del DeploymentAffinityCheck). En otro nodo que el proxy el
+      # RTT por el overlay de Tailscale salio p50 27.2 ms / p99 257 ms. Por
+      # eso sigue al proxy: MISMA afinidad que el Deployment litellm (prefiere
+      # `ubuntu`, salta a `sauvage` si el x86 cae, el descheduler lo devuelve).
+      # Los pins son efimeros (TTL 1 h, allkeys-lru) y el hook es fail-open:
+      # el salto solo re-vincula sesiones.
+      tolerations:
+        - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+        - { key: role, operator: Equal, value: edge, effect: NoSchedule }
+        - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+        - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [ubuntu, sauvage]
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [ubuntu]
       containers:
         - name: valkey
           image: redis:7-alpine
