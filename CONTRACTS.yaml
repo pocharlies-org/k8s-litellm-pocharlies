@@ -583,3 +583,27 @@ contracts:
       (`alibaba-q38-flash: BadRequestErrorRetries: 2`), que da tres
       generaciones nuevas por turno SOLO en ese grupo; lo fija
       tests/test_alibaba_400_retry_policy_contract.py.
+  - id: dgx.litellm.priority-field.v1
+    kind: schema
+    value: priority
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      ADITIVO (DGX-453, 2026-09-29): el hook `async_pre_call_hook` inyecta el
+      campo `priority` (int) dentro de `extra_body` de las peticiones cuyo
+      destino RESUELTO (`data["model"]` tras la red final) es el residente —
+      deployment cuyo `litellm_params.api_base` contiene
+      `.llm.svc.cluster.local`. vLLM lo interpreta como prioridad de cola
+      (menor = mas urgente, default 0). NUNCA se inyecta hacia Alibaba ni
+      OpenRouter: no conocen el campo y devolverian 400. La decision vive en
+      el mapa top-level `priority_by_alias` del ConfigMap `litellm-config`
+      (config.yaml) y NO en codigo: alias sin mapa, alias no mappeado o
+      prioridad 0 => no se añade el campo; el fallo de lectura del config es
+      fail-open (no inyecta, nunca lanza). Consumidor del valor: el vLLM del
+      residente (queue_sort por prioridad). Productor: session_router.apply_priority
+      llamado desde litellm_strip_params.py. Verificado contra el parser real
+      del proxy litellm 1.100.0 que una clave top-level desconocida en
+      config.yaml se ignora sin error, por eso el mapa es top-level.
