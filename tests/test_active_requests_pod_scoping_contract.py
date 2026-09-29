@@ -655,6 +655,11 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
         for row in shape_new["active"]:
             assert "prompt_tokens_estimate" in row, "falta prompt_tokens_estimate en la fila"
             row.pop("prompt_tokens_estimate")
+        # Y para `profile` (29-09, dgx.hermes.profile-header.v1): el perfil de
+        # Hermes de la cabecera x-hermes-profile. ADITIVA, el panel la lee con .get().
+        for row in shape_new["active"]:
+            assert "profile" in row, "falta profile en la fila"
+            row.pop("profile")
         assert _shape(body_old) == shape_new, (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
             f"ahora: {json.dumps(shape_new)}"
