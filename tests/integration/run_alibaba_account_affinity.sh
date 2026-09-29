@@ -17,8 +17,9 @@ docker run -d --rm --name "$NET-valkey" --network "$NET" valkey/valkey:8-alpine 
 # SWR distintas y preferred_account deja de coincidir entre ellos: rojo en CI el
 # 29-09 (run 36583219046, 46 sesiones mezcladas con k1/k2). Un test de CI no debe
 # hablar con el panel de produccion, y la determinancia entre pods que este test
-# mide exige pesos fijos. Con 0.45/0.55 se ejercita ADEMAS la rama ponderada
-# (hasta hoy el test solo habia visto el reparto uniforme).
+# mide exige pesos fijos. Con 1.0/1.0 se ejercita ADEMAS la rama ponderada
+# (sanitize -> _account_weights -> tramos) con el reparto 50/50 que el test ya
+# conadia; el reparto sesgado lo cubren los unitarios (ver static_routing_config.py).
 docker run -d --rm --name "$NET-cfg" --network "$NET" -v "$REPO:/repo:ro" \
   --entrypoint python "$IMAGE" /repo/tests/integration/static_routing_config.py >/dev/null
 echo "imagen: $IMAGE"

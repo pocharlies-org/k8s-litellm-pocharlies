@@ -406,6 +406,31 @@ contracts:
       sellan nada. Aditivo junto a refusal_text (fase A), refusal_lambda y
       refusal_runtime, que no cambian. Pinned by
       tests/test_refusal_probe_stamp_contract.py.
+  - id: dgx.litellm.master-inference-veto.v1
+    kind: allowlist
+    value: master
+    anchor: 'def _master_inference_denied(requested, key_label):'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      La master key es SOLO de administracion (29-09-2026, orden de Dani al
+      ver filas `master` de inferencia en el panel). El PRIMER gate del
+      async_pre_call_hook del hook (litellm_strip_params.py) deniega
+      HTTP 403 con motivo cualquier llamada de LLM —completion, embedding,
+      rerank, transcription, imagen— autenticada con la master. Las rutas
+      administrativas no pasan por el hook: GET /v1/models, /key/list,
+      /health y /internal/active-requests siguen siendo validas con la
+      master, que es el unico uso que le queda. Consumidores: ninguno de
+      inferencia — los siete servicios del barrido LITELLM-MASTER-KEY-DONE
+      (22-08) ya tienen key propia, y el watchdog, ultimo consumidor de
+      inferencia con la master, paso el mismo dia a sondear con 0 tokens
+      (L1 residente publica el modelo esperado + L2 GET /v1/models
+      autenticado). La purga de `master` del default de
+      UNCENSORED_ALLOWED_KEY_ALIASES es coherente con este veto: su motivo
+      de entrada (la medicion interna) ya no existe. Pinned by
+      tests/test_master_inference_veto_contract.py.
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que
