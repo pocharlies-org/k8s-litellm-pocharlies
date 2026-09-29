@@ -25,6 +25,7 @@ motivaron la issue: el `Request(..., timeout=)` que rompia toda corrida (lo pill
 este harness en su primera ejecucion) y el `SystemExit` que no llegaba a ejecutarse.
 """
 import ast
+import html
 import json
 import os
 import pathlib
@@ -339,6 +340,43 @@ def test_caido_con_telegram_roto_sigue_saliendo_con_uno():
             return None
         return _verde(url)
     assert _run(handler)[0] == 1
+
+
+def test_el_aviso_de_caido_es_HTML_valido_para_telegram():
+    """29-09-2026: el residente estuvo ~45 min caido y NADIE lo vio por Telegram.
+
+    El Job salio Failed (bien: ArgoCD lo pinto Degraded), pero el log decia
+    `telegram fallo: HTTP Error 400: Bad Request`. El motivo: el mensaje se manda
+    con `parse_mode=HTML` y el texto del fallo lleva angulos — un connection
+    refused se describe como `<urlopen error [Errno 111] Connection refused>` —
+    asi que Telegram lo rechaza por etiqueta mal cerrada y el aviso NO llega. El
+    unico aviso que existe para `caido` era el que se rompia.
+
+    Este test afirma el contrato: TODO lo que viene de fuera (fallos, cuerpos de
+    error, nombres de residente) va escapado en el mensaje. Se acepta que el
+    texto lleve nuestras etiquetas (<b>, <code>) pero NINGUN angulo suelto.
+    """
+    def handler(url):
+        if RESIDENTE_LLM_TP in url:
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        return _verde(url)
+    cuerpos = []
+    exito, _ = _run(handler, cuerpos=cuerpos)
+    assert exito == 1, "con el residente sin contestar el Job tiene que ponerse rojo"
+    textos = _telegram_enviado(cuerpos)
+    assert textos, (
+        "no salio ningun aviso a Telegram con clase caido: es exactamente el "
+        "400 de HTML mal formado que dejo la caida de 45 min sin aviso")
+    texto = textos[0]
+    assert "urlopen error" in texto, "el aviso perdio el motivo del fallo"
+    sin_tags = texto.replace("<b>", "").replace("</b>", "") \
+                    .replace("<code>", "").replace("</code>", "")
+    assert "<" not in sin_tags and ">" not in sin_tags, (
+        "el aviso de caido interpola angulos sin escapar: Telegram responde 400 "
+        "y el humano no se entera. Escapa con html.escape lo que no sea "
+        "plantilla propia. -> " + repr(sin_tags[:200]))
+    assert html.unescape(texto).count("<urlopen error") == 1, (
+        "el escape no es reversible: lo que lee el humano no es el fallo real")
 
 
 def test_caido_sin_token_de_telegram_sigue_saliendo_con_uno():

@@ -140,6 +140,7 @@ spec:
                 - -c
                 - |
                   import json, os, ssl, sys, time, urllib.error, urllib.parse, urllib.request
+                  import html   # escape del aviso: ver el bloque de mensajes Telegram
 
                   BASE = "http://litellm.litellm.svc.cluster.local:4000"
                   KEY = os.environ.get("LITELLM_MASTER_KEY", "")
@@ -582,7 +583,16 @@ spec:
                       if clase == "caido":
                           titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
                           intro = "No esta sirviendo."
-                          cuerpo = ["· " + f for f in fallos]
+                          # html.escape en TODO lo interpolado: el mensaje sale
+                          # con parse_mode=HTML y un fallo lleva angulos
+                          # ("<urlopen error [Errno 111]...>"). Sin escapar,
+                          # Telegram responde 400 y el aviso de CAIDO no llega:
+                          # paso el 29-09 con el residente caido ~45 min y el
+                          # log del Job diciendo "telegram fallo: HTTP Error
+                          # 400". Las etiquetas <b>/<code> son de la plantilla;
+                          # lo que viene de fuera (fallos, dial, buscador, la
+                          # fecha de reset) se escapa SIEMPRE.
+                          cuerpo = ["· " + html.escape(f) for f in fallos]
                           quehacer = ("Lo usa TODO: OpenClaw, el brain, el panel.\n"
                                       "Mira <code>kubectl get pods -n litellm</code>.\n"
                                       "Si pone OOMKilled, el limite esta en el manifiesto.\n"
@@ -596,7 +606,7 @@ spec:
                           intro = "El cluster esta bien; el plan de arriba agoto el limite."
                           cuerpo = ["· %d modelos publicados, el catalogo sirve" % (modelos or 0),
                                     "· la inferencia da 429 usage_limit_reached",
-                                    "· vuelve: <b>%s</b>" % cuando]
+                                    "· vuelve: <b>%s</b>" % html.escape(cuando)]
                           quehacer = ("Nada en el cluster. No hay fallback local desde el\n"
                                       "10-08, asi que ningun alias contesta hasta el reset.")
                       elif clase == "abliterado":
@@ -604,7 +614,7 @@ spec:
                           intro = ("Sirve bien, y por eso no se nota: el dial de abliteracion "
                                    "esta activo para TODO el trafico, no solo para los alias "
                                    "-uncensored.")
-                          cuerpo = ["· " + d for d in dial_alto] + [
+                          cuerpo = ["· " + html.escape(d) for d in dial_alto] + [
                               "· %d modelos · inferencia en %d ms" % (
                                   modelos or 0, round(latencia or 0))]
                           quehacer = ("El valor NO es el que declara el manifiesto.\n"
@@ -628,8 +638,9 @@ spec:
                                    "tiene key. Quien lo paga es Claude Code con\n"
                                    "<code>PERPLEXITYAI_API_KEY is not set</code>.")
                           cuerpo = ["· el Router reporta: %s"
-                                    % (", ".join(buscador) if buscador else "NADA"),
-                                    "· se esperaba <code>%s</code>" % BUSCADOR_ESPERADO,
+                                    % (", ".join(html.escape(t) for t in buscador)
+                                       if buscador else "NADA"),
+                                    "· se esperaba <code>%s</code>" % html.escape(BUSCADOR_ESPERADO),
                                     "· %d modelos · inferencia en %d ms" % (
                                         modelos or 0, round(latencia or 0))]
                           quehacer = ("Comprueba las DOS vistas, solo la primera "
@@ -653,9 +664,9 @@ spec:
                       elif roto_antes:
                           titulo = "\U0001F7E2 <b>LiteLLM BUSCADOR RECUPERADO</b>"
                           intro = ("WebSearch vuelve a ver <code>%s</code> en el "
-                                   "Router." % BUSCADOR_ESPERADO)
+                                   "Router." % html.escape(BUSCADOR_ESPERADO))
                           cuerpo = ["· el Router reporta: %s"
-                                    % ", ".join(buscador or [])]
+                                    % ", ".join(html.escape(t) for t in (buscador or []))]
                           quehacer = "Nada. El aviso anterior queda desmentido."
                       else:
                           titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
