@@ -1,9 +1,15 @@
 # Afinidad de litellm: prefiere `ubuntu`, failover a `sauvage` (29-09-2026)
 
-**Vigente desde el 29-09-2026.** Tras un corte de luz en el x86 (apagado limpio
-por el SAI a las 09:23, 1 h 26 min fuera) todo el trafico LLM se quedo sin proxy
-con los Sparks sirviendo. Decision del owner: `ubuntu` sigue siendo el sitio
-(latencia a la LAN y a los Sparks), pero ya no es el unico.
+**Vigente desde el 29-09-2026.** Tras el corte de luz en casa del 29-09 (el x86 se
+apago limpio por el SAI a las 09:23; los dos Sparks cayeron EN SECO a las ~09:18,
+sin registro de apagado, y todo volvio a las 10:49) el proxy de todo el trafico
+LLM quedo atado a un nodo apagado. Decision del owner: `ubuntu` sigue siendo el
+sitio (latencia a la LAN y a los Sparks), pero ya no es el unico.
+
+Que cubre el failover, sin exagerar: si cae SOLO el x86, `sauvage` sigue
+enrutando al residente de los Sparks y a la nube; si cae la casa entera (como el
+29-09), `sauvage` solo puede servir los modelos en la nube (Alibaba, xAI,
+OpenRouter), de pago.
 
 - `required`: `kubernetes.io/hostname In [ubuntu, sauvage]` + toleracion
   `role=edge:NoSchedule`. Los Sparks y los ks5 siguen fuera por los motivos de

@@ -199,8 +199,8 @@ def test_startup_budget_covers_measured_boot_three_times(deploy):
 
 # --------------------------------------------------------------------------
 # 29-09-2026: el anclaje a `ubuntu` (SC-404) pasa a PREFERENCIA con failover a
-# `sauvage`, tras el corte de luz del x86 que dejo sin proxy a todo el trafico
-# LLM con los Sparks sirviendo. Detalle en doc/node-affinity-ubuntu.md.
+# `sauvage`, tras el corte de luz del 29-09 que dejo el proxy de todo el trafico
+# LLM atado a un nodo apagado. Detalle en doc/node-affinity-ubuntu.md.
 # --------------------------------------------------------------------------
 
 
