@@ -472,6 +472,22 @@ contracts:
       opencode/CLI vs Hermes vs otros, y el presupuesto diario de la
       compania). Aditivo junto a refusal_lambda/refusal_runtime. Pinned by
       tests/test_spendlogs_claude_class_contract.py.
+  - id: dgx.litellm.spendlogs-hermes-profile.v1
+    # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
+    # que lee por SQL el panel de uso por perfil. Mismo kind que claude_class.
+    kind: schema
+    value: hermes_profile
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-30. El pre-call hook de strip_params sella
+      spend_logs_metadata.hermes_profile = perfil normalizado de la cabecera
+      x-hermes-profile (dgx.hermes.profile-header.v1) cuando la peticion la
+      trae; sin cabecera no se escribe nada. Consumido por dgx-infra
+      services/dashboard (Inferencia: uso por perfil y consumidor en ventanas
+      1m..30d). Aditivo. Pinned by tests/test_spendlogs_hermes_profile_contract.py.
   - id: dgx.litellm.key-fallbacks.demos.v1
     # kind 'allowlist': es la lista de keys (por key_alias) que tienen salida
     # externa en `tooling`; el consumidor la usa sabiendo que su key la tiene.
