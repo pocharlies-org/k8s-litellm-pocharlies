@@ -8444,17 +8444,31 @@ data:
         ordered = sorted(accounts)
         digest = hashlib.sha256(f"{user_key}:{sid}".encode("utf-8")).digest()
         h = int.from_bytes(digest[:8], "big")
+        # UNA sola formula para los dos casos (29-09-2026). Antes el reparto con
+        # pesos leia el hash como un punto en [0, total) y el uniforme como
+        # `h % len`: dos lecturas DISTINTAS del mismo hash, asi que una sesion
+        # nueva caia en una cuenta u otra segun si ESE pod tenia o no la caché de
+        # config cargada (pesos => tramos; {} en frio => módulo). Con el panel
+        # proyectando pesos desde el 29-09, los pods transitaban {} -> pesos en
+        # instantes distintos y el rojo de CI (run 36583219046: 46 sesiones
+        # mezcladas) era eso, no el reparto. Sin pesos = pesos IGUALES, que es la
+        # misma formula con tramos de 1: determinista entre pods con la caché fria
+        # o caliente.
         if weights and all(a in weights for a in ordered):
-            total = sum(weights[a] for a in ordered)
-            if total > 0:
-                point = h / 2 ** 64 * total
-                acc = 0.0
-                for a in ordered:
-                    acc += weights[a]
-                    if point < acc:
-                        return a
-                return next(a for a in reversed(ordered) if weights[a] > 0)
-        return ordered[h % len(ordered)]
+            tramos = {a: float(weights[a]) for a in ordered}
+        else:
+            tramos = {a: 1.0 for a in ordered}
+        total = sum(tramos[a] for a in ordered)
+        if total <= 0:
+            tramos = {a: 1.0 for a in ordered}
+            total = float(len(ordered))
+        point = h / 2 ** 64 * total
+        acc = 0.0
+        for a in ordered:
+            acc += tramos[a]
+            if point < acc:
+                return a
+        return next(a for a in reversed(ordered) if tramos[a] > 0)
 
 
     async def _account_weights():
@@ -10714,7 +10728,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-713b55c3f9bb
+        config.k8s.e-dani.com/revision: config-8ee36dca424f
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

@@ -148,7 +148,10 @@ contracts:
       punto de [0,1) y cae en el tramo acumulado de su cuenta — las sesiones
       NUEVAS (y las mudanzas) se reparten en proporcion al cupo; los pines
       existentes no se mueven. Ausente, invalido o sin cubrir todas las
-      cuentas = el modulo uniforme de siempre. Unica forma de cambiar de cuenta: la suya sin deployment sano en
+      cuentas = pesos IGUALES: desde 2026-09-29 el uniforme y el ponderado son
+      la MISMA formula de tramos (sin pesos = tramos de 1), no dos lecturas del
+      hash — con dos lecturas un pod con la caché de config en frio elegia otra
+      cuenta que un pod caliente y las sesiones se mezclaban entre replicas. Unica forma de cambiar de cuenta: la suya sin deployment sano en
       el grupo pedido (cooldown/retirada) -> mudanza ENTERA y el pin se
       reescribe (sin vuelta). <api-key-hash> = user_api_key_hash (sha256).
       Tests: tests/test_alibaba_account_affinity.py (unitarios) y
