@@ -2037,3 +2037,91 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         _sessions_write(sid, est)
     info["decision"] = "local"
     return False
+
+
+# DGX-453 (29-09-2026): prioridad de cola del RESIDENTE segun el alias de la
+# virtual key. El mapa vive en /config/config.yaml (`priority_by_alias`,
+# top-level) y NO en este modulo: se reordena la cola sin tocar codigo.
+# Fail-open TOTAL: cualquier fallo (fichero ausente, yaml roto, forma rara)
+# => no se inyecta nada y la peticion sale con la prioridad default de vLLM.
+# Solo hacia `*.llm.svc.cluster.local`: Alibaba y OpenRouter no conocen el
+# campo y devolverian 400.
+# CONTRACTS.yaml: dgx.litellm.priority-field.v1
+_PRIORITY_CONFIG_PATH = "/config/config.yaml"
+_PRIORITY_RESIDENT_MARKER = ".llm.svc.cluster.local"
+_priority_cache = {"mtime": None, "map": None, "model_list": None}
+
+
+def _priority_config():
+    """(mapa alias->int, model_list) del config, reparseado SOLO si el mtime
+    del fichero cambio (esto corre en cada peticion). Devuelve (None, None)
+    ante cualquier fallo."""
+    try:
+        mtime = os.path.getmtime(_PRIORITY_CONFIG_PATH)
+    except OSError:
+        return None, None
+    if _priority_cache["mtime"] != mtime:
+        try:
+            import yaml
+
+            with open(_PRIORITY_CONFIG_PATH) as fh:
+                cfg = yaml.safe_load(fh) or {}
+            raw = cfg.get("priority_by_alias")
+            pmap = None
+            if isinstance(raw, dict):
+                pmap = {}
+                for k, v in raw.items():
+                    if (isinstance(k, str) and isinstance(v, int)
+                            and not isinstance(v, bool)):
+                        pmap[k.strip().lower()] = v
+            ml = cfg.get("model_list")
+            _priority_cache["map"] = pmap
+            _priority_cache["model_list"] = ml if isinstance(ml, list) else None
+            _priority_cache["mtime"] = mtime
+        except Exception:
+            return None, None
+    return _priority_cache["map"], _priority_cache["model_list"]
+
+
+def _priority_targets_resident(model, model_list):
+    """El modelo RESUELTO (data["model"], ya elegido por la red final) apunta
+    a un deployment cuyo api_base es del residente?"""
+    if not isinstance(model, str) or not isinstance(model_list, list):
+        return False
+    for entry in list(model_list):
+        try:
+            names = str(entry["model_name"]).split(",")
+            api_base = entry["litellm_params"]["api_base"]
+        except (KeyError, TypeError):
+            continue
+        if (any(n.strip() == model for n in names)
+                and _PRIORITY_RESIDENT_MARKER in str(api_base)):
+            return True
+    return False
+
+
+def apply_priority(data):
+    """Inyecta `priority` (int) en data["extra_body"] segun el alias de la
+    virtual key, SOLO si el destino resuelto es el residente. Sin alias, alias
+    no mappeado, prioridad 0 o destino cloud => no se añade el campo. Nunca
+    lanza. Llamado desde litellm_strip_params.async_pre_call_hook justo
+    despues del pin de afinidad, donde data["model"] ya es el destino real."""
+    try:
+        alias = _key_alias(data)
+        if not alias:
+            return
+        pmap, model_list = _priority_config()
+        if not pmap:
+            return
+        prio = pmap.get(alias)
+        if not isinstance(prio, int) or isinstance(prio, bool) or prio == 0:
+            return
+        if not _priority_targets_resident(data.get("model"), model_list):
+            return
+        body = data.get("extra_body")
+        if not isinstance(body, dict):
+            body = {}
+            data["extra_body"] = body
+        body.setdefault("priority", prio)
+    except Exception:
+        return
