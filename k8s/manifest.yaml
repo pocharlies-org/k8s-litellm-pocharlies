@@ -6204,6 +6204,26 @@ data:
         _slm["claude_class"] = str(claude_class).strip().lower()
         return True
 
+    def _stamp_hermes_profile(data, profile) -> bool:
+        """Sella spend_logs_metadata.hermes_profile (30-09-2026): el perfil de
+        x-hermes-profile (_hermes_profile) para el HISTORICO del panel — uso por
+        perfil en ventanas de 1 min a 30 dias. Mismo dict y misma via que
+        _stamp_claude_class. Sin perfil no se escribe nada. True si sello."""
+        if not profile or not isinstance(data, dict):
+            return False
+        _mvar = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+        _meta = data.get(_mvar)
+        if not isinstance(_meta, dict):
+            _meta = {}
+            data[_mvar] = _meta
+        _slm = _meta.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            _meta["spend_logs_metadata"] = _slm
+        # CONTRACT: dgx.litellm.spendlogs-hermes-profile.v1
+        _slm["hermes_profile"] = str(profile)
+        return True
+
 
     def _stamp_refusal_probe(request_data, obj) -> bool:
         """Sella la sonda si `obj` la trae. Mismas dos vias que _stamp_refusal_text
@@ -6705,6 +6725,10 @@ data:
                 )
             except Exception as e:
                 log.warning("class stamp error: %s", e)
+            try:
+                _stamp_hermes_profile(data, _hermes_profile(data))
+            except Exception as e:
+                log.warning("profile stamp error: %s", e)
             try:
                 _route_meta = data.get("metadata")
                 if not isinstance(_route_meta, dict):
@@ -10879,7 +10903,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-ac325131740b
+        config.k8s.e-dani.com/revision: config-f3f56ae86c4a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
