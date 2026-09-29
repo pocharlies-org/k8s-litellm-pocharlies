@@ -98,6 +98,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -546,6 +547,21 @@ def _claude_class(data):
     return None
 
 
+def _sanitize_account_weights(raw):
+    """`alibaba_account_weights` (29-09-2026, ADITIVO): {"k1": peso, "k2": peso} con pesos
+    finitos >= 0. Cualquier otra forma => {} (= reparto uniforme de siempre)."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for k, v in raw.items():
+        if not (isinstance(k, str) and _ACCOUNT_KEY_RE.fullmatch(k)):
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+            return {}
+        out[k] = float(v)
+    return out if sum(out.values()) > 0 else {}
+
+
 def _sanitize(raw):
     """El panel manda el deseado; nada de confiar en tipos. Campo inválido =>
     default, nunca excepción (el panel ya proyecta estricto, esto es la segunda
@@ -585,6 +601,7 @@ def _sanitize(raw):
             value if isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi
             else default
         )
+    config["alibaba_account_weights"] = _sanitize_account_weights(raw.get("alibaba_account_weights"))
     bots = raw.get("bot_keys")
     config["bot_keys"] = (
         sorted({str(x).strip().lower() for x in bots if isinstance(x, str) and x.strip()})
@@ -1436,6 +1453,7 @@ ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
 ALIBABA_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("ALIBABA_ACCOUNT_PIN_TTL_SECONDS", str(30 * 86400)))
 _NATIVE_PIN_PREFIX = "deployment_affinity:v1:session"
 _ACCOUNT_RE = re.compile(r"-(k[0-9]+)$")
+_ACCOUNT_KEY_RE = re.compile(r"k[0-9]+")
 # Pines conocidos por ESTE proceso: si Valkey no contesta a tiempo, una sesion
 # que ya se vio aqui sigue en su cuenta (incluida una mudanza reciente).
 _account_pins_local = {}
@@ -1448,7 +1466,7 @@ def _remember_pin(key, account):
     _account_pins_local[key] = account
     while len(_account_pins_local) > _ACCOUNT_PINS_LOCAL_MAX:
         _account_pins_local.pop(next(iter(_account_pins_local)))
-ACCOUNT_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "seeded": 0, "redis_errors": 0}
+ACCOUNT_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "seeded": 0, "weighted": 0, "redis_errors": 0}
 
 
 def _deployment_account(deployment):
@@ -1483,11 +1501,52 @@ def account_pin_key(user_key, sid):
     return f"{ALIBABA_ACCOUNT_PIN_PREFIX}:{user_key}:{sid}"
 
 
-def preferred_account(user_key, sid, accounts):
-    """Cuenta determinista para una sesion nueva: la misma en todos los pods."""
+def preferred_account(user_key, sid, accounts, weights=None):
+    """Cuenta determinista para una sesion nueva: la misma en todos los pods.
+
+    Con `weights` (29-09-2026, `alibaba_account_weights` de /api/model-routing/config:
+    el cupo diario que le queda a cada cuenta) el hash se lee como un punto en [0, 1) y
+    cae en la cuenta cuyo tramo acumulado lo contiene: una cuenta con el doble de cupo
+    recibe el doble de sesiones nuevas. Sigue siendo determinista (mismos pesos = misma
+    cuenta en los dos pods). Pesos que no cubren todas las cuentas o que suman 0 => el
+    reparto uniforme de siempre."""
     ordered = sorted(accounts)
     digest = hashlib.sha256(f"{user_key}:{sid}".encode("utf-8")).digest()
-    return ordered[int.from_bytes(digest[:8], "big") % len(ordered)]
+    h = int.from_bytes(digest[:8], "big")
+    # UNA sola formula para los dos casos (29-09-2026). Antes el reparto con
+    # pesos leia el hash como un punto en [0, total) y el uniforme como
+    # `h % len`: dos lecturas DISTINTAS del mismo hash, asi que una sesion
+    # nueva caia en una cuenta u otra segun si ESE pod tenia o no la caché de
+    # config cargada (pesos => tramos; {} en frio => módulo). Con el panel
+    # proyectando pesos desde el 29-09, los pods transitaban {} -> pesos en
+    # instantes distintos y el rojo de CI (run 36583219046: 46 sesiones
+    # mezcladas) era eso, no el reparto. Sin pesos = pesos IGUALES, que es la
+    # misma formula con tramos de 1: determinista entre pods con la caché fria
+    # o caliente.
+    if weights and all(a in weights for a in ordered):
+        tramos = {a: float(weights[a]) for a in ordered}
+    else:
+        tramos = {a: 1.0 for a in ordered}
+    total = sum(tramos[a] for a in ordered)
+    if total <= 0:
+        tramos = {a: 1.0 for a in ordered}
+        total = float(len(ordered))
+    point = h / 2 ** 64 * total
+    acc = 0.0
+    for a in ordered:
+        acc += tramos[a]
+        if point < acc:
+            return a
+    return next(a for a in reversed(ordered) if tramos[a] > 0)
+
+
+async def _account_weights():
+    """Pesos por cuenta de la config del panel (caché SWR, sin I/O en el camino). {} si no hay."""
+    try:
+        weights = (await _config()).get("alibaba_account_weights")
+        return weights if isinstance(weights, dict) else {}
+    except Exception:
+        return {}
 
 
 async def _pin_get(client, key):
@@ -1574,7 +1633,7 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 
     if pinned is not None:
         # Su cuenta no tiene deployment sano en este grupo: mudanza ENTERA.
-        target = preferred_account(user_key, sid, by_account)
+        target = preferred_account(user_key, sid, by_account, await _account_weights())
         ACCOUNT_AFFINITY_STATS["moves"] += 1
         log.warning("session_router: sesion %s muda de cuenta Alibaba %s -> %s (%s sin deployment sano)",
                     sid[:24], pinned, target, model)
@@ -1597,7 +1656,10 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
             choice = seeded
             ACCOUNT_AFFINITY_STATS["seeded"] += 1
     if choice is None:
-        choice = preferred_account(user_key, sid, by_account)
+        weights = await _account_weights()
+        choice = preferred_account(user_key, sid, by_account, weights)
+        if weights:
+            ACCOUNT_AFFINITY_STATS["weighted"] += 1
     if client is not None:
         try:
             won = await _pin_claim(client, key, choice)
