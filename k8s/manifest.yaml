@@ -2381,7 +2381,11 @@ data:
     # dedicada, y ese es del owner: en cuanto exista, se quita de aqui la del
     # gateway y se pone la nueva.
     #
-    # `master` entra porque es la key con la que se mide desde dentro del cluster.
+    # `master` SALIO de esta allowlist (29-09-2026): entraba porque era la key con
+    # la que se medía desde dentro del cluster, y el watchdog —ultimo consumidor de
+    # inferencia con la master— paso a comprobar el catalogo sin gastar tokens.
+    # Ademas el pre_call_hook ya veto la inferencia con la master, así que
+    # mantenerla aqui seria admitir lo que el propio hook niega.
     # `playground` entra (2026-08-20) porque es la key de prueba/sonda del playground
     # del dashboard DGX: es de SOLO LECTURA (no una herramienta con escritura), y el
     # owner quiere explicitamente que la superficie de prueba del playground pueda
@@ -2413,7 +2417,7 @@ data:
         alias.strip()
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
-            "openclaw-qwen36-prod,master,playground,open-webui-v3,"
+            "openclaw-qwen36-prod,playground,open-webui-v3,"
             "opencode-20260630-local,claude-local,hermes,synapse",
         ).split(",")
         if alias.strip()
@@ -4020,6 +4024,32 @@ data:
             if value and str(value).startswith("litellm_proxy_master"):
                 return "master"
         return "unknown"
+
+    # CONTRACT: dgx.litellm.master-inference-veto.v1
+    def _master_inference_denied(requested, key_label):
+        """(bool, detalle) si quien llama es la MASTER KEY pidiendo inferencia.
+
+        La master es SOLO DE ADMINISTRACION (29-09-2026, orden del humano al ver
+        filas `master` en el panel de inferencia). Este hook solo corre para
+        llamadas de LLM —completion, embedding, rerank, transcription, imagen—;
+        las rutas administrativas (GET /v1/models, /key/list, /health, /config)
+        no pasan por aqui, asi que el veto mata la inferencia con la master SIN
+        tocar el uso de administracion que panel y watchdog necesitan.
+
+        Desde el mismo dia no queda ningun consumidor legitimo: el watchdog paso
+        a sondear el catalogo (0 tokens) y el barrido del 22-08 ya dio key
+        propia a los siete servicios. Si alguien saca la master de Vault y la
+        usa para inferencia, la respuesta es un 403 con el motivo, no una fila
+        silenciosa en el panel.
+        """
+        if key_label != "master":
+            return False, None
+        return True, {
+            "error": ("la master key es solo de administracion: no puede pedir "
+                      "inferencia. Pide una key de servicio (ver /key/list)."),
+            "requested": requested,
+            "key": key_label,
+        }
 
     # Aurora is intentionally local-only. Its incident loop is expendable when the
     # resident is unavailable and must not consume any external account as a
@@ -6186,8 +6216,21 @@ data:
 
             requested_model = data.get("model", "")
 
-            # Gate de la ruta ABLITERADA, lo primero de todo y a proposito: antes de
-            # sanear sampling, de reescribir alias y de cualquier llamada al backend.
+            # La master key es SOLO DE ADMINISTRACION (29-09-2026, orden del
+            # humano al ver filas `master` en el panel de inferencia). El porque,
+            # el alcance y el detalle del veto viven en _master_inference_denied.
+            _denied, _detail = _master_inference_denied(
+                requested_model, _resolve_key_label(user_api_key_dict)
+            )
+            if _denied:
+                router_log.warning(
+                    "master: inferencia bloqueada (model=%r call_type=%r)",
+                    _detail["requested"], call_type)
+                raise HTTPException(status_code=403, detail=_detail)
+
+            # Gate de la ruta ABLITERADA, lo primero despues del veto a la master, y
+            # a proposito: antes de sanear sampling, de reescribir alias y de
+            # cualquier llamada al backend.
             # Si esta key no puede pedirla, no se toca nada mas y se devuelve 403.
             # Cubre el alias de capacidad Y los dos nombres directos: si solo cubriera
             # el primero, se rodearia pidiendo el directo.
@@ -10671,7 +10714,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a7a647867424
+        config.k8s.e-dani.com/revision: config-713b55c3f9bb
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
