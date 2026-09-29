@@ -475,3 +475,21 @@ def test_sanitize_de_los_pesos(raw, esperado):
 def test_pesos_que_no_cubren_las_cuentas_caen_al_uniforme():
     pod = _pod(None)
     assert pod.preferred_account("u", "s", ["k1", "k2"], {"k2": 1.0}) == pod.preferred_account("u", "s", ["k1", "k2"])
+
+
+def test_pesos_uniformes_y_cachefria_eligen_la_misma_cuenta():
+    """Regresión del rojo de CI del 29-09 (run 36583219046): el reparto con pesos
+    leía el hash por tramos acumulados y el uniforme por `h % len` — dos lecturas
+    distintas del mismo hash. Un pod con la caché de config en frío ({}) y otro ya
+    con los pesos proyectados elegían cuentas DISTINTAS para la misma sesión nueva:
+    sesiones mezcladas. Con pesos = 1 (o sin pesos) la elección tiene que ser
+    idéntica, y con pesos sesgados tiene que seguir siendo determinista."""
+    pod = _pod(None)
+    for i in range(500):
+        sid = f"cold{i}"
+        sin_pesos = pod.preferred_account(KEY_A, sid, ["k1", "k2"])
+        uniformes = pod.preferred_account(KEY_A, sid, ["k1", "k2"], {"k1": 1.0, "k2": 1.0})
+        assert sin_pesos == uniformes, (sid, sin_pesos, uniformes)
+    sesgados = [pod.preferred_account(KEY_A, f"w{i}", ["k1", "k2"], {"k1": 0.45, "k2": 0.55})
+                for i in range(4000)]
+    assert 0.41 < sesgados.count("k2") / len(sesgados) < 0.59
