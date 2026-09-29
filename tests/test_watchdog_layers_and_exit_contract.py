@@ -116,7 +116,8 @@ def _telegram_enviado(cuerpos):
             for u, b in cuerpos if "api.telegram.org" in u]
 
 
-def _run(handler, estado_previo="ok", token=True, cuerpos=None):
+def _run(handler, estado_previo="ok", token=True, cuerpos=None,
+         deploy=(1, 1)):
     """Ejecuta el script del CronJob con urllib parcheado -> (exit_code, urls).
 
     `handler(url)` devuelve un `_Resp`, una excepcion (se lanza) o None (error de
@@ -126,6 +127,12 @@ def _run(handler, estado_previo="ok", token=True, cuerpos=None):
     Si se pasa `cuerpos` (una lista), se van guardando como (url, cuerpo) TODAS
     las peticiones con cuerpo: es la unica forma de ver que escribio en el
     ConfigMap y que mensaje mando a Telegram.
+
+    `deploy=(replicas, availableReplicas)` es lo que responde el GET del
+    Deployment del residente (29-09-2026: el watchdog lo lee para distinguir
+    Recreate en curso de caida). El default (1, 1) = residente disponible: sin
+    rollout, L1 muerto vuelve a ser `caido` como siempre — los tests viejos no
+    cambian de semantica.
     """
     src = _watchdog_script().replace(
         "/var/run/secrets/kubernetes.io/serviceaccount", SA)
@@ -147,6 +154,11 @@ def _run(handler, estado_previo="ok", token=True, cuerpos=None):
             if crudo is not None:
                 cuerpos.append((url, crudo.decode() if isinstance(crudo, bytes) else crudo))
         if "kubernetes.default.svc" in url:
+            if "/deployments/" in url:
+                if deploy is None:      # Role no aplicado: 403 de verdad
+                    raise _http_error(url, 403, b'{"error": "forbidden"}')
+                return _Resp({"spec": {"replicas": deploy[0]},
+                              "status": {"availableReplicas": deploy[1]}})
             return _Resp({"data": {"estado": json.dumps(previo)}})
         resultado = handler(url)
         if resultado is None:
@@ -492,6 +504,101 @@ def test_no_poder_leer_el_router_no_es_sin_buscador():
 
 
 # ── 4. el contrato de salida, leido del arbol ───────────────────────────────────
+
+# ── 5. rollout del residente != caida (29-09-2026, traspaso de DEVOPS) ────────
+
+def test_rollout_del_residente_no_es_caido_no_pone_el_job_rojo_no_avisa():
+    """El falso positivo que DEVOPS paso: cada repin del tuning recrea el head
+    (Recreate) y la carga posterior caia dentro de la ventana del watchdog ->
+    Job Failed y aviso de CAIDO por algo que era el estado normal de un deploy.
+
+    Con el Deployment del residente sin replicas disponibles, L1 muerto es
+    `cargando`: exit 0, y SIN mensaje (el ritmo de pins es deliberado; avisar de
+    el cada 10 min lo ignora todo el mundo).
+    """
+    def handler(url):
+        if RESIDENTE_LLM_TP in url:
+            raise _http_error(url, 503, b'{"error": "no endpoints available"}')
+        return _verde(url)
+    cuerpos = []
+    exito, _ = _run(handler, estado_previo="ok", cuerpos=cuerpos, deploy=(1, 0))
+    assert exito == 0, "rollout en curso no puede poner el Job en Failed"
+    assert not _telegram_enviado(cuerpos), (
+        "entrar en la ventana de carga no avisa: no es un incidente")
+    estado = _estado_escrito(cuerpos)
+    assert estado["clase"] == "cargando"
+    assert estado["cargando_desde"], "el reloj de la ventana tiene que quedar escrito"
+
+
+def test_la_ventana_de_carga_tiene_techo_y_fuera_de_el_si_es_caido():
+    """`cargando` es una ventana, no un cheque en blanco: el techo es la propia
+    startupProbe del head (1 h). Pasada, el mismo estado (Deployment sin
+    replicas) vuelve a ser `caido` con Job rojo y aviso — si no, un residente
+    estancado en CrashLoop quedaria en silencio para siempre, que es el fallo
+    silencioso que este vigilante existe para cazar.
+    """
+    ahora = int(time.time())
+    previo = {"clase": "cargando", "ultimo_aviso": ahora,
+              "cargando_desde": ahora - 3600 - 60}
+    def handler(url):
+        if RESIDENTE_LLM_TP in url:
+            raise _http_error(url, 503, b'{"error": "no endpoints available"}')
+        return _verde(url)
+    cuerpos = []
+    exito, _ = _run(handler, estado_previo=previo, cuerpos=cuerpos, deploy=(1, 0))
+    assert exito == 1, "fuera de la ventana, rollout plantado es caido de verdad"
+    textos = _telegram_enviado(cuerpos)
+    assert textos and "CAIDO" in textos[0]
+
+
+def test_sin_permiso_para_leer_el_deployment_se_condena_como_antes():
+    """La lectura del Deployment es un atenuante, no un interruptor: si el Role
+    no esta aplicado (403) o el API no contesta, el watchdog NO puede afirmar
+    que es un rollout y conserva el comportamiento viejo — mas vale un falso
+    positivo que el silencio.
+    """
+    def handler(url):
+        if RESIDENTE_LLM_TP in url:
+            raise _http_error(url, 503, b'{"error": "no endpoints available"}')
+        return _verde(url)
+    exito, llamadas = _run(handler, estado_previo="ok", deploy=None)
+    assert exito == 1, "sin poder leer el Deployment NO se puede atenuar"
+    # y el GET del deployment se intenta de verdad (el Role existe en el YAML):
+    assert any("/deployments/qwen38-flash-next-head" in u for u in llamadas), (
+        "el watchdog lee el Deployment del residente antes de condenar")
+
+
+def test_la_salida_de_la_ventana_no_anuncia_recuperado():
+    """Al entrar en `cargando` no hubo aviso, asi que al salir no puede haber
+    "RECUPERADO" de algo que nunca se anuncio: la pareja (ok, saliendo de
+    cargando) no dispara mensaje y sale con 0.
+    """
+    ahora = int(time.time())
+    previo = {"clase": "cargando", "ultimo_aviso": ahora,
+              "cargando_desde": ahora - 300}
+    cuerpos = []
+    exito, _ = _run(_verde, estado_previo=previo, cuerpos=cuerpos)
+    assert exito == 0
+    assert not _telegram_enviado(cuerpos)
+    assert _estado_escrito(cuerpos)["clase"] == "ok"
+
+
+def test_el_yaml_declara_rbac_minimo_para_esa_lectura():
+    """El GET del Deployment no es gratis: el SA del watchdog solo tiene permisos
+    clavados por nombre. Si alguien mueve el residente y no este Role, la
+    atenuacion se apaga en silencio (el test de arriba prueba el fallback, este
+    prueba que el permiso existe y es minimo).
+    """
+    docs = [d for d in yaml.safe_load_all(WATCHDOG.read_text()) if d]
+    role = next(d for d in docs if d.get("kind") == "Role"
+                and d["metadata"]["name"] == "litellm-watchdog-residente")
+    assert role["metadata"]["namespace"] == "llm"
+    (regla,) = role["rules"]
+    assert regla["apiGroups"] == ["apps"] and regla["resources"] == ["deployments"]
+    assert regla["verbs"] == ["get"], "solo lectura, nunca mutar el residente"
+    assert regla["resourceNames"] == ["qwen38-flash-next-head"], (
+        "clavado al residente: no es un get de deployments del namespace")
+
 
 def test_ultimo_statement_del_script_es_un_system_exit_con_salida():
     """El bug de la linea ~291: si el ultimo statement del bloque no es un raise,

@@ -35,6 +35,17 @@
 # de las dos pone el Job en rojo: LiteLLM sigue sirviendo, y un rojo cada 10 min
 # taparia un Degraded de verdad. El aviso es la senal.
 #
+# UN ROLLOUT NO ES UNA CAIDA (29-09-2026, traspaso de DEVOPS). El residente se
+# recrea EN CADA repin del tuning de qwen38 (estrategia Recreate, ~20 min de
+# carga de 121 GiB) y el watchdog, que corre cada 10 min, se encontraba con L1
+# sin endpoints y salia rojo: los fallos de las 01:50/02:00 Z caian DENTRO de la
+# ventana de carga del pin #432 (RS nuevo a las 01:47 Z), no eran ni fallo del
+# residente ni del pipeline. Ahora, si L1 no contesta, se mira el Deployment del
+# residente: en Recreate la clase es `cargando` —no condena, no avisa, porque el
+# ritmo de pins es deliberado— y solo vuelve a `caido` si se pasa de la ventana
+# que el propio startupProbe del head permite (120 x 30 s = 1 h). El Job rojo
+# queda reservado para la caida de verdad.
+#
 # LA MEMORIA VA EN UN CONFIGMAP (2026-08-15)
 # ------------------------------------------
 # La primera version guardaba el estado previo en /tmp, dentro del pod del Job, que
@@ -172,6 +183,16 @@ spec:
                           "http://qwen38-flash-next.llm.svc.cluster.local:8000",
                   }
 
+                  # Donde vive el Deployment del residente: si L1 no contesta,
+                  # hay que saber si es una caida o un Recreate en curso (ver el
+                  # bloque de arriba). Solo hace falta GET, y solo a ESTE
+                  # Deployment — el Role del namespace llm lo clava por nombre.
+                  DEPLOY_RESIDENTE = ("llm", "qwen38-flash-next-head")
+                  # Ventana de credibilidad: la fija el startupProbe del head
+                  # (failureThreshold 120 x periodSeconds 30 = 1 h). Fuera de
+                  # ella, "esta cargando" deja de ser creible.
+                  ROLLOUT_MAX = 3600
+
                   # La herramienta de busqueda que tiene que ver el Router. El nombre
                   # es el que declara `search_tools:` en el manifiesto; el contrato
                   # que impide que se separen vive en
@@ -265,6 +286,7 @@ spec:
                       latencia = None
                       vuelve = None      # epoch de reset si el upstream lo dice
                       capa = "L0"        # donde se rompio, para el aviso
+                      rollout = False    # L1 muerto por Recreate, no por caida
 
                       # ── L0. ¿Vive el proxy? 0 tokens ────────────────────────────────
                       # /health/liveliness: 200 mientras el bucle del servidor esta vivo,
@@ -326,6 +348,25 @@ spec:
                               # Ningun perfil contesta. Los dos perfiles son
                               # exclusivos, pero los DOS a 0 replicas SI es un
                               # fallo: no hay quien sirva.
+                              #
+                              # Antes de condenar, mirar el Deployment: con el
+                              # residente en Recreate el Service se queda sin
+                              # endpoints y esto es el estado NORMAL de la
+                              # ventana de carga, no una caida (29-09-2026).
+                              try:
+                                  dep = k8s("GET",
+                                            "/apis/apps/v1/namespaces/%s"
+                                            "/deployments/%s" % DEPLOY_RESIDENTE)
+                                  deseadas = int((dep.get("spec") or {}).get(
+                                      "replicas", 1) or 1)
+                                  disponibles = int((dep.get("status") or {}).get(
+                                      "availableReplicas", 0) or 0)
+                                  rollout = disponibles < deseadas
+                              except Exception as exc:
+                                  # Sin esta lectura no se puede afirmar que es
+                                  # un rollout: se condena como antes.
+                                  print("[litellm-watchdog] deploy residente:",
+                                        str(exc)[:110])
                               fallos.append(
                                   "ningun residente contesta (%s)"
                                   % "; ".join(errores))
@@ -515,6 +556,20 @@ spec:
                       ultimo = antes.get("ultimo_aviso", 0)
                       roto_antes = bool(antes.get("buscador_roto"))
 
+                      # Ventana de rollout: `caido` en L1 con el Deployment en
+                      # Recreate NO es una caida mientras quepa en la ventana de
+                      # carga. Si se pasa de ROLLOUT_MAX, vuelve a ser `caido`
+                      # de verdad y su Job rojo. `cargando_desde` vive en el
+                      # mismo ConfigMap de estado: es un reloj, no opinion.
+                      cargando_desde = antes.get("cargando_desde")
+                      if clase == "caido" and rollout:
+                          if not cargando_desde:
+                              cargando_desde = ahora
+                          if ahora - cargando_desde <= ROLLOUT_MAX:
+                              clase = "cargando"
+                      elif clase == "ok":
+                          cargando_desde = None
+
                       print("[litellm-watchdog]", json.dumps(
                           {"clase": clase, "antes": clase_antes, "capa": capa,
                            "modelos": modelos, "listo": listo,
@@ -539,7 +594,13 @@ spec:
                           avisar = ((clase in ("caido", "abliterado") or buscador_roto)
                                     and (ahora - ultimo) >= RECORDAR)
                       else:
-                          avisar = (clase != "ok" or buscador_roto or roto_antes
+                          # `cargando` NO avisa al entrar: es el ritmo normal de
+                          # un repin y Dani lo eligio deliberadamente. Lo que
+                          # avisa es que la ventana se paso -> `caido`. Y como al
+                          # entrar no hubo aviso, al salir tampoco puede haber
+                          # "RECUPERADO" de algo que nunca se anuncio.
+                          avisar = (clase not in ("ok", "cargando")
+                                    or buscador_roto or roto_antes
                                     or clase_antes in ("caido", "cuota", "abliterado"))
 
                       # Solo "caido" hace fallar el Job. Con la cuota agotada el Job
@@ -564,6 +625,7 @@ spec:
                           # del que viene esta issue: un semaforo del que no se sabe
                           # cuando se miro.
                           guarda_estado({"clase": clase, "desde": desde,
+                                         "cargando_desde": cargando_desde,
                                          "ultimo_aviso": ahora if enviado else ultimo,
                                          "visto": ahora, "capa": capa,
                                          "latencia_ms": round(latencia or 0),
@@ -580,7 +642,21 @@ spec:
                           apunta(False)
                           raise SystemExit(SALIDA)
 
-                      if clase == "caido":
+                      if clase == "cargando":
+                          # Solo se escribe si alguien lo ve (normalmente entra
+                          # en silencio: ok -> cargando no avisa).
+                          titulo = "🟡 <b>Residente cargando</b>"
+                          intro = ("El residente del perfil activo se esta "
+                                   "recreando (Recreate) y aun no publica. No "
+                                   "es una caida: es la ventana de carga.")
+                          cuerpo = ["· " + f for f in fallos] + [
+                              "· dentro de la ventana de carga (startupProbe del "
+                              "head permite 1 h)"]
+                          quehacer = ("Nada mientras quepa en la ventana. Si el "
+                                      "Deployment sigue sin replicas disponibles "
+                                      "pasada esa hora, el proximo aviso sera "
+                                      "CAIDO y ahi si hay que mirar.")
+                      elif clase == "caido":
                           titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
                           intro = "No esta sirviendo."
                           # html.escape en TODO lo interpolado: el mensaje sale
@@ -661,6 +737,20 @@ spec:
                                       "siguiente ciclo.\n"
                                       "NO hace falta ninguna key de Perplexity: la "
                                       "busqueda es por SearXNG self-hosted.")
+                      elif clase == "cargando":
+                          # Solo alcanzable si venimos de avisar `caido` y la
+                          # lectura del Deployment (recien aplicada la atenuacion,
+                          # o tras un 403 del API) dice que era un rollout: el
+                          # aviso anterior queda desmentido SIN decir "vuelve a
+                          # servir", porque aun no sirve.
+                          titulo = "\U0001F7E1 <b>Fue un rollout, no una caida</b>"
+                          intro = ("El residente sigue sin publicar, pero el "
+                                   "Deployment esta en Recreate: la ventana de "
+                                   "carga, no un incidente.")
+                          cuerpo = ["· " + f for f in fallos]
+                          quehacer = ("Nada mientras quepa en la ventana (1 h "
+                                      "desde que empezo). Pasada, el siguiente "
+                                      "aviso vuelve a ser CAIDO.")
                       elif roto_antes:
                           titulo = "\U0001F7E2 <b>LiteLLM BUSCADOR RECUPERADO</b>"
                           intro = ("WebSearch vuelve a ver <code>%s</code> en el "
@@ -785,6 +875,36 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: litellm-watchdog-estado
+subjects:
+  - kind: ServiceAccount
+    name: litellm-watchdog
+    namespace: litellm
+---
+# 29-09-2026: lectura minima del Deployment del residente (namespace llm) para
+# distinguir rollout de caida. UN get, sobre UN recurso clavado por nombre. Sin
+# esto el watchdog condenaba cada repin del tuning como si fuera una caida.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: litellm-watchdog-residente
+  namespace: llm
+  labels: { app: litellm-watchdog }
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["qwen38-flash-next-head"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: litellm-watchdog-residente
+  namespace: llm
+  labels: { app: litellm-watchdog }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: litellm-watchdog-residente
 subjects:
   - kind: ServiceAccount
     name: litellm-watchdog
