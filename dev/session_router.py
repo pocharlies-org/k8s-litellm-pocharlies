@@ -98,6 +98,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -546,6 +547,21 @@ def _claude_class(data):
     return None
 
 
+def _sanitize_account_weights(raw):
+    """`alibaba_account_weights` (29-09-2026, ADITIVO): {"k1": peso, "k2": peso} con pesos
+    finitos >= 0. Cualquier otra forma => {} (= reparto uniforme de siempre)."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for k, v in raw.items():
+        if not (isinstance(k, str) and _ACCOUNT_KEY_RE.fullmatch(k)):
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+            return {}
+        out[k] = float(v)
+    return out if sum(out.values()) > 0 else {}
+
+
 def _sanitize(raw):
     """El panel manda el deseado; nada de confiar en tipos. Campo inválido =>
     default, nunca excepción (el panel ya proyecta estricto, esto es la segunda
@@ -585,6 +601,7 @@ def _sanitize(raw):
             value if isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi
             else default
         )
+    config["alibaba_account_weights"] = _sanitize_account_weights(raw.get("alibaba_account_weights"))
     bots = raw.get("bot_keys")
     config["bot_keys"] = (
         sorted({str(x).strip().lower() for x in bots if isinstance(x, str) and x.strip()})
@@ -1436,6 +1453,7 @@ ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
 ALIBABA_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("ALIBABA_ACCOUNT_PIN_TTL_SECONDS", str(30 * 86400)))
 _NATIVE_PIN_PREFIX = "deployment_affinity:v1:session"
 _ACCOUNT_RE = re.compile(r"-(k[0-9]+)$")
+_ACCOUNT_KEY_RE = re.compile(r"k[0-9]+")
 # Pines conocidos por ESTE proceso: si Valkey no contesta a tiempo, una sesion
 # que ya se vio aqui sigue en su cuenta (incluida una mudanza reciente).
 _account_pins_local = {}
@@ -1448,7 +1466,7 @@ def _remember_pin(key, account):
     _account_pins_local[key] = account
     while len(_account_pins_local) > _ACCOUNT_PINS_LOCAL_MAX:
         _account_pins_local.pop(next(iter(_account_pins_local)))
-ACCOUNT_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "seeded": 0, "redis_errors": 0}
+ACCOUNT_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "seeded": 0, "weighted": 0, "redis_errors": 0}
 
 
 def _deployment_account(deployment):
@@ -1483,11 +1501,52 @@ def account_pin_key(user_key, sid):
     return f"{ALIBABA_ACCOUNT_PIN_PREFIX}:{user_key}:{sid}"
 
 
-def preferred_account(user_key, sid, accounts):
-    """Cuenta determinista para una sesion nueva: la misma en todos los pods."""
+def preferred_account(user_key, sid, accounts, weights=None):
+    """Cuenta determinista para una sesion nueva: la misma en todos los pods.
+
+    Con `weights` (29-09-2026, `alibaba_account_weights` de /api/model-routing/config:
+    el cupo diario que le queda a cada cuenta) el hash se lee como un punto en [0, 1) y
+    cae en la cuenta cuyo tramo acumulado lo contiene: una cuenta con el doble de cupo
+    recibe el doble de sesiones nuevas. Sigue siendo determinista (mismos pesos = misma
+    cuenta en los dos pods). Pesos que no cubren todas las cuentas o que suman 0 => el
+    reparto uniforme de siempre."""
     ordered = sorted(accounts)
     digest = hashlib.sha256(f"{user_key}:{sid}".encode("utf-8")).digest()
-    return ordered[int.from_bytes(digest[:8], "big") % len(ordered)]
+    h = int.from_bytes(digest[:8], "big")
+    # UNA sola formula para los dos casos (29-09-2026). Antes el reparto con
+    # pesos leia el hash como un punto en [0, total) y el uniforme como
+    # `h % len`: dos lecturas DISTINTAS del mismo hash, asi que una sesion
+    # nueva caia en una cuenta u otra segun si ESE pod tenia o no la caché de
+    # config cargada (pesos => tramos; {} en frio => módulo). Con el panel
+    # proyectando pesos desde el 29-09, los pods transitaban {} -> pesos en
+    # instantes distintos y el rojo de CI (run 36583219046: 46 sesiones
+    # mezcladas) era eso, no el reparto. Sin pesos = pesos IGUALES, que es la
+    # misma formula con tramos de 1: determinista entre pods con la caché fria
+    # o caliente.
+    if weights and all(a in weights for a in ordered):
+        tramos = {a: float(weights[a]) for a in ordered}
+    else:
+        tramos = {a: 1.0 for a in ordered}
+    total = sum(tramos[a] for a in ordered)
+    if total <= 0:
+        tramos = {a: 1.0 for a in ordered}
+        total = float(len(ordered))
+    point = h / 2 ** 64 * total
+    acc = 0.0
+    for a in ordered:
+        acc += tramos[a]
+        if point < acc:
+            return a
+    return next(a for a in reversed(ordered) if tramos[a] > 0)
+
+
+async def _account_weights():
+    """Pesos por cuenta de la config del panel (caché SWR, sin I/O en el camino). {} si no hay."""
+    try:
+        weights = (await _config()).get("alibaba_account_weights")
+        return weights if isinstance(weights, dict) else {}
+    except Exception:
+        return {}
 
 
 async def _pin_get(client, key):
@@ -1574,7 +1633,7 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 
     if pinned is not None:
         # Su cuenta no tiene deployment sano en este grupo: mudanza ENTERA.
-        target = preferred_account(user_key, sid, by_account)
+        target = preferred_account(user_key, sid, by_account, await _account_weights())
         ACCOUNT_AFFINITY_STATS["moves"] += 1
         log.warning("session_router: sesion %s muda de cuenta Alibaba %s -> %s (%s sin deployment sano)",
                     sid[:24], pinned, target, model)
@@ -1597,7 +1656,10 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
             choice = seeded
             ACCOUNT_AFFINITY_STATS["seeded"] += 1
     if choice is None:
-        choice = preferred_account(user_key, sid, by_account)
+        weights = await _account_weights()
+        choice = preferred_account(user_key, sid, by_account, weights)
+        if weights:
+            ACCOUNT_AFFINITY_STATS["weighted"] += 1
     if client is not None:
         try:
             won = await _pin_claim(client, key, choice)
@@ -1975,3 +2037,91 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         _sessions_write(sid, est)
     info["decision"] = "local"
     return False
+
+
+# DGX-453 (29-09-2026): prioridad de cola del RESIDENTE segun el alias de la
+# virtual key. El mapa vive en /config/config.yaml (`priority_by_alias`,
+# top-level) y NO en este modulo: se reordena la cola sin tocar codigo.
+# Fail-open TOTAL: cualquier fallo (fichero ausente, yaml roto, forma rara)
+# => no se inyecta nada y la peticion sale con la prioridad default de vLLM.
+# Solo hacia `*.llm.svc.cluster.local`: Alibaba y OpenRouter no conocen el
+# campo y devolverian 400.
+# CONTRACTS.yaml: dgx.litellm.priority-field.v1
+_PRIORITY_CONFIG_PATH = "/config/config.yaml"
+_PRIORITY_RESIDENT_MARKER = ".llm.svc.cluster.local"
+_priority_cache = {"mtime": None, "map": None, "model_list": None}
+
+
+def _priority_config():
+    """(mapa alias->int, model_list) del config, reparseado SOLO si el mtime
+    del fichero cambio (esto corre en cada peticion). Devuelve (None, None)
+    ante cualquier fallo."""
+    try:
+        mtime = os.path.getmtime(_PRIORITY_CONFIG_PATH)
+    except OSError:
+        return None, None
+    if _priority_cache["mtime"] != mtime:
+        try:
+            import yaml
+
+            with open(_PRIORITY_CONFIG_PATH) as fh:
+                cfg = yaml.safe_load(fh) or {}
+            raw = cfg.get("priority_by_alias")
+            pmap = None
+            if isinstance(raw, dict):
+                pmap = {}
+                for k, v in raw.items():
+                    if (isinstance(k, str) and isinstance(v, int)
+                            and not isinstance(v, bool)):
+                        pmap[k.strip().lower()] = v
+            ml = cfg.get("model_list")
+            _priority_cache["map"] = pmap
+            _priority_cache["model_list"] = ml if isinstance(ml, list) else None
+            _priority_cache["mtime"] = mtime
+        except Exception:
+            return None, None
+    return _priority_cache["map"], _priority_cache["model_list"]
+
+
+def _priority_targets_resident(model, model_list):
+    """El modelo RESUELTO (data["model"], ya elegido por la red final) apunta
+    a un deployment cuyo api_base es del residente?"""
+    if not isinstance(model, str) or not isinstance(model_list, list):
+        return False
+    for entry in list(model_list):
+        try:
+            names = str(entry["model_name"]).split(",")
+            api_base = entry["litellm_params"]["api_base"]
+        except (KeyError, TypeError):
+            continue
+        if (any(n.strip() == model for n in names)
+                and _PRIORITY_RESIDENT_MARKER in str(api_base)):
+            return True
+    return False
+
+
+def apply_priority(data):
+    """Inyecta `priority` (int) en data["extra_body"] segun el alias de la
+    virtual key, SOLO si el destino resuelto es el residente. Sin alias, alias
+    no mappeado, prioridad 0 o destino cloud => no se añade el campo. Nunca
+    lanza. Llamado desde litellm_strip_params.async_pre_call_hook justo
+    despues del pin de afinidad, donde data["model"] ya es el destino real."""
+    try:
+        alias = _key_alias(data)
+        if not alias:
+            return
+        pmap, model_list = _priority_config()
+        if not pmap:
+            return
+        prio = pmap.get(alias)
+        if not isinstance(prio, int) or isinstance(prio, bool) or prio == 0:
+            return
+        if not _priority_targets_resident(data.get("model"), model_list):
+            return
+        body = data.get("extra_body")
+        if not isinstance(body, dict):
+            body = {}
+            data["extra_body"] = body
+        body.setdefault("priority", prio)
+    except Exception:
+        return
