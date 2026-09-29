@@ -15,8 +15,12 @@ Dos cosas que se vieron en produccion el mismo dia:
 
 La arquitectura que lo cierra es de barato a caro y para en la primera capa que
 falla: L0 liveliness/readiness de LiteLLM (0 tokens), L1 GET /v1/models del
-residente (0 tokens) y L2 la UNICA inferencia real, solo si L0 y L1 estan verdes.
-El plan completo esta en el doc de STA-7.
+residente exigiendo el modelo esperado (0 tokens) y L2 GET /v1/models
+AUTENTICADO contra el proxy —el catalogo que enruta—, solo si L0 y L1 estan
+verdes. DESDE 29-09-2026 NINGUNA CAPA GASTA TOKENS: la suma real ("17*23" por
+`tooling`) era la ultima y salio del vigilante porque aparecia como fila
+`master` en el panel de inferencia y la master key no se usa para inferencia
+(el pre_call_hook lo veta desde ese mismo dia).
 
 COMO SE PRUEBA, y por que no leyendo el YAML. El contrato es el CODIGO DE SALIDA,
 asi que estos tests extraen el script del CronJob y lo EJECUTAN con urllib
@@ -89,8 +93,12 @@ def _verde(url):
         return _Resp({"status": "healthy", "db": "connected"})
     if RESIDENTE_LLM_TP in url or RESIDENTE_CREATIVE in url:
         return _Resp({"data": [{"id": "qwen38-flash-next"}]})
-    if "chat/completions" in url:
-        return _Resp({"choices": [{"message": {"content": "391"}}]})
+    if "litellm.litellm.svc" in url and "/v1/models" in url:
+        # L2: el catalogo autenticado del proxy. Tiene que incluir el modelo
+        # del residente, que es lo que la capa comprueba.
+        return _Resp({"data": [{"id": "qwen38-flash-next"},
+                               {"id": "tooling"},
+                               {"id": "bge-m3"}]})
     if "/v1/search/tools" in url:
         # Forma real leida del proxy el 16-09: la clave es `search_tool_name`, no
         # `name`. Un probe que mirase `name` daria por roto un estado sano.
@@ -187,25 +195,35 @@ def _run(handler, estado_previo="ok", token=True, cuerpos=None,
     return exito, llamadas
 
 
-# ── 1. capas: la inferencia es la ULTIMA comprobacion, no la primera ────────────
+# ── 1. capas: NINGUNA gasta tokens; la ultima es el catalogo autenticado ────────
 
-def test_todo_verde_gasta_UNA_inferencia_y_sale_con_cero():
+def test_todo_verde_no_gasta_NINGUNA_inferencia_y_sale_con_cero():
+    """29-09: el vigilante no puede aparecer como fila `master` en el panel de
+    inferencia. La suma real ("17*23") se fue; si un cambio futuro la
+    devuelve, este test lo impide."""
     exito, llamadas = _run(_verde)
     assert exito == 0
-    assert sum("chat/completions" in u for u in llamadas) == 1, (
-        "L2 es la unica capa que gasta tokens; duplicarla es volver al estado en "
-        "que el semaforo caro se comia el presupuesto y encima mentia")
+    assert not any("chat/completions" in u for u in llamadas), (
+        "el watchdog ha vuelto a gastar tokens: su sonda sale como fila "
+        "`master` en el panel de inferencia")
+    assert any("litellm.litellm.svc" in u and "/v1/models" in u
+               for u in llamadas), (
+        "L2 no comprueba el catalogo autenticado: sin ella el vigilante no "
+        "dice que LiteLLM este funcionando, solo que el residente vive")
 
 
-def test_L0_roto_es_caido_sin_gastar_la_inferencia():
+def test_L0_roto_es_caido_sin_bajar_a_los_residentes():
     def handler(url):
         return None if "liveliness" in url else _verde(url)
     exito, llamadas = _run(handler)
     assert exito == 1, "caido tiene que poner el Job en Failed"
-    assert not any("chat/completions" in u for u in llamadas)
+    assert not any(RESIDENTE_LLM_TP in u and "/v1/models" in u
+                   for u in llamadas), (
+        "con L0 roto se sigue bajando a sondear el residente: el dial de "
+        "abliteracion es lo unico que corre sin gate")
 
 
-def test_L1_los_dos_residentes_caidos_es_caido_sin_gastar_la_inferencia():
+def test_L1_los_dos_residentes_caidos_es_caido_sin_tocar_el_catalogo():
     """El 503 del incidente que abrio STA-7, reproducido en la capa que lo ve.
 
     Desde #56 hay DOS residentes y solo condena si NINGUNO contesta, asi que el
@@ -219,8 +237,22 @@ def test_L1_los_dos_residentes_caidos_es_caido_sin_gastar_la_inferencia():
         return _verde(url)
     exito, llamadas = _run(handler)
     assert exito == 1
-    assert not any("chat/completions" in u for u in llamadas), (
-        "si el residente no publica, la inferencia no se paga: L1 existe para eso")
+    assert not any("litellm.litellm.svc" in u and "/v1/models" in u
+                   for u in llamadas), (
+        "si el residente no publica, el catalogo no se pregunta: L1 existe "
+        "para eso")
+
+
+def test_L1_residente_arriba_PERO_sin_el_modelo_esperado_es_caido():
+    """El modelo publicado es lo que demuestra que el motor tiene el peso
+    montado: un vLLM que contesta y publica otra cosa no sirve NINGUNA de las
+    rutas del residente. 0 tokens, y es el caso que la vieja L2 de inferencia
+    cubria pagando."""
+    def handler(url):
+        if RESIDENTE_LLM_TP in url:
+            return _Resp({"data": [{"id": "otro-modelo-que-no-es"}]})
+        return _verde(url)
+    assert _run(handler)[0] == 1
 
 
 def test_L1_un_solo_residente_caido_no_es_caido():
@@ -236,7 +268,8 @@ def test_L1_un_solo_residente_caido_no_es_caido():
     assert exito == 0, (
         "condena con un solo residente caido: vuelve el bug del Service de pool "
         "muerto; solo NINGUN residente contestando es un fallo")
-    assert any("chat/completions" in u for u in llamadas), (
+    assert any("litellm.litellm.svc" in u and "/v1/models" in u
+               for u in llamadas), (
         "con el residente del perfil activo vivo, L2 es la comprobacion que toca")
 
 
@@ -309,32 +342,39 @@ def test_readiness_rota_no_es_caido():
 
 # ── 2. el codigo de salida en TODAS las ramas ───────────────────────────────────
 
-def test_inferencia_vacia_con_200_es_caido():
+def test_L2_catalogo_roto_es_caido():
+    """El proxy vivo (L0) y el residente arriba (L1) pero el GET /v1/models
+    autenticado no contesta o revienta: la puerta sellada no funciona."""
     def handler(url):
-        if "chat/completions" in url:
-            return _Resp({"choices": [{"message": {"content": ""}}]})
+        if "litellm.litellm.svc" in url and "/v1/models" in url:
+            raise _http_error(url, 401, b'{"error": "authentication_error"}')
         return _verde(url)
     assert _run(handler)[0] == 1
 
 
-def test_inferencia_que_no_es_391_es_caido():
+def test_L2_catalogo_sin_el_residente_es_caido():
+    """El catalogo responde 200 pero no enruta el modelo del residente: es el
+    caso del 19-08 (LiteLLM sirviendo 16 modelos mientras el ConfigMap
+    declaraba 27), visto desde la capa barata."""
     def handler(url):
-        if "chat/completions" in url:
-            return _Resp({"choices": [{"message": {"content": "390"}}]})
+        if "litellm.litellm.svc" in url and "/v1/models" in url:
+            return _Resp({"data": [{"id": "bge-m3"}, {"id": "stt-turbo"}]})
         return _verde(url)
     assert _run(handler)[0] == 1
 
 
-def test_cuota_agotada_no_es_caido_y_no_pone_el_job_rojo():
-    """Regla del 15-08: con la cuota agotada el cluster esta bien, y un Job rojo
-    cada 10 min durante dias taparia un Degraded de verdad."""
-    def handler(url):
-        if "chat/completions" in url:
-            raise _http_error(
-                url, 429,
-                b'{"error": {"code": "usage_limit_reached", "resets_at": 1789000000}}')
-        return _verde(url)
-    assert _run(handler)[0] == 0
+def test_cuota_legada_transiciona_sin_poner_el_job_rojo():
+    """29-09: la cuota ya no puede detectarse — se veia por el 429 de la
+    inferencia de L2, y no hay inferencia. La rama `cuota` se queda viva para
+    que un estado previo con clase="cuota" (escrito antes del cambio)
+    transicione: verde ahora + cuota antes => aviso de recuperacion, exit 0."""
+    cuerpos = []
+    exito, _ = _run(_verde, estado_previo="cuota", cuerpos=cuerpos)
+    assert exito == 0
+    textos = _telegram_enviado(cuerpos)
+    assert textos and "RECUPERADO" in textos[0], (
+        "el estado legado `cuota` no transiciona: el panel se quedaria con el "
+        "semaforo viejo colgado")
 
 
 def test_abliterado_no_pone_el_job_rojo():
@@ -403,7 +443,7 @@ def test_una_excepcion_del_propio_watchdog_sale_con_uno():
     """Un watchdog que muere con una excepcion propia no puede salir con 0: en
     ArgoCD el silencio se lee como "todo bien"."""
     def handler(url):
-        if "chat/completions" in url:
+        if "litellm.litellm.svc" in url and "/v1/models" in url:
             return _Resp("esto-no-es-el-formato-esperado")
         return _verde(url)
     assert _run(handler)[0] == 1
