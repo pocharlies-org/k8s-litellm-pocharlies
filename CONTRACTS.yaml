@@ -395,6 +395,25 @@ contracts:
       sellan nada. Aditivo junto a refusal_text (fase A), refusal_lambda y
       refusal_runtime, que no cambian. Pinned by
       tests/test_refusal_probe_stamp_contract.py.
+  - id: dgx.litellm.spendlogs-claude-class.v1
+    # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
+    # que lee por SQL el panel de uso por consumidor. Mismo kind que
+    # refusal-probe-stamp: convencion de datos entre procesos.
+    kind: schema
+    value: claude_class
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-29. El pre-call hook de strip_params sella
+      spend_logs_metadata.claude_class = valor normalizado de la cabecera
+      x-claude-class (dgx.claude.class-header.v1, hoy solo "company") cuando
+      la peticion la trae; sin cabecera no se escribe nada. Consumido por
+      dgx-infra services/dashboard (uso de Alibaba por clase: compania vs
+      opencode/CLI vs Hermes vs otros, y el presupuesto diario de la
+      compania). Aditivo junto a refusal_lambda/refusal_runtime. Pinned by
+      tests/test_spendlogs_claude_class_contract.py.
   - id: dgx.litellm.key-fallbacks.demos.v1
     # kind 'allowlist': es la lista de keys (por key_alias) que tienen salida
     # externa en `tooling`; el consumidor la usa sabiendo que su key la tiene.
