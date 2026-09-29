@@ -142,7 +142,13 @@ contracts:
       ALIBABA_ACCOUNT_PIN_TTL_SECONDS (30 dias de inactividad, keepalive en
       cada acierto); SET NX = gana el primero. Cuenta de una sesion nueva =
       sha256(api-key-hash:sid) % cuentas, la misma en todas las replicas sin
-      Valkey. Unica forma de cambiar de cuenta: la suya sin deployment sano en
+      Valkey; desde 2026-09-29, si /api/model-routing/config trae el campo
+      ADITIVO alibaba_account_weights = {"kN": peso >= 0} (cupo diario que le
+      queda a cada cuenta, lo proyecta el dashboard), el hash se lee como un
+      punto de [0,1) y cae en el tramo acumulado de su cuenta — las sesiones
+      NUEVAS (y las mudanzas) se reparten en proporcion al cupo; los pines
+      existentes no se mueven. Ausente, invalido o sin cubrir todas las
+      cuentas = el modulo uniforme de siempre. Unica forma de cambiar de cuenta: la suya sin deployment sano en
       el grupo pedido (cooldown/retirada) -> mudanza ENTERA y el pin se
       reescribe (sin vuelta). <api-key-hash> = user_api_key_hash (sha256).
       Tests: tests/test_alibaba_account_affinity.py (unitarios) y

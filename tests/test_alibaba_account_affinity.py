@@ -390,3 +390,88 @@ def test_el_nativo_por_grupo_no_esta_activado_a_la_vez():
     rs = cfg["router_settings"]
     assert "model_group_affinity_config" not in rs
     assert "session_affinity" not in (rs.get("optional_pre_call_checks") or [])
+
+
+# ── reparto ponderado por cupo (29-09-2026) ──────────────────────────────────
+
+
+def _con_pesos(pod, weights):
+    async def cfg():
+        return {"alibaba_account_weights": weights}
+    pod._config = cfg
+    return pod
+
+
+def test_sesiones_nuevas_siguen_el_peso_de_cada_cuenta():
+    pod = _con_pesos(_pod(FakeValkey()), {"k1": 0.25, "k2": 0.75})
+
+    async def go():
+        cuentas = []
+        for i in range(4000):
+            out = await pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(f"w{i}"))
+            cuentas.append(_account(out))
+        return cuentas
+
+    cuentas = run(go())
+    assert 0.21 < cuentas.count("k1") / len(cuentas) < 0.29
+    assert pod.ACCOUNT_AFFINITY_STATS["weighted"] == 4000
+
+
+def test_con_pesos_sigue_siendo_determinista_entre_pods():
+    a = _con_pesos(_pod(None), {"k1": 0.3, "k2": 0.7})
+    b = _con_pesos(_pod(None), {"k1": 0.3, "k2": 0.7})
+
+    async def go():
+        for i in range(300):
+            ra = await a.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(f"d{i}"))
+            rb = await b.alibaba_account_filter("alibaba-q38-max", _deps("alibaba-q38-max"), _kwargs(f"d{i}"))
+            assert _account(ra) == _account(rb)
+
+    run(go())
+
+
+def test_el_peso_no_mueve_una_sesion_ya_clavada():
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+
+    async def go():
+        out = await pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("fija"))
+        antes = _account(out)
+        otra = "k2" if antes == "k1" else "k1"
+        _con_pesos(pod, {antes: 0.0, otra: 1.0})
+        out = await pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("fija"))
+        return antes, _account(out)
+
+    antes, despues = run(go())
+    assert antes == despues
+
+
+def test_cuenta_con_peso_cero_no_recibe_sesiones_nuevas():
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+
+    async def go():
+        for i in range(200):
+            out = await pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(f"z{i}"))
+            assert _account(out) == "k2"
+
+    run(go())
+
+
+@pytest.mark.parametrize("raw,esperado", [
+    ({"k1": 0.4, "k2": 0.6}, {"k1": 0.4, "k2": 0.6}),
+    ({"k1": 0, "k2": 0}, {}),
+    ({"k1": -1, "k2": 1}, {}),
+    ({"k1": True, "k2": 1}, {}),
+    ({"k1": float("nan"), "k2": 1}, {}),
+    ({"x": 1, "k2": 1}, {"k2": 1.0}),
+    ("k1", {}),
+    (None, {}),
+])
+def test_sanitize_de_los_pesos(raw, esperado):
+    pod = _pod(None)
+    assert pod._sanitize({"alibaba_account_weights": raw})["alibaba_account_weights"] == esperado
+
+
+def test_pesos_que_no_cubren_las_cuentas_caen_al_uniforme():
+    pod = _pod(None)
+    assert pod.preferred_account("u", "s", ["k1", "k2"], {"k2": 1.0}) == pod.preferred_account("u", "s", ["k1", "k2"])
