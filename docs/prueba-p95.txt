@@ -1772,4 +1772,238 @@ data:
       request_timeout: 600
       # Content logging ENABLED (2026-07-09): full prompt/response text flows to Langfuse
       # traces AND the DB spend-logs — needed for prompt debugging + LLM-as-a-judge evals.
-      # Langfuse is SSO-gated (Ke
+      # Langfuse is SSO-gated (Keycloak) + homelab, so the privacy risk is low. To redact
+      # content again (traces keep latency/cost/tokens/tags; body -> "redacted-by-litellm"),
+      # set this back to true.
+      turn_off_message_logging: false
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+      database_url: os.environ/DATABASE_URL
+      # 2026-08-18: a false. Esto estaba a true por UNA razon — que el controlador
+      # `litellm-dgx-backend-sync` pudiera escribir modelos por /model/new y que las
+      # 4 replicas compartieran ese catalogo. Muerto el controlador, nadie escribe
+      # modelos, y el catalogo compartido lo da el ConfigMap: todas las replicas leen
+      # el MISMO fichero.
+      #
+      # Lo que se gana, y es el motivo de fondo: un alias solo puede existir en git.
+      # No hay que purgar las filas viejas de la DB — con esto dejan de cargarse, se
+      # quedan inertes. Y LiteLLM arranca y enruta SIN postgres (que ya se cayo 9h el
+      # 20-07 y se llevo la inferencia por delante); antes eso solo lo mitigaba
+      # allow_requests_on_db_unavailable, mas abajo.
+      #
+      # OJO: esto es SOLO modelos. Keys, equipos, presupuesto y spend siguen en
+      # postgres, y database_url se queda. Añadir un modelo pasa a ser un commit:
+      # POST /models del panel y el boton «Add deployment» dejan de tener sentido y
+      # se retiran en dgx-infra.
+      store_model_in_db: false
+      # 2026-07-21: prompts OFF in SpendLogs — full prompt/response duplication of
+      # what Langfuse already stores had grown the table to 21 GB (~38 KB/row) and
+      # made retention DELETEs time out. SpendLogs is accounting only.
+      store_prompts_in_spend_logs: false
+      # DB down must degrade auth (restricted internal token), not kill inference.
+      # Incident 2026-07-20: postgres-shared out for 9h => litellm hard-down.
+      allow_requests_on_db_unavailable: true
+      # 2026-08-14: con 4 replicas, Prisma sin limite son ~98 conexiones por pod
+      # = ~400, que es EXACTAMENTE el max_connections de postgres-shared.
+      # 25 x 4 = 100 deja 300 al resto de tenants. Se fija aqui y no en el DSN a
+      # proposito: el mismo parametro en la URL tumba el arranque de cualquier
+      # consumidor psycopg que la herede.
+      database_connection_pool_limit: 25
+      database_connection_timeout: 60
+      background_health_checks: true
+      # 2026-08-19: el intervalo estaba IMPLICITO en el default de upstream
+      # (DEFAULT_HEALTH_CHECK_INTERVAL = 300 s, litellm/constants.py) y el bucle
+      # es por REPLICA: 4 replicas x 288 ciclos/dia x cada deployment. Con los
+      # alias gemelos ya callados arriba, los dos pools bge quedaban aun en
+      # ~4200 filas/dia de SpendLogs generadas por `litellm-internal-health-check`
+      # -- sobre una tabla que ya llego a 21 GB y cuyos DELETE de retencion
+      # expiraban (ver store_prompts_in_spend_logs, arriba). El coste de GPU es
+      # calderilla (8010 prompt tokens en 30 h, 3 por llamada: el prompt es
+      # "test from litellm"); lo que se compra aqui son filas y ruido de panel.
+      # 900 s mantiene deteccion de un pool caido en <=15 min, que es de sobra
+      # para un backend con `for: 5m` en Prometheus.
+      #
+      # NO se pone `health_check_skip_disabled_background_models`: se quiere que
+      # un `GET /health` a mano SIGA sondeando los gemelos cuando un operador lo
+      # pide expresamente. Solo se calla el bucle de fondo.
+      #
+      # `use_shared_health_check: true` es lo que upstream recomienda para el
+      # factor x4 de replicas (un pod coge un lock en Redis y los demas leen
+      # cache), pero EXIGE Redis y aqui no hay ninguno declarado -- no hay
+      # `cache_params` en litellm_settings. Queda como la via para bajar de 384
+      # a 96 llamadas/dia el dia que haya Redis; no se activa a ciegas porque
+      # sin Redis el codigo cae a checks locales y el cambio seria un no-op
+      # silencioso.
+      health_check_interval: 900
+      enable_passthrough_logging: false
+      maximum_spend_logs_retention_period: 30d
+      maximum_spend_logs_retention_interval: 1d
+      proxy_batch_write_at: 60
+      # 2026-09-16: WebSearch de Claude Code caia a Perplexity con
+      # `litellm.APIConnectionError: PerplexityException - PERPLEXITYAI_API_KEY is
+      # not set` teniendo `search_tools: searxng-local` (ver abajo) configurado.
+      #
+      # MECANISMO. Con `store_model_in_db: false` el proxy programa
+      # `reload_search_tools_from_db` (arranque + cada 30 s) y esa funcion
+      # RECONSTRUYE `router.search_tools` desde el config QUE TIENE EN MEMORIA
+      # (`parse_search_tools(self.get_config_state())`, proxy_server.py:7774 en
+      # v1.100.0), no desde el fichero. El estado en memoria no lleva el bloque
+      # top-level `search_tools` — `load_config` si lo ve al arrancar (el log
+      # imprime "Proxy initialized with Search Tools: searxng-local" y el Router
+      # nace con la herramienta), pero en los ciclos de recarga sale
+      # "Loading 0 search tool(s) into router (0 from config, 0 from database)"
+      # y esa lista VACIA se asigna al Router, borrando la del arranque.
+      # Sin herramienta en el router, el callback `websearch_interception` cae
+      # al provider por defecto: `search_provider = "perplexity"`
+      # (integrations/websearch_interception/handler.py:1399-1405) => el error de
+      # arriba. Prueba en vivo: `GET /v1/search/tools` devolvia `{"data":[]}` en
+      # las dos replicas; tras un `GET /search_tools/list` —que si relee el
+      # fichero porque llama a `get_config()`, no a `get_config_state()`— el
+      # siguiente ciclo carga "1 from config" y la misma peticion de WebSearch
+      # responde por SearXNG en 3 s.
+      #
+      # EL ARREGLO es la allowlist que el propio upstream documenta para esto
+      # ("an admin who excluded search_tools from supported_db_objects opts out",
+      # proxy_server.py:7807): si el reconcile de search_tools no corre, nadie
+      # escribe `router.search_tools` despues de `load_config` y la herramienta
+      # del ConfigMap sobrevive. Es la via que no depende de por que el estado en
+      # memoria pierde la clave.
+      #
+      # OJO con la forma: es una allowlist de CADENAS EXACTAS
+      # (proxy_server.py:4400), no un extra sobre un default. Lo que no se
+      # enumerate deja de cargarse de la base de datos. Por eso se listan TODOS
+      # los tipos que el paquete consulta con `should_load_db_object(...)`, menos
+      # `search_tools`, que queda solo en el ConfigMap. Los seis que no estan en
+      # el enum `SupportedDBObjectType` (agents, anthropic_beta_headers,
+      # cache_settings, semantic_filter_settings, sso_settings,
+      # vector_store_indexes) son validos para el gate —que compara strings— pero
+      # NO para el modelo `ConfigGeneralSettings`, que solo se aplica al editar
+      # el campo desde el panel (`/config/field/update`), no al arrancar.
+      # AL SUBIR DE VERSION de litellm: rehacer la lista contra los
+      # `should_load_db_object(object_type=...)` del paquete; un tipo nuevo que
+      # falte aqui se carga a false en silencio.
+      supported_db_objects:
+      - models
+      - mcp
+      - guardrails
+      - policies
+      - vector_stores
+      - vector_store_indexes
+      - pass_through_endpoints
+      - prompts
+      - model_cost_map
+      - tools
+      - config_overrides
+      - agents
+      - anthropic_beta_headers
+      - cache_settings
+      - semantic_filter_settings
+      - sso_settings
+    router_settings:
+      routing_strategy: simple-shuffle
+      timeout: 600
+      num_retries: 1
+      # ── Reintentos del 400 de `function.arguments`, SOLO en Alibaba ─────────
+      #
+      # 27-09-2026. Medido en los spend logs (postgres-shared/litellm, tabla
+      # LiteLLM_SpendLogs): 23 peticiones fallidas contra `alibaba-q38-flash` en
+      # 12 h, todas con la key `opencode-20260630-local`, y el texto
+      # `The "function.arguments" parameter of the code model must be in JSON
+      # format`. Lo que NO es: un historial envenenado que mande OpenCode. Tres
+      # mediciones lo descartan — (a) 2424 `input` almacenados en las 6 sesiones
+      # afectadas, TODOS dict, y el wire se construye con
+      # `JSON.stringify(part.input)`, o sea objeto siempre; (b) 5252 tool_calls
+      # de 400 trazas en Langfuse, todos con arguments de objeto valido; (c) el
+      # fallo es TRANSITORIO: en ses_f342de2bdffe falla 19:07:28 y la MISMA
+      # sesion sirve bien 19:07:35, con el mismo historial mas un mensaje. Un
+      # valor corrupto en `messages` habria tumbado tambien la segunda.
+      #
+      # Lo que si cuadra con (c): Model Studio valida los arguments que GENERA su
+      # propio modelo y devuelve 400 en vez de una generacion defectuosa. Es un
+      # fallo de muestreo, no del request: por eso la siguiente peticion pasa.
+      #
+      # El `num_retries: 1` de arriba ya cubre el primer reintento (en el
+      # metadata de esos fallos se lee `max_retries: 1`), o sea que las dos
+      # intentonas cayeron. Aqui se sube el presupuesto PARA ESTE GRUPO y para
+      # esta clase de error, no global: `model_group_retry_policy` se resuelve
+      # por modelo en get_retry_from_policy.py:51 y el proxy la reenvia al Router
+      # porque es argumento valido de Router.__init__ (proxy_server.py:5722-5732
+      # filtra por get_valid_args(); si no lo fuera, avisaria e ignoraria la
+      # clave en vez de tragarsela). Dos reintentos = tres generaciones nuevas
+      # por turno, que es lo que cambia cuando el fallo es de muestreo.
+      #
+      # Alcance y lo que cuesta: aplica a TODOS los 400 del grupo, incluidos los
+      # de peticion realmente invalida, que pagarian 3 intentos en vez de 2. Con
+      # 23 fallos en 12 h y un 400 legitimo mucho mas raro, el coste es
+      # despreciable; lo que se compra es que un 400 transitorio no reventel
+      # turno del usuario. No lo extenderia a otros grupos sin medirlo.
+      model_group_retry_policy:
+        alibaba-q38-flash:
+          BadRequestErrorRetries: 2
+      # ── Afinidad de sesion por CUENTA de Alibaba ─────────────────────────
+      #
+      # 28-09-2026: el `session_affinity` nativo (model_group_affinity_config)
+      # queda RETIRADO. Clavaba por GRUPO y soltaba la sesion a la otra cuenta
+      # durante un cooldown (ida y vuelta). La afinidad la hace ahora
+      # session_router.alibaba_account_filter: UN pin por sesion -> cuenta
+      # (k1/k2) para todos los grupos `alibaba-*`, en la Valkey del router
+      # (contrato dgx.session-router.alibaba-account-pin.v1). No volver a
+      # activar el nativo encima: filtrarian a la vez con pines distintos.
+      # ── PUENTE de renombrado (20-09): los alias largos de Alibaba siguen viva ──
+      #
+      # Al acortar los alias a <=17 caracteres (para que quepan en un boton de
+      # Telegram) borre el nombre viejo de un sync para otro, y una sesion de VS
+      # Code que lo tenia FIJADO se encontro con:
+      #   API Error: 400 anthropic_messages: Invalid model name passed in
+      #   model=alibaba-qwen38-max
+      # El picker de un cliente se relee al reiniciar; su sesion en curso no. Un
+      # renombrado que tira sesiones vivas no es un renombrado, es una rotura.
+      #
+      # `model_group_alias` resuelve el nombre pedido ANTES de enrutar, asi que el
+      # nombre viejo vuelve a servir sin duplicar la entrada del model_list (y sin
+      # duplicar sus flags de vision/cooldown, que es justo como se pudre una
+      # copia). Coste aceptado mientras dure el puente: los spend logs registran
+      # el nombre PEDIDO, o sea que el uso de un nombre viejo sale aparte del
+      # nuevo — razon de mas para quitar esto en cuanto no quede nadie usandolo.
+      #
+      # COMO QUITARLO: mirar en el panel de spend logs si queda alguna peticion
+      # con alguno de estos nombres en los ultimos 7 dias; en verde, se borra el
+      # bloque entero y su test.
+      model_group_alias:
+        alibaba-qwen38-max: alibaba-q38-max
+        alibaba-qwen38-flash: alibaba-q38-flash
+        alibaba-qwen37-plus: alibaba-q37-plus
+        alibaba-qwen37-max: alibaba-q37-max
+        alibaba-qwen36-flash: alibaba-q36-flash
+        alibaba-deepseek-v41-flash: alibaba-dsv41-fl
+        alibaba-deepseek-v4-pro: alibaba-dsv4-pro
+        alibaba-deepseek-v4-flash-0731: alibaba-dsv4f0731
+        # 26-09-2026: RETIRADO el puente `q38-flash*` del renombrado del 22-09.
+        # Regla de caducidad cumplida: spend logs 19..26-09 = 13 peticiones,
+        # 0 con exito (todas probes fallidas). La pareja del hook
+        # (CHAT_PROFILE_RENAMES) se va con el. Test: test_chat_catalog_contract.
+      # 2026-06-22: a wedged vLLM backend (EngineCore deadlock; /health still 200)
+      # used to keep eating ~50% of chat traffic because it took 20 fails before
+      # any cooldown and the cooldown was only 30s. Eject faster and keep it out
+      # longer; the vLLM engine-watchdog liveness probe restarts the wedged pod
+      # within ~4 min.
+      # 07-09-2026: ese reinicio ADEMAS retiraba el alias (el controlador de sync
+      # lo borraba al pasar el Service a NotReady), y este cooldown solo tenia que
+      # cubrir esa ventana. Retirado el controlador, el alias no se retira nunca:
+      # este cooldown es lo UNICO que aparta a un backend colgado. No bajarlo.
+      allowed_fails: 3
+      # 20-09-2026: 120 -> 300. Este valor dejo de ser solo "cuanto tarda en
+      # volver un backend colgado": desde que `qwen38-flash-next` tiene fallback a
+      # Alibaba (abajo), es LA PALANCA DE STICKINESS, y el unico mecanismo de
+      # afinidad que LiteLLM ofrece aqui.
+      #
+      # Verificado leyendo el codigo que corre (v1.96.0, en el pod), no de memoria:
+      # con `allowed_fails` puesto en el router, `_should_cooldown_deployment` se va
+      # por `should_cooldown_based_on_allowed_fails_policy`, que NO consulta la
+      # exencion de "grupo con un solo deployment" (esa solo aplica cuando
+      # `allowed_fails` NO esta puesto). O sea que el residente SI entra en cooldown
+      # al 4o fallo y, mientras dura, TODO el trafico se queda en el fallback sin
+      # volver a probarlo. Sin eso, cada peticion reintentaria el residente muerto y
+      # el salto seria constante.
+      #
+      
