@@ -1,22 +1,5 @@
-# Review automatica de pull requests con DeepSeek, servido por LiteLLM.
-#
-# Copia este fichero tal cual a `.github/workflows/pr-review.yml` de tu repo.
-# Los secretos (LITELLM_CI_KEY, TELEGRAM_CI_BOT_TOKEN, TELEGRAM_CI_CHAT_ID)
-# son de ORGANIZACION y entran solos con `secrets: inherit`.
-#
-# La implementacion vive en el repo del framework, no aqui:
-#   pocharlies-org/k8s-gitops-pocharlies
-#     .github/workflows/reusable-pr-review.yml   <- orquestacion
-#     .github/actions/llm-review/                <- accion + review.py
-#
-# El check NO bloquea: si el modelo no esta disponible (los Sparks conmutan de
-# perfil de computo) la review se omite y el check queda en verde.
-#
-# `workflow_dispatch` revisa el ultimo commit del tronco y lo comenta ahi: es
-# el modo con el que se valida el repo sin abrir un PR de prueba.
-#
-# `pull_request` a proposito, NUNCA `pull_request_target`: el segundo ejecuta
-# con los secretos del repo base sobre codigo de un fork.
+# PRUEBA INFRA-332 (piloto F1 de INFRA-298) · NO MERGEAR: apunta a la rama del workflow v2
+# (pocharlies-org/k8s-gitops-pocharlies#457) con engine pr-agent. Se cierra al medir.
 name: PR review
 
 on:
@@ -26,15 +9,16 @@ on:
 
 jobs:
   review:
-    # El bloque va AQUI y no solo en el workflow reutilizable: la organizacion
-    # tiene `default_workflow_permissions: read` y un workflow llamado solo
-    # puede REBAJAR los permisos de quien lo llama, nunca ampliarlos. Sin esto
-    # el comentario se va en 403 y parece que el bot no encontro nada.
+    # Los mismos permisos que la plantilla de los 108 repos: el piloto mide que
+    # `pull-requests: write` basta (comentarios, inline y etiquetas).
     permissions:
       contents: read
       pull-requests: write
-      # Para que el modo `workflow_dispatch` publique el comentario de COMMIT
-      # hace falta `contents: write`. No viene puesto a proposito: sin el, ese
-      # modo sigue en verde y deja el review en el resumen del job.
-    uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-pr-review.yml@main
-    secrets: inherit
+    uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-pr-review.yml@INFRA-332-reusable-pr-review-v2
+    with:
+      engine: pr-agent
+    # Criterio 6: key invalida -> 401 de LiteLLM -> el run debe cerrar failure.
+    secrets:
+      PR_AGENT_LITELLM_KEY: sk-prueba-invalida-infra-332
+      HARBOR_USER: ${{ secrets.HARBOR_USER }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
