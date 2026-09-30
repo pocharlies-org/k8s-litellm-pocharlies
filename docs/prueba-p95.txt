@@ -1525,4 +1525,251 @@ data:
         supports_reasoning: true
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
-    # `order: 2
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-dsv4-pro
+      litellm_params:
+        model: openai/deepseek-v4-pro
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-dsv4-pro-k2
+        name: DeepSeek V4 Pro (Alibaba)
+        description: DeepSeek-V4-Pro servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000021167127
+        cache_read_input_token_cost: 0.00000004233425
+        output_cost_per_token: 0.00000042334254
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: alibaba-dsv4f0731
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-dsv4f0731-k1
+        name: DeepSeek V4 Flash 0731 (Alibaba)
+        description: DeepSeek-V4-Flash snapshot 0731 - pin de version.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.0000000388064
+        cache_read_input_token_cost: 0.00000000776128
+        output_cost_per_token: 0.0000001164192
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-dsv4f0731
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-dsv4f0731-k2
+        name: DeepSeek V4 Flash 0731 (Alibaba)
+        description: DeepSeek-V4-Flash snapshot 0731 - pin de version.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.0000000388064
+        cache_read_input_token_cost: 0.00000000776128
+        output_cost_per_token: 0.0000001164192
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: alibaba-glm-53
+      litellm_params:
+        model: openai/glm-5.3
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-glm-53-k1
+        name: GLM-5.3 · Zhipu (Alibaba)
+        description: GLM-5.3 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-glm-53
+      litellm_params:
+        model: openai/glm-5.3
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-glm-53-k2
+        name: GLM-5.3 · Zhipu (Alibaba)
+        description: GLM-5.3 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: alibaba-glm-52
+      litellm_params:
+        model: openai/glm-5.2
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-glm-52-k1
+        name: GLM-5.2 · Zhipu (Alibaba)
+        description: GLM-5.2 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-glm-52
+      litellm_params:
+        model: openai/glm-5.2
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-glm-52-k2
+        name: GLM-5.2 · Zhipu (Alibaba)
+        description: GLM-5.2 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    litellm_settings:
+      success_callback:
+      - db
+      - prometheus
+      failure_callback:
+      - prometheus
+      service_callback:
+      - prometheus_system
+      callbacks:
+      - litellm_strip_params.proxy_handler_instance
+      # Cuenta Grok (xAI): hook de imagen + registro del config de video (ver el
+      # modulo xai_account_provider.py mas abajo y los alias `grok-*`).
+      - xai_account_provider.proxy_handler_instance
+      - langfuse_otel
+      # 07-09-2026: WebSearch de Claude Code contra residentes locales. Claude Code
+      # manda la server tool nativa (type web_search_20250305); LiteLLM la traduce a
+      # function tool (litellm_web_search), el residente la invoca como tool_use
+      # normal y el proxy ejecuta la busqueda (loop agentico, max 3 rondas) contra el
+      # search_tool de abajo y devuelve la respuesta final. Sin esto el traductor
+      # OpenAI dejaba tool_choice sin tools -> 400 "When using `tool_choice`, `tools`
+      # must be set" (Model Group=qwen38-flash-next). El default del callback es
+      # ["bedrock"]; hay que nombrar "openai" explicitamente (todos los locales son
+      # openai/...). Caveat: las peticiones interceptadas pierden el streaming.
+      - websearch_interception
+      websearch_interception_params:
+        enabled_providers: ["openai"]
+        search_tool_name: searxng-local
+      drop_params: true
+      set_verbose: false
+      require_auth_for_metrics_endpoint: false
+      num_retries: 2
+      request_timeout: 600
+      # Content logging ENABLED (2026-07-09): full prompt/response text flows to Langfuse
+      # traces AND the DB spend-logs — needed for prompt debugging + LLM-as-a-judge evals.
+      # Langfuse is SSO-gated (Ke
