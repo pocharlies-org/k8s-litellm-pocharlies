@@ -424,4 +424,196 @@ data:
     # contra un Service sin backends no da «modelo desconocido», da fallo de
     # conexion (la lapida del puente gpt-5 lo documenta), y ademas ocupaba dos
     # lineas del picker. El shutdown del Deployment y su Service (VRAM en dgx1)
-    # es paso aparte, como con `qwen35-4b-int4`. La caducidad del pue
+    # es paso aparte, como con `qwen35-4b-int4`. La caducidad del puente
+    # `q38-flash*` del renombrado corre pareja: ver model_group_alias mas abajo.
+    # 14-09-2026 (SC-384): `qwen35-4b` / `qwen35-4b-fast` / `qwen3.5-4b` RETIRADOS.
+    # El backend `qwen35-4b-int4` esta caido (todo su trafico = Connection error,
+    # 0 replicas ready) y OpenClaw ya corre sobre `tooling`. Los consumidores del
+    # panel (claude-sessions search, video-director) se repuntan a `tooling` en
+    # dgx-infra. El shutdown del Deployment `qwen35-4b-int4` (VRAM) es paso aparte.
+    # ── ALIAS DE CAPACIDAD: al Service de POOL ───────────────────────────────────
+    # `tooling` significa «el residente del perfil vivo, sin pensar».
+    #
+    # 24-08-2026: se retiran `high` y `max`. No eran modelos: eran el MISMO
+    # backend con otro nivel de pensamiento, y ese nivel lo pide el cliente por
+    # `reasoning_effort` (`/effort` en OpenClaw) desde que la lista honesta de
+    # efforts vive en `supported_reasoning_efforts`. Como nombres solo servian
+    # para ocupar dos lineas mas del picker; 0 peticiones en los ultimos 1000
+    # requests del proxy cuando se midio.
+    - model_name: tooling
+      litellm_params: &tooling_pool_params
+        model: openai/tooling
+        api_base: http://tooling.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        timeout: 600
+        # 21-09-2026: 32 -> 8. Desde el #107/#112 (sticky + Valkey + socket 2 s)
+        # el tope es real y global, no el semáforo por pod que hacía 8x2=16
+        # decorativo. El residente ya admitía a 8 (timeout 240, #98); tooling
+        # apunta al MISMO motor (pool label), así que 32 aquí era la puerta de
+        # atrás: por tooling entraban la compañía, synapse y openclaw y el
+        # motor se llenaba por encima de la zona usable medida. Mismo cambio
+        # para tooling-uncensored vía el anchor compartido: mismo motor.
+        max_parallel_requests: 8
+        # 03-09-2026: sello EXPLICITO a 0, y es una correccion, no un detalle.
+        #
+        # El pool `tooling` ES hoy el qwen38-flash-next ablado: el service
+        # `tooling` selecciona llm.dgx-infra/pool=tooling-resident, que apunta al
+        # head de qwen38-flash-next (verificado con kubectl). Desde #38 el
+        # residente sirve con el lambda global en 1.0, asi que sin sello `tooling`
+        # contestaba ABLADO igual que `tooling-uncensored`: los dos alias eran
+        # uncensored y el censurado no censuraba nada.
+        #
+        # El ancla se comparte con `tooling-uncensored`, pero el hook
+        # _preserve_uncensored_seal no pisa un sello explicito, y la resolucion
+        # del uncensored va por nombre de destino
+        # (TOOLING_UNCENSORED_MODE_TARGETS -> qwen38-flash-next-uncensored /
+        # qwen38-27b-uncensored), que tienen el suyo. El sello heredado aqui no
+        # llega a ninguna peticion uncensored.
+        extra_body: { cache_salt: "refusal:0" }
+      model_info: &tooling_pool_info
+        mode: chat
+        backend: profile-resident
+        max_input_tokens: 262144
+        max_output_tokens: 16384
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # ESTA es la lista que lee OpenClaw para pintar el menu de `/effort` del
+        # residente (plugin litellm-thinking-profile, derivado de /model/info).
+        # Sin `low` el cliente ya no puede quedarse en el nivel que el servidor
+        # descarta: cualquier nivel guardado que no este aqui se recorta al mas
+        # cercano y el effort que llega es DELIBERADO. Ver el alias directo de
+        # DeepSeek para el fallo que arregla.
+        # 05-09-2026 (SC-203): el menu se abre a la receta oficial de Qwen3.8
+        # (none/low/medium/xhigh) y el default del alias pasa de "off" a "low"
+        # (THINKING_TIERS): "el residente del perfil, sin pensar" ya no es
+        # verdad — pensar en `low` es el default nuevo. En `creative` el
+        # residente detras de este alias es el 27B, que no honra low/medium
+        # (medido 15-08: reasoning_content 0): ahi el motor resuelve esos
+        # niveles como "no piensa" — el mismo resultado que daba antes, cuando
+        # caian fuera de la tabla — y `none`/`high`/`max` siguen honrados igual
+        # que antes.
+        # 23-09-2026: `high`/`max` salen del menu, igual que en qwen38-flash-next
+        # (el residente al que resuelve este alias): los dos caen en `xhigh`
+        # (THINKING_KWARGS) y el picker pintaba tres opciones iguales. Siguen
+        # ACEPTADOS y traducidos si un cliente los manda (CLIENT_EFFORT_TIERS).
+        # El perfil `creative` esta retirado desde el 21-09, asi que el 27B que
+        # describe el parrafo de arriba ya no esta detras de este alias.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
+        # 02-09-2026 (STA-9): el alias de capacidad apunta al MISMO Service de pool
+        # que el nombre directo del residente vivo, y el bucle de fondo deduplica
+        # por model_info.id y no por api_base (ver bge-m3-embedding): sondear los
+        # dos es dos inferencias contra el mismo motor. El residente ya lleva su
+        # flag; el de capacidad se calla igual.
+        disable_background_health_check: true
+    # ── `tooling-uncensored`: el residente del perfil, abliterado ───────────────
+    #
+    # POR QUE HACE FALTA UN NOMBRE DE CAPACIDAD. `deepseek-v4-flash-0731-uncensored`
+    # y `qwen38-27b-uncensored` son nombres de MODELO, y los dos perfiles son
+    # fisicamente exclusivos en los Sparks, asi que uno de los dos backends esta
+    # siempre a 0 replicas.
+    #
+    # CORRECCION 19-08 (auditoria): antes aqui decia que cada nombre "esta muerto la
+    # mitad del tiempo". Es FALSO y ademas oculta el modo de fallo. Con
+    # `store_model_in_db: false` el alias se declara en git, asi que **sigue
+    # registrado y publicado en /v1/models aunque su backend no exista**: no esta
+    # muerto, esta registrado y roto. Medido con la key del gateway de OpenClaw,
+    # perfil llm-tp y Qwen a 0/0 replicas:
+    #
+    #   deepseek-v4-flash-0731-uncensored -> 200
+    #   qwen38-27b-uncensored             -> HTTP 500 ... Connection error.
+    #                                        No fallback model group found
+    #
+    # Correcto para MEDIR (falla fuerte en vez de contestar desde otro checkpoint) e
+    # inservible para PINEAR: un agente de OpenClaw clavado a uno de los dos recibe
+    # un 500 al cambiar el perfil, no un error que sepa reintentar.
+    #
+    # ESTA ENTRADA NO SE SIRVE NUNCA TAL CUAL. Igual que `tooling`, el hook la
+    # reescribe al nombre DIRECTO del residente vivo
+    # antes de enrutar (TOOLING_UNCENSORED_MODE_TARGETS). Existe para que el alias
+    # sea un modelo conocido por el router y aparezca en /v1/models; el
+    # `api_base` al Service de pool es la red de seguridad si la reescritura no
+    # ocurriera.
+    #
+    # SIN `extra_body` A PROPOSITO, y esto es lo unico delicado: la lambda NO es la
+    # misma en los dos residentes (1.5 DeepSeek / 1.0 Qwen3.8, medidas y no
+    # intercambiables — a 1.0 DeepSeek aun rechaza 5-7/10; a 1.5 Qwen pierde 26,8
+    # puntos de MMLU-Pro). Un `cache_salt` fijo aqui seria el valor equivocado
+    # para uno de los dos SIEMPRE. El sello viaja en la entrada del nombre directo
+    # al que reescribe el hook, que es la unica que sabe de que backend habla.
+    - model_name: tooling-uncensored
+      litellm_params: *tooling_pool_params
+      model_info: *tooling_pool_info
+    # ── OWU-50: los cuatro perfiles de chat (21-09-2026, decisión de Dani) ───────
+    #
+    # DOS CAPACIDADES, DOS NIVELES, CUATRO NOMBRES QUE SE LEEN SOLOS
+    # (renombrado 22-09-2026 a pedido del owner: los nombres viejos `q38-flash*`
+    # duplicaban el residente sin decir qué era cada uno). La matriz:
+    #   `qwen38-flash-next` / `qwen38-flash-next-uncensored` -> el residente
+    #       (censurado / abliterado) PENSANDO (tier low).
+    #   `qwen38-off` / `qwen38-u-off` -> EL MISMO residente con el
+    #       pensamiento APAGADO.
+    # El nivel no se declara aquí: vive en THINKING_TIERS, que es la tabla que el
+    # plugin `litellm-thinking-profile` ya usa para ponerlo por alias pedido. Aquí
+    # solo se declaran los nombres y a qué pool apuntan. Los cuatro nombres viejos
+    # siguen vivos como puente en model_group_alias, con su caducidad.
+    #
+    # POR QUE ALIASES REALES Y NO PARÁMETROS DE OPEN WEBUI. Open WebUI guarda los
+    # parámetros por modelo en su BD y son propiedad de UNA cuenta: eso es justo lo
+    # que produce que cada cuenta vea una cosa (OWU-50). Un perfil que vive en la BD
+    # de un cliente no es GitOps. Declararlos aquí los pone en el único sitio que ya
+    # es versionado, testeado y que decide quién es el residente.
+    #
+    # Reutilizan las anclas de `tooling`/`tooling-uncensored` a propósito: los flags
+    # de visión, timeouts y admisión los posee una sola vez cada capacidad. Copiar y
+    # pegar esos bloques es la forma exacta en que dos nombres dejan de significar
+    # lo mismo. El hook reescribe el nombre al residente vivo antes de enrutar
+    # (TOOLING_MODE_TARGETS / TOOLING_UNCENSORED_MODE_TARGETS), así que estos cuatro
+    # siguen al residente del perfil `llm-tp` sin que nadie toque Open WebUI.
+    #
+    # OJO — HAY UN SEGUNDO SITIO, Y NO ES ESTE FICHERO. Cada key de LiteLLM lleva su
+    # propia allowlist de modelos (`models` de la key, en la Postgres de LiteLLM), y
+    # el control va ANTES que este manifiesto: medir `tooling-uncensored` con la key
+    # de chat da 403 «key not allowed to access model» aunque el gate del hook esté
+    # abierto (medido 21-09; la prueba de que el gate sí está abierto es que
+    # `qwen38-flash-next-uncensored`, que sí está en la lista de la key, contesta
+    # 200). La key de chat se llama `open-webui-v3` y hoy solo conoce los nombres con
+    # los que nació, así que añadir un alias aquí NO lo hace alcanzable: hay que
+    # añadirlo también a la key. Se hace a mano en H1 y queda como deuda: OWU-52
+    # (reconciliador) es quien tiene que dejar de mirar solo el catálogo de Open WebUI
+    # y poseer también el `models` de las keys, o cada alias nuevo morirá en un 403
+    # que parece un problema de routing y no lo es.
+    #
+    # 23-09-2026: el ancla de info se sigue heredando (vision, admision, health
+    # check), pero el MENU de esfuerzo se pisa a [none]. Heredado, estos dos
+    # anunciaban la escalera entera de `tooling` y opencode/Hermes ofrecian High
+    # o Xhigh en un alias cuyo nombre dice "apagado". Con [none] el picker solo
+    # ofrece lo que el alias es, y el hook (_apply_thinking_tier) lo sostiene:
+    # cualquier effort que llegue se traduce a off. `none` y no la lista vacia:
+    # Hermes lee "sin declaracion" como "escalera completa de upstream".
+    - model_name: qwen38-off
+      litellm_params: *tooling_pool_params
+      model_info:
+        <<: *tooling_pool_info
+        supported_reasoning_efforts: [none]
+    - model_name: qwen38-u-off
+      litellm_params: *tooling_pool_params
+      model_info:
+        <<: *tooling_pool_info
+        supported_reasoning_efforts: [none]
+    # ── RETIRADOS 2026-08-10: `deepseek-v4-flash-openclaw` y `-opencode` ────────
+    #
+    # Eran dos entradas estaticas con el sampling de DeepSeek ya puesto, una por
+    # cliente. Se construyeron con cuidado y NUNCA las pidio nadie: 0 consumidores
+    # en todo ~/k8s. OpenClaw y opencode piden `tooling`. Codigo muerto que ademas
+    # duplicaba, pinneado a
+    # DeepSeek, lo que ya se resuelve solo:
+    #
+    #   temperature 1.0 / top_p 0.95  -> lo pone FAMILY_SAMPLING del hook, deducido
+    #     de la FAMILIA del backend que sirve el alias ahora mismo. Funciona para
+    #     todos los clientes y sobrevive al cambio de residente; una entrada
+    #     estatica pinneada a DeepSeek habria mentido al volver a Qwen.
+    #   chat_template_kwargs {thinking, reasoning_effort: low}  -> ya los trae el
+    #     servidor vLLM como --default-chat-template-kwargs (visto en los args de
+    #     arranque del head). No hacia falta repetirlos aqui.
+    #   max_tokens 16384  -> ahora lo publica el sync como max_output_tokens en
