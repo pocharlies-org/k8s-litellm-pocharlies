@@ -1276,4 +1276,253 @@ data:
         description: Qwen3.7-Plus - texto + razonamiento + vision.
         mode: chat
         backend: alibaba-model-studio
-        # 25-09-202
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000003527855
+        cache_read_input_token_cost: 0.00000000705571
+        output_cost_per_token: 0.00000014111418
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-q37-plus
+      litellm_params:
+        model: openai/qwen3.7-plus
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q37-plus-k2
+        name: Qwen3.7 Plus (Alibaba)
+        description: Qwen3.7-Plus - texto + razonamiento + vision.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000003527855
+        cache_read_input_token_cost: 0.00000000705571
+        output_cost_per_token: 0.00000014111418
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: alibaba-q37-max
+      litellm_params:
+        model: openai/qwen3.7-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-q37-max-k1
+        name: Qwen3.7 Max (Alibaba)
+        description: Qwen3.7-Max - texto + razonamiento. Sin vision.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000022049091
+        cache_read_input_token_cost: 0.00000004409818
+        output_cost_per_token: 0.00000066147272
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-q37-max
+      litellm_params:
+        model: openai/qwen3.7-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q37-max-k2
+        name: Qwen3.7 Max (Alibaba)
+        description: Qwen3.7-Max - texto + razonamiento. Sin vision.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000022049091
+        cache_read_input_token_cost: 0.00000004409818
+        output_cost_per_token: 0.00000066147272
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: alibaba-q36-flash
+      litellm_params:
+        model: openai/qwen3.6-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-q36-flash-k1
+        name: Qwen3.6 Flash (Alibaba)
+        description: Qwen3.6-Flash - texto + razonamiento + vision. Generacion anterior.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002204909
+        cache_read_input_token_cost: 0.00000000440982
+        output_cost_per_token: 0.00000013229454
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-q36-flash
+      litellm_params:
+        model: openai/qwen3.6-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q36-flash-k2
+        name: Qwen3.6 Flash (Alibaba)
+        description: Qwen3.6-Flash - texto + razonamiento + vision. Generacion anterior.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002204909
+        cache_read_input_token_cost: 0.00000000440982
+        output_cost_per_token: 0.00000013229454
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: alibaba-dsv41-fl
+      litellm_params:
+        model: openai/deepseek-v4.1-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-dsv41-fl-k1
+        name: DeepSeek V4.1 Flash (Alibaba)
+        description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-dsv41-fl
+      litellm_params:
+        model: openai/deepseek-v4.1-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-dsv41-fl-k2
+        name: DeepSeek V4.1 Flash (Alibaba)
+        description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    - model_name: alibaba-dsv4-pro
+      litellm_params:
+        model: openai/deepseek-v4-pro
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-dsv4-pro-k1
+        name: DeepSeek V4 Pro (Alibaba)
+        description: DeepSeek-V4-Pro servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000021167127
+        cache_read_input_token_cost: 0.00000004233425
+        output_cost_per_token: 0.00000042334254
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2
