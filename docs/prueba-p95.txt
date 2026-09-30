@@ -1063,4 +1063,217 @@ data:
         order: 1
       model_info:
         id: alibaba-q38-max-k1
-        name: Qwen3.8 Ma
+        name: Qwen3.8 Max · gama alta (Alibaba)
+        description: Qwen3.8-Max - texto + razonamiento + vision. El mayor del plan.
+        mode: chat
+        backend: alibaba-model-studio
+        # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000017639273
+        cache_read_input_token_cost: 0.00000003527855
+        output_cost_per_token: 0.00000052917818
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
+        # pregunta, /v1/chat/completions): `none` -> reasoning_content 0;
+        # low/medium/high/max/xhigh -> reasoning_content 358/418/420/557/512
+        # chars. Los seis se aceptan con 200 y gradiente. Sin esto, opencode
+        # (que filtra sus variantes de effort por esta lista) no pinta ningun
+        # nivel para el alias.
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-q38-max
+      litellm_params:
+        model: openai/qwen3.8-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q38-max-k2
+        name: Qwen3.8 Max · gama alta (Alibaba)
+        description: Qwen3.8-Max - texto + razonamiento + vision. El mayor del plan.
+        mode: chat
+        backend: alibaba-model-studio
+        # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000017639273
+        cache_read_input_token_cost: 0.00000003527855
+        output_cost_per_token: 0.00000052917818
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
+        # pregunta, /v1/chat/completions): `none` -> reasoning_content 0;
+        # low/medium/high/max/xhigh -> reasoning_content 358/418/420/557/512
+        # chars. Los seis se aceptan con 200 y gradiente. Sin esto, opencode
+        # (que filtra sus variantes de effort por esta lista) no pinta ningun
+        # nivel para el alias.
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        disable_background_health_check: true
+    # ── El gemelo cloud del residente. UN alias, y por el plano OpenAI ───────
+    #
+    # Alibaba publica este modelo en DOS planos y la pregunta legitima es por que
+    # no se usa el Anthropic para el Claude CLI, que entra por `/v1/messages` y se
+    # ahorraria la traduccion. Se midieron los dos el 20-09-2026 y la respuesta NO
+    # esta en el proveedor: esta en la configuracion de ESTE proxy.
+    #
+    # LOS DOS PLANOS SON EQUIVALENTES. Ninguno tiene una capacidad que al otro le
+    # falte (medido, mismo modelo, mismo dia):
+    #   cache     openai: implicita — 22528 de 22785 cacheados en la 2a llamada.
+    #             anthropic: explicita con `cache_control` ephemeral — create
+    #             22772, read 22772 en la 2a. Las dos van; NO es el criterio.
+    #   thinking  openai: `reasoning_content`. anthropic: bloques `thinking`, y el
+    #             round-trip funciona aunque la `signature` venga VACIA (Anthropic
+    #             de verdad lo rechazaria; este shim no valida la firma).
+    #   tools     los dos; el plano Anthropic devuelve `tool_use` nativo.
+    #   stream    los dos. OJO: el SSE del plano Anthropic escribe `event:ping`
+    #             SIN espacio tras los dos puntos — un grep de `^event: ` no ve
+    #             nada y parece que no hay streaming. Lo hay.
+    #
+    # LO QUE LO DECIDE: mas abajo, el Deployment exporta
+    # `LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES=true` y ese flag es
+    # GLOBAL (ver su comentario, SC-203): TODA peticion que entra por `/v1/messages`
+    # se traduce a chat completions ANTES de enrutar — antes incluso del hook, que
+    # cuenta con ello para leer el `reasoning_effort` ya traducido. Con eso puesto,
+    # la cuenta de transformaciones se INVIERTE respecto a la intuicion:
+    #
+    #   alias `openai/`     CC -> [flag: anthropic->openai] -> Alibaba openai   = 1
+    #   alias `anthropic/`  CC -> [flag: anthropic->openai] -> [LiteLLM
+    #                                    openai->anthropic] -> Alibaba anthropic = 2
+    #
+    # O sea que un alias `anthropic/` aqui NO quita la traduccion: añade una
+    # segunda. Y el flag no se puede apagar solo para este modelo — es global, y
+    # apagarlo rompe los bloques `thinking` del residente local hacia Claude Code
+    # (es justo el bug que SC-203 arreglo poniendolo).
+    #
+    # Asi que un solo alias, por el plano OpenAI, que es optimo para las DOS
+    # puertas del proxy: `/v1/chat/completions` (Hermes, OpenClaw, opencode) entra
+    # sin traduccion, y `/v1/messages` (Claude CLI) paga la unica que el flag ya
+    # impone a todo el proxy. Si algun dia cae el flag, reconsiderar esto.
+    #
+    # Nota aparte, porque se pregunta sola: al RESIDENTE LOCAL tampoco le
+    # convendria `anthropic/`. Su `/v1/messages` es un shim sobre su propio motor
+    # OpenAI (`AnthropicServingMessages(OpenAIServingChat)`, leido en la imagen del
+    # head), asi que la conversion ocurre igual — solo cambia quien la hace.
+    - model_name: alibaba-q38-flash
+      litellm_params:
+        model: openai/qwen3.8-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-q38-flash-k1
+        name: Qwen3.8 Flash · gemelo cloud del residente
+        description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000001322945
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000004145229
+        # 20-09-2026: la otra mitad del cooldown asimetrico (ver `qwen38-flash-next`).
+        # Este aparca CORTO porque es el ULTIMO recurso: si se expulsa a este y el
+        # residente sigue caido, no queda a donde ir y la peticion muere. Un 429 o un
+        # corte de red de Alibaba no debe dejarnos 15 min sin red de seguridad. 60 s
+        # basta para no martillear a un upstream que dice que no, y es lo bastante
+        # corto para que la red vuelva enseguida.
+        # (Un `Retry-After` suyo manda sobre esto: si Alibaba pide mas, se le da.)
+        cooldown_time: 60
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
+        # pregunta, /v1/chat/completions): `none` -> reasoning 0; low/medium/
+        # high/max/xhigh -> reasoning_content presente (343/355/337/286/327
+        # chars). Es lo que filtra los variants del picker de opencode
+        # (plugin opencode-litellm, mapping.ts).
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        disable_background_health_check: true
+    # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
+    # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
+    # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
+    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    - model_name: alibaba-q38-flash
+      litellm_params:
+        model: openai/qwen3.8-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q38-flash-k2
+        name: Qwen3.8 Flash · gemelo cloud del residente
+        description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000001322945
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000004145229
+        # 20-09-2026: la otra mitad del cooldown asimetrico (ver `qwen38-flash-next`).
+        # Este aparca CORTO porque es el ULTIMO recurso: si se expulsa a este y el
+        # residente sigue caido, no queda a donde ir y la peticion muere. Un 429 o un
+        # corte de red de Alibaba no debe dejarnos 15 min sin red de seguridad. 60 s
+        # basta para no martillear a un upstream que dice que no, y es lo bastante
+        # corto para que la red vuelva enseguida.
+        # (Un `Retry-After` suyo manda sobre esto: si Alibaba pide mas, se le da.)
+        cooldown_time: 60
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
+        # pregunta, /v1/chat/completions): `none` -> reasoning 0; low/medium/
+        # high/max/xhigh -> reasoning_content presente (343/355/337/286/327
+        # chars). Es lo que filtra los variants del picker de opencode
+        # (plugin opencode-litellm, mapping.ts).
+        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        disable_background_health_check: true
+    - model_name: alibaba-q37-plus
+      litellm_params:
+        model: openai/qwen3.7-plus
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
+        # SOLO entre orders declarados — sin esto el unico order del grupo
+        # seria el 2 del -k2 y el reparto se ir entero a la cuenta 2
+        # (medido en la v1.100.0 pineada: 20/20 a -k2).
+        order: 1
+      model_info:
+        id: alibaba-q37-plus-k1
+        name: Qwen3.7 Plus (Alibaba)
+        description: Qwen3.7-Plus - texto + razonamiento + vision.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-202
