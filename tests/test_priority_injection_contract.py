@@ -216,7 +216,7 @@ def test_cache_no_reparsea_sin_cambio_de_mtime(tmp_path):
 
 def test_el_mapa_vive_en_config_yaml():
     assert CONFIG_YAML["priority_by_alias"] == {
-        "open-webui-v3": -10, "hermes": -10, "hermes-batch": 10,
+        "open-webui-v3": -10, "hermes": -10, "hermes-batch": 10, "brain": 20,
     }
 
 

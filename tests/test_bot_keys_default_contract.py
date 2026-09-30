@@ -35,10 +35,10 @@ def router_mod():
     return module
 
 
-def test_bot_keys_por_defecto_son_hermes_batch_y_aurora_rca(router_mod):
-    assert tuple(router_mod.DEFAULT_BOT_KEYS) == ("hermes-batch", "aurora-rca")
+def test_bot_keys_por_defecto_son_hermes_batch_aurora_rca_y_brain(router_mod):
+    assert tuple(router_mod.DEFAULT_BOT_KEYS) == ("hermes-batch", "aurora-rca", "brain")
     bots = router_mod._sanitize({})["bot_keys"]
-    assert "hermes-batch" in bots and "aurora-rca" in bots
+    assert "hermes-batch" in bots and "aurora-rca" in bots and "brain" in bots
     assert "hermes" not in bots
 
 

@@ -2092,6 +2092,7 @@ data:
       open-webui-v3: -10  # chat interactivo: por delante del lote
       hermes: -10         # turnos de los bots: por delante del lote
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
+      brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
     # Proveedores de busqueda para websearch_interception (arriba en
     # litellm_settings.callbacks). SearXNG self-hosted del ns chat: sin API key,
     # sin salida a terceros. El formato json de /search esta activo en la
@@ -4094,7 +4095,7 @@ data:
     # allowlist gobierna lo que la key puede PEDIR; esto gobierna a donde puede
     # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
     # Alibaba sin que nadie lo pida.
-    NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse"})
+    NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse", "brain"})
 
     # ── Línea de facturación de Claude Code (23-09-2026) ─────────────────────────
     # Claude Code pone como PRIMER bloque del system `x-anthropic-billing-header:
@@ -7231,7 +7232,7 @@ data:
     # claude-local SIN clase company, opencode-*, open-webui — NO están). La
     # identificación es fiable para los listados: cada bot usa su key. Una key
     # nueva sin listar se trata como interactiva (fail-open hacia local).
-    DEFAULT_BOT_KEYS = ("hermes-batch", "aurora-rca")
+    DEFAULT_BOT_KEYS = ("hermes-batch", "aurora-rca", "brain")
     # Punto de partida del estimador; el tracker aprende el real por modelo
     # (active_request_tracking.py: chars_per_token arranca en 3,5).
     FALLBACK_CHARS_PER_TOKEN = 3.5
@@ -10903,7 +10904,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-72d8e1dfb707
+        config.k8s.e-dani.com/revision: config-ce2bf8e6af2d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
