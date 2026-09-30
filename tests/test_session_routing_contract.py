@@ -1522,11 +1522,11 @@ def test_kv_no_expulsa_una_sesion_ya_ligada_a_local(router_mod):
 
 def test_kv_bot_umbral_bajo_interactivo_alto(router_mod):
     """Prioridad 3: el interactivo va primero. Suma viva 700.000 de 1.000.000
-    (70 %): bajo bot_budget_pct=60 el bot (key hermes) no cabe y nace en
+    (70 %): bajo bot_budget_pct=60 el bot (key hermes-batch) no cabe y nace en
     Alibaba; la sesión interactiva (opencode) cabe bajo kv_budget_pct=85."""
     cfg = _cfg(sticky=True)
     env = _Env(router_mod, cfg, kv_cap=1_000_000, kv_total=700_000)
-    data = _data(metadata={"user_api_key_alias": "hermes"}, messages=_big_msg(50_000))
+    data = _data(metadata={"user_api_key_alias": "hermes-batch"}, messages=_big_msg(50_000))
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
     env = _Env(router_mod, cfg, kv_cap=1_000_000, kv_total=700_000)
@@ -1630,7 +1630,7 @@ def test_retorno_respeta_residente_no_ready(router_mod):
 @pytest.mark.parametrize("raw,esperado", [
     ({}, {"kv_budget_pct": 85, "bot_budget_pct": 60, "session_idle_s": 600,
           "return_max_tokens": 30000, "alibaba_return_after_s": 3600,
-          "bot_keys": ["hermes", "aurora-rca"]}),
+          "bot_keys": ["hermes-batch", "aurora-rca"]}),
     ({"kv_budget_pct": "85"}, {"kv_budget_pct": 85}),   # string => default
     ({"kv_budget_pct": True}, {"kv_budget_pct": 85}),   # bool => default
     ({"kv_budget_pct": 0}, {"kv_budget_pct": 85}),      # fuera de rango
@@ -1640,7 +1640,7 @@ def test_retorno_respeta_residente_no_ready(router_mod):
     ({"bot_keys": ["Hermes", " aurora-rca ", 5]}, {"bot_keys": ["aurora-rca", "hermes"]}),
     # no-lista => default (los bots conocidos), NUNCA vacía: vacía significaría
     # "nadie es bot" guardado a propósito desde el panel.
-    ({"bot_keys": "hermes"}, {"bot_keys": ["hermes", "aurora-rca"]}),
+    ({"bot_keys": "hermes"}, {"bot_keys": ["hermes-batch", "aurora-rca"]}),
     ({"bot_keys": []}, {"bot_keys": []}),               # lista vacía legítima
 ])
 def test_kv_sanitize_formas(router_mod, raw, esperado):

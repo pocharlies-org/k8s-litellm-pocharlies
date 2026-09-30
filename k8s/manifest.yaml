@@ -2434,7 +2434,7 @@ data:
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
             "openclaw-qwen36-prod,playground,open-webui-v3,"
-            "opencode-20260630-local,claude-local,hermes,synapse",
+            "opencode-20260630-local,claude-local,hermes,hermes-batch,synapse",
         ).split(",")
         if alias.strip()
     )
@@ -7072,7 +7072,7 @@ data:
     #      la válvula está APAGADA (fail-open = comportamiento actual). Una sesión
     #      YA ligada a local NUNCA la expulsa esta válvula: desalojar un prefijo
     #      caliente paga el re-prefrío de quien se va y el de quien vuelve. Las
-    #      sesiones BOT (clase company o key alias en bot_keys: hermes,
+    #      sesiones BOT (clase company o key alias en bot_keys: hermes-batch,
     #      aurora-rca) solo se admiten bajo el umbral más bajo bot_budget_pct:
     #      el interactivo (claude-cli, opencode, open-webui) va primero.
     #   4c. RETORNO desde Alibaba (27-09-2026): una sesión ligada a Alibaba vuelve
@@ -7231,7 +7231,7 @@ data:
     # claude-local SIN clase company, opencode-*, open-webui — NO están). La
     # identificación es fiable para los listados: cada bot usa su key. Una key
     # nueva sin listar se trata como interactiva (fail-open hacia local).
-    DEFAULT_BOT_KEYS = ("hermes", "aurora-rca")
+    DEFAULT_BOT_KEYS = ("hermes-batch", "aurora-rca")
     # Punto de partida del estimador; el tracker aprende el real por modelo
     # (active_request_tracking.py: chars_per_token arranca en 3,5).
     FALLBACK_CHARS_PER_TOKEN = 3.5
@@ -8149,7 +8149,7 @@ data:
     def _is_bot_session(config, claude_class, key_alias):
         """Prioridad (27-09-2026): el interactivo va primero. Bot = clase company
         (los roles autónomos de la compañía corren en segundo plano) o alias de
-        virtual key en bot_keys (hermes, aurora-rca). claude-cli/opencode/
+        virtual key en bot_keys (hermes-batch, aurora-rca). claude-cli/opencode/
         open-webui NO son bot. Sin key alias o config vieja: no bot (fail-open
         hacia local). La clase es falsificable (dgx.claude.class-header.v1) y el
         alias lo pone la key: el único efecto de mentir es que la sesión se
@@ -10903,7 +10903,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f3f56ae86c4a
+        config.k8s.e-dani.com/revision: config-72d8e1dfb707
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -11097,7 +11097,11 @@ spec:
             # lista 16 modelos y devuelve 403 al elegirlos es peor que no tenerla:
             # el picker es una promesa de lo que se puede pedir. Sigue denegada
             # para las demas (document-intake, synapse, master...).
-            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes" }
+            # DGX-454: `hermes-batch` entra con la misma fila que `hermes` — es la clave
+            # de los perfiles de compania (trabajo en segundo plano) y el picker les
+            # promete los mismos or-* que a los de chat: fuera de la lista, la fila
+            # mentiria 403 exactamente igual que cuando falta `hermes`.
+            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes,hermes-batch" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo

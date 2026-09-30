@@ -223,9 +223,15 @@ def test_el_mapa_vive_en_config_yaml():
 def test_el_modulo_no_hardcodea_alias_ni_niveles():
     # La decision es CONFIG: si un alias o un nivel aparece literal en el
     # modulo, alguien lo movio a codigo y este test lo para.
+    # Excepcion (DGX-454, C7): la valvula KV lista `hermes-batch` como DEFAULT de
+    # bot_keys (DEFAULT_BOT_KEYS, contrato dgx.model-routing.config.v2). Es otra
+    # decision (umbral de KV de los bots), no el mapa de prioridad: las lineas que
+    # hablan de bot_keys no cuentan; cualquier otra aparicion sigue parando aqui.
+    src = "\n".join(l for l in ROUTER_SRC.splitlines()
+                    if "bot_keys" not in l.lower())
     for token in ("open-webui-v3", "hermes-batch", "priority_by_alias: {",
                   "-10", "+10"):
-        assert token not in ROUTER_SRC, f"{token!r} hardcodeado en session_router"
+        assert token not in src, f"{token!r} hardcodeado en session_router"
     assert "hermes" not in ROUTER_SRC.split("apply_priority")[1]
 
 

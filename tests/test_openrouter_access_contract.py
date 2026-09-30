@@ -148,6 +148,16 @@ def test_hermes_alcanza_los_alias_or_porque_su_picker_los_promete():
     assert not denied
 
 
+def test_hermes_batch_alcanza_los_alias_or_como_su_gemela_de_chat():
+    """DGX-454: `hermes-batch` (perfiles de compania) nace con los MISMOS modelos que
+    `hermes`. `models: []` en la key virtual no basta si el gate del hook la deja
+    fuera: la fila del picker mentiria 403 para los bots igual que para la gemela."""
+    assert "hermes-batch" in _allowlist()
+    gate = _gate({"LITELLM_OPENROUTER_ALLOWED_KEYS": ",".join(_allowlist())})
+    denied, _ = gate._openrouter_access_denied("or-glm", "hermes-batch")
+    assert not denied
+
+
 def test_la_lane_de_openrouter_tiene_su_propio_service_sobre_los_mismos_pods():
     """El Service `litellm-openrouter` es un ALIAS de `litellm`, no un backend.
 
