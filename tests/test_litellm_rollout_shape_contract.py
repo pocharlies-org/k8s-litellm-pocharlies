@@ -43,81 +43,37 @@ def deploy():
     return _named("Deployment", "litellm")
 
 
-def test_surge_and_ScheduleAnyway_travel_together(deploy):
-    """Los dos ajustes son un solo arreglo. Separarlos revive un fallo distinto.
+def test_surge_without_spread(deploy):
+    """Surge 1 / maxUnavailable 0, y SIN topologySpreadConstraints.
 
-    - surge sin ScheduleAnyway  -> el pod extra no cabe en el unico dominio libre
-      y el rollout se cuelga (medido 14-08).
-    - ScheduleAnyway sin surge  -> vuelve el reemplazo en serie de 720s por replica.
+    El surge sigue siendo lo que desserializa el rollout (sin el, cada replica
+    espera los 720s de drenaje de la anterior). El reparto por hostname se quito
+    el 29-09: con `sauvage` elegible como failover, un spread (aunque fuera
+    ScheduleAnyway) mandaria la segunda replica a OVH en cada rollout y el
+    descheduler la devolveria -- ida y vuelta. Sin spread no hay deadlock posible:
+    el pod de surge cabe en cualquier nodo elegible.
     """
     rolling = deploy["spec"]["strategy"]["rollingUpdate"]
-    spread = deploy["spec"]["template"]["spec"]["topologySpreadConstraints"]
-
     assert rolling["maxSurge"] == 1, (
         "sin surge el rollout serializa: cada replica espera los 720s de drenaje "
         "de la anterior")
     assert rolling["maxUnavailable"] == 0, (
         "con maxUnavailable > 0 se pierde capacidad durante el rollout, y con solo "
         "2 replicas eso es la mitad del proxy de TODO el trafico LLM")
-    assert [c["whenUnsatisfiable"] for c in spread] == ["ScheduleAnyway"], (
-        "DoNotSchedule + surge es el deadlock del 14-08: el pod extra solo cabe en "
-        "el dominio con cuenta 0, que es justo el nodo que aun no ha soltado la CPU")
-
-
-def test_the_skew_arithmetic_still_holds_for_the_declared_replicas(deploy):
-    """`maxSkew: 1` tiene que seguir siendo satisfacible en reposo Y en rollout.
-
-    Con R replicas sobre D dominios el reparto mas plano posible da skew
-    ceil(R/D) - floor(R/D), que solo es <= 1 mientras R no pase de 2*D. En rollout
-    hay R+maxSurge pods. Si alguien sube replicas sin mirar esto, el reparto deja de
-    ser satisfacible y `ScheduleAnyway` lo degrada en silencio a "donde quepa" --
-    los dos pods pueden acabar en el mismo nodo y se pierde la HA sin un aviso.
-    """
-    spec = deploy["spec"]
-    sp = spec["template"]["spec"]
-    replicas = spec["replicas"]
-    surge = spec["strategy"]["rollingUpdate"]["maxSurge"]
-    domains = len(
-        sp["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
-        ["nodeSelectorTerms"][0]["matchExpressions"][0]["values"]
-    )
-    max_skew = sp["topologySpreadConstraints"][0]["maxSkew"]
-
-    for label, pods in (("en reposo", replicas), ("en rollout", replicas + surge)):
-        skew = -(-pods // domains) - (pods // domains)  # ceil - floor
-        assert skew <= max_skew, (
-            f"{label}: {pods} pods sobre {domains} dominios da skew {skew} > "
-            f"{max_skew}; el reparto deja de ser satisfacible")
+    assert not deploy["spec"]["template"]["spec"].get("topologySpreadConstraints"), (
+        "un spread por hostname con sauvage elegible reparte una replica a OVH en "
+        "cada rollout y el descheduler la devuelve: ida y vuelta")
 
 
 def test_replicas_keep_HA_without_over_provisioning(deploy):
-    """Rango, no numero exacto — corregido tras la auditoria del 19-08.
-
-    Antes esto era `== 2` y hacia INALCANZABLE el test de aritmetica del skew: al
-    subir replicas fallaba este primero, asi que el otro no podia fallar nunca por
-    esa via y era ceremonia. Ahora expresa la propiedad que de verdad importa y
-    deja que el del skew haga su trabajo.
-
-    Por que 2 y no 1: es el proxy de TODO el trafico LLM, y 1 replica es punto
-    unico de fallo con cola. Por que no mas de 4: mas alla de los 4 dominios del
-    nodeAffinity el reparto deja de ser satisfacible y `ScheduleAnyway` degrada en
-    silencio a "donde quepa". El 2 concreto es decision del owner (19-08, "4 era
-    sobre-arquitectura") con el dato de 5-6m de CPU real por pod contra 300m
-    reservados y concurrencia solapada media 6,68.
+    """Por que 2 y no 1: es el proxy de TODO el trafico LLM, y 1 replica es punto
+    unico de fallo con cola. Por que no mas de 4: decision del owner (19-08, "4 era
+    sobre-arquitectura") con 5-6m de CPU real por pod y concurrencia media 6,68.
     """
     replicas = deploy["spec"]["replicas"]
-    domains = len(
-        deploy["spec"]["template"]["spec"]["affinity"]["nodeAffinity"]
-        ["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"][0]
-        ["matchExpressions"][0]["values"]
-    )
-    assert replicas >= 2, (
-        f"{replicas} replicas: por debajo de 2 no hay HA ni frente a la caida de "
-        f"un pod, y esto es el proxy de TODO el trafico LLM")
-    if domains > 1:
-        assert replicas <= domains, (
-            f"{replicas} replicas sobre {domains} dominios: el reparto por nodo "
-            f"deja de ser satisfacible y ScheduleAnyway degrada en silencio")
+    assert 2 <= replicas <= 4, (
+        f"{replicas} replicas: por debajo de 2 no hay HA frente a la caida de un "
+        f"pod; por encima de 4 es sobre-aprovisionar un proxy async I/O-bound")
 
 
 def test_the_PDB_cannot_block_a_node_drain(deploy):
@@ -127,10 +83,8 @@ def test_the_PDB_cannot_block_a_node_drain(deploy):
     drenaje de nodo -- rutina en los ks5. Se expresa como `maxUnavailable` para que
     siga siendo correcto si las replicas vuelven a cambiar.
 
-    2026-08-21: esto sigue siendo necesario pero YA NO ES SUFICIENTE. Con el pin a
-    un unico nodo, drenar `ubuntu` se cuelga igual -- no por el PDB sino por el
-    nodeAffinity: el pod desalojado no tiene otro nodo donde ir. Es el precio
-    aceptado del aislamiento en x86, no una regresion que arreglar aqui.
+    29-09-2026: con `sauvage` como failover, drenar `ubuntu` ya no se cuelga: el
+    pod desalojado tiene donde ir, y el descheduler lo devuelve al descordonar.
     """
     spec = _named("PodDisruptionBudget", "litellm")["spec"]
     assert "minAvailable" not in spec, (
@@ -244,45 +198,44 @@ def test_startup_budget_covers_measured_boot_three_times(deploy):
 
 
 # --------------------------------------------------------------------------
-# SC-404 (09-09): el anclaje a `ubuntu`, vuelto a considerar y reafirmado.
-#
-# La historia pedia ensanchar el nodeAffinity para repartir las 2 replicas. Con
-# los 7 nodos medidos ese dia (tabla y descartes en doc/node-affinity-ubuntu.md)
-# no hay segundo nodo honesto, y la historia contempla ese resultado como exito:
-# cerrarla con el motivo escrito. Este test es lo que evita que el "todavia no"
-# se convierta en un "si" por despiste: quien amplie la lista sin el segundo
-# nodo real que falta se cae aqui y tiene que pegar la evidencia.
+# 29-09-2026: el anclaje a `ubuntu` (SC-404) pasa a PREFERENCIA con failover a
+# `sauvage`, tras el corte de luz del 29-09 que dejo el proxy de todo el trafico
+# LLM atado a un nodo apagado. Detalle en doc/node-affinity-ubuntu.md.
 # --------------------------------------------------------------------------
 
 
-def test_the_ubuntu_anchor_is_a_decision_not_an_accidente(deploy):
-    """Un unico dominio elegible, y sin tolerar el taint del pool de GPU.
+def _node_affinity(deploy):
+    return deploy["spec"]["template"]["spec"]["affinity"]["nodeAffinity"]
 
-    Las dos aserciones van juntas porque son las que hacen que ensanchar el
-    nodeAffinity SOLO no mueva nada: los dos Sparks llevan taint duro
-    `dedicated=llm:NoSchedule` y este pod no lo tolera, asi que con la lista
-    ampliada el scheduler sigue eligiendo `ubuntu` (el PR prometeria reparto y
-    el `kubectl get pods -o wide` seria el mismo de hoy). Y anadir la toleracion
-    mete al router en el pool dedicado de GPU -- memoria unificada, radio del
-    SystemOOM del 19-08, y decision del owner del pool, no de este manifiesto.
-    Cualquiera de los dos caminos tiene que venir a caer aqui a por todas.
+
+def test_prefers_x86_and_fails_over_to_sauvage_only(deploy):
+    """Elegibles SOLO `ubuntu` y `sauvage`; en reposo, `ubuntu`.
+
+    Ni los Sparks (dedicated=llm, memoria unificada, SystemOOM del 19-08) ni el
+    plano de control ks5. Y sin tolerar `dedicated`: eso es decision del owner
+    del pool de GPU, no de este manifiesto.
     """
-    sp = deploy["spec"]["template"]["spec"]
-    expr = (
-        sp["affinity"]["nodeAffinity"]
-        ["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"][0]
-        ["matchExpressions"][0]
-    )
-    assert expr["key"] == "kubernetes.io/hostname"
-    assert expr["operator"] == "In"
-    assert expr["values"] == ["ubuntu"], (
-        f"nodeAffinity ampliado a {expr['values']}: SC-404 cerro con el criterio "
-        "5 (doc/node-affinity-ubuntu.md). Solo se amplia con un segundo worker "
-        "general sin taint duro, o con decision del owner del pool GPU mas su "
-        "toleracion; en ambos casos re-mediando el reparto y la suma de "
-        "/internal/active-requests entre nodos (criterios 1-3 de SC-404)")
-    dedicated = [t for t in sp.get("tolerations", []) if t.get("key") == "dedicated"]
-    assert not dedicated, (
-        "tolerar dedicated=llm:NoSchedule mete al router en el pool dedicado de "
-        "GPU (nvidia-dgx / gx10-ec3d, memoria unificada, SystemOOM del 19-08). "
-        "No es decision de este manifiesto: ver doc/node-affinity-ubuntu.md")
+    na = _node_affinity(deploy)
+    req = na["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"]
+    assert req == [{"matchExpressions": [
+        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu", "sauvage"]}]}]
+    pref = na["preferredDuringSchedulingIgnoredDuringExecution"]
+    assert pref == [{"weight": 100, "preference": {"matchExpressions": [
+        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu"]}]}}]
+    tol = deploy["spec"]["template"]["spec"]["tolerations"]
+    assert not [t for t in tol if t.get("key") == "dedicated"], (
+        "tolerar dedicated=llm:NoSchedule mete al router en el pool dedicado de GPU")
+    assert {"key": "role", "operator": "Equal", "value": "edge",
+            "effect": "NoSchedule"} in tol, "sin tolerar role=edge no cabe en sauvage"
+
+
+def test_failover_is_fast_and_comes_back(deploy):
+    """30 s de toleracion a unreachable/not-ready (defecto 300) y la etiqueta
+    de opt-in del descheduler que lo devuelve al x86 cuando vuelve."""
+    tol = {t["key"]: t for t in deploy["spec"]["template"]["spec"]["tolerations"]}
+    for key in ("node.kubernetes.io/unreachable", "node.kubernetes.io/not-ready"):
+        assert tol[key]["effect"] == "NoExecute"
+        assert tol[key]["tolerationSeconds"] <= 60, f"{key}: failover de minutos"
+    labels = deploy["spec"]["template"]["metadata"]["labels"]
+    assert labels.get("e-dani.com/vuelve-a-x86") == "true", (
+        "sin la etiqueta el descheduler no lo devuelve al x86 y se queda en OVH")

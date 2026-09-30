@@ -98,7 +98,12 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         service = self.resource("Service", "litellm")
         service_spec = service["spec"]
         deployment_selector = deployment["spec"]["selector"]["matchLabels"]
-        pod_labels = pod_template["metadata"]["labels"]
+        # La etiqueta de opt-in del descheduler (29-09-2026, vuelta al x86) es la
+        # unica que el pod lleva de mas: no entra en selectores.
+        pod_labels = {
+            k: v for k, v in pod_template["metadata"]["labels"].items()
+            if k != "e-dani.com/vuelve-a-x86"
+        }
 
         self.assertEqual(deployment_selector, pod_labels)
         self.assertEqual(service_spec["selector"], pod_labels)

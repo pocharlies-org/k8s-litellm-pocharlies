@@ -148,7 +148,10 @@ contracts:
       punto de [0,1) y cae en el tramo acumulado de su cuenta — las sesiones
       NUEVAS (y las mudanzas) se reparten en proporcion al cupo; los pines
       existentes no se mueven. Ausente, invalido o sin cubrir todas las
-      cuentas = el modulo uniforme de siempre. Unica forma de cambiar de cuenta: la suya sin deployment sano en
+      cuentas = pesos IGUALES: desde 2026-09-29 el uniforme y el ponderado son
+      la MISMA formula de tramos (sin pesos = tramos de 1), no dos lecturas del
+      hash — con dos lecturas un pod con la caché de config en frio elegia otra
+      cuenta que un pod caliente y las sesiones se mezclaban entre replicas. Unica forma de cambiar de cuenta: la suya sin deployment sano en
       el grupo pedido (cooldown/retirada) -> mudanza ENTERA y el pin se
       reescribe (sin vuelta). <api-key-hash> = user_api_key_hash (sha256).
       Tests: tests/test_alibaba_account_affinity.py (unitarios) y
@@ -193,9 +196,11 @@ contracts:
       antes que el filtro de order: un pin nacido en un cooldown del -k1
       atrapaba la sesion en un -k2 sin key, 401 en bucle). Si el hook no
       carga, el order: 2 del YAML es la inercia.
-      La Valkey (litellm-valkey) va anclada al mismo nodo que el proxy
-      (nodeSelector hostname: ubuntu): el claim se paga en cada peticion y
-      el RTT del overlay entre nodos es ~27 ms p50 (medido 26-09). El minimo de
+      La Valkey (litellm-valkey) lleva la MISMA afinidad que el proxy: el
+      claim se paga en cada peticion y el RTT del overlay entre nodos es
+      ~27 ms p50 (medido 26-09). Desde 2026-09-29 esa afinidad es preferred
+      ubuntu con failover a sauvage (y vuelta por descheduler): valor, Service
+      y puerto no cambian; en failover ambos saltan juntos. El minimo de
       orders se calcula solo entre declarados, por eso el -k1 declara 1.
   - id: dgx.model-routing.config.v1
     kind: http-route
@@ -204,8 +209,14 @@ contracts:
     files:
       - dev/session_router.py
       - k8s/manifest.yaml
-    status: active
+    status: deprecated
+    replaced_by: dgx.model-routing.config.v2
+    remove_after: "2026-10-31"
     note: >-
+      DEPRECATED 2026-09-30 (DGX-454, C7 de DGX-451): sustituido por
+      dgx.model-routing.config.v2 — misma ruta y mismos campos; cambia solo el
+      default de bot_keys ([hermes-batch, aurora-rca] en vez de
+      [hermes, aurora-rca]). Lo que sigue describe la superficie tal como era.
       Consumer side of the dashboard contract (publisher: dgx-infra
       services/dashboard/routes_model_routing.py). session_router.py pulls it
       with a 5 s TTL, stale-while-revalidate and last-known-good; every field
@@ -240,6 +251,26 @@ contracts:
       or malformed field = module default; the valve additionally stays off
       until KV capacity is discovered and the sessions hash has a fresh read
       (fail-open).
+  - id: dgx.model-routing.config.v2
+    kind: http-route
+    value: /api/model-routing/config
+    role: consumer
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-30 (DGX-454, C7 de DGX-451). Misma ruta y mismos campos que
+      dgx.model-routing.config.v1 (su nota los describe todos); el unico cambio
+      es el DEFAULT de bot_keys (modulo session_router, DEFAULT_BOT_KEYS):
+      [hermes-batch, aurora-rca], no [hermes, aurora-rca]. Tras el parto de
+      Hermes la key `hermes` sirve chats interactivos y ya no se penaliza con el
+      umbral bajo bot_budget_pct; el fondo de la compania entra por la clase
+      `company` y por la key `hermes-batch`
+      (dgx.litellm.virtual-key.hermes-batch.v1). Un dashboard que siga
+      publicando bot_keys explicito lo manda sobre el default; ausente o
+      malformado = el default nuevo. Pinned by
+      tests/test_bot_keys_default_contract.py.
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba
@@ -378,6 +409,28 @@ contracts:
       The sidecar caches peer discovery (DNS of litellm-active-peers) for
       15 s and serves the last good list up to 120 s if DNS fails. Shape and
       paths unchanged. Pinned by tests/test_session_routing_contract.py.
+      Since 2026-09-29 each row also carries the additive `profile`: the
+      Hermes profile from the x-hermes-profile header
+      (dgx.hermes.profile-header.v1), null when the request has none. Pinned
+      by tests/test_active_request_profile_contract.py.
+  - id: dgx.hermes.profile-header.v1
+    # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
+    kind: schema
+    value: x-hermes-profile
+    role: consumer
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-29. Request header stamped by the Hermes seed
+      (k8s-openclaw-qwen36-pocharlies helm/hermes/files/hermes_seed.py,
+      con_perfil) on every provider of every Hermes profile: all profiles
+      share the `hermes` key, so this is the only way to tell them apart.
+      The strip_params hook reads it (case-insensitive key, lowercased value,
+      anything not matching [a-z0-9][a-z0-9_.-]{0,63} is dropped) and the
+      tracker serves it as `profile` on /internal/active-requests. Label only:
+      no routing, admission or billing decision depends on it. Pinned by
+      tests/test_active_request_profile_contract.py.
   - id: dgx.litellm.refusal-probe-stamp.v1
     # Claves que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de refusal. Mismo kind que class-header: es una
@@ -401,6 +454,31 @@ contracts:
       sellan nada. Aditivo junto a refusal_text (fase A), refusal_lambda y
       refusal_runtime, que no cambian. Pinned by
       tests/test_refusal_probe_stamp_contract.py.
+  - id: dgx.litellm.master-inference-veto.v1
+    kind: allowlist
+    value: master
+    anchor: 'def _master_inference_denied(requested, key_label):'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      La master key es SOLO de administracion (29-09-2026, orden de Dani al
+      ver filas `master` de inferencia en el panel). El PRIMER gate del
+      async_pre_call_hook del hook (litellm_strip_params.py) deniega
+      HTTP 403 con motivo cualquier llamada de LLM —completion, embedding,
+      rerank, transcription, imagen— autenticada con la master. Las rutas
+      administrativas no pasan por el hook: GET /v1/models, /key/list,
+      /health y /internal/active-requests siguen siendo validas con la
+      master, que es el unico uso que le queda. Consumidores: ninguno de
+      inferencia — los siete servicios del barrido LITELLM-MASTER-KEY-DONE
+      (22-08) ya tienen key propia, y el watchdog, ultimo consumidor de
+      inferencia con la master, paso el mismo dia a sondear con 0 tokens
+      (L1 residente publica el modelo esperado + L2 GET /v1/models
+      autenticado). La purga de `master` del default de
+      UNCENSORED_ALLOWED_KEY_ALIASES es coherente con este veto: su motivo
+      de entrada (la medicion interna) ya no existe. Pinned by
+      tests/test_master_inference_veto_contract.py.
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que
@@ -420,6 +498,22 @@ contracts:
       opencode/CLI vs Hermes vs otros, y el presupuesto diario de la
       compania). Aditivo junto a refusal_lambda/refusal_runtime. Pinned by
       tests/test_spendlogs_claude_class_contract.py.
+  - id: dgx.litellm.spendlogs-hermes-profile.v1
+    # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
+    # que lee por SQL el panel de uso por perfil. Mismo kind que claude_class.
+    kind: schema
+    value: hermes_profile
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-09-30. El pre-call hook de strip_params sella
+      spend_logs_metadata.hermes_profile = perfil normalizado de la cabecera
+      x-hermes-profile (dgx.hermes.profile-header.v1) cuando la peticion la
+      trae; sin cabecera no se escribe nada. Consumido por dgx-infra
+      services/dashboard (Inferencia: uso por perfil y consumidor en ventanas
+      1m..30d). Aditivo. Pinned by tests/test_spendlogs_hermes_profile_contract.py.
   - id: dgx.litellm.key-fallbacks.demos.v1
     # kind 'allowlist': es la lista de keys (por key_alias) que tienen salida
     # externa en `tooling`; el consumidor la usa sabiendo que su key la tiene.
@@ -578,3 +672,27 @@ contracts:
       (`alibaba-q38-flash: BadRequestErrorRetries: 2`), que da tres
       generaciones nuevas por turno SOLO en ese grupo; lo fija
       tests/test_alibaba_400_retry_policy_contract.py.
+  - id: dgx.litellm.priority-field.v1
+    kind: schema
+    value: priority
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      ADITIVO (DGX-453, 2026-09-29): el hook `async_pre_call_hook` inyecta el
+      campo `priority` (int) dentro de `extra_body` de las peticiones cuyo
+      destino RESUELTO (`data["model"]` tras la red final) es el residente —
+      deployment cuyo `litellm_params.api_base` contiene
+      `.llm.svc.cluster.local`. vLLM lo interpreta como prioridad de cola
+      (menor = mas urgente, default 0). NUNCA se inyecta hacia Alibaba ni
+      OpenRouter: no conocen el campo y devolverian 400. La decision vive en
+      el mapa top-level `priority_by_alias` del ConfigMap `litellm-config`
+      (config.yaml) y NO en codigo: alias sin mapa, alias no mappeado o
+      prioridad 0 => no se añade el campo; el fallo de lectura del config es
+      fail-open (no inyecta, nunca lanza). Consumidor del valor: el vLLM del
+      residente (queue_sort por prioridad). Productor: session_router.apply_priority
+      llamado desde litellm_strip_params.py. Verificado contra el parser real
+      del proxy litellm 1.100.0 que una clave top-level desconocida en
+      config.yaml se ignora sin error, por eso el mapa es top-level.

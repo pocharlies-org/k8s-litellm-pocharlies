@@ -20,16 +20,35 @@
 #
 # QUE COMPRUEBA, Y POR QUE ASI
 # ----------------------------
-# Una INFERENCIA REAL, no /health. En esta casa hay precedentes de sobra de
-# servicios con el semaforo en verde y la funcion rota: el pool bge con cero
-# endpoints y el brain devolviendo 200 sin fuentes, o el propio LiteLLM sirviendo
-# 16 modelos mientras su ConfigMap declaraba 27. Un /health que solo dice que el
-# proceso esta vivo no distingue "sirve" de "esta ahi".
+# CERO INFERENCIA REAL (29-09-2026, orden del humano). Este vigilante
+# comprobara durante semanas con una suma real ("17*23", modelo `tooling`,
+# la unica capa que gastaba tokens). El motivo de quitarla: esa sonda salia
+# en el panel de inferencia como una fila `master` cada 10 min, y la master
+# key no debe usarse para inferencia (el barrido del 22-08 ya la dejo solo
+# para administracion; el watchdog era el ultimo usuario de inferencia que
+# quedaba, y el hook la bloquea desde este cambio).
 #
-# Se pide una suma y se comprueba el RESULTADO. Una respuesta vacia con HTTP 200 es
-# un fallo, no un exito, y esto lo trata como tal.
+# El motivo de fondo por el que se escribio la version con tokens sigue
+# valido y es lo que intenta cubrir la version sin tokens: en esta casa hay
+# precedentes de sobra de servicios con el semaforo en verde y la funcion
+# rota —el pool bge con cero endpoints, el brain devolviendo 200 sin fuentes,
+# o el propio LiteLLM sirviendo 16 modelos mientras su ConfigMap declaraba
+# 27—. Un /health que solo dice que el proceso esta vivo no distingue
+# "sirve" de "esta ahi". Por eso NO se baja a /health y ya:
 #
-# Ademas de las capas de servicio (L0 liveliness, L1 residente, L2 inferencia) mira
+#   L1  el residente vLLM, directo: /v1/models tiene que PUBLICAR el modelo
+#       esperado (engine arriba Y modelo cargado, no solo puerto abierto).
+#   L2  LiteLLM con la key: GET /v1/models autenticado — el proxy responde a
+#       peticiones autenticadas y el modelo del residente esta en el
+#       catalogo que enruta.
+#
+# Lo que se pierde al quitar la suma: detectar "HTTP 200 con content vacio"
+# (el caso del 02-09) y el 429 de cuota agotada del plan de pago (15-08).
+# Aceptado: el trafico real (hermes, opencode, OpenClaw, el panel) es
+# constante, y quien se quede sin servir se ve en el panel y en los agentes
+# en cuestion de minutos.
+#
+# Ademas de las capas de servicio (L0 liveliness, L1 residente, L2 catalogo) mira
 # DOS cosas que se rompen sin cambiar de semaforo: el dial global de abliteracion y
 # que el Router tenga herramienta de busqueda (L3, 16-09). Las dos avisan y NINGUNA
 # de las dos pone el Job en rojo: LiteLLM sigue sirviendo, y un rojo cada 10 min
@@ -126,17 +145,24 @@ spec:
         metadata:
           labels: { app: litellm-watchdog }
         spec:
-          # 2026-08-21: todo litellm corre EXCLUSIVAMENTE en `ubuntu` (el x86 de la
-          # RTX). Estos Jobs no tenian restriccion y caian en cualquier ks5. Aqui no se
-          # pierde HA: son tareas puntuales, no servicio. Se tolera el taint blando
-          # pool=dev:PreferNoSchedule del nodo para no penalizarlo en la puntuacion.
+          # 29-09-2026: sigue a litellm (manifest.yaml): prefiere `ubuntu` y cae en
+          # `sauvage` si el x86 no esta. Anclado solo a `ubuntu`, el watchdog se
+          # apagaba justo cuando mas falta hacia: con el x86 caido.
           tolerations:
             - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+            - { key: role, operator: Equal, value: edge, effect: NoSchedule }
           affinity:
             nodeAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:
                 nodeSelectorTerms:
                   - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values: [ubuntu, sauvage]
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  preference:
+                    matchExpressions:
                       - key: kubernetes.io/hostname
                         operator: In
                         values: [ubuntu]
@@ -182,6 +208,12 @@ spec:
                       "llm-tp":
                           "http://qwen38-flash-next.llm.svc.cluster.local:8000",
                   }
+                  # El modelo que el residente TIENE que publicar (medido
+                  # 29-09: `--served-model-name qwen38-flash-next`). L1 no se
+                  # conforma con "contesta y publica algo": un vLLM arriba con
+                  # el peso mal montado puede publicar una lista rara, y el
+                  # modelo esperado es lo que demuestra que esta OPERATIVO.
+                  MODELO_RESIDENTE = "qwen38-flash-next"
 
                   # Donde vive el Deployment del residente: si L1 no contesta,
                   # hay que saber si es una caida o un Recreate en curso (ver el
@@ -326,8 +358,9 @@ spec:
                               try:
                                   d, _ = pide("/v1/models", timeout=15,
                                               base=base, auth=False)
-                                  vivos.append((nombre,
-                                                len(d.get("data", []))))
+                                  ids = [str(m.get("id") or "")
+                                         for m in (d.get("data") or [])]
+                                  vivos.append((nombre, ids))
                               except urllib.error.HTTPError as exc:
                                   # El cuerpo dice el porque (503 sin endpoints,
                                   # 401, ...) y `str(exc)` no lo lleva: mismo
@@ -371,54 +404,56 @@ spec:
                                   "ningun residente contesta (%s)"
                                   % "; ".join(errores))
                           else:
-                              modelos = vivos[0][1]
+                              publicados = [i for _, ids in vivos for i in ids]
+                              modelos = len(publicados)
                               if modelos == 0:
                                   fallos.append(
                                       "residente %s publica CERO modelos"
                                       % vivos[0][0])
+                              elif MODELO_RESIDENTE not in publicados:
+                                  # Arriba pero no OPERATIVO: el motor contesta
+                                  # y publica otra cosa. Sin el modelo esperado,
+                                  # todo lo que enruta a ese alias va a fallar.
+                                  # Medido 29-09: el residente publica
+                                  # `qwen38-flash-next` (--served-model-name).
+                                  fallos.append(
+                                      "residente %s NO publica %r (publica: %s)"
+                                      % (vivos[0][0], MODELO_RESIDENTE,
+                                         ", ".join(publicados)[:120]))
 
-                      # ── L2. La UNICA comprobacion que gasta tokens ─────────────────
-                      # Solo si L0 y L1 estan verdes. max_tokens generoso a proposito:
-                      # con un modelo de razonamiento, un limite corto se lo come el
-                      # pensamiento y devuelve content vacio con HTTP 200. Eso paso de
-                      # verdad y parecia un fallo del servidor cuando era del test — y
-                      # es EXACTAMENTE lo que el health-check de fondo de LiteLLM sigue
-                      # haciendo con su max_tokens de 16 (por eso los residentes locales
-                      # llevan disable_background_health_check en el config, STA-9).
+                      # ── L2. ¿LiteLLM sirve el catalogo con la key? 0 tokens ─────────
+                      # Antes: la UNICA inferencia real del vigilante ("17*23" contra
+                      # `tooling`). Quitada el 29-09 por orden del humano: salia como
+                      # fila `master` en el panel y la master no se usa para
+                      # inferencia (el hook lo bloquea desde este cambio). El
+                      # max_tokens de 400 que se ve en el historico existia porque
+                      # un limite corto se comia el razonamiento y devolvia content
+                      # vacio con HTTP 200 — un fallo del TEST, no del servidor.
+                      #
+                      # Ahora: GET /v1/models AUTENTICADO contra el proxy. Demuestra
+                      # las dos cosas que hay que demostrar sin gastar un token: el
+                      # proxy responde a peticiones selladas con key (la puerta de
+                      # autenticacion y el router vivos) y el modelo del residente
+                      # esta en el catalogo que enruta. El catalogo sale del
+                      # ConfigMap, SI: por eso L1 (residente directo, modelo
+                      # esperado publicado) es la pareja obligatoria de esta capa,
+                      # no un extra.
                       if not fallos:
-                          capa = "L2 inferencia"
+                          capa = "L2 catalogo"
                           try:
-                              d, latencia = pide("/v1/chat/completions", {
-                                  "model": "tooling",
-                                  "messages": [{"role": "user",
-                                                "content": "Responde SOLO el numero: 17*23"}],
-                                  "max_tokens": 400,
-                              }, timeout=120)
-                              txt = (d["choices"][0]["message"].get("content") or "").strip()
-                              if not txt:
-                                  fallos.append("inferencia: HTTP 200 con contenido VACIO")
-                              elif "391" not in txt:
-                                  fallos.append("inferencia: respuesta incorrecta %r"
-                                                % txt[:40])
+                              d, latencia = pide("/v1/models", timeout=30)
+                              en_catalogo = {str(m.get("id") or "")
+                                             for m in (d.get("data") or [])}
+                              if MODELO_RESIDENTE not in en_catalogo:
+                                  fallos.append(
+                                      "catalogo: LiteLLM no enruta %r (%d modelos)"
+                                      % (MODELO_RESIDENTE, len(en_catalogo)))
                           except urllib.error.HTTPError as exc:
-                              # El cuerpo del 429 trae el motivo y el reset; sin leerlo,
-                              # "Too Many Requests" no distingue cuota agotada de
-                              # rate-limit por rafaga.
-                              crudo = cuerpo_error(exc)
-                              if exc.code == 429 and "usage_limit_reached" in crudo:
-                                  for trozo in crudo.split("resets_at"):
-                                      digitos = "".join(
-                                          c for c in trozo[:24] if c.isdigit())
-                                      if len(digitos) >= 10:
-                                          vuelve = int(digitos[:10])
-                                          break
-                                  fallos.append("cuota del plan agotada (429 "
-                                                "usage_limit_reached)")
-                              else:
-                                  fallos.append("inferencia: HTTP %d %s"
-                                                % (exc.code, crudo[:90]))
+                              fallos.append("catalogo: HTTP %d %s"
+                                            % (exc.code,
+                                               cuerpo_error(exc)[:90]))
                           except Exception as exc:
-                              fallos.append("inferencia: %s" % str(exc)[:110])
+                              fallos.append("catalogo: %s" % str(exc)[:110])
 
                       # 3. El DIAL GLOBAL de abliteracion. Anadido 19-08 tras una auditoria.
                       #
@@ -538,6 +573,10 @@ spec:
                       # --- clase del incidente -------------------------------------------
                       # "cuota" no es "caido": el cluster esta bien y no hay nada que tocar,
                       # solo esperar. Mezclarlos fue el error del aviso del 15-08.
+                      # DESDE 29-09 LA CUOTA ES INALCANZABLE AQUI: se detectaba por el 429
+                      # de la inferencia de L2, y L2 ya no gasta tokens. La rama se queda
+                      # para que un estado previo con clase="cuota" en el ConfigMap
+                      # (escrito antes de este cambio) transicione y se anuncie bien.
                       #
                       # "abliterado" tampoco es "caido": sirve perfectamente, y eso es justo
                       # el problema — no se nota. Va DESPUES de caido/cuota porque si no
@@ -691,7 +730,7 @@ spec:
                                    "esta activo para TODO el trafico, no solo para los alias "
                                    "-uncensored.")
                           cuerpo = ["· " + html.escape(d) for d in dial_alto] + [
-                              "· %d modelos · inferencia en %d ms" % (
+                              "· %d modelos · catalogo en %d ms" % (
                                   modelos or 0, round(latencia or 0))]
                           quehacer = ("El valor NO es el que declara el manifiesto.\n"
                                       "Si fue un cambio querido, fijalo en git\n"
@@ -717,7 +756,7 @@ spec:
                                     % (", ".join(html.escape(t) for t in buscador)
                                        if buscador else "NADA"),
                                     "· se esperaba <code>%s</code>" % html.escape(BUSCADOR_ESPERADO),
-                                    "· %d modelos · inferencia en %d ms" % (
+                                    "· %d modelos · catalogo en %d ms" % (
                                         modelos or 0, round(latencia or 0))]
                           quehacer = ("Comprueba las DOS vistas, solo la primera "
                                       "decide:\n"
@@ -761,7 +800,7 @@ spec:
                       else:
                           titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
                           intro = "Vuelve a servir."
-                          cuerpo = ["· %d modelos · inferencia en %d ms" % (
+                          cuerpo = ["· %d modelos · catalogo en %d ms" % (
                               modelos or 0, round(latencia or 0))]
                           quehacer = "Nada. El aviso anterior queda desmentido."
 

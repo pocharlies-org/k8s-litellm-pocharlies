@@ -75,6 +75,10 @@ def test_classifier_implementation_is_gone():
 
 
 def test_watchdog_uses_tooling():
+    """29-09-2026: el watchdog ya NO pide ningun modelo (cero inferencia, orden
+    del humano: su sonda `tooling` salia como fila `master` en el panel). El
+    ancla que debe quedar en el YAML es el residente que sondea L1/L2, y los
+    alias retirados siguen sin poder volver."""
     text = (ROOT / "k8s" / "litellm-watchdog-cron.yaml").read_text()
-    assert json.dumps("tooling") in text
+    assert json.dumps("qwen38-flash-next") in text
     assert all(json.dumps(name) not in text for name in RETIRED)

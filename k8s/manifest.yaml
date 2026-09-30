@@ -2077,6 +2077,21 @@ data:
       # proposito de la ruta y perderlo en silencio seria peor que un error.
       fallbacks:
         - qwen38-flash-next: ["alibaba-q38-flash"]
+    # DGX-453 (29-09-2026): prioridad de cola del residente (campo `priority` en
+    # extra_body, menor = mas urgente, default 0) segun el ALIAS de la virtual key,
+    # decidido AQUI y no en codigo: se reordena la cola sin tocar el hook.
+    # session_router.apply_priority lo inyecta SOLO si el destino resuelto es el
+    # residente (`*.llm.svc.cluster.local`) -- Alibaba y OpenRouter no conocen el
+    # campo y devolverian 400. Vive top-level porque el parser real del proxy
+    # (litellm 1.100.0, ProxyConfig.get_config -> yaml.safe_load, sin whitelist de
+    # claves top-level) ignora las claves que no conoce sin error: medido contra la
+    # ruta real de carga antes de fijar la posicion. La clave `hermes-batch` la
+    # crea DGX-454; el mapa la incluye ya para no moverlo dos veces.
+    # CONTRACTS.yaml: dgx.litellm.priority-field.v1
+    priority_by_alias:
+      open-webui-v3: -10  # chat interactivo: por delante del lote
+      hermes: -10         # turnos de los bots: por delante del lote
+      hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
     # Proveedores de busqueda para websearch_interception (arriba en
     # litellm_settings.callbacks). SearXNG self-hosted del ns chat: sin API key,
     # sin salida a terceros. El formato json de /search esta activo en la
@@ -2097,6 +2112,7 @@ data:
     import json
     import logging
     import os
+    import re
     import threading
     import time
     from urllib.parse import urlparse
@@ -2381,7 +2397,11 @@ data:
     # dedicada, y ese es del owner: en cuanto exista, se quita de aqui la del
     # gateway y se pone la nueva.
     #
-    # `master` entra porque es la key con la que se mide desde dentro del cluster.
+    # `master` SALIO de esta allowlist (29-09-2026): entraba porque era la key con
+    # la que se medía desde dentro del cluster, y el watchdog —ultimo consumidor de
+    # inferencia con la master— paso a comprobar el catalogo sin gastar tokens.
+    # Ademas el pre_call_hook ya veto la inferencia con la master, así que
+    # mantenerla aqui seria admitir lo que el propio hook niega.
     # `playground` entra (2026-08-20) porque es la key de prueba/sonda del playground
     # del dashboard DGX: es de SOLO LECTURA (no una herramienta con escritura), y el
     # owner quiere explicitamente que la superficie de prueba del playground pueda
@@ -2413,7 +2433,7 @@ data:
         alias.strip()
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
-            "openclaw-qwen36-prod,master,playground,open-webui-v3,"
+            "openclaw-qwen36-prod,playground,open-webui-v3,"
             "opencode-20260630-local,claude-local,hermes,hermes-batch,synapse",
         ).split(",")
         if alias.strip()
@@ -4020,6 +4040,32 @@ data:
             if value and str(value).startswith("litellm_proxy_master"):
                 return "master"
         return "unknown"
+
+    # CONTRACT: dgx.litellm.master-inference-veto.v1
+    def _master_inference_denied(requested, key_label):
+        """(bool, detalle) si quien llama es la MASTER KEY pidiendo inferencia.
+
+        La master es SOLO DE ADMINISTRACION (29-09-2026, orden del humano al ver
+        filas `master` en el panel de inferencia). Este hook solo corre para
+        llamadas de LLM —completion, embedding, rerank, transcription, imagen—;
+        las rutas administrativas (GET /v1/models, /key/list, /health, /config)
+        no pasan por aqui, asi que el veto mata la inferencia con la master SIN
+        tocar el uso de administracion que panel y watchdog necesitan.
+
+        Desde el mismo dia no queda ningun consumidor legitimo: el watchdog paso
+        a sondear el catalogo (0 tokens) y el barrido del 22-08 ya dio key
+        propia a los siete servicios. Si alguien saca la master de Vault y la
+        usa para inferencia, la respuesta es un 403 con el motivo, no una fila
+        silenciosa en el panel.
+        """
+        if key_label != "master":
+            return False, None
+        return True, {
+            "error": ("la master key es solo de administracion: no puede pedir "
+                      "inferencia. Pide una key de servicio (ver /key/list)."),
+            "requested": requested,
+            "key": key_label,
+        }
 
     # Aurora is intentionally local-only. Its incident loop is expendable when the
     # resident is unavailable and must not consume any external account as a
@@ -6102,6 +6148,37 @@ data:
             container["spend_logs_metadata"] = _slm
         _slm.update(fields)
 
+    _PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+
+    def _hermes_profile(data):
+        """El perfil de Hermes de la cabecera x-hermes-profile (29-09-2026), o None.
+
+        Mismas tres fuentes que session_router._claude_class (headers raíz,
+        metadata.headers, litellm_metadata.headers) y clave case-insensitive: la
+        caja del cable se conserva. El valor es solo una etiqueta para el panel;
+        se normaliza a minúsculas y lo que no parece un nombre de perfil se tira.
+        Fail-open: nunca lanza."""
+        # CONTRACT: dgx.hermes.profile-header.v1
+        try:
+            sources = [
+                data.get("headers"),
+                (data.get("metadata") or {}).get("headers"),
+                (data.get("litellm_metadata") or {}).get("headers"),
+            ]
+        except AttributeError:
+            return None
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            try:
+                for key, value in source.items():
+                    if isinstance(key, str) and key.lower() == "x-hermes-profile" and value:
+                        v = str(value).strip().lower()
+                        return v if _PROFILE_RE.fullmatch(v) else None
+            except (AttributeError, TypeError):
+                continue
+        return None
+
     def _stamp_claude_class(data, claude_class) -> bool:
         """Sella spend_logs_metadata.claude_class (29-09-2026).
 
@@ -6125,6 +6202,26 @@ data:
             _meta["spend_logs_metadata"] = _slm
         # CONTRACT: dgx.litellm.spendlogs-claude-class.v1
         _slm["claude_class"] = str(claude_class).strip().lower()
+        return True
+
+    def _stamp_hermes_profile(data, profile) -> bool:
+        """Sella spend_logs_metadata.hermes_profile (30-09-2026): el perfil de
+        x-hermes-profile (_hermes_profile) para el HISTORICO del panel — uso por
+        perfil en ventanas de 1 min a 30 dias. Mismo dict y misma via que
+        _stamp_claude_class. Sin perfil no se escribe nada. True si sello."""
+        if not profile or not isinstance(data, dict):
+            return False
+        _mvar = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+        _meta = data.get(_mvar)
+        if not isinstance(_meta, dict):
+            _meta = {}
+            data[_mvar] = _meta
+        _slm = _meta.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            _meta["spend_logs_metadata"] = _slm
+        # CONTRACT: dgx.litellm.spendlogs-hermes-profile.v1
+        _slm["hermes_profile"] = str(profile)
         return True
 
 
@@ -6186,8 +6283,21 @@ data:
 
             requested_model = data.get("model", "")
 
-            # Gate de la ruta ABLITERADA, lo primero de todo y a proposito: antes de
-            # sanear sampling, de reescribir alias y de cualquier llamada al backend.
+            # La master key es SOLO DE ADMINISTRACION (29-09-2026, orden del
+            # humano al ver filas `master` en el panel de inferencia). El porque,
+            # el alcance y el detalle del veto viven en _master_inference_denied.
+            _denied, _detail = _master_inference_denied(
+                requested_model, _resolve_key_label(user_api_key_dict)
+            )
+            if _denied:
+                router_log.warning(
+                    "master: inferencia bloqueada (model=%r call_type=%r)",
+                    _detail["requested"], call_type)
+                raise HTTPException(status_code=403, detail=_detail)
+
+            # Gate de la ruta ABLITERADA, lo primero despues del veto a la master, y
+            # a proposito: antes de sanear sampling, de reescribir alias y de
+            # cualquier llamada al backend.
             # Si esta key no puede pedirla, no se toca nada mas y se devuelve 403.
             # Cubre el alias de capacidad Y los dos nombres directos: si solo cubriera
             # el primero, se rodearia pidiendo el directo.
@@ -6438,6 +6548,14 @@ data:
             if session_router is not None:
                 session_router.stamp_alibaba_session_affinity(data)
 
+            # DGX-453: prioridad de cola hacia el residente segun el alias de la
+            # clave (mapa `priority_by_alias` en config.yaml, no en codigo). Aqui
+            # data["model"] ya es el destino real (tras la red final y el pin de
+            # afinidad): apply_priority solo inyecta si el api_base es del
+            # residente y es fail-open total (nunca lanza, nunca 400 a un cloud).
+            if session_router is not None:
+                session_router.apply_priority(data)
+
             # Sampling por FAMILIA del backend, con el modelo YA resuelto: aqui
             # data["model"] es el alias que de verdad va a atender (tras el salto
             # de CAPABILITY_CHAINS), no el que pidio el
@@ -6608,6 +6726,10 @@ data:
             except Exception as e:
                 log.warning("class stamp error: %s", e)
             try:
+                _stamp_hermes_profile(data, _hermes_profile(data))
+            except Exception as e:
+                log.warning("profile stamp error: %s", e)
+            try:
                 _route_meta = data.get("metadata")
                 if not isinstance(_route_meta, dict):
                     _route_meta = data.get("litellm_metadata")
@@ -6633,6 +6755,7 @@ data:
                     route_reason=_route_meta.get("_session_routing_reason") if _rerouted else None,
                     prompt_chars=_pchars,
                     prompt_has_media=_pmedia,
+                    profile=_hermes_profile(data),
                 )
             except Exception as e:
                 log.debug("track_start error: %s", e)
@@ -6949,7 +7072,7 @@ data:
     #      la válvula está APAGADA (fail-open = comportamiento actual). Una sesión
     #      YA ligada a local NUNCA la expulsa esta válvula: desalojar un prefijo
     #      caliente paga el re-prefrío de quien se va y el de quien vuelve. Las
-    #      sesiones BOT (clase company o key alias en bot_keys: hermes,
+    #      sesiones BOT (clase company o key alias en bot_keys: hermes-batch,
     #      aurora-rca) solo se admiten bajo el umbral más bajo bot_budget_pct:
     #      el interactivo (claude-cli, opencode, open-webui) va primero.
     #   4c. RETORNO desde Alibaba (27-09-2026): una sesión ligada a Alibaba vuelve
@@ -7108,7 +7231,7 @@ data:
     # claude-local SIN clase company, opencode-*, open-webui — NO están). La
     # identificación es fiable para los listados: cada bot usa su key. Una key
     # nueva sin listar se trata como interactiva (fail-open hacia local).
-    DEFAULT_BOT_KEYS = ("hermes", "aurora-rca")
+    DEFAULT_BOT_KEYS = ("hermes-batch", "aurora-rca")
     # Punto de partida del estimador; el tracker aprende el real por modelo
     # (active_request_tracking.py: chars_per_token arranca en 3,5).
     FALLBACK_CHARS_PER_TOKEN = 3.5
@@ -8026,7 +8149,7 @@ data:
     def _is_bot_session(config, claude_class, key_alias):
         """Prioridad (27-09-2026): el interactivo va primero. Bot = clase company
         (los roles autónomos de la compañía corren en segundo plano) o alias de
-        virtual key en bot_keys (hermes, aurora-rca). claude-cli/opencode/
+        virtual key en bot_keys (hermes-batch, aurora-rca). claude-cli/opencode/
         open-webui NO son bot. Sin key alias o config vieja: no bot (fail-open
         hacia local). La clase es falsificable (dgx.claude.class-header.v1) y el
         alias lo pone la key: el único efecto de mentir es que la sesión se
@@ -8401,17 +8524,31 @@ data:
         ordered = sorted(accounts)
         digest = hashlib.sha256(f"{user_key}:{sid}".encode("utf-8")).digest()
         h = int.from_bytes(digest[:8], "big")
+        # UNA sola formula para los dos casos (29-09-2026). Antes el reparto con
+        # pesos leia el hash como un punto en [0, total) y el uniforme como
+        # `h % len`: dos lecturas DISTINTAS del mismo hash, asi que una sesion
+        # nueva caia en una cuenta u otra segun si ESE pod tenia o no la caché de
+        # config cargada (pesos => tramos; {} en frio => módulo). Con el panel
+        # proyectando pesos desde el 29-09, los pods transitaban {} -> pesos en
+        # instantes distintos y el rojo de CI (run 36583219046: 46 sesiones
+        # mezcladas) era eso, no el reparto. Sin pesos = pesos IGUALES, que es la
+        # misma formula con tramos de 1: determinista entre pods con la caché fria
+        # o caliente.
         if weights and all(a in weights for a in ordered):
-            total = sum(weights[a] for a in ordered)
-            if total > 0:
-                point = h / 2 ** 64 * total
-                acc = 0.0
-                for a in ordered:
-                    acc += weights[a]
-                    if point < acc:
-                        return a
-                return next(a for a in reversed(ordered) if weights[a] > 0)
-        return ordered[h % len(ordered)]
+            tramos = {a: float(weights[a]) for a in ordered}
+        else:
+            tramos = {a: 1.0 for a in ordered}
+        total = sum(tramos[a] for a in ordered)
+        if total <= 0:
+            tramos = {a: 1.0 for a in ordered}
+            total = float(len(ordered))
+        point = h / 2 ** 64 * total
+        acc = 0.0
+        for a in ordered:
+            acc += tramos[a]
+            if point < acc:
+                return a
+        return next(a for a in reversed(ordered) if tramos[a] > 0)
 
 
     async def _account_weights():
@@ -8911,6 +9048,94 @@ data:
             _sessions_write(sid, est)
         info["decision"] = "local"
         return False
+
+
+    # DGX-453 (29-09-2026): prioridad de cola del RESIDENTE segun el alias de la
+    # virtual key. El mapa vive en /config/config.yaml (`priority_by_alias`,
+    # top-level) y NO en este modulo: se reordena la cola sin tocar codigo.
+    # Fail-open TOTAL: cualquier fallo (fichero ausente, yaml roto, forma rara)
+    # => no se inyecta nada y la peticion sale con la prioridad default de vLLM.
+    # Solo hacia `*.llm.svc.cluster.local`: Alibaba y OpenRouter no conocen el
+    # campo y devolverian 400.
+    # CONTRACTS.yaml: dgx.litellm.priority-field.v1
+    _PRIORITY_CONFIG_PATH = "/config/config.yaml"
+    _PRIORITY_RESIDENT_MARKER = ".llm.svc.cluster.local"
+    _priority_cache = {"mtime": None, "map": None, "model_list": None}
+
+
+    def _priority_config():
+        """(mapa alias->int, model_list) del config, reparseado SOLO si el mtime
+        del fichero cambio (esto corre en cada peticion). Devuelve (None, None)
+        ante cualquier fallo."""
+        try:
+            mtime = os.path.getmtime(_PRIORITY_CONFIG_PATH)
+        except OSError:
+            return None, None
+        if _priority_cache["mtime"] != mtime:
+            try:
+                import yaml
+
+                with open(_PRIORITY_CONFIG_PATH) as fh:
+                    cfg = yaml.safe_load(fh) or {}
+                raw = cfg.get("priority_by_alias")
+                pmap = None
+                if isinstance(raw, dict):
+                    pmap = {}
+                    for k, v in raw.items():
+                        if (isinstance(k, str) and isinstance(v, int)
+                                and not isinstance(v, bool)):
+                            pmap[k.strip().lower()] = v
+                ml = cfg.get("model_list")
+                _priority_cache["map"] = pmap
+                _priority_cache["model_list"] = ml if isinstance(ml, list) else None
+                _priority_cache["mtime"] = mtime
+            except Exception:
+                return None, None
+        return _priority_cache["map"], _priority_cache["model_list"]
+
+
+    def _priority_targets_resident(model, model_list):
+        """El modelo RESUELTO (data["model"], ya elegido por la red final) apunta
+        a un deployment cuyo api_base es del residente?"""
+        if not isinstance(model, str) or not isinstance(model_list, list):
+            return False
+        for entry in list(model_list):
+            try:
+                names = str(entry["model_name"]).split(",")
+                api_base = entry["litellm_params"]["api_base"]
+            except (KeyError, TypeError):
+                continue
+            if (any(n.strip() == model for n in names)
+                    and _PRIORITY_RESIDENT_MARKER in str(api_base)):
+                return True
+        return False
+
+
+    def apply_priority(data):
+        """Inyecta `priority` (int) en data["extra_body"] segun el alias de la
+        virtual key, SOLO si el destino resuelto es el residente. Sin alias, alias
+        no mappeado, prioridad 0 o destino cloud => no se añade el campo. Nunca
+        lanza. Llamado desde litellm_strip_params.async_pre_call_hook justo
+        despues del pin de afinidad, donde data["model"] ya es el destino real."""
+        try:
+            alias = _key_alias(data)
+            if not alias:
+                return
+            pmap, model_list = _priority_config()
+            if not pmap:
+                return
+            prio = pmap.get(alias)
+            if not isinstance(prio, int) or isinstance(prio, bool) or prio == 0:
+                return
+            if not _priority_targets_resident(data.get("model"), model_list):
+                return
+            body = data.get("extra_body")
+            if not isinstance(body, dict):
+                body = {}
+                data["extra_body"] = body
+            body.setdefault("priority", prio)
+        except Exception:
+            return
   active_request_tracking.py: |
     """Exact, best-effort telemetry for requests currently handled by LiteLLM."""
     from __future__ import annotations
@@ -9185,6 +9410,7 @@ data:
             route_reason: Any = None,
             prompt_chars: Optional[int] = None,
             prompt_has_media: bool = False,
+            profile: Any = None,
         ) -> Dict[str, Any]:
             now = self.clock()
             with self._lock:
@@ -9203,6 +9429,11 @@ data:
                     "trace_id": str(trace_id).strip() if trace_id else None,
                     "source": "litellm",
                     "alias": str(key_alias or "unknown"),
+                    # QUIEN dentro de la key (29-09-2026): la cabecera
+                    # x-hermes-profile. Todos los perfiles de Hermes comparten la
+                    # key `hermes`; sin esto el panel solo decia "hermes". None =
+                    # la peticion no la trae.
+                    "profile": str(profile) if profile else None,
                     "model": str(model or "unknown"),
                     "call_type": str(call_type or "unknown"),
                     "server_id": resolve_server_id(model, api_base),
@@ -9795,6 +10026,7 @@ data:
                     "route_from": raw.get("route_from"),
                     "route_reason": raw.get("route_reason"),
                     "route_at": raw.get("route_at"),
+                    "profile": raw.get("profile"),
                     "prompt_tokens": raw.get("prompt_tokens"),
                     "prompt_tokens_estimate": raw.get("prompt_tokens_estimate"),
                     "completion_tokens": raw.get("completion_tokens"),
@@ -10663,7 +10895,7 @@ spec:
   selector: { matchLabels: { app: litellm } }
   template:
     metadata:
-      labels: { app: litellm }
+      labels: { app: litellm, e-dani.com/vuelve-a-x86: "true" }
       annotations:
         # The request-policy hook lives in the mounted ConfigMap and is imported at
         # process start, so every material hook change must roll this pod.
@@ -10671,53 +10903,41 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-24244a5e40a9
+        config.k8s.e-dani.com/revision: config-72d8e1dfb707
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
       terminationGracePeriodSeconds: 720
-      # 2026-08-21, decision del owner: TODO litellm corre EXCLUSIVAMENTE en
-      # `ubuntu` (el x86 de la RTX). La lista pasa de cuatro nodos a uno.
+      # 29-09-2026, decision del owner tras el corte de luz del x86: litellm
+      # PREFIERE `ubuntu` (latencia a la LAN y a los Sparks) pero ya no depende
+      # de el. Si el x86 cae, las replicas saltan a `sauvage`; cuando vuelve,
+      # el descheduler (k8s-gitops-pocharlies, infra/descheduler) las devuelve
+      # una a una respetando el PDB. Antes (21-08 / SC-404, doc/node-affinity-ubuntu.md)
+      # el pin era `required` a `ubuntu`: con el x86 apagado no habia proxy de
+      # NINGUN trafico LLM aunque los Sparks siguieran sirviendo.
       #
-      # LO QUE SE PIERDE, escrito para que nadie lo descubra en un incidente:
-      # con un solo nodo elegible las 2 replicas ya NO dan HA de nodo -- protegen
-      # de la caida de un pod, no de la del host. Si `ubuntu` cae, cae el proxy de
-      # TODO el trafico LLM. Y `ubuntu` deja de ser drenable sin corte: al
-      # cordonarlo el pod desalojado no tiene donde reprogramarse, se queda
-      # Pending, y el PDB (maxUnavailable 1) bloquea el desalojo del segundo. El
-      # drain se cuelga. Es inherente a fijar a un nodo, no un fallo de config.
+      # Medido el 29-09 desde un pod en `sauvage`: qwen38-flash-next, tooling y
+      # stt responden (200, ~0,15-0,30 s de conexion+peticion, la WAN por
+      # Tailscale); postgres-shared y shared-valkey viven en los ks5. Los
+      # clientes de LAN entran por traefik-lan, que sigue en el x86: el failover
+      # cubre a los consumidores dentro del cluster (Hermes, en ks5).
       #
-      # 2026-09-09, SC-404: se vuelve a considerar el reparto y el anclaje se
-      # REAFIRMA con los 7 nodos medidos ese dia. La tabla completa y el motivo
-      # de cada descarte viven en doc/node-affinity-ubuntu.md. Dos hechos
-      # medidos en esa comprobacion cambian como hay que leer este pin:
-      #   - La imagen NO es el motivo: el digest fijado (c8756e7b...) es un OCI
-      #     index con linux/amd64 Y linux/arm64 (`docker manifest inspect`), o
-      #     sea que un Spark PODRIA ejecutar el binario.
-      #   - Lo que decide es QUE TOLERA el pod, no quien esta limpio: "sin
-      #     taint" no describe bien a ninguno de los 7. Medidos: `gx10-ec3d` y
-      #     `nvidia-dgx` llevan taint DURO `dedicated=llm:NoSchedule`; `sauvage`
-      #     lleva `role=edge:NoSchedule` (y esta al otro lado de la WAN, en
-      #     OVH); `ks5-cp-1/2/3` no llevan NINGUN taint pero son plano de
-      #     control con etcd, vetados por la epica; `ubuntu` lleva
-      #     `pool=dev:PreferNoSchedule`, que es blando y este pod SI lo tolera.
-      #     El pod solo tolera `pool=dev:PreferNoSchedule`, y por eso `ubuntu`
-      #     es el unico nodo viable. Ensanchar el nodeAffinity sin tocar
-      #     tolerations no mueve nada: el scheduler seguiria eligiendo `ubuntu`
-      #     igual que hoy. Colocar de
-      #     verdad una replica en `nvidia-dgx` exige ademas meter al router en
-      #     el pool dedicado de GPU -- decision del dueno del pool, no de este
-      #     manifiesto, y dentro del radio del SystemOOM del 19-08 en memoria
-      #     unificada.
-      # Mientras no haya un segundo worker general sin taint, esto es decision
-      # consciente y no accidente; tests/test_litellm_rollout_shape_contract.py
-      # ::test_the_ubuntu_anchor_is_a_decision_not_an_accidente lo mantiene.
-      #
-      # `ubuntu` lleva un taint BLANDO pool=dev:PreferNoSchedule. Se sigue
-      # tolerando: con un unico nodo elegible no puede bloquear, pero sin la
-      # toleracion el scheduler lo penaliza en la puntuacion sin necesidad.
+      # - required ubuntu|sauvage: nunca los Sparks (dedicated=llm, memoria
+      #   unificada, SystemOOM del 19-08) ni el plano de control ks5.
+      # - preferred ubuntu weight 100: en reposo las 2 replicas viven en el x86.
+      # - Sin topologySpreadConstraints: con `sauvage` elegible, un reparto por
+      #   hostname (aunque fuera ScheduleAnyway) mandaria la segunda replica a
+      #   OVH en cada rollout y el descheduler la devolveria: ida y vuelta.
+      # - unreachable/not-ready con tolerationSeconds 30 (defecto 300): el
+      #   failover tarda ~grace del nodo (40-50 s) + 30 s + arranque del pod,
+      #   en vez de 5 min.
+      # - Etiqueta e-dani.com/vuelve-a-x86 (en labels del template): opt-in
+      #   del descheduler.
       tolerations:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+        - { key: role, operator: Equal, value: edge, effect: NoSchedule }
+        - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+        - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -10725,42 +10945,14 @@ spec:
               - matchExpressions:
                   - key: kubernetes.io/hostname
                     operator: In
+                    values: [ubuntu, sauvage]
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
                     values: [ubuntu]
-      # 2026-08-21: con UN solo dominio esta restriccion es inerte -- todos los
-      # pods caen en el mismo hostname, asi que el skew es siempre 0 y nunca puede
-      # violarse. Se conserva a proposito: si algun dia se vuelve a ensanchar el
-      # nodeAffinity, la maquinaria de reparto vuelve a funcionar sola, y los
-      # contratos de tests/test_litellm_rollout_shape_contract.py la leen.
-      #
-      # ScheduleAnyway y NO DoNotSchedule (2026-08-19). Este es el cambio que de
-      # verdad desserializa el rollout; bajar replicas por si solo NO bastaba.
-      #
-      # La aritmetica del skew con 2 replicas y maxSurge 1, sobre los 4 nodos que
-      # deja el nodeAffinity:
-      #   - regimen estable, 2 pods / 4 dominios -> 1,1,0,0 -> skew = 1-0 = 1 <= 1 OK
-      #   - durante el rollout, 2+1 = 3 pods / 4 dominios -> 1,1,1,0 -> skew = 1 OK
-      # O sea que en el papel maxSkew 1 se cumple. El problema es que en el papel
-      # no se ve el pod Terminating: sigue contando en el recuento de topologia Y
-      # sigue reservando su CPU durante los 720s del drenaje. Peor caso real:
-      #     cp-1 = 1 (Terminating)   cp-2 = 0   cp-3 = 1 (viejo)   ubuntu = 1 (nuevo)
-      # el UNICO dominio con cuenta 0 es cp-2, y cp-2 tiene 75m de CPU libre
-      # (7925m pedidos de 8000m) contra los 160m que pide el pod. Con DoNotSchedule
-      # eso es FailedScheduling y vuelve el candado de 720s, con 2 replicas igual
-      # que con 4.
-      #
-      # ScheduleAnyway convierte el reparto en puntuacion en vez de filtro: el
-      # scheduler SIGUE prefiriendo un pod por nodo (es lo que puntua), pero cuando
-      # la unica casilla que respeta el skew no tiene CPU, dobla en otro nodo en vez
-      # de quedarse en Pending. El reparto 1-por-nodo es una preferencia de HA, no
-      # una condicion de correctness: no hay estado por-nodo que lo exija.
-      # CPU libre medida para el pod de surge (150m + 10m del sidecar = 160m):
-      # cp-1 520m OK, cp-3 540m OK, ubuntu 1645m OK, cp-2 75m NO -> 3 de 4 nodos
-      # pueden aceptarlo en cualquier momento, asi que no hay deadlock posible.
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
-          labelSelector: { matchLabels: { app: litellm } }
       initContainers:
         # Siembra el token de la cuenta Grok en un emptyDir escribible: el secret
         # montado es de solo lectura y el XAIOAuthAuthenticator necesita escribir
@@ -11232,20 +11424,35 @@ spec:
   selector: { matchLabels: { app: litellm-valkey } }
   template:
     metadata:
-      labels: { app: litellm-valkey }
+      labels: { app: litellm-valkey, e-dani.com/vuelve-a-x86: "true" }
     spec:
       # 26-09-2026, medido: este tier se lee UNA vez por peticion alibaba
-      # (el claim del DeploymentAffinityCheck). Sin fijar nodo, la scheduler
-      # lo puso en ks5-cp-1 y el RTT por el overlay de Tailscale salio
-      # p50 27.2 ms / p99 257 ms desde el pod del proxy — cada peticion
-      # pagaba ~27 ms solo por preguntar "a que cuenta me toca". litellm
-      # esta anclado a `ubuntu` (nodeAffinity arriba) y el UNICO consumidor
-      # de esta Valkey es litellm (SESSION_ROUTER_REDIS_URL), asi que el
-      # anclaje conjunto deja el RTT en terminos de loopback. El riesgo es
-      # la decision ya tomada para el proxy (ubuntu es unico nodo): si
-      # ubuntu cae, cae todo litellm igualmente; y los pins son efimeros
-      # (TTL 1 h, allkeys-lru) — se rehacen solos en el siguiente arranque.
-      nodeSelector: { kubernetes.io/hostname: ubuntu }
+      # (el claim del DeploymentAffinityCheck). En otro nodo que el proxy el
+      # RTT por el overlay de Tailscale salio p50 27.2 ms / p99 257 ms. Por
+      # eso sigue al proxy: MISMA afinidad que el Deployment litellm (prefiere
+      # `ubuntu`, salta a `sauvage` si el x86 cae, el descheduler lo devuelve).
+      # Los pins son efimeros (TTL 1 h, allkeys-lru) y el hook es fail-open:
+      # el salto solo re-vincula sesiones.
+      tolerations:
+        - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+        - { key: role, operator: Equal, value: edge, effect: NoSchedule }
+        - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+        - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [ubuntu, sauvage]
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [ubuntu]
       containers:
         - name: valkey
           image: redis:7-alpine

@@ -194,13 +194,13 @@ def test_ac10_lo_que_no_se_toca_sigue_intacto():
     env = {e["name"]: e["value"] for e in litellm["env"] if "value" in e}
     assert env["LITELLM_DRAIN_TIMEOUT_SEC"] == "660"
 
-    # AC10 es tambien un "no se ensancha": la afinidad sigue anclada a ubuntu
-    # (eso es H3/SC-404, y un PR que la ensanche aqui se rechaza).
+    # AC10: la afinidad no se ensancha mas alla de ubuntu (preferido) y sauvage
+    # (failover, 29-09-2026); el detalle lo guarda test_litellm_rollout_shape_contract.
     terms = template["affinity"]["nodeAffinity"][
         "requiredDuringSchedulingIgnoredDuringExecution"
     ]["nodeSelectorTerms"]
     assert terms[0]["matchExpressions"] == [
-        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu"]}
+        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu", "sauvage"]}
     ]
 
 
@@ -655,6 +655,11 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
         for row in shape_new["active"]:
             assert "prompt_tokens_estimate" in row, "falta prompt_tokens_estimate en la fila"
             row.pop("prompt_tokens_estimate")
+        # Y para `profile` (29-09, dgx.hermes.profile-header.v1): el perfil de
+        # Hermes de la cabecera x-hermes-profile. ADITIVA, el panel la lee con .get().
+        for row in shape_new["active"]:
+            assert "profile" in row, "falta profile en la fila"
+            row.pop("profile")
         assert _shape(body_old) == shape_new, (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
             f"ahora: {json.dumps(shape_new)}"
