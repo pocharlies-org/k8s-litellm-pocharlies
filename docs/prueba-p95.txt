@@ -97,4 +97,141 @@ data:
         disable_background_health_check: true
     # ── Audio: Whisper STT + OmniVoice TTS (OSS passthrough; for CloudBlue & clients) ──
     # One LiteLLM key now covers chat + embeddings + STT + TTS. Backends are ClusterIP-only;
-    # LiteLLM stays the single pub
+    # LiteLLM stays the single public, key-authed, budgeted front door (no separate exposure).
+    - model_name: stt-turbo
+      litellm_params:
+        model: openai/whisper-large-v3
+        api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_transcription
+    - model_name: whisper-1            # OpenAI-SDK-compatible alias -> same Whisper backend
+      litellm_params:
+        model: openai/whisper-large-v3
+        api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_transcription
+    - model_name: omnivoice-tts
+      litellm_params:
+        model: openai/omnivoice
+        api_base: http://omnivoice-tts.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_speech
+    - model_name: tts-1               # OpenAI-SDK-compatible alias -> same OmniVoice backend
+      litellm_params:
+        model: openai/omnivoice
+        api_base: http://omnivoice-tts.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: audio_speech
+    # ── RESIDENTES LOCALES: ESTATICOS DESDE 2026-08-18 ──────────────────────────
+    #
+    # Hasta hoy estos alias NO estaban aqui: los registraba en runtime el
+    # controlador `litellm-dgx-backend-sync` por HTTP contra /model/new. Ese
+    # controlador es el que producia el desmadre de nombres, y por tres motivos
+    # que se combinan:
+    #   - /model/new es create-only (ver managed_model_contract),
+    #   - store_model_in_db: true guardaba lo registrado en postgres,
+    #   - /model/delete borraba el alias en cuanto el Service pasaba a NotReady.
+    # Resultado medido: alias que aparecian y desaparecian solos (18-08 11:43
+    # desregistro los nueve de DeepSeek, 12:37 los volvio a crear), CINCO
+    # workarounds en este mismo fichero, y cuatro listas de alias que no
+    # coincidian entre si (panel, OpenClaw, opencode y el allowlist del equipo).
+    #
+    # Ahora hay UNA fuente de la verdad: este YAML. Y "quien esta arriba" lo
+    # contesta Kubernetes por el Service de pool `tooling` (k8s-ai-pocharlies,
+    # selector llm.dgx-infra/pool=tooling-resident), que es su competencia — no
+    # la de un controlador que escribe en una base de datos.
+    #
+    # DOS CLASES DE NOMBRE, y la diferencia importa:
+    #
+    #  1. NOMBRE DIRECTO (qwen38-flash-next y su `-uncensored`): apunta al Service
+    #     PROPIO del backend. Si ese backend no
+    #     esta, el alias da 400 «Invalid model name» — visible y correcto: quien
+    #     nombra un modelo concreto debe recibir ese modelo o un error, nunca otro.
+    #
+    #  2. NOMBRE DE CAPACIDAD (`tooling`, `high`, `max`): apunta al Service de
+    #     POOL. El hook los reescribe por peticion al
+    #     nombre directo del residente vivo (_resolve_tooling_profile), que es lo
+    #     que mantiene correctos el sampling por familia (FAMILY_SAMPLING), el
+    #     sello de lambda y la ventana real. La entrada al pool es la red de
+    #     seguridad: si el hook se desactivara, el alias sigue siendo servible
+    #     porque los DOS backends declaran `tooling` como segundo
+    #     --served-model-name. Lo unico que se perderia en ese camino es el
+    #     repetition_penalty de Qwen, que va en las entradas directas.
+    #
+    # NO SE DECLARA DOS VECES `tooling` (una por backend) a proposito. Medido el
+    # 18-08 con dos deployments bajo un alias, uno con api_base muerto: 11 de 12
+    # peticiones OK y UNA 500. Con routing_strategy simple-shuffle, allowed_fails
+    # 3 y cooldown_time 120 el muerto se come peticiones hasta acumular 3 fallos y
+    # vuelve a salir cada 2 minutos a fallar otras tres. El Service de pool no
+    # tiene ese agujero: el backend caido no esta en los EndpointSlice.
+    #
+    # La ventana de los alias de capacidad es 262144 (la del residente MENOR), no
+    # 393216: es el suelo de los dos, y el techo de contexto que se pidio. Un
+    # cliente que declare 384k y aterrice en qwen38 se pasaria de ventana; al
+    # contrario solo desaprovecha.
+    # 2026-08-20: max_parallel_requests 6 -> 32 en los dos alias directos de
+    # DeepSeek, y 4 -> 32 en el pool de capacidad de mas abajo. ESTE era el 429.
+    #
+    # max_parallel_requests NO ENCOLA. Cuando el contador en vuelo de la
+    # deployment pasa del tope, LiteLLM levanta RateLimitError (HTTP 429) en el
+    # acto. vLLM si encola: mas alla de MAX_NUM_SEQS las peticiones esperan en su
+    # waiting queue, no se rechazan. Poner el tope del proxy a la altura de los
+    # slots de EJECUCION del motor convertia "espera dos segundos" en "429 too
+    # many requests", y el cliente lo remata con "exceeded retry limit".
+    #
+    # Por que tumbaba al cliente externo Y a DeepSeek A LA VEZ: comparten la salida. Con
+    # num_retries 1 el unico reintento cae casi siempre por encima del mismo
+    # tope. Las antiguas salidas externas ya no forman parte del grafo: un 429
+    # actual se diagnostica contra este límite o el backend local.
+    #
+    # La aritmetica, con numeros ya medidos en este repo (ver el comentario de
+    # `replicas` del Deployment: sweep-line sobre 89.672 peticiones de 48 h):
+    # concurrencia media 6,68 / p99 37 / pico 77. Con 2 replicas el p99 son ~19
+    # por proceso contra un tope de 4-6. Esto no recortaba picos raros: rechazaba
+    # trafico NORMAL, porque la media ya estaba por encima del tope de 4. Medido
+    # hoy en el proxy vivo: litellm_deployment_failure_responses_total 281 sobre
+    # 2.811, y litellm_deployment_successful_fallbacks_total = 2 -- la red no
+    # salvaba nada porque todos los caminos acaban en un tope o en una cuota
+    # agotada.
+    #
+    # 32 por proceso (64 entre las 2 replicas) cubre el p99 con margen y sigue
+    # acotando una fuga. Quien debe decidir la saturacion es el motor con su
+    # cola, el unico que sabe cuanta KV le queda; el proxy no tiene esa
+    # informacion y no deberia estar decidiendo con ella.
+    # ── Residente llm-tp desde el 27-08: Qwen3.8-Flash-Next (vLLM TP=2) ──────
+    #
+    # 27-08: PR #34 declaro este residente SOLO en sync.py — el controlador
+    # RETIRADO el 18-08 (0 replicas) — asi que el router nunca lo cargo y
+    # `_alias_has_deployments("qwen38-flash-next")` devolvia False: `tooling`
+    # respondia 503 `compute_profile_target_unavailable` con el residente
+    # perfectamente Ready. Esta es la entrada del mecanismo VIGENTE (model_list
+    # estatico). El hook ya lo tenia: TOOLING_MODE_TARGETS llm-tp -> este
+    # nombre, familia de sampling qwen y thinking off por defecto.
+    #
+    # ctx 262144 (256K nativo sin YaRN) y salida 16384 como el resto de la
+    # familia. El tope de 8 en paralelo que decia aqui se midio contra SGLang
+    # (`--mem-fraction-static 0.78`) y ya no aplica: a este residente lo sirve
+    # vLLM, no SGLang -- verificado en vivo el 20-09-2026 sobre el Deployment
+    # `qwen38-flash-next-head`: imagen `vllm/vllm-openai`, `GPU_MEM_UTIL=0.816`
+    # y `KV_CACHE_MEMORY_BYTES` 22 GiB.
+    #
+    # 20-09-2026 (Dani): se DEROGA el "32, la saturacion la decide el motor".
+    # La evidencia es la gotcha de la muerte silenciosa (14-09, 736 peticiones
+    # medidas: p50 98 s, p99 591 s, max 851 s) y la cola de hoy: concurrencia
+    # 13-14 sostenida, la compania con tope dinamico 1 y 10 epicas esperando
+    # hueco mientras los turnos de claude mueren sin error. Dejar que el motor
+    # decida con su cola significa que el CLIENTE se rinde antes que el proxy:
+    # el .jsonl acaba en un tool_result, no hay fallo que dispare el fallback a
+    # `alibaba-q38-flash`, y la peticion se cobra entera en el residente sin
+    # que nadie escuche la respuesta.
+    #
+    # Semantica VERIFICADA en vivo (20-09, tras desplegar #98): el
+    # `max_parallel_requests` NO rechaza — ENCOLA. Este LiteLLM lo implementa
+    # como un semaphore asyncio por deployment y por POD (router.py:
+    # `_get_client(client_type="max_parallel_requests")` + `async with`), y sin
+    # Redis el tope es 8 por replica: 16 efectivos entre las dos. El hook del
+    # proxy no aplica topes por modelo (parallel_
