@@ -1,0 +1,100 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: litellm
+---
+# ExternalSecret: litellm DB credentials in shared PostgreSQL
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-postgres-creds
+  namespace: litellm
+spec:
+  refreshInterval: 24h
+  secretStoreRef:
+    name: onepassword
+    kind: ClusterSecretStore
+  target:
+    name: litellm-postgres-creds
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: username
+      remoteRef: { key: litellm/DB_USER }
+    - secretKey: password
+      remoteRef: { key: litellm/DB_PASSWORD }
+---
+# LiteLLM Router — unified LLM API gateway
+# Image: ghcr.io/berriai/litellm:main-stable (amd64/arm64)
+# Router is stateless; state lives in the shared PostgreSQL cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: litellm
+data:
+  config.yaml: |
+    model_list:
+    # Los alias locales son ESTATICOS desde el 18-08-2026 (ver la lapida de
+    # `litellm-dgx-backend-sync` mas abajo): no se registran ni se retiran en
+    # runtime segun los endpoints del Service. Que un backend este arriba lo
+    # contesta Kubernetes; que un alias exista, lo dice ESTE fichero y solo el.
+    # 2026-08-14: los cuatro apuntaban a los Services `-cpu`, cuyos Deployments
+    # llevan 0/0 replicas y no tienen ningun KEDA que los levante: LiteLLM daba
+    # "Connect call failed" en /v1/embeddings y /v1/rerank teniendo los backends
+    # sanos al lado. No era protocolo -- el embedder responde /v1/embeddings con
+    # forma OpenAI y el reranker su /rerank nativo, que es lo que traduce el
+    # provider `infinity/`. Los Services buenos seleccionan por la etiqueta
+    # `bge-pool`, que es la que llevan los pods `-creative` vivos, y son los
+    # mismos a los que el brain ya iba directo (TEI_DENSE_URL / TEI_RERANKER_URL).
+    - model_name: bge-m3
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+    - model_name: bge-m3-embedding
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+        # 2026-08-19: gemelo EXACTO de `bge-m3` (mismo model + mismo api_base).
+        # El bucle de background health checks deduplica por `model_info.id`
+        # (health_check.py::filter_deployments_by_id), que es unico POR
+        # DEPLOYMENT, no por api_base -- asi que los dos alias se sondean por
+        # separado y cada sondeo es inferencia real contra el MISMO pool.
+        # Medido en SpendLogs (30 h): `litellm-internal-health-check` = 2670
+        # llamadas a bge-m3, ~2136/dia, y NINGUN otro consumidor con exito.
+        # Cuadra con 4 replicas x 2 alias x 288 ciclos/dia = 2304.
+        # Se calla el gemelo, no el original: la cobertura no baja (mismo
+        # api_base) y `bge-m3` sigue sondeandose de verdad.
+        disable_background_health_check: true
+    - model_name: bge-reranker
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_key: not-used
+      model_info:
+        mode: rerank
+        max_tokens: 8192
+    - model_name: bge-reranker-v2-m3
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_key: not-used
+      model_info:
+        mode: rerank
+        max_tokens: 8192
+        # 2026-08-19: mismo caso que `bge-m3-embedding` -- gemelo exacto de
+        # `bge-reranker`. Medido: 2626 llamadas en 30 h (~2101/dia), todas del
+        # health check interno. `bge-reranker` conserva su sondeo.
+        disable_background_health_check: true
+    # ── Audio: Whisper STT + OmniVoice TTS (OSS passthrough; for CloudBlue & clients) ──
+    # One LiteLLM key now covers chat + embeddings + STT + TTS. Backends are ClusterIP-only;
+    # LiteLLM stays the single pub
