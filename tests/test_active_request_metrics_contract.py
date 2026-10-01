@@ -218,10 +218,13 @@ def test_hook_feeds_tracker_from_the_openai_chunk_and_restores_the_seal():
     assert "and _served_by_local_vllm(model)" in hook
     # Tras meter extra_body en la peticion, el sello cache_salt de la deployment
     # se restaura: extra_body de la peticion sustituye al de la deployment.
-    block = hook[hook.index("_stream_usage_extra = call_type"):hook.index("tracking_id = str(uuid.uuid4())")]
+    block = hook[hook.index("_stream_usage_extra = ("):hook.index("tracking_id = str(uuid.uuid4())")]
     assert block.count("enable_continuous_usage(data, via_extra_body=_stream_usage_extra)") == 2
     assert block.count("_preserve_uncensored_seal(data)") == 2
     assert block.index("enable_continuous_usage(data, via_extra_body") < block.index("_preserve_uncensored_seal(data)")
+    # SC-1517: con tool de busqueda web NO se escribe extra_body:
+    # websearch_interception flipa stream a False y el resto viajaria invalido.
+    assert "_has_web_search_tool(data)" in block
 
 
 def test_tracking_id_also_rides_litellm_metadata_for_messages():
