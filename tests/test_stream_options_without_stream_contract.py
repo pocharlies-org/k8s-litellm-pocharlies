@@ -27,24 +27,11 @@ pre-request este registrado DESPUES de websearch_interception (el orden de
 import ast
 import asyncio
 import types
-from pathlib import Path
 
 import pytest
 import yaml
 
-MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
-
-
-def _docs():
-    return [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
-
-
-def _configmap(name):
-    return next(
-        d["data"]
-        for d in _docs()
-        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == name
-    )
+from manifest_docs import config_data as _configmap
 
 
 def _extract(src, names):

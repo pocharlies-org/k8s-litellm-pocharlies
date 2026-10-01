@@ -18,24 +18,9 @@ surge dejando `ScheduleAnyway` revive los 720s en serie. Ninguna de las dos cosa
 da un error visible -- da un rollout lento o colgado, que es lo que hace falta un
 test para verlo.
 """
-from pathlib import Path
-
 import pytest
-import yaml
 
-
-MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
-
-
-def _docs():
-    return [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
-
-
-def _named(kind, name):
-    for doc in _docs():
-        if doc.get("kind") == kind and doc["metadata"]["name"] == name:
-            return doc
-    raise AssertionError(f"no encuentro {kind}/{name}")
+from manifest_docs import named as _named
 
 
 @pytest.fixture(scope="module")

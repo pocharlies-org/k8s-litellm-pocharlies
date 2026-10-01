@@ -5780,6 +5780,7 @@ data:
             log.debug("_has_web_search_tool error: %s", e)
         return False
 
+    # CONTRACT: dgx.litellm.stream-options-guard.v1
     def _strip_stream_options_without_stream(data):
         """Nada que parezca `stream_options` sale hacia un backend sin stream.
 
@@ -11014,7 +11015,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-237904b8c958
+        config.k8s.e-dani.com/revision: config-99a52b9cfde4
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
