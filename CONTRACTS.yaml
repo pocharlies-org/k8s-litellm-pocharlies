@@ -416,7 +416,7 @@ contracts:
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema
-    value: x-hermes-profile
+    value: x-hermes-profile-rename
     role: consumer
     files:
       - k8s/manifest.yaml
