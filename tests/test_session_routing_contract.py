@@ -1630,7 +1630,7 @@ def test_retorno_respeta_residente_no_ready(router_mod):
 @pytest.mark.parametrize("raw,esperado", [
     ({}, {"kv_budget_pct": 85, "bot_budget_pct": 60, "session_idle_s": 600,
           "return_max_tokens": 30000, "alibaba_return_after_s": 3600,
-          "bot_keys": ["hermes-batch", "aurora-rca"]}),
+          "bot_keys": ["hermes-batch", "aurora-rca", "brain"]}),
     ({"kv_budget_pct": "85"}, {"kv_budget_pct": 85}),   # string => default
     ({"kv_budget_pct": True}, {"kv_budget_pct": 85}),   # bool => default
     ({"kv_budget_pct": 0}, {"kv_budget_pct": 85}),      # fuera de rango
@@ -1640,7 +1640,7 @@ def test_retorno_respeta_residente_no_ready(router_mod):
     ({"bot_keys": ["Hermes", " aurora-rca ", 5]}, {"bot_keys": ["aurora-rca", "hermes"]}),
     # no-lista => default (los bots conocidos), NUNCA vacía: vacía significaría
     # "nadie es bot" guardado a propósito desde el panel.
-    ({"bot_keys": "hermes"}, {"bot_keys": ["hermes-batch", "aurora-rca"]}),
+    ({"bot_keys": "hermes"}, {"bot_keys": ["hermes-batch", "aurora-rca", "brain"]}),
     ({"bot_keys": []}, {"bot_keys": []}),               # lista vacía legítima
 ])
 def test_kv_sanitize_formas(router_mod, raw, esperado):
