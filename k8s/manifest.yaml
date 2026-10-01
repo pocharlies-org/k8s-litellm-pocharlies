@@ -1762,6 +1762,12 @@ data:
       # ["bedrock"]; hay que nombrar "openai" explicitamente (todos los locales son
       # openai/...). Caveat: las peticiones interceptadas pierden el streaming.
       - websearch_interception
+      # SC-1517: guard de stream_options sin stream. Va DESPUES de
+      # websearch_interception porque _execute_pre_request_hooks recorre los
+      # callbacks en orden y el guard tiene que ver el `stream` YA flipado por
+      # el interceptor (quien lo flipa) para poder quitar los restos de
+      # stream_options que ese flip deja invalidos.
+      - litellm_strip_params.stream_guard_instance
       websearch_interception_params:
         enabled_providers: ["openai"]
         search_tool_name: searxng-local
@@ -5749,6 +5755,60 @@ data:
         except Exception as e:  # nunca romper una peticion por esto
             log.debug("_preserve_uncensored_seal error: %s", e)
 
+    def _has_web_search_tool(data):
+        """True si la peticion declara una tool de busqueda web (SC-1517).
+
+        Es la condicion con la que `websearch_interception` (callback,
+        enabled_providers: openai) intercepta la peticion y le da la vuelta a
+        `stream` dentro de litellm.anthropic_messages. Detecta las dos formas
+        que ve el hook: la server tool nativa de Anthropic
+        (`{"type": "web_search_20250305", "name": "web_search"}`) y la ya
+        convertida de LiteLLM (`litellm_web_search`, por si llega reescrita).
+        """
+        try:
+            for tool in (data.get("tools") or ()):
+                if not isinstance(tool, dict):
+                    continue
+                if str(tool.get("type") or "").startswith("web_search"):
+                    return True
+                name = tool.get("name")
+                if not name and isinstance(tool.get("function"), dict):
+                    name = tool["function"].get("name")
+                if name in ("web_search", "litellm_web_search"):
+                    return True
+        except Exception as e:  # nunca romper una peticion por esto
+            log.debug("_has_web_search_tool error: %s", e)
+        return False
+
+    # CONTRACT: dgx.litellm.stream-options-guard.v1
+    def _strip_stream_options_without_stream(data):
+        """Nada que parezca `stream_options` sale hacia un backend sin stream.
+
+        SC-1517. El SDK de OpenAI FUNDE `extra_body` dentro del body final, y
+        el adaptador Anthropic->OpenAI de la v1.100 reenvia `extra_body` tal
+        cual pase lo que pase con `stream`: un `stream_options` que sobreviva
+        dentro de el acaba en vLLM/DashScope sin `stream: true` -> 400
+        "Stream options can only be defined when stream=True" / "'stream' and
+        'stream_options' must be set together", y el fallback repite el 400
+        porque las kwargs viajan intactas. Medido contra el proxy vivo.
+
+        Con `stream: true` no se toca nada: ahi stream_options es legitimo y
+        es lo que da el uso continuo al panel. Con stream ausente o False se
+        quitan las dos vias: la clave top-level y la que vive dentro de
+        `extra_body` (esta es la que hace dano; la top-level la descarta el
+        propio LiteLLM en no-stream, pero el contrato del hook es que NUNCA
+        salga, y un guard condicional a la implementacion no es un guard).
+        """
+        try:
+            if data.get("stream") is True:
+                return
+            data.pop("stream_options", None)
+            body = data.get("extra_body")
+            if isinstance(body, dict):
+                body.pop("stream_options", None)
+        except Exception as e:  # nunca romper una peticion por esto
+            log.debug("_strip_stream_options_without_stream error: %s", e)
+
     def _chain_of(entry):
         """The ordered aliases of a chain entry, primary first."""
         return (entry["model"],) + tuple(entry.get("fallbacks") or ())
@@ -6617,7 +6677,23 @@ data:
             # alias local, y sin el marcador el rechazo instantáneo se
             # comería un 503 de admisión justo cuando el cómputo local está
             # apagado, que es cuando la nube hace más falta.
-            _stream_usage_extra = call_type == "anthropic_messages"
+            # SC-1517: `websearch_interception` (enabled_providers: openai) LE
+            # da la vuelta a `stream` (True -> False) DENTRO de
+            # litellm.anthropic_messages cuando la peticion trae una tool de
+            # busqueda web nativa, porque su loop agentico necesita rondas no
+            # stream. Lo que haya quedado en `extra_body` viaja tal cual por el
+            # adaptador Anthropic->OpenAI de la v1.100 (el bucle de
+            # `_create_completion_kwargs` reenvia extra_body sin mirar stream)
+            # y el SDK de OpenAI lo funde en el body: stream_options sin
+            # stream -> 400 de vLLM y de DashScope, en el hop primario y en el
+            # fallback. Por eso aqui NO se escribe extra_body en esas
+            # peticiones: son no-stream internamente y el uso continuo no
+            # significa nada. El `stream_options` top-level si se escribe: con
+            # stream=False LiteLLM lo descarta (medido contra el proxy vivo).
+            _stream_usage_extra = (
+                call_type == "anthropic_messages"
+                and not _has_web_search_tool(data)
+            )
             if not vision_diverted and not session_rerouted and _is_local_vllm_request(model, proxy_model, api_base):
                 await _enforce_compute_mode_admission(model, proxy_model, api_base)
                 enable_continuous_usage(data, via_extra_body=_stream_usage_extra)
@@ -6776,6 +6852,12 @@ data:
                     "multimodal: %s descarta una imagen de %s MB (limite %s MB)",
                     _big_detail["model"], _big_detail["image_mb"], _big_detail["limit_mb"])
                 raise HTTPException(status_code=400, detail=_big_detail)
+
+            # SC-1517: ultimo corte del pre-call. Un cliente que mande
+            # `stream_options` (o `extra_body.stream_options`) en una peticion
+            # no-stream no debe llegar nunca al backend con esa combinacion,
+            # la haya metido quien la haya metido.
+            _strip_stream_options_without_stream(data)
 
             return data
 
@@ -7001,6 +7083,40 @@ data:
         return str(proxy_model or model or "") in LOCAL_VLLM_ALIASES
 
     proxy_handler_instance = StripUnsupportedParams()
+
+
+    class StreamOptionsWithoutStreamGuard(litellm.integrations.custom_logger.CustomLogger):
+        """Ultimo guard de stream_options (SC-1517).
+
+        `async_pre_request_hook` es el punto por el que pasa TODA llamada a
+        litellm.anthropic_messages (tambien cada reintento y cada salto de
+        fallback del Router, que reentran por aqui), justo antes de que el
+        adaptador Anthropic->OpenAI construya el body final. A diferencia del
+        pre-call del proxy, este hook corre DESPUES de `websearch_interception`
+        (se registra despues en litellm_settings.callbacks), que es justo quien
+        le da la vuelta a `stream` (True -> False) cuando la peticion trae una
+        tool de busqueda web y su loop agentico necesita rondas no-stream. Si
+        al llegar aqui `stream` es falso y quedan restos de `stream_options`
+        (top-level o dentro de `extra_body`, que el SDK de OpenAI funde en el
+        body), se quitan: un backend que no va a recibir `stream: true` no
+        debe ver nunca `stream_options` (400 de vLLM y de DashScope, medido).
+
+        Con `stream` en True no toca nada: ahi stream_options es legitimo y es
+        lo que alimenta el uso continuo del panel.
+        """
+
+        async def async_pre_request_hook(self, model, messages, kwargs):
+            stripped = False
+            if not kwargs.get("stream"):
+                if kwargs.pop("stream_options", None) is not None:
+                    stripped = True
+                body = kwargs.get("extra_body")
+                if isinstance(body, dict) and body.pop("stream_options", None) is not None:
+                    stripped = True
+            return kwargs if stripped else None
+
+
+    stream_guard_instance = StreamOptionsWithoutStreamGuard()
   # INFRA-208: sticky routing por sesión + rechazo instantáneo. NO es un
   # segundo callback (mandato 2 del arquitecto): litellm_strip_params.py
   # importa este módulo y lo llama desde su async_pre_call_hook tras la red
@@ -9245,11 +9361,6 @@ data:
                 data["extra_body"] = body
             body["stream_options"] = dict(options)
         return data
-        options = dict(data.get("stream_options") or {})
-        options["include_usage"] = True
-        options["continuous_usage_stats"] = True
-        data["stream_options"] = options
-        return data
 
 
     # Lo que del body acaba en el prompt: `system` de /v1/messages,
@@ -10904,7 +11015,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-ce2bf8e6af2d
+        config.k8s.e-dani.com/revision: config-99a52b9cfde4
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

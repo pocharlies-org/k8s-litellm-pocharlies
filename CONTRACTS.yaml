@@ -698,3 +698,32 @@ contracts:
       config.yaml se ignora sin error, por eso el mapa es top-level. ADITIVO (INFRA-364, 2026-10-01): alias `brain: 20`, la prioridad mas
       baja de todas (detras de hermes-batch: 10); `brain` entra tambien en
       DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba).
+  - id: dgx.litellm.stream-options-guard.v1
+    kind: schema
+    value: stream_options
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Regla de alambre (SC-1517, 2026-10-01): `stream_options` NUNCA sale hacia
+      un backend que no va a recibir `stream: true` en el body final, por
+      ninguno de los dos caminos: la clave top-level y la que vive dentro de
+      `extra_body` (el SDK de OpenAI funde extra_body en el body, y el
+      adaptador Anthropic->OpenAI de la v1.100 lo reenvia tal cual pase lo que
+      pase con `stream`). Si no se cumple, vLLM responde 400 "Stream options
+      can only be defined when stream=True" y DashScope "'stream' and
+      'stream_options' must be set together", el 400 se repite en reintentos y
+      saltos de fallback (las kwargs viajan intactas) y el turno muere con
+      "No fallback model group found". Productores del valor: el hook
+      `enable_continuous_usage` (uso continuo del panel) y, en origen del bug,
+      `websearch_interception`, que flipa `stream` True->False dentro de
+      litellm.anthropic_messages cuando la peticion trae una tool de busqueda
+      web y deja los restos en extra_body. Consumidores que no deben ver nunca
+      la combinacion invalida: el vLLM del residente y el compatible-mode de
+      Alibaba. Tres guardas: el hook no escribe extra_body en peticiones con
+      tool de busqueda; `_strip_stream_options_without_stream` corta al final
+      del pre-call; `stream_guard_instance` (async_pre_request_hook,
+      registrado en callbacks DESPUES de websearch_interception) quita los
+      restos en cada intento, reintento y salto de fallback. Lo fija
+      tests/test_stream_options_without_stream_contract.py.
