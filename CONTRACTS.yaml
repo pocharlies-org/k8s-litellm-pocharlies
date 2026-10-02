@@ -565,6 +565,24 @@ contracts:
       retirar el alias parte los .env de los bots sin ruido: pinned by
       tests/test_openrouter_access_contract.py y
       tests/test_uncensored_access_and_dial_alert_contract.py.
+  - id: dgx.litellm.virtual-key.hermes-cloudblue.v1
+    # kind allowlist: la superficie es la key virtual por key_alias, listada en
+    # la puerta uncensored del hook (LITELLM_UNCENSORED_ALLOWED_KEYS).
+    kind: allowlist
+    value: hermes-cloudblue
+    anchor: openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-local,hermes,hermes-batch,synapse,hermes-cloudblue
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-02 (DO-31477). Clave virtual de LiteLLM para Hermes (CloudBlue),
+      renombrada desde `hermes-daniel` via /key/update (mismo token hash, mismos
+      models [qwen38-flash-next, qwen38-flash-next-uncensored], max_budget 50,
+      budget_duration 30d). Se anade a la puerta uncensored definiendo la env
+      LITELLM_UNCENSORED_ALLOWED_KEYS del Deployment con el default del hook mas
+      este alias (sin tocar el codigo de litellm_strip_params.py). Renombrar o
+      retirar el alias deja fuera la ruta abliterada para este consumidor.
   - id: dgx.litellm.alibaba-pack-pricing.v1
     kind: schema
     # `cache_read_input_token_cost` es el literal nuevo de la superficie: los

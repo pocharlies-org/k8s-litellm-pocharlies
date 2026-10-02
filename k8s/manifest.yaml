@@ -11214,6 +11214,12 @@ spec:
             # promete los mismos or-* que a los de chat: fuera de la lista, la fila
             # mentiria 403 exactamente igual que cuando falta `hermes`.
             - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes,hermes-batch" }
+            # DO-31477: allowlist de la ruta abliterada (hook litellm_strip_params.py,
+            # UNCENSORED_ALLOWED_KEY_ALIASES). Sin esta env el hook usa su default; se
+            # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
+            # conservando todos los alias del default.
+            # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-local,hermes,hermes-batch,synapse,hermes-cloudblue" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
