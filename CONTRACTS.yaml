@@ -583,6 +583,51 @@ contracts:
       LITELLM_UNCENSORED_ALLOWED_KEYS del Deployment con el default del hook mas
       este alias (sin tocar el codigo de litellm_strip_params.py). Renombrar o
       retirar el alias deja fuera la ruta abliterada para este consumidor.
+  - id: dgx.litellm.virtual-key.keep-hub.v1
+    # kind allowlist: la superficie es la allowlist `models` de la key virtual
+    # `keep-hub`, que vive SOLO en la Postgres de LiteLLM (se fija por
+    # /key/update, no en este fichero). El literal `keep-hub` aparece en el
+    # manifiesto en la nota de la seccion de keys.
+    kind: allowlist
+    value: keep-hub
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-03 (INFRA-431, epica INFRA-324). Clave virtual de LiteLLM que usa
+      Keep (k8s-observability manifests/keep-secrets.yaml, keep/LITELLM_VIRTUAL_KEY)
+      como su proveedor LLM. Su allowlist `models` vive solo en la BBDD de LiteLLM
+      (/key/update) y es la puerta que va ANTES que el router: quitarle un modelo
+      parte a Keep con un 403 «key not allowed to access model» sin que ningun diff
+      lo avise (precedente INFRA-217). INFRA-431 anadio `qwen38-flash-next` a la
+      lista enviando la UNION (existente + qwen38-flash-next) porque /key/update
+      REEMPLAZA `models`; se conservan `tooling` y los demas. Renombrar el alias o
+      retirar un modelo de su allowlist es un cambio de este contrato: hay que
+      mover a Keep (values) en el mismo push.
+  - id: dgx.litellm.virtual-key.aurora-rca.v1
+    # kind allowlist: allowlist `models` de la key virtual `aurora-rca` (alias
+    # real; el secreto k8s del ns aurora se llama aurorasvc-llm y la envuelve como
+    # BEDROCK_API_KEY). Vive solo en la Postgres de LiteLLM (/key/update).
+    kind: allowlist
+    value: aurora-rca
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-03 (INFRA-431, epica INFRA-324). Clave virtual de LiteLLM que usa
+      Aurora como su LLM (k8s-observability manifests/aurora-secrets.yaml, secreto
+      k8s `aurorasvc-llm` -> BEDROCK_API_KEY; su comentario la llama «master key»
+      pero es una virtual key con allowlist propia, alias `aurora-rca`). Igual que
+      keep-hub, su `models` vive solo en la BBDD y es la puerta antes que el router:
+      quitarle un modelo deja a Aurora con 403 en silencio (INFRA-217). INFRA-431
+      anadio `qwen38-flash-next` por /key/update enviando la UNION (existente +
+      qwen38-flash-next), conservando `tooling`, `dense` y los demas. El fallback
+      del Router qwen38-flash-next -> alibaba-q38-flash NO re-aplica esta allowlist
+      (el gate corre en el pre-call sobre el modelo pedido), asi que `alibaba-q38-flash`
+      no hace falta en la lista. Renombrar el alias o retirar un modelo es un cambio
+      de este contrato: mover a Aurora (values) en el mismo push.
   - id: dgx.litellm.alibaba-pack-pricing.v1
     kind: schema
     # `cache_read_input_token_cost` es el literal nuevo de la superficie: los
