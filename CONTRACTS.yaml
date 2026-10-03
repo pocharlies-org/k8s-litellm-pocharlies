@@ -645,7 +645,10 @@ contracts:
       max_budget 30 USD / budget_duration 30d, purpose "INFRA-458 copiloto side
       panel". La consume el copiloto del side panel de agent-jake desde el
       fichero ~/.config/agent-browser-copilot-key (600) del x86 (va compilada en
-      el bundle de la extension del host). Su `models` cubre solo chat
+      el bundle de la extension del host). Ojo: ese fichero guarda el token RAW
+      (empieza por `sk-`, el campo `key` que devuelve /key/generate), NO el
+      `token` hash de 64 hex que devuelven /key/list y /key/generate (guardar el
+      hash deja el copiloto con 401 «LiteLLM Virtual Key expected»). Su `models` cubre solo chat
       (residente, tooling, alibaba-*, or-*); sin embeddings, audio, imagen ni
       video. Renombrar o retirar el alias deja sin copiloto al side panel y
       obliga a quitarlo de LITELLM_OPENROUTER_ALLOWED_KEYS en el mismo push.
