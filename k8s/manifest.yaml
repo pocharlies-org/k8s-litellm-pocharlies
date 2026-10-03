@@ -584,6 +584,31 @@ data:
     # y poseer también el `models` de las keys, o cada alias nuevo morirá en un 403
     # que parece un problema de routing y no lo es.
     #
+    # 03-10-2026 (INFRA-431): operación sobre la BBDD de dos keys, sin tocar este
+    # manifiesto ni el perfil de los Sparks. Aurora y los steps LLM de Keep pasan a
+    # pedir el residente por su nombre directo `qwen38-flash-next` (decisión del
+    # arquitecto en INFRA-324), y como el `models` de cada key es la puerta que va
+    # ANTES que este fichero, había que añadir el nombre a las dos keys que usan:
+    #   - `keep-hub` (la virtual key de Keep; ver `keep/LITELLM_VIRTUAL_KEY` en
+    #     k8s-observability `manifests/keep-secrets.yaml`).
+    #   - `aurora-rca` (la virtual key de Aurora; el secreto k8s `aurorasvc-llm` del
+    #     ns `aurora` la envuelve como `BEDROCK_API_KEY`, y su comentario en
+    #     `manifests/aurorasvc-secrets.yaml` la llama «master key» pero NO lo es: es
+    #     una virtual key con allowlist propia, alias `aurora-rca`).
+    # `POST /key/update` REEMPLAZA la lista, así que se envió la unión (existente +
+    # `qwen38-flash-next`) para no pisar `tooling` ni los demás. Ninguna de las dos
+    # tenía `models: []` (todos), así que ambas se actualizaron. Verificado con
+    # llamada real por key: `qwen38-flash-next` y `tooling` -> 200 (antes, aurora-rca
+    # daba 403 a `qwen38-flash-next`). El fallback del Router `qwen38-flash-next ->
+    # alibaba-q38-flash` NO re-aplica la allowlist: la comprobación de la key corre en
+    # el pre-call hook sobre el modelo PEDIDO (`qwen38-flash-next`, permitido) y el
+    # rebote lo lanza el Router desde dentro de `async_function_with_fallbacks` sin
+    # volver por ahí; medido pidiendo `alibaba-q38-flash` DIRECTO con keep-hub -> 403,
+    # prueba de que el gate es por nombre pedido. Por eso NO hace falta añadir
+    # `alibaba-q38-flash` a las keys. Quedan en `aurora-rca` los alias muertos
+    # `qwen35-4b`/`qwen3.5-4b` (retirados del model_list el 14-09): se conservan tal
+    # cual por no perder nada; su limpieza es otra cosa.
+    #
     # 23-09-2026: el ancla de info se sigue heredando (vision, admision, health
     # check), pero el MENU de esfuerzo se pisa a [none]. Heredado, estos dos
     # anunciaban la escalera entera de `tooling` y opencode/Hermes ofrecian High
