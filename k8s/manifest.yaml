@@ -11238,7 +11238,10 @@ spec:
             # de los perfiles de compania (trabajo en segundo plano) y el picker les
             # promete los mismos or-* que a los de chat: fuera de la lista, la fila
             # mentiria 403 exactamente igual que cuando falta `hermes`.
-            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes,hermes-batch" }
+            # CONTRACT: dgx.litellm.virtual-key.copilot-jake-chat.v1 — el alias
+            # `copilot-jake-chat` de esta allowlist es la clave del copiloto del
+            # side panel (INFRA-458); retirarla aqui le deja los or-* denegados.
+            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes,hermes-batch,copilot-jake-chat" }
             # DO-31477: allowlist de la ruta abliterada (hook litellm_strip_params.py,
             # UNCENSORED_ALLOWED_KEY_ALIASES). Sin esta env el hook usa su default; se
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
