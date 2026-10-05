@@ -812,7 +812,7 @@ contracts:
       del proxy litellm 1.100.0 que una clave top-level desconocida en
       config.yaml se ignora sin error, por eso el mapa es top-level. ADITIVO (INFRA-364, 2026-10-01): alias `brain: 20`, la prioridad mas
       baja de todas (detras de hermes-batch: 10); `brain` entra tambien en
-      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`.
+      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`. ADITIVO (DGX-601, 2026-10-06): el valor del mapa puede ser ENTERO (como siempre) o MAPA por clase de sesion (`{default: int, "<x-claude-class>": int}`), y el config gana una clave top-level `priority_uncensored` que manda sobre el mapa cuando el destino resuelto es uncensored (`_is_uncensored`). El campo que sale hacia vLLM es el mismo `priority` (int) y el gate del residente no cambia; `claude-local` pasa a `{default: -5, company: 5}` y lo uncensored a -20. Forma rara en un valor => ese alias no inyecta (fail-open de siempre).
   - id: dgx.litellm.stream-options-guard.v1
     kind: schema
     value: stream_options

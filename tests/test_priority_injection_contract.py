@@ -62,11 +62,25 @@ model_list:
   litellm_params:
     model: anthropic/claude
     api_base: https://openrouter.ai/api/v1
+- model_name: qwen38-flash-next-uncensored
+  litellm_params:
+    model: openai/qwen
+    api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
+- model_name: qwen38-nube-uncensored
+  litellm_params:
+    model: openai/qwen
+    api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
 priority_by_alias:
   open-webui-v3: -10
   hermes: -10
   hermes-batch: 10
   neutra: 0
+  claude-local:
+    default: -5
+    company: 5
+  roto-por-clase:
+    default: no-es-entero
+priority_uncensored: -20
 """
 
 
@@ -78,10 +92,17 @@ def _mod_with_config(tmp_path, content=CFG, name="config.yaml"):
     return mod, p
 
 
-def _data(model, alias="open-webui-v3"):
+def _data(model, alias="open-webui-v3", cls=None):
     d = {"model": model}
+    meta = {}
     if alias is not None:
-        d["metadata"] = {"user_api_key_alias": alias}
+        meta["user_api_key_alias"] = alias
+    if cls is not None:
+        # La estampa el wrapper de la compania (x-claude-class); el router la lee
+        # de las tres fuentes que documenta _claude_class. Aqui, la de siempre.
+        meta["headers"] = {"x-claude-class": cls}
+    if meta:
+        d["metadata"] = meta
     return d
 
 
@@ -109,6 +130,84 @@ def test_prioridad_cero_no_inyecta_nada(tmp_path):
     d = _data("qwen38-flash-next", "neutra")
     mod.apply_priority(d)
     assert "extra_body" not in d
+
+
+# ── DGX-601: niveles por CLASE de sesion dentro de un alias ──────────────────
+
+
+def test_alias_por_clase_sin_clave_uso_personal_sale_por_delante(tmp_path):
+    # `claude-local` comparte key para la compania y para el uso personal: sin
+    # clase (la de Dani) sale con el `default` del mapa, por delante del resto.
+    mod, _ = _mod_with_config(tmp_path)
+    d = _data("qwen38-flash-next", "claude-local")
+    mod.apply_priority(d)
+    assert d["extra_body"]["priority"] == -5
+
+
+def test_alias_por_clase_company_sale_un_poco_por_detras_pero_antes_del_lote(tmp_path):
+    mod, _ = _mod_with_config(tmp_path)
+    d = _data("qwen38-flash-next", "claude-local", cls="company")
+    mod.apply_priority(d)
+    assert d["extra_body"]["priority"] == 5
+    # el lote (hermes-batch: 10) sigue por detras: menor numero = antes
+    lote = _data("qwen38-flash-next", "hermes-batch")
+    mod.apply_priority(lote)
+    assert lote["extra_body"]["priority"] > d["extra_body"]["priority"]
+
+
+def test_alias_por_clase_con_clase_no_listada_usa_el_default(tmp_path):
+    mod, _ = _mod_with_config(tmp_path)
+    d = _data("qwen38-flash-next", "claude-local", cls="otra-cosa")
+    mod.apply_priority(d)
+    assert d["extra_body"]["priority"] == -5
+
+
+def test_alias_por_clase_compara_sin_importar_mayusculas(tmp_path):
+    # El header llega con la caja del cable; _claude_class lo normaliza.
+    mod, _ = _mod_with_config(tmp_path)
+    d = _data("qwen38-flash-next", "claude-local", cls="COMPANY")
+    mod.apply_priority(d)
+    assert d["extra_body"]["priority"] == 5
+
+
+def test_forma_por_clase_rota_fail_open(tmp_path):
+    # Ningun nivel entero util en el mapa => ese alias no inyecta nada.
+    mod, _ = _mod_with_config(tmp_path)
+    d = _data("qwen38-flash-next", "roto-por-clase")
+    mod.apply_priority(d)
+    assert "extra_body" not in d
+
+
+# ── DGX-601: lo uncensored pasa por delante de todo ───────────────────────────
+
+
+def test_uncensored_manda_sobre_el_mapa_de_alias_con_qualquier_key(tmp_path):
+    # El motivo: no tiene proveedor de alternativa, si espera no se sirve en otro
+    # sitio. Da igual que la key sea la del lote (10) o la de la compania (5).
+    mod, _ = _mod_with_config(tmp_path)
+    for alias, cls in (("hermes-batch", None), ("claude-local", "company"),
+                       ("claude-local", None), ("sin-mapear", None)):
+        d = _data("qwen38-flash-next-uncensored", alias, cls=cls)
+        mod.apply_priority(d)
+        assert d["extra_body"]["priority"] == -20, (alias, cls)
+
+
+def test_uncensored_a_destino_cloud_no_inyecta(tmp_path):
+    # El gate del residente va primero: un nombre con el sufijo no basta si el
+    # api_base resuelto no es del residente.
+    mod, _ = _mod_with_config(tmp_path)
+    d = _data("qwen38-nube-uncensored", "hermes-batch")
+    mod.apply_priority(d)
+    assert "extra_body" not in d
+
+
+def test_uncensored_sin_nivel_configurado_no_inyecta_por_ser_uncensored(tmp_path):
+    # `priority_uncensored` ausente => se comporta como antes de DGX-601.
+    mod, _ = _mod_with_config(
+        tmp_path, content=CFG.replace("priority_uncensored: -20", ""))
+    d = _data("qwen38-flash-next-uncensored", "claude-local")
+    mod.apply_priority(d)
+    assert d["extra_body"]["priority"] == -5   # por alias, no por ser uncensored
 
 
 # ── sin alias / alias no mappeado ─────────────────────────────────────────────
@@ -217,7 +316,12 @@ def test_cache_no_reparsea_sin_cambio_de_mtime(tmp_path):
 def test_el_mapa_vive_en_config_yaml():
     assert CONFIG_YAML["priority_by_alias"] == {
         "open-webui-v3": -10, "hermes": -10, "hermes-batch": 10, "brain": 20,
+        # DGX-601 (Dani): `claude-local` es la misma key para la compania y para el
+        # uso personal, asi que su nivel va MAPA por clase, no entero.
+        "claude-local": {"default": -5, "company": 5},
     }
+    # DGX-601: lo uncensored no tiene alternativa -> nivel propio, por delante.
+    assert CONFIG_YAML["priority_uncensored"] == -20
 
 
 def test_el_modulo_no_hardcodea_alias_ni_niveles():
