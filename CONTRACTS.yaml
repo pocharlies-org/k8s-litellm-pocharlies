@@ -422,6 +422,10 @@ contracts:
       request_tracker.start() never ran and Claude-Code-shaped requests had NO
       row on this route at all. Pinned by
       tests/test_prompt_walk_type_property_contract.py.
+      Since 2026-10-05 (DGX-587) each resident alias (qwen38-flash-next, -uncensored,
+      tooling) admits 4 in flight per pod (8 across the 2 replicas): a request over
+      that waits in LiteLLM's per-deployment semaphore before reaching the engine, so
+      it shows here with no `ttft_ms` (queue phase) longer than before. No field change.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema

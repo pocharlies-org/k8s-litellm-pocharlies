@@ -257,7 +257,11 @@ data:
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 240
-        max_parallel_requests: 8
+        # 05-10-2026 (DGX-587, Dani): 8 -> 4. El semáforo es por deployment y por POD: con 2 réplicas eran 16 por
+        # alias y 48 entre los tres alias del residente, contra 16 ranuras del vLLM; nunca se llenaba y un cliente
+        # podía acapararlo. Con 4 son 8 por alias (24 entre los tres): lo que pase ESPERA aquí (encola, no rechaza)
+        # y la cola final sigue siendo la del vLLM, que ordena por prioridad. ROLLBACK: 8.
+        max_parallel_requests: 4
         # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
         # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
@@ -375,7 +379,11 @@ data:
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 8
+        # 05-10-2026 (DGX-587, Dani): 8 -> 4. El semáforo es por deployment y por POD: con 2 réplicas eran 16 por
+        # alias y 48 entre los tres alias del residente, contra 16 ranuras del vLLM; nunca se llenaba y un cliente
+        # podía acapararlo. Con 4 son 8 por alias (24 entre los tres): lo que pase ESPERA aquí (encola, no rechaza)
+        # y la cola final sigue siendo la del vLLM, que ordena por prioridad. ROLLBACK: 8.
+        max_parallel_requests: 4
         extra_body: { cache_salt: "refusal:1.0" }
       model_info:
         mode: chat
@@ -453,7 +461,11 @@ data:
         # atrás: por tooling entraban la compañía, synapse y openclaw y el
         # motor se llenaba por encima de la zona usable medida. Mismo cambio
         # para tooling-uncensored vía el anchor compartido: mismo motor.
-        max_parallel_requests: 8
+        # 05-10-2026 (DGX-587, Dani): 8 -> 4. El semáforo es por deployment y por POD: con 2 réplicas eran 16 por
+        # alias y 48 entre los tres alias del residente, contra 16 ranuras del vLLM; nunca se llenaba y un cliente
+        # podía acapararlo. Con 4 son 8 por alias (24 entre los tres): lo que pase ESPERA aquí (encola, no rechaza)
+        # y la cola final sigue siendo la del vLLM, que ordena por prioridad. ROLLBACK: 8.
+        max_parallel_requests: 4
         # 03-09-2026: sello EXPLICITO a 0, y es una correccion, no un detalle.
         #
         # El pool `tooling` ES hoy el qwen38-flash-next ablado: el service
