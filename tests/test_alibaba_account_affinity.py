@@ -8,10 +8,16 @@ Valkey si — igual que las dos replicas del proxy.
 
 El test de integracion con el Router REAL de litellm v1.100.0 y una Valkey real
 esta en tests/integration/alibaba_account_affinity_router.py.
+
+TTL del pin (DGX-592, 05-10-2026): INACTIVIDAD al ritmo del vinculo de plan a
+Alibaba, no el ciclo del plan. Una sesion viva no muda (el keepalive renueva); una
+que vuelve tras el hueco se re-sortea con los pesos del cupo, y la memoria local del
+pod caduca igual — reactivar desde ella un pin caducado anularia el reparto.
 """
 import asyncio
 import random
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -161,13 +167,18 @@ def test_cuenta_nueva_es_la_misma_en_dos_pods_sin_valkey():
     run(go())
 
 
-def test_el_pin_se_guarda_con_su_clave_y_ttl_de_30_dias():
+def test_el_pin_se_guarda_con_su_clave_y_ttl_de_inactividad():
+    """DGX-592: el pin vive lo que vive el prefijo cacheado (el tiempo del vinculo
+    de plan a Alibaba), no el ciclo del plan. Con 30 dias la sesion nacida en k1 se
+    quedaba en k1 defendiendo una caché muerta y el reparto por cupo no reasignaba
+    nada (medido: pesos 0,28/0,72 y 51/49 del trafico real en contra)."""
     valkey = FakeValkey()
     pod = _pod(valkey)
     run(pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("ses-1")))
     key = f"alibaba_account_pin:v1:{KEY_A}:ses-1"
     assert valkey.data[key] in ("k1", "k2")
-    assert valkey.ttl[key] == 30 * 86400 == pod.ALIBABA_ACCOUNT_PIN_TTL_SECONDS
+    assert pod.ALIBABA_ACCOUNT_PIN_TTL_SECONDS == pod.STICKY_TTL_ALIBABA_SECONDS
+    assert valkey.ttl[key] == pod.ALIBABA_ACCOUNT_PIN_TTL_SECONDS < 30 * 86400
 
 
 def test_el_pin_guardado_manda_sobre_la_eleccion_determinista():
@@ -444,6 +455,44 @@ def test_el_peso_no_mueve_una_sesion_ya_clavada():
 
     antes, despues = run(go())
     assert antes == despues
+
+
+def test_pin_caducado_con_valkey_sana_se_re_sortea_no_se_reactiva_local():
+    """Un GET CORRECTO que devuelve None es un pin caducado, no una lectura fallida.
+    Si la memoria del pod lo reactiva, el TTL corto no sirve de nada: la sesion se
+    queda en su cuenta de nacimiento dentro de este pod para siempre (DGX-592)."""
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+    sid = "ses-caduca"
+    antes = _account(run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(sid))))
+    key = pod.account_pin_key(KEY_A, sid)
+    assert key in valkey.data and pod._local_pin(key) == antes
+
+    del valkey.data[key]                     # durmio mas que el TTL: la clave ya no esta
+    otra = "k2" if antes == "k1" else "k1"
+    _con_pesos(pod, {antes: 0.0, otra: 1.0})  # y al volver el cupo esta del revés
+    out = run(pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(sid)))
+    assert _account(out) == otra, "el pin caducado se reactivó desde la memoria local"
+    assert valkey.data[key] == otra          # el re-sorteo queda escrito
+
+
+def test_la_memoria_local_caduca_como_el_pin():
+    """Con Valkey caída la memoria local es la red de estabilidad, pero caduca al
+    mismo tiempo que el pin: un recuerdo viejo no puede clavar la sesion."""
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+    sid = "ses-local"
+    antes = _account(run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(sid))))
+    key = pod.account_pin_key(KEY_A, sid)
+    pod._account_pins_local[key] = (antes, time.monotonic() - 1)   # recuerdo caducado
+    del valkey.data[key]
+    otra = "k2" if antes == "k1" else "k1"
+    _con_pesos(pod, {antes: 0.0, otra: 1.0})
+    valkey.down = True
+    out = run(pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(sid)))
+    assert _account(out) == otra
 
 
 def test_cuenta_con_peso_cero_no_recibe_sesiones_nuevas():
