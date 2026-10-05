@@ -4721,7 +4721,10 @@ data:
             c = entry.get("content")
             if isinstance(c, list):
                 for p in c:
-                    if isinstance(p, dict) and p.get("type") in names:
+                    if not isinstance(p, dict):
+                        continue
+                    part_type = p.get("type")
+                    if isinstance(part_type, str) and part_type in names:
                         return True
         return False
 
@@ -5177,7 +5180,10 @@ data:
                 return content
             out = []
             for part in content:
-                if isinstance(part, dict) and part.get("type") in IMAGE_PART_TYPES:
+                # `isinstance(str)` antes de la membresia: un `type` que no es
+                # string (un dict, p. ej.) haria TypeError en el `in`.
+                if (isinstance(part, dict) and isinstance(part.get("type"), str)
+                        and part.get("type") in IMAGE_PART_TYPES):
                     out.append({"type": "text", "text": IMAGE_OMITTED_TEXT})
                     changed = True
                 else:
@@ -5396,7 +5402,8 @@ data:
     def _is_structured_output(data):
         """La peticion exige una forma de salida (json_schema / json_object)."""
         rf = data.get("response_format")
-        return isinstance(rf, dict) and rf.get("type") in ("json_schema", "json_object")
+        return (isinstance(rf, dict) and isinstance(rf.get("type"), str)
+                and rf.get("type") in ("json_schema", "json_object"))
 
 
     def _has_tools(data):
@@ -8035,7 +8042,12 @@ data:
                         continue
                     total += len(node)
                 elif isinstance(node, dict):
-                    if node.get("type") in media:
+                    # Mismo criterio que prompt_chars: un `type` que no es string
+                    # (una propiedad de un JSON-Schema que se llama `type`) reventaba
+                    # el recorrido y el try/except de arriba devolvia None -> la
+                    # valvula KV se quedaba ciega justo con los turnos de Claude Code.
+                    block_type = node.get("type")
+                    if isinstance(block_type, str) and block_type in media:
                         continue
                     for key, value in node.items():
                         if key == "cache_control":
@@ -9419,7 +9431,14 @@ data:
                     continue
                 total += len(node)
             elif isinstance(node, dict):
-                if node.get("type") in _MEDIA_BLOCK_TYPES:
+                # Un JSON-Schema con una propiedad llamada `type` cuyo valor es un
+                # objeto (el tool Artifact de Claude Code la trae: properties.type
+                # = {"description": …}) llega aqui como DICT, y `dict in frozenset`
+                # es TypeError: el stamp perdia el request_tracker.start() y la
+                # tarjeta del motor se quedaba sin filas en vuelo. Solo un str
+                # puede nombrar un bloque de medio.
+                block_type = node.get("type")
+                if isinstance(block_type, str) and block_type in _MEDIA_BLOCK_TYPES:
                     has_media = True
                     continue
                 for key, value in node.items():
@@ -11040,7 +11059,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e0d235034946
+        config.k8s.e-dani.com/revision: config-faaecf513f84
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
