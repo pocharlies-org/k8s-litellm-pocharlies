@@ -257,7 +257,13 @@ data:
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 240
-        max_parallel_requests: 8
+        # 05-10-2026 (DGX-587, Dani): 8 -> 4 aquí, en qwen38-flash-next-uncensored y en el anchor de tooling (que
+        # comparten tooling, tooling-uncensored, qwen38-off y qwen38-u-off: seis entradas, cada una con SU
+        # semáforo). El semáforo es por deployment y por POD (el router no usa Redis para esto): con 2 réplicas,
+        # 4 por pod son 8 por entrada. Antes, 16 por entrada y nunca se llenaba, así que un cliente podía
+        # acaparar el residente (16 ranuras). Lo que pase ESPERA aquí (encola, no rechaza; su espera no cuenta
+        # para `timeout`) y es FIFO: la prioridad por key solo la ordena la cola del vLLM. ROLLBACK: 8.
+        max_parallel_requests: 4
         # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
         # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
@@ -375,7 +381,8 @@ data:
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        max_parallel_requests: 8
+        # DGX-587: 8 -> 4 (por pod). Detalle en el comentario de qwen38-flash-next.
+        max_parallel_requests: 4
         extra_body: { cache_salt: "refusal:1.0" }
       model_info:
         mode: chat
@@ -446,14 +453,15 @@ data:
         api_base: http://tooling.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        # 21-09-2026: 32 -> 8. Desde el #107/#112 (sticky + Valkey + socket 2 s)
-        # el tope es real y global, no el semáforo por pod que hacía 8x2=16
-        # decorativo. El residente ya admitía a 8 (timeout 240, #98); tooling
+        # 21-09-2026: 32 -> 8. (Corregido el 05-10, DGX-587: el tope NO es global; el
+        # semáforo sigue siendo por deployment y por pod, Valkey solo lo usa el
+        # session_router.) El residente ya admitía a 8 (timeout 240, #98); tooling
         # apunta al MISMO motor (pool label), así que 32 aquí era la puerta de
         # atrás: por tooling entraban la compañía, synapse y openclaw y el
         # motor se llenaba por encima de la zona usable medida. Mismo cambio
         # para tooling-uncensored vía el anchor compartido: mismo motor.
-        max_parallel_requests: 8
+        # DGX-587: 8 -> 4 (por pod). Detalle en el comentario de qwen38-flash-next.
+        max_parallel_requests: 4
         # 03-09-2026: sello EXPLICITO a 0, y es una correccion, no un detalle.
         #
         # El pool `tooling` ES hoy el qwen38-flash-next ablado: el service
@@ -11063,7 +11071,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-660ce2245b84
+        config.k8s.e-dani.com/revision: config-6d0cbcbc6fe6
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
