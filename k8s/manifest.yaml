@@ -8607,11 +8607,16 @@ data:
     #   2. Con el deployment clavado en cooldown, el filtro devolvia TODOS los sanos:
     #      esa peticion iba a la otra cuenta, el pin seguia en la primera y la
     #      sesion volvia a ella al acabar el cooldown — ida y vuelta, fria las dos.
-    #   3. TTL de 1 h de inactividad: una sesion que vuelve tras comer se re-sortea.
+    #   3. TTL de 1 h de inactividad SIN proporcion al cupo: al volver tras el hueco
+    #      se re-sorteba a ciegas (50/50) y, con el hueco 2, la conversacion saltaba
+    #      de cuenta pagando el prefijo en cada salto. Lo que hace caro un re-sorteo
+    #      es que el prefijo AUN este vivo; pasado el hueco ya esta frio en las dos
+    #      cuentas, asi que mudar sale gratis y repartir bien importa (DGX-592).
     #
     # Aqui:
     #   - Clave `alibaba_account_pin:v1:<api-key-hash>:<sid>` -> "k1" | "k2" en la
-    #     Valkey del session router (misma URL/password). TTL largo con keepalive.
+    #     Valkey del session router (misma URL/password). TTL de inactividad (el del
+    #     vinculo de plan a Alibaba) renovado por keepalive en cada acierto.
     #   - Cuenta de una sesion NUEVA = hash(api-key-hash, sid) % cuentas: las dos
     #     replicas eligen LA MISMA sin hablar entre si, asi que ni un corte de
     #     Valkey ni una carrera entre pods mezclan una sesion nueva. El SET NX solo
@@ -8626,24 +8631,49 @@ data:
     # CONTRACT: dgx.session-router.alibaba-account-pin.v1
     # (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
     ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
-    # 30 dias de INACTIVIDAD (se renueva en cada peticion): el plan es mensual, y una
-    # sesion no debe cambiar de cuenta por dormir una semana.
-    ALIBABA_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("ALIBABA_ACCOUNT_PIN_TTL_SECONDS", str(30 * 86400)))
+    # TTL DE INACTIVIDAD (se renueva en cada peticion), el MISMO tiempo que el
+    # vinculo de plan a Alibaba (STICKY_TTL_ALIBABA_SECONDS, DGX-592): lo
+    # unico que defiende el pin es la caché de prefijo de la cuenta, y esa caché no
+    # aguanta pausas largas (ver el comentario de STICKY_TTL_*). Los 30 dias de antes
+    # eran el ciclo del plan, no la vida del prefijo: una sesion nacida en k1 se
+    # quedaba en k1 aunque su prefijo llevara dias frio, asi que el reparto por cupo
+    # nunca reasignaba nada (medido: pesos 0,28/0,72 y 51/49 de trafico REAL a favor
+    # de la cuenta SIN cupo; 0 mudanzas en 4 h). Una sesion viva no muda —el keepalive
+    # renueva—; una que vuelve tras una hora se re-sortea con los pesos. El coste es
+    # cero: ese prefill frio ya lo pagaba en la cuenta vieja.
+    ALIBABA_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get(
+        "ALIBABA_ACCOUNT_PIN_TTL_SECONDS", str(STICKY_TTL_ALIBABA_SECONDS)))
     _NATIVE_PIN_PREFIX = "deployment_affinity:v1:session"
     _ACCOUNT_RE = re.compile(r"-(k[0-9]+)$")
     _ACCOUNT_KEY_RE = re.compile(r"k[0-9]+")
     # Pines conocidos por ESTE proceso: si Valkey no contesta a tiempo, una sesion
-    # que ya se vio aqui sigue en su cuenta (incluida una mudanza reciente).
+    # que ya se vio aqui sigue en su cuenta (incluida una mudanza reciente). Caduca
+    # por TIEMPO, al mismo ritmo que el pin de Valkey (DGX-592): sin caducidad local,
+    # un GET correcto que devuelve None —pin caducado— rebote en la memoria del pod y
+    # la sesion no se re-sorteo nunca, que es el fallo que este cambio venia a cerrar.
     _account_pins_local = {}
     _ACCOUNT_PINS_LOCAL_MAX = 20000
 
 
     def _remember_pin(key, account):
-        """Memoria local acotada (orden de insercion: se cae lo mas viejo)."""
+        """Memoria local acotada (orden de insercion: se cae lo mas viejo) y con
+        caducidad: dura lo que duraria el pin en Valkey desde este acierto."""
         _account_pins_local.pop(key, None)
-        _account_pins_local[key] = account
+        _account_pins_local[key] = (account, time.monotonic() + ALIBABA_ACCOUNT_PIN_TTL_SECONDS)
         while len(_account_pins_local) > _ACCOUNT_PINS_LOCAL_MAX:
             _account_pins_local.pop(next(iter(_account_pins_local)))
+
+
+    def _local_pin(key):
+        """Cuenta recordada por este pod, solo si aun no caduco (ver _remember_pin)."""
+        hit = _account_pins_local.get(key)
+        if not hit:
+            return None
+        account, deadline = hit
+        if deadline <= time.monotonic():
+            _account_pins_local.pop(key, None)
+            return None
+        return account
     ACCOUNT_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "seeded": 0, "weighted": 0, "redis_errors": 0}
 
 
@@ -8792,15 +8822,21 @@ data:
 
         client = None
         pinned = None
+        leido = False
         try:
             client = await _redis()
             if client is not None:
                 pinned = await _pin_get(client, key)
+                leido = True
         except Exception:
             ACCOUNT_AFFINITY_STATS["redis_errors"] += 1
             client = None
-        if pinned is None:
-            pinned = _account_pins_local.get(key)
+        if pinned is None and not leido:
+            # Red de estabilidad SOLO cuando Valkey no contesto (caida, lenta, sin
+            # tier montado). Un GET CORRECTO que devuelve None es un pin CADUCADO,
+            # no una lectura fallida: reactivarlo desde la memoria del pod clavaba
+            # la sesion en su cuenta de nacimiento para siempre (DGX-592).
+            pinned = _local_pin(key)
 
         if pinned in by_account:
             ACCOUNT_AFFINITY_STATS["hits"] += 1
@@ -11079,7 +11115,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f6a2ffd2235f
+        config.k8s.e-dani.com/revision: config-949cb23f1af0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

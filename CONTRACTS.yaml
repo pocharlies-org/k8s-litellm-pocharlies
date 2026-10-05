@@ -133,30 +133,44 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
-      2026-09-28. Una sesion vive en UNA cuenta de Alibaba en TODOS los grupos
-      alibaba-*. Publisher y lector: session_router.alibaba_account_filter,
-      llamado por el Router en cada eleccion de deployment a traves de
-      StripUnsupportedParams.async_filter_deployments. Valkey del session
-      router (litellm-valkey, db de REDIS_URL); valor "k1" | "k2" (sufijo del
-      model_info.id estable `<grupo>-kN`); TTL
-      ALIBABA_ACCOUNT_PIN_TTL_SECONDS (30 dias de inactividad, keepalive en
-      cada acierto); SET NX = gana el primero. Cuenta de una sesion nueva =
-      sha256(api-key-hash:sid) % cuentas, la misma en todas las replicas sin
-      Valkey; desde 2026-09-29, si /api/model-routing/config trae el campo
-      ADITIVO alibaba_account_weights = {"kN": peso >= 0} (cupo diario que le
-      queda a cada cuenta, lo proyecta el dashboard), el hash se lee como un
-      punto de [0,1) y cae en el tramo acumulado de su cuenta — las sesiones
-      NUEVAS (y las mudanzas) se reparten en proporcion al cupo; los pines
-      existentes no se mueven. Ausente, invalido o sin cubrir todas las
-      cuentas = pesos IGUALES: desde 2026-09-29 el uniforme y el ponderado son
-      la MISMA formula de tramos (sin pesos = tramos de 1), no dos lecturas del
-      hash — con dos lecturas un pod con la caché de config en frio elegia otra
-      cuenta que un pod caliente y las sesiones se mezclaban entre replicas. Unica forma de cambiar de cuenta: la suya sin deployment sano en
-      el grupo pedido (cooldown/retirada) -> mudanza ENTERA y el pin se
-      reescribe (sin vuelta). <api-key-hash> = user_api_key_hash (sha256).
-      Tests: tests/test_alibaba_account_affinity.py (unitarios) y
-      tests/integration/run_alibaba_account_affinity.sh (Router real de la
-      imagen pineada + Valkey real + dos pods, job de CI).
+      Una sesion vive en UNA cuenta de Alibaba en TODOS los grupos alibaba-*.
+      Publisher y lector: session_router.alibaba_account_filter, llamado por el
+      Router en cada eleccion de deployment a traves de
+      StripUnsupportedParams.async_filter_deployments. Valkey del session router
+      (litellm-valkey, db de REDIS_URL); valor "k1" | "k2" (sufijo del
+      model_info.id estable `<grupo>-kN`); SET NX = gana el primero. <api-key-hash>
+      = user_api_key_hash (sha256).
+
+      TTL DE INACTIVIDAD ALIBABA_ACCOUNT_PIN_TTL_SECONDS, default
+      STICKY_TTL_ALIBABA_SECONDS (1 h) y keepalive (`EXPIRE`) en cada acierto: el
+      pin defiende la caché de prefijo de la cuenta, y esa caché no aguanta pausas
+      largas — el mismo instante en que el vinculo de plan a Alibaba da el prefijo
+      por perdido. Desde ese hueco la sesion se re-sortea, y como el prefill frio ya
+      se paga en la cuenta vieja, mudar es gratis. (Antes del 2026-10-05 eran 30
+      dias = el ciclo del plan: el pin sobrevivía al prefijo y el reparto por cupo
+      nunca reasignaba nada; DGX-592.) La memoria local del pod
+      (`_account_pins_local`) caduca por tiempo igual que el pin y solo se consulta
+      cuando la lectura de Valkey FALLA: un GET correcto que devuelve None es un pin
+      caducado, no una lectura fallida.
+
+      Cuenta de una sesion nueva o caducada = sha256(api-key-hash:sid) sobre los
+      tramos de `alibaba_account_weights` = {"kN": peso >= 0} (cupo diario restante
+      de cada cuenta, lo proyecta el dashboard en /api/model-routing/config desde
+      2026-09-29): el hash se lee como un punto de [0,1) y cae en la cuenta cuyo
+      tramo acumulado lo contiene, asi que las sesiones se reparten en proporcion al
+      cupo. Ausente, invalido o sin cubrir todas las cuentas = pesos IGUALES, y el
+      uniforme y el ponderado son la MISMA formula de tramos (sin pesos = tramos de
+      1), no dos lecturas del hash — con dos lecturas un pod con la caché de config
+      en frio elegia otra cuenta que un pod caliente y las sesiones se mezclaban
+      entre replicas. La eleccion es determinista: las replicas coinciden sin hablar
+      entre si y sin Valkey.
+
+      Cambios de cuenta a mitad de vida del pin: la suya sin deployment sano en el
+      grupo pedido (cooldown/retirada) -> mudanza ENTERA y el pin se reescribe (sin
+      vuelta), y el re-sorteo al caducar el TTL. Tests:
+      tests/test_alibaba_account_affinity.py (unitarios) y
+      tests/integration/run_alibaba_account_affinity.sh (Router real de la imagen
+      pineada + Valkey real + dos pods, job de CI).
   - id: dgx.session-router.deployment-affinity-key.v1
     kind: schema
     value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>
