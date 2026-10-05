@@ -413,6 +413,15 @@ contracts:
       Hermes profile from the x-hermes-profile header
       (dgx.hermes.profile-header.v1), null when the request has none. Pinned
       by tests/test_active_request_profile_contract.py.
+      Since 2026-10-05 no field or value changed: the body walk that feeds
+      `prompt_tokens_estimate` (prompt_chars in active_request_tracking.py,
+      mirrored in session_router._estimate_prompt_tokens) skipped a node whose
+      `type` was not a string instead of raising TypeError on it. A tool whose
+      JSON-Schema declares a property literally named `type` (Claude Code's
+      Artifact tool) made that walk raise inside the stamp's try/except, so
+      request_tracker.start() never ran and Claude-Code-shaped requests had NO
+      row on this route at all. Pinned by
+      tests/test_prompt_walk_type_property_contract.py.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema

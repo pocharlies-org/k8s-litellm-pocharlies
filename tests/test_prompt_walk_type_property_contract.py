@@ -125,8 +125,14 @@ def test_estimate_prompt_tokens_no_se_queda_ciego_con_esas_tools():
 
 
 def test_ayudantes_del_strip_no_reventan_con_un_type_dict():
-    body = _body_con_propiedad_type()
+    # `_has_part_type` recorre `content`, no `tools`: hay que poner la parte
+    # defectuosa ahi, si no el test no ejercita su camino.
+    body = {"messages": [{"role": "user", "content": [
+        {"type": {"json_schema": {}}},
+        {"type": "text", "text": "hola"},
+    ]}]}
     assert STRIP._has_part_type(body, {"image"}) is False
+    assert STRIP._has_part_type(_body_con_propiedad_type(), {"image"}) is False
     assert STRIP._is_structured_output(
         {"response_format": {"type": {"json_schema": {}}}}) is False
     assert STRIP._is_structured_output(
