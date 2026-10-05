@@ -6877,6 +6877,7 @@ data:
                     prompt_chars=_pchars,
                     prompt_has_media=_pmedia,
                     profile=_hermes_profile(data),
+                    priority=(data.get("extra_body") or {}).get("priority") if isinstance(data.get("extra_body"), dict) else None,
                 )
             except Exception as e:
                 log.debug("track_start error: %s", e)
@@ -9579,6 +9580,7 @@ data:
             prompt_chars: Optional[int] = None,
             prompt_has_media: bool = False,
             profile: Any = None,
+            priority: Any = None,
         ) -> Dict[str, Any]:
             now = self.clock()
             with self._lock:
@@ -9602,6 +9604,11 @@ data:
                     # key `hermes`; sin esto el panel solo decia "hermes". None =
                     # la peticion no la trae.
                     "profile": str(profile) if profile else None,
+                    # Prioridad de vLLM que apply_priority sello en extra_body
+                    # (DGX-589): el panel ordena con ella la cola estimada del
+                    # motor. None = sin prioridad (0) o destino que no es el
+                    # residente.
+                    "priority": priority if isinstance(priority, int) and not isinstance(priority, bool) else None,
                     "model": str(model or "unknown"),
                     "call_type": str(call_type or "unknown"),
                     "server_id": resolve_server_id(model, api_base),
@@ -10195,6 +10202,7 @@ data:
                     "route_reason": raw.get("route_reason"),
                     "route_at": raw.get("route_at"),
                     "profile": raw.get("profile"),
+                    "priority": raw.get("priority"),
                     "prompt_tokens": raw.get("prompt_tokens"),
                     "prompt_tokens_estimate": raw.get("prompt_tokens_estimate"),
                     "completion_tokens": raw.get("completion_tokens"),
@@ -11071,7 +11079,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6d0cbcbc6fe6
+        config.k8s.e-dani.com/revision: config-f6a2ffd2235f
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
