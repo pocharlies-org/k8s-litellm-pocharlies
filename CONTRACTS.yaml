@@ -426,7 +426,7 @@ contracts:
       the tooling anchor: tooling, tooling-uncensored, qwen38-off, qwen38-u-off — six
       semaphores) admits 4 in flight per pod (8 across the 2 replicas): a request over
       that waits in LiteLLM's per-deployment semaphore before reaching the engine, so
-      it shows here with no `ttft_ms` (queue phase) longer than before. No field change.
+      it shows here with no `ttft_ms` (queue phase) longer than before. No field change. Since 2026-10-05 (DGX-589) each row also carries the additive `priority`: the vLLM priority apply_priority stamped in extra_body (int; null = no priority, i.e. 0, or a non-resident destination). The /inferencia panel orders its estimated engine queue with it (lower first, then oldest). Pinned by tests/test_active_request_priority_contract.py.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema
@@ -798,7 +798,7 @@ contracts:
       del proxy litellm 1.100.0 que una clave top-level desconocida en
       config.yaml se ignora sin error, por eso el mapa es top-level. ADITIVO (INFRA-364, 2026-10-01): alias `brain: 20`, la prioridad mas
       baja de todas (detras de hermes-batch: 10); `brain` entra tambien en
-      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba).
+      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`.
   - id: dgx.litellm.stream-options-guard.v1
     kind: schema
     value: stream_options
