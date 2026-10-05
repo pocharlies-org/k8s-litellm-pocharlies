@@ -350,7 +350,7 @@ contracts:
       (redeploy/restart, 15-20 min) the hook degrades them to their cloud twin
       `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
-      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse) keep failing closed via
+      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue) keep failing closed via
       disable_fallbacks, and the abliterated aliases have no chain. Guarded by
       tests/test_tooling_profile_contract.py and
       tests/test_aurora_fallback_policy_contract.py.
