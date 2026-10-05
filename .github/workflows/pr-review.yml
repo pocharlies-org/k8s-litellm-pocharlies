@@ -36,7 +36,7 @@ jobs:
       # Para que el modo `workflow_dispatch` publique el comentario de COMMIT
       # hace falta `contents: write`. No viene puesto a proposito: sin el, ese
       # modo sigue en verde y deja el review en el resumen del job.
-    uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-pr-review.yml@main
+    uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-pr-review.yml@INFRA-334-p95-clave-muerta-docs
     with:
       # Piloto F1 de INFRA-298 (INFRA-332): este repo es uno de los 2 con PR-Agent;
       # el resto sigue en `propio` hasta el rollout (INFRA-334).
