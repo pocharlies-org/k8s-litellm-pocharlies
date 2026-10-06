@@ -7292,6 +7292,7 @@ data:
     import os
     import re
     import time
+    import uuid
     from urllib.parse import quote, urlsplit, urlunsplit
 
     import httpx
@@ -8644,7 +8645,10 @@ data:
     #     queda en el log y en `ACCOUNT_AFFINITY_STATS["moves"]`.
     #   - Sesiones que ya tenian pin nativo por grupo: se respeta esa cuenta la
     #     primera vez (siembra), para que el cambio de mecanismo no mueva a nadie.
-    #   - Sin sid (ni cabecera ni prefijo) no se filtra: no hay sesion que clavar.
+    #   - Sin sid (ni cabecera ni prefijo) se sortea la cuenta por cupo con
+    #     `draw_account` (DGX-619, octubre 2026): no hay sesion que clavar, pero el
+    #     50/50 ciego del Router gastaba la cuenta sin cupo (k1 al 91,5 %). Sin pin,
+    #     sin Valkey; cualquier excepcion deja la lista intacta (fail-open).
     # CONTRACT: dgx.session-router.alibaba-account-pin.v1
     # (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
     ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
@@ -8774,6 +8778,23 @@ data:
             return {}
 
 
+    async def draw_account(accounts):
+        """SEAM PUBLICO del selector (DGX-619): sorteo ponderado por cupo de una
+        peticion SIN sesion — la MISMA formula (`preferred_account` por tramos de
+        `alibaba_account_weights`) que una sesion nueva, sobre un id aleatorio.
+        No escribe pin ni toca Valkey: no hay sesion que clavar. El gateway de media
+        (DGX-621) llama LITERALMENTE esto; prohibido definir fórmula propia.
+        Sin pesos (config fria) = tramos iguales, la misma formula de siempre."""
+        return preferred_account("draw", uuid.uuid4().hex, accounts, await _account_weights())
+
+
+    async def warm_config():
+        """Refresca la config del panel ANTES de aceptar trafico (lifespan del
+        gateway, DGX-621): un sorteo en frio sin pesos sale 50/50 y gastaria cupo a
+        ciegas. Nunca lanza: _refresh_config es fail-open por contrato."""
+        await _refresh_config()
+
+
     async def _pin_get(client, key):
         return await asyncio.wait_for(client.get(key), timeout=REDIS_OP_TIMEOUT_SECONDS)
 
@@ -8821,7 +8842,8 @@ data:
         Lo llama el Router en CADA eleccion de deployment, reintentos incluidos, a
         traves de StripUnsupportedParams.async_filter_deployments (el callback que
         ya existe: este modulo no es un callback de litellm, mandato 2). Fail-open: cualquier
-        cosa que no sea un grupo `alibaba-*` con ids `-kN` y un sid pasa intacta."""
+        cosa que no sea un grupo `alibaba-*` con ids `-kN` pasa intacta. Sin sid no hay
+        pin que consultar: se sortea cuenta por cupo con `draw_account` (DGX-619)."""
         if not str(model or "").startswith(ALIBABA_PREFIX) or not healthy_deployments:
             return healthy_deployments
         by_account = {}
@@ -8833,7 +8855,14 @@ data:
         request_kwargs = request_kwargs or {}
         sid = _affinity_session_id(request_kwargs)
         if not sid:
-            return healthy_deployments
+            # DGX-619: peticion anonima — no hay sesion que clavar, pero si cupo que
+            # respetar. Sorteo ponderado sobre las cuentas con deployment sano con la
+            # MISMA formula que una sesion nueva, sin pin ni Valkey. Fail-open:
+            # cualquier excepcion deja la lista intacta (el 50/50 de antes).
+            try:
+                return by_account[await draw_account(by_account)]
+            except Exception:
+                return healthy_deployments
         user_key = _affinity_user_key(request_kwargs)
         key = account_pin_key(user_key, sid)
 
@@ -11177,7 +11206,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-03677b2a016f
+        config.k8s.e-dani.com/revision: config-1bc733d53578
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false

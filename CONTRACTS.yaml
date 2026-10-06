@@ -171,6 +171,18 @@ contracts:
       tests/test_alibaba_account_affinity.py (unitarios) y
       tests/integration/run_alibaba_account_affinity.sh (Router real de la imagen
       pineada + Valkey real + dos pods, job de CI).
+
+      ADITIVO (DGX-619, 2026-10-06): una peticion SIN sid (ni cabecera ni prefijo)
+      ya no pasa intacta: el filtro sortea la cuenta con `draw_account` — la MISMA
+      formula de tramos sobre `alibaba_account_weights` que una sesion nueva, sobre
+      un id aleatorio — entre las cuentas con deployment sano, SIN escribir pin ni
+      tocar Valkey, fail-open a la lista completa ante cualquier excepcion. La
+      clave, el valor y el TTL del pin estan intactos: el 50/50 que gastaba la
+      cuenta sin cupo era efecto del simple-shuffle del Router, no promesa de este
+      contrato (precedente de parrafos ADITIVO: dgx.litellm.priority-field.v1; sin
+      .v2). `draw_account` y `warm_config` son el seam publico unico del selector:
+      el futuro gateway de media del plan (DGX-621) los llama literalmente,
+      prohibida cualquier formula propia.
   - id: dgx.session-router.deployment-affinity-key.v1
     kind: schema
     value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>
