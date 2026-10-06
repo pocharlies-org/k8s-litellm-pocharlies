@@ -2130,8 +2130,25 @@ data:
     priority_by_alias:
       open-webui-v3: -10  # chat interactivo: por delante del lote
       hermes: -10         # turnos de los bots: por delante del lote
+      # DGX-601 (06-10-2026, Dani): un alias puede valer ENTERO (lo de siempre) o
+      # MAPA por clase de sesion (`x-claude-class`, que estampa el lanzador de la
+      # compania). `claude-local` comparte la misma key para el Claude Code de la
+      # compania y para el uso personal: hasta ahora los dos salian sin campo, es
+      # decir con el default de vLLM (0), compitiendo iguales. El uso personal va
+      # por delante (-5) y el de la compania por detras (5), pero aun por delante
+      # del lote (10).
+      claude-local:
+        default: -5       # sin clase: uso personal de Dani
+        company: 5        # sesion de la compania: por delante del lote, detras del resto
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
+    # DGX-601: lo UNCENSORED (`_is_uncensored`: sufijo `-uncensored` o
+    # UNCENSORED_ALIASES) NO tiene proveedor de alternativa -- el sello abliterado
+    # solo existe en el residente y a proposito no lleva `fallbacks` (ver el aviso
+    # unas lineas arriba en el model_list). Si espera, no se sirve en ningun otro
+    # sitio, asi que pasa por delante de TODO el mapa de alias con este nivel sea
+    # cual sea la key que lo mande.
+    priority_uncensored: -20
     # Proveedores de busqueda para websearch_interception (arriba en
     # litellm_settings.callbacks). SearXNG self-hosted del ns chat: sin API key,
     # sin salida a terceros. El formato json de /search esta activo en la
@@ -9256,6 +9273,10 @@ data:
     # DGX-453 (29-09-2026): prioridad de cola del RESIDENTE segun el alias de la
     # virtual key. El mapa vive en /config/config.yaml (`priority_by_alias`,
     # top-level) y NO en este modulo: se reordena la cola sin tocar codigo.
+    # DGX-601 (octubre 2026, Dani): un alias puede valer ENTERO o MAPA por CLASE de
+    # sesion (`x-claude-class`, con `default` para quien no la trae), y el config
+    # gana un `priority_uncensored` que manda sobre el mapa entero: lo abliterado no
+    # tiene proveedor de alternativa, si espera no se sirve en otro sitio.
     # Fail-open TOTAL: cualquier fallo (fichero ausente, yaml roto, forma rara)
     # => no se inyecta nada y la peticion sale con la prioridad default de vLLM.
     # Solo hacia `*.llm.svc.cluster.local`: Alibaba y OpenRouter no conocen el
@@ -9263,17 +9284,26 @@ data:
     # CONTRACTS.yaml: dgx.litellm.priority-field.v1
     _PRIORITY_CONFIG_PATH = "/config/config.yaml"
     _PRIORITY_RESIDENT_MARKER = ".llm.svc.cluster.local"
-    _priority_cache = {"mtime": None, "map": None, "model_list": None}
+    _priority_cache = {"mtime": None, "map": None, "model_list": None, "uncensored": None}
+
+
+    def _priority_nivel(v):
+        """Entero util de prioridad, o None. None tambien para 0: es el default de
+        vLLM, anadirlo al request seria ruido."""
+        if isinstance(v, int) and not isinstance(v, bool) and v != 0:
+            return v
+        return None
 
 
     def _priority_config():
-        """(mapa alias->int, model_list) del config, reparseado SOLO si el mtime
-        del fichero cambio (esto corre en cada peticion). Devuelve (None, None)
-        ante cualquier fallo."""
+        """(mapa alias->nivel, model_list, nivel_uncensored) del config, reparseado
+        SOLO si el mtime del fichero cambio (esto corre en cada peticion). Un nivel
+        es un entero o un mapa {clase: entero, "default": entero}. Devuelve
+        (None, None, None) ante cualquier fallo."""
         try:
             mtime = os.path.getmtime(_PRIORITY_CONFIG_PATH)
         except OSError:
-            return None, None
+            return None, None, None
         if _priority_cache["mtime"] != mtime:
             try:
                 import yaml
@@ -9285,16 +9315,32 @@ data:
                 if isinstance(raw, dict):
                     pmap = {}
                     for k, v in raw.items():
-                        if (isinstance(k, str) and isinstance(v, int)
-                                and not isinstance(v, bool)):
-                            pmap[k.strip().lower()] = v
+                        if not isinstance(k, str) or not k.strip():
+                            continue
+                        nivel = _priority_nivel(v)
+                        if nivel is not None:
+                            pmap[k.strip().lower()] = nivel
+                            continue
+                        if isinstance(v, dict):
+                            by_cls = {}
+                            for ck, cv in v.items():
+                                if not isinstance(ck, str) or not ck.strip():
+                                    continue
+                                n = _priority_nivel(cv)
+                                if n is not None:
+                                    by_cls[ck.strip().lower()] = n
+                            if by_cls:
+                                pmap[k.strip().lower()] = by_cls
+                unc = _priority_nivel(cfg.get("priority_uncensored"))
                 ml = cfg.get("model_list")
                 _priority_cache["map"] = pmap
                 _priority_cache["model_list"] = ml if isinstance(ml, list) else None
+                _priority_cache["uncensored"] = unc
                 _priority_cache["mtime"] = mtime
             except Exception:
-                return None, None
-        return _priority_cache["map"], _priority_cache["model_list"]
+                return None, None, None
+        return (_priority_cache["map"], _priority_cache["model_list"],
+                _priority_cache["uncensored"])
 
 
     def _priority_targets_resident(model, model_list):
@@ -9315,23 +9361,39 @@ data:
 
 
     def apply_priority(data):
-        """Inyecta `priority` (int) en data["extra_body"] segun el alias de la
-        virtual key, SOLO si el destino resuelto es el residente. Sin alias, alias
-        no mappeado, prioridad 0 o destino cloud => no se añade el campo. Nunca
-        lanza. Llamado desde litellm_strip_params.async_pre_call_hook justo
+        """Inyecta `priority` (int) en data["extra_body"], SOLO si el destino
+        resuelto es el residente. El nivel sale de `priority_by_alias` (entero, o
+        mapa por clase de sesion con `default`); `priority_uncensored` manda sobre
+        el mapa (DGX-601): lo abliterado no se puede servir en otro proveedor. Sin
+        alias, alias no mappeado, nivel 0 o destino cloud => no se añade el campo.
+        Nunca lanza. Llamado desde litellm_strip_params.async_pre_call_hook justo
         despues del pin de afinidad, donde data["model"] ya es el destino real."""
         try:
-            alias = _key_alias(data)
-            if not alias:
-                return
-            pmap, model_list = _priority_config()
-            if not pmap:
-                return
-            prio = pmap.get(alias)
-            if not isinstance(prio, int) or isinstance(prio, bool) or prio == 0:
+            pmap, model_list, uncensored = _priority_config()
+            if not pmap and uncensored is None:
                 return
             if not _priority_targets_resident(data.get("model"), model_list):
                 return
+            if uncensored is not None and _is_uncensored(data.get("model")):
+                prio = uncensored
+            else:
+                if not pmap:
+                    return
+                alias = _key_alias(data)
+                if not alias:
+                    return
+                prio = pmap.get(alias)
+                if isinstance(prio, dict):
+                    # Alias con niveles por clase: la que estampa el lanzador de la
+                    # compania; `default` para el resto (uso personal, claves sin
+                    # clase y clases no listadas en el mapa).
+                    cls = _claude_class(data) or ""
+                    if cls and cls in prio:
+                        prio = prio[cls]
+                    else:
+                        prio = prio.get("default")
+                if not isinstance(prio, int) or isinstance(prio, bool):
+                    return
             body = data.get("extra_body")
             if not isinstance(body, dict):
                 body = {}
@@ -11115,7 +11177,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-949cb23f1af0
+        config.k8s.e-dani.com/revision: config-03677b2a016f
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
