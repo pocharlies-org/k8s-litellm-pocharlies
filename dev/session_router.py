@@ -61,7 +61,7 @@
 #      la válvula está APAGADA (fail-open = comportamiento actual). Una sesión
 #      YA ligada a local NUNCA la expulsa esta válvula: desalojar un prefijo
 #      caliente paga el re-prefrío de quien se va y el de quien vuelve. Las
-#      sesiones BOT (clase company o key alias en bot_keys: hermes,
+#      sesiones BOT (clase company o key alias en bot_keys: hermes-batch,
 #      aurora-rca) solo se admiten bajo el umbral más bajo bot_budget_pct:
 #      el interactivo (claude-cli, opencode, open-webui) va primero.
 #   4c. RETORNO desde Alibaba (27-09-2026): una sesión ligada a Alibaba vuelve
@@ -102,6 +102,7 @@ import math
 import os
 import re
 import time
+import uuid
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
@@ -220,7 +221,7 @@ DEFAULT_ALIBABA_RETURN_AFTER_S = 3600
 # claude-local SIN clase company, opencode-*, open-webui — NO están). La
 # identificación es fiable para los listados: cada bot usa su key. Una key
 # nueva sin listar se trata como interactiva (fail-open hacia local).
-DEFAULT_BOT_KEYS = ("hermes", "aurora-rca")
+DEFAULT_BOT_KEYS = ("hermes-batch", "aurora-rca", "brain")
 # Punto de partida del estimador; el tracker aprende el real por modelo
 # (active_request_tracking.py: chars_per_token arranca en 3,5).
 FALLBACK_CHARS_PER_TOKEN = 3.5
@@ -882,7 +883,12 @@ def _estimate_prompt_tokens(data, tracker=None):
                     continue
                 total += len(node)
             elif isinstance(node, dict):
-                if node.get("type") in media:
+                # Mismo criterio que prompt_chars: un `type` que no es string
+                # (una propiedad de un JSON-Schema que se llama `type`) reventaba
+                # el recorrido y el try/except de arriba devolvia None -> la
+                # valvula KV se quedaba ciega justo con los turnos de Claude Code.
+                block_type = node.get("type")
+                if isinstance(block_type, str) and block_type in media:
                     continue
                 for key, value in node.items():
                     if key == "cache_control":
@@ -1138,7 +1144,7 @@ async def _inflight_resident(tracker):
 def _is_bot_session(config, claude_class, key_alias):
     """Prioridad (27-09-2026): el interactivo va primero. Bot = clase company
     (los roles autónomos de la compañía corren en segundo plano) o alias de
-    virtual key en bot_keys (hermes, aurora-rca). claude-cli/opencode/
+    virtual key en bot_keys (hermes-batch, aurora-rca). claude-cli/opencode/
     open-webui NO son bot. Sin key alias o config vieja: no bot (fail-open
     hacia local). La clase es falsificable (dgx.claude.class-header.v1) y el
     alias lo pone la key: el único efecto de mentir es que la sesión se
@@ -1449,7 +1455,10 @@ def stamp_alibaba_session_affinity(data):
 #     queda en el log y en `ACCOUNT_AFFINITY_STATS["moves"]`.
 #   - Sesiones que ya tenian pin nativo por grupo: se respeta esa cuenta la
 #     primera vez (siembra), para que el cambio de mecanismo no mueva a nadie.
-#   - Sin sid (ni cabecera ni prefijo) no se filtra: no hay sesion que clavar.
+#   - Sin sid (ni cabecera ni prefijo) se sortea la cuenta por cupo con
+#     `draw_account` (DGX-619, octubre 2026): no hay sesion que clavar, pero el
+#     50/50 ciego del Router gastaba la cuenta sin cupo (k1 al 91,5 %). Sin pin,
+#     sin Valkey; cualquier excepcion deja la lista intacta (fail-open).
 # CONTRACT: dgx.session-router.alibaba-account-pin.v1
 # (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
 ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
@@ -1579,6 +1588,23 @@ async def _account_weights():
         return {}
 
 
+async def draw_account(accounts):
+    """SEAM PUBLICO del selector (DGX-619): sorteo ponderado por cupo de una
+    peticion SIN sesion — la MISMA formula (`preferred_account` por tramos de
+    `alibaba_account_weights`) que una sesion nueva, sobre un id aleatorio.
+    No escribe pin ni toca Valkey: no hay sesion que clavar. El gateway de media
+    (DGX-621) llama LITERALMENTE esto; prohibido definir fórmula propia.
+    Sin pesos (config fria) = tramos iguales, la misma formula de siempre."""
+    return preferred_account("draw", uuid.uuid4().hex, accounts, await _account_weights())
+
+
+async def warm_config():
+    """Refresca la config del panel ANTES de aceptar trafico (lifespan del
+    gateway, DGX-621): un sorteo en frio sin pesos sale 50/50 y gastaria cupo a
+    ciegas. Nunca lanza: _refresh_config es fail-open por contrato."""
+    await _refresh_config()
+
+
 async def _pin_get(client, key):
     return await asyncio.wait_for(client.get(key), timeout=REDIS_OP_TIMEOUT_SECONDS)
 
@@ -1626,7 +1652,8 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
     Lo llama el Router en CADA eleccion de deployment, reintentos incluidos, a
     traves de StripUnsupportedParams.async_filter_deployments (el callback que
     ya existe: este modulo no es un callback de litellm, mandato 2). Fail-open: cualquier
-    cosa que no sea un grupo `alibaba-*` con ids `-kN` y un sid pasa intacta."""
+    cosa que no sea un grupo `alibaba-*` con ids `-kN` pasa intacta. Sin sid no hay
+    pin que consultar: se sortea cuenta por cupo con `draw_account` (DGX-619)."""
     if not str(model or "").startswith(ALIBABA_PREFIX) or not healthy_deployments:
         return healthy_deployments
     by_account = {}
@@ -1638,7 +1665,14 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
     request_kwargs = request_kwargs or {}
     sid = _affinity_session_id(request_kwargs)
     if not sid:
-        return healthy_deployments
+        # DGX-619: peticion anonima — no hay sesion que clavar, pero si cupo que
+        # respetar. Sorteo ponderado sobre las cuentas con deployment sano con la
+        # MISMA formula que una sesion nueva, sin pin ni Valkey. Fail-open:
+        # cualquier excepcion deja la lista intacta (el 50/50 de antes).
+        try:
+            return by_account[await draw_account(by_account)]
+        except Exception:
+            return healthy_deployments
     user_key = _affinity_user_key(request_kwargs)
     key = account_pin_key(user_key, sid)
 
@@ -2078,6 +2112,10 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
 # DGX-453 (29-09-2026): prioridad de cola del RESIDENTE segun el alias de la
 # virtual key. El mapa vive en /config/config.yaml (`priority_by_alias`,
 # top-level) y NO en este modulo: se reordena la cola sin tocar codigo.
+# DGX-601 (octubre 2026, Dani): un alias puede valer ENTERO o MAPA por CLASE de
+# sesion (`x-claude-class`, con `default` para quien no la trae), y el config
+# gana un `priority_uncensored` que manda sobre el mapa entero: lo abliterado no
+# tiene proveedor de alternativa, si espera no se sirve en otro sitio.
 # Fail-open TOTAL: cualquier fallo (fichero ausente, yaml roto, forma rara)
 # => no se inyecta nada y la peticion sale con la prioridad default de vLLM.
 # Solo hacia `*.llm.svc.cluster.local`: Alibaba y OpenRouter no conocen el
@@ -2085,17 +2123,26 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
 # CONTRACTS.yaml: dgx.litellm.priority-field.v1
 _PRIORITY_CONFIG_PATH = "/config/config.yaml"
 _PRIORITY_RESIDENT_MARKER = ".llm.svc.cluster.local"
-_priority_cache = {"mtime": None, "map": None, "model_list": None}
+_priority_cache = {"mtime": None, "map": None, "model_list": None, "uncensored": None}
+
+
+def _priority_nivel(v):
+    """Entero util de prioridad, o None. None tambien para 0: es el default de
+    vLLM, anadirlo al request seria ruido."""
+    if isinstance(v, int) and not isinstance(v, bool) and v != 0:
+        return v
+    return None
 
 
 def _priority_config():
-    """(mapa alias->int, model_list) del config, reparseado SOLO si el mtime
-    del fichero cambio (esto corre en cada peticion). Devuelve (None, None)
-    ante cualquier fallo."""
+    """(mapa alias->nivel, model_list, nivel_uncensored) del config, reparseado
+    SOLO si el mtime del fichero cambio (esto corre en cada peticion). Un nivel
+    es un entero o un mapa {clase: entero, "default": entero}. Devuelve
+    (None, None, None) ante cualquier fallo."""
     try:
         mtime = os.path.getmtime(_PRIORITY_CONFIG_PATH)
     except OSError:
-        return None, None
+        return None, None, None
     if _priority_cache["mtime"] != mtime:
         try:
             import yaml
@@ -2107,16 +2154,32 @@ def _priority_config():
             if isinstance(raw, dict):
                 pmap = {}
                 for k, v in raw.items():
-                    if (isinstance(k, str) and isinstance(v, int)
-                            and not isinstance(v, bool)):
-                        pmap[k.strip().lower()] = v
+                    if not isinstance(k, str) or not k.strip():
+                        continue
+                    nivel = _priority_nivel(v)
+                    if nivel is not None:
+                        pmap[k.strip().lower()] = nivel
+                        continue
+                    if isinstance(v, dict):
+                        by_cls = {}
+                        for ck, cv in v.items():
+                            if not isinstance(ck, str) or not ck.strip():
+                                continue
+                            n = _priority_nivel(cv)
+                            if n is not None:
+                                by_cls[ck.strip().lower()] = n
+                        if by_cls:
+                            pmap[k.strip().lower()] = by_cls
+            unc = _priority_nivel(cfg.get("priority_uncensored"))
             ml = cfg.get("model_list")
             _priority_cache["map"] = pmap
             _priority_cache["model_list"] = ml if isinstance(ml, list) else None
+            _priority_cache["uncensored"] = unc
             _priority_cache["mtime"] = mtime
         except Exception:
-            return None, None
-    return _priority_cache["map"], _priority_cache["model_list"]
+            return None, None, None
+    return (_priority_cache["map"], _priority_cache["model_list"],
+            _priority_cache["uncensored"])
 
 
 def _priority_targets_resident(model, model_list):
@@ -2137,23 +2200,39 @@ def _priority_targets_resident(model, model_list):
 
 
 def apply_priority(data):
-    """Inyecta `priority` (int) en data["extra_body"] segun el alias de la
-    virtual key, SOLO si el destino resuelto es el residente. Sin alias, alias
-    no mappeado, prioridad 0 o destino cloud => no se añade el campo. Nunca
-    lanza. Llamado desde litellm_strip_params.async_pre_call_hook justo
+    """Inyecta `priority` (int) en data["extra_body"], SOLO si el destino
+    resuelto es el residente. El nivel sale de `priority_by_alias` (entero, o
+    mapa por clase de sesion con `default`); `priority_uncensored` manda sobre
+    el mapa (DGX-601): lo abliterado no se puede servir en otro proveedor. Sin
+    alias, alias no mappeado, nivel 0 o destino cloud => no se añade el campo.
+    Nunca lanza. Llamado desde litellm_strip_params.async_pre_call_hook justo
     despues del pin de afinidad, donde data["model"] ya es el destino real."""
     try:
-        alias = _key_alias(data)
-        if not alias:
-            return
-        pmap, model_list = _priority_config()
-        if not pmap:
-            return
-        prio = pmap.get(alias)
-        if not isinstance(prio, int) or isinstance(prio, bool) or prio == 0:
+        pmap, model_list, uncensored = _priority_config()
+        if not pmap and uncensored is None:
             return
         if not _priority_targets_resident(data.get("model"), model_list):
             return
+        if uncensored is not None and _is_uncensored(data.get("model")):
+            prio = uncensored
+        else:
+            if not pmap:
+                return
+            alias = _key_alias(data)
+            if not alias:
+                return
+            prio = pmap.get(alias)
+            if isinstance(prio, dict):
+                # Alias con niveles por clase: la que estampa el lanzador de la
+                # compania; `default` para el resto (uso personal, claves sin
+                # clase y clases no listadas en el mapa).
+                cls = _claude_class(data) or ""
+                if cls and cls in prio:
+                    prio = prio[cls]
+                else:
+                    prio = prio.get("default")
+            if not isinstance(prio, int) or isinstance(prio, bool):
+                return
         body = data.get("extra_body")
         if not isinstance(body, dict):
             body = {}

@@ -15,6 +15,7 @@ que vuelve tras el hueco se re-sortea con los pesos del cupo, y la memoria local
 pod caduca igual — reactivar desde ella un pin caducado anularia el reparto.
 """
 import asyncio
+import json
 import random
 import sys
 import time
@@ -364,11 +365,33 @@ def test_passthrough_fuera_de_alibaba_o_sin_ids_de_cuenta(model, deps):
     assert not valkey.ops
 
 
-def test_sin_sid_no_se_filtra():
+def test_sin_sid_sortea_una_cuenta_sin_escribir_pin():
+    """DGX-619 (06-10-2026): antes pasaba intacta y el simple-shuffle del Router
+    repartia 50/50 a ciegas, gastando la cuenta sin cupo (k1 al 91,5 %). Ahora el
+    filtro sortea con `draw_account` sobre las cuentas sanas y NO escribe pin ni
+    toca Valkey: no hay sesion que clavar."""
     valkey = FakeValkey()
-    pod = _pod(valkey)
+    pod = _con_pesos(_pod(valkey), {"k1": 0.0, "k2": 1.0})
+    out = run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash"),
+        {"metadata": {"user_api_key_hash": KEY_A}}))
+    assert _account(out) == "k2"
+    assert not valkey.ops
+    assert not pod._account_pins_local
+
+
+def test_sin_sid_falla_abierto_a_la_lista_completa():
+    """Cualquier excepcion del sorteo deja la lista intacta (fail-open, como el
+    resto del modulo): una peticion anonima nunca se cae por el selector."""
+    pod = _pod(FakeValkey())
+
+    async def boom(accounts):
+        raise RuntimeError("cupo ilegible")
+
+    pod.draw_account = boom
     deps = _deps("alibaba-q38-max")
-    out = run(pod.alibaba_account_filter("alibaba-q38-max", deps, {"metadata": {"user_api_key_hash": KEY_A}}))
+    out = run(pod.alibaba_account_filter(
+        "alibaba-q38-max", deps, {"metadata": {"user_api_key_hash": KEY_A}}))
     assert out is deps
 
 
@@ -524,6 +547,50 @@ def test_sanitize_de_los_pesos(raw, esperado):
 def test_pesos_que_no_cubren_las_cuentas_caen_al_uniforme():
     pod = _pod(None)
     assert pod.preferred_account("u", "s", ["k1", "k2"], {"k2": 1.0}) == pod.preferred_account("u", "s", ["k1", "k2"])
+
+
+# ── seam publico del selector: peticiones SIN sesion (DGX-619, 06-10-2026) ───
+
+PESOS_DGX619 = json.loads(
+    (Path(__file__).resolve().parent / "fixtures" / "alibaba_account_weights_dgx619.json").read_text())
+
+
+def _sorteos(pod, n):
+    async def go():
+        return [await pod.draw_account(["k1", "k2"]) for _ in range(n)]
+    return run(go())
+
+
+def test_sin_sid_draw_account_real_reparte_por_los_pesos_del_fixture():
+    """C3 (DGX-619): 10 000 sorteos por el `draw_account` REAL (no mock) con los
+    pesos fijos del fixture {k1: 0.17, k2: 0.83} => k2 entre 73 % y 93 %
+    (sigma ~0,4 pt: no flaquea). Es la unica formula que veran el chat anonimo y
+    el gateway de media (DGX-621): el seam, no un mock del selector."""
+    assert PESOS_DGX619 == {"k1": 0.17, "k2": 0.83}
+    pod = _con_pesos(_pod(None), PESOS_DGX619)
+    draws = _sorteos(pod, 10000)
+    assert len(draws) == 10000 and set(draws) == {"k1", "k2"}
+    p2 = draws.count("k2") / len(draws)
+    assert 0.73 < p2 < 0.93, p2
+
+
+def test_sin_sid_sin_pesos_config_fria_salen_tramos_iguales():
+    """Regresión del rojo del 29-09 (run 36583219046) aplicada al sorteo anonimo:
+    con la caché de config FRIA (sin pesos) no puede haber una segunda formula —
+    `draw_account` usa los mismos tramos con peso 1, asi que el reparto sale
+    uniforme y el frio/caliente no son dos lecturas del hash."""
+    frio = _pod(None)  # _account_weights() sobre DEFAULT_CONFIG => {}
+    draws = _sorteos(frio, 4000)
+    assert 0.41 < draws.count("k2") / len(draws) < 0.59, draws.count("k2")
+
+
+def test_warm_config_refresca_sin_lanzar_nunca():
+    """Lo llama el lifespan del gateway (DGX-621) antes de aceptar trafico, para
+    no repartir en frio: renueva la TTL de la caché incluso con el panel
+    inalcanzable (httpx stubbeado) y nunca propaga la excepcion."""
+    pod = _pod(None)
+    run(pod.warm_config())
+    assert pod._config_cache["expires"] > time.monotonic()
 
 
 def test_pesos_uniformes_y_cachefria_eligen_la_misma_cuenta():
