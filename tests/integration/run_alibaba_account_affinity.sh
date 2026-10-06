@@ -23,6 +23,11 @@ docker run -d --rm --name "$NET-valkey" --network "$NET" valkey/valkey:8-alpine 
 docker run -d --rm --name "$NET-cfg" --network "$NET" -v "$REPO:/repo:ro" \
   --entrypoint python "$IMAGE" /repo/tests/integration/static_routing_config.py >/dev/null
 echo "imagen: $IMAGE"
+# DGX-621: el plan-gateway corre en ESTA imagen (misma que el proxy): httpx, uvicorn y
+# fastapi tienen que estar, y el gateway del manifiesto tiene que importar y contestar.
+docker run --rm --entrypoint python "$IMAGE" -c "import httpx, uvicorn, fastapi"
+docker run --rm -v "$REPO:/repo:ro" -e REPO=/repo -e LITELLM_LOG=ERROR --entrypoint python "$IMAGE" \
+  /repo/tests/integration/plan_gateway_import.py
 OUTDIR=$(mktemp -d -p "${RUNNER_TEMP:-/tmp}")
 chmod 777 "$OUTDIR"
 

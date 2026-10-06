@@ -43,9 +43,17 @@ MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 # 07-09-2026: eran dos. El del sync se fue con `litellm-dgx-backend-sync`, pero el
 # mecanismo sigue haciendo falta para `litellm-config`, que monta el hook
 # `litellm_strip_params.py` en un proceso que tampoco lo relee.
-VIGILADOS = {
-    "litellm-config": ("litellm", "config-"),
-}
+#
+# DGX-621: el Deployment `plan-gateway` importa `session_router.py` de
+# `litellm-config` (rueda con el proxy: nunca desfasados) y ademas lleva su propio
+# codigo en `plan-gateway-config`. Son TRES parejas (configmap, deployment,
+# anotacion, prefijo) y no un dict por configmap: `litellm-config` aparece en dos
+# Deployments con la misma anotacion.
+VIGILADOS = [
+    ("litellm-config", "litellm", "config.k8s.e-dani.com/revision", "config-"),
+    ("litellm-config", "plan-gateway", "config.k8s.e-dani.com/revision", "config-"),
+    ("plan-gateway-config", "plan-gateway", "plan-gateway/revision", "plan-gateway-"),
+]
 
 
 def _docs():
@@ -62,22 +70,22 @@ def _hash_configmap(nombre: str) -> str:
     raise AssertionError(f"no encuentro el ConfigMap {nombre}")
 
 
-def _anotacion(deployment: str) -> str | None:
+def _anotacion(deployment: str, clave: str) -> str | None:
     for doc in _docs():
         if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == deployment:
             anot = (
                 doc["spec"]["template"]["metadata"].get("annotations") or {}
             )
-            return anot.get("config.k8s.e-dani.com/revision")
+            return anot.get(clave)
     raise AssertionError(f"no encuentro el Deployment {deployment}")
 
 
 def test_la_anotacion_lleva_el_hash_del_configmap_que_monta():
-    for cm, (deployment, prefijo) in VIGILADOS.items():
+    for cm, deployment, clave, prefijo in VIGILADOS:
         esperado = prefijo + _hash_configmap(cm)
-        actual = _anotacion(deployment)
+        actual = _anotacion(deployment, clave)
         assert actual == esperado, (
-            f"{deployment}: la anotacion dice {actual!r} y el contenido de {cm} "
+            f"{deployment}: la anotacion {clave} dice {actual!r} y el contenido de {cm} "
             f"exige {esperado!r}.\n"
             "El pod NO relee el ConfigMap en caliente: sin bumpear esto, el "
             "cambio se aplica en git, ArgoCD dice Synced/Healthy y el proceso "
@@ -109,18 +117,24 @@ def test_el_proxy_sigue_sin_recargar_en_caliente():
 
 def _fix() -> int:
     texto = MANIFEST.read_text()
-    for cm, (deployment, prefijo) in VIGILADOS.items():
+    for cm, deployment, clave, prefijo in VIGILADOS:
         esperado = prefijo + _hash_configmap(cm)
-        actual = _anotacion(deployment)
+        actual = _anotacion(deployment, clave)
         if actual == esperado:
-            print(f"  {deployment}: ya esta en {esperado}")
+            print(f"  {deployment} {clave}: ya esta en {esperado}")
             continue
-        patron = re.compile(
-            r"(config\.k8s\.e-dani\.com/revision:\s*)" + re.escape(str(actual))
+        # Dos Deployments comparten el mismo valor viejo: se sustituye dentro del
+        # documento del Deployment pedido, no la primera aparicion del fichero.
+        inicio = re.search(
+            r"^kind: Deployment\nmetadata:\n  name: " + re.escape(deployment) + r"\n",
+            texto, re.M,
         )
-        texto, n = patron.subn(r"\g<1>" + esperado, texto, count=1)
-        assert n == 1, f"no pude sustituir la anotacion de {deployment}"
-        print(f"  {deployment}: {actual} -> {esperado}")
+        assert inicio, f"no encuentro el Deployment {deployment} en el texto"
+        patron = re.compile(re.escape(clave) + r":\s*" + re.escape(str(actual)))
+        m = patron.search(texto, inicio.end())
+        assert m, f"no pude sustituir la anotacion {clave} de {deployment}"
+        texto = texto[: m.start()] + f"{clave}: {esperado}" + texto[m.end():]
+        print(f"  {deployment} {clave}: {actual} -> {esperado}")
     MANIFEST.write_text(texto)
     return 0
 

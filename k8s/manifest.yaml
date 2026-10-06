@@ -11654,6 +11654,522 @@ spec:
   ports:
     - { name: http, port: 4000, targetPort: 4000 }
 ---
+# plan-gateway (DGX-621, plan DGX-619): sitio unico por el que pasa la media
+# (imagen, video, voz) del Token Plan de Alibaba. Deployment PROPIO (no sidecar del
+# proxy: un sidecar NotReady sacaria del Service todo el chat de su replica, el pod
+# litellm drena 720 s y los limites de memoria serian compartidos), en la misma app
+# ArgoCD `litellm`. Etiqueta `app: plan-gateway` y NUNCA `app: litellm`: los Services
+# del proxy seleccionan por esa etiqueta y mezclarlas mandaria chat al gateway.
+# El codigo es inline (como los hooks de litellm-config) y sin copia en dev/.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: plan-gateway-config
+  namespace: litellm
+data:
+  plan_gateway.py: |
+    # CONTRACT: dgx.alibaba.plan-gateway.v1
+    """plan-gateway (DGX-621, plan DGX-619): sitio unico por el que pasa la media
+    (imagen, video, voz) del Token Plan de Alibaba.
+
+    Por que existe: Studio, omnivoice y galan gastaban la key de UNA cuenta sin
+    reparto, sin failover y sin registro. Aqui se elige cuenta con el selector
+    canonico del proxy (`session_router.draw_account`, la misma formula que una
+    sesion nueva de chat), se reintenta UNA vez en la otra y se anota cada intento.
+
+    Es un proxy HTTPS de allowlist cerrada, no un proxy general: cuatro rutas, un
+    host upstream fijo (PLAN_UPSTREAM_BASE) y nada mas. Sin estado: no hay mapa de
+    tareas; la cuenta de una tarea asincrona viaja en la cabecera X-Plan-Account.
+
+    Superficie (todo lo demas, 404):
+      POST /api/v1/services/aigc/multimodal-generation/generation   (imagen, ASR)
+      POST /api/v1/services/aigc/video-generation/video-synthesis   (video, async)
+      POST /api/v1/services/audio/tts/SpeechSynthesizer              (TTS)
+      GET  /api/v1/tasks/{id}                                        (polling)
+
+    Auth: `Authorization: Bearer <token>` con UN token por consumidor
+    (env PLAN_GATEWAY_TOKEN_<NOMBRE>); el nombre en minusculas es el `caller` del
+    ledger. Authorization y X-Plan-Account entrantes se descartan y se reponen.
+
+    Failover (un solo reintento, a la otra cuenta): 429, cuerpo JSON con un codigo de
+    CODIGOS_CUOTA, o error de conexion ANTES de enviar. Un POST nunca se reintenta
+    tras ReadTimeout (la tarea puede estar creada y cobrada). Si fallan las dos se
+    devuelve la ultima respuesta del upstream tal cual.
+
+    Ledger: una linea JSON por INTENTO en stdout. ASGI puro (sin fastapi): la imagen
+    del proxy trae httpx y uvicorn, y los tests ejercitan `app` con httpx.ASGITransport.
+    """
+    import asyncio
+    import hmac
+    import json
+    import os
+    import re
+    import sys
+    import time
+    from datetime import datetime, timezone
+
+    import httpx
+
+    import session_router
+
+    UPSTREAM_BASE = os.environ.get(
+        "PLAN_UPSTREAM_BASE", "https://token-plan.ap-southeast-1.maas.aliyuncs.com"
+    ).rstrip("/")
+
+    MAX_BODY_BYTES = 32 * 1024 * 1024
+    MAX_CONCURRENT = 8
+    TOKEN_ENV_PREFIX = "PLAN_GATEWAY_TOKEN_"
+    # Cuenta -> env con su key. Los mismos Secrets que el Deployment `litellm`.
+    ACCOUNT_ENVS = {"k1": "DASHSCOPE_API_KEY", "k2": "DASHSCOPE_API_KEY_2"}
+
+    # HIPOTESIS: ninguna de estas respuestas esta capturada del upstream real. La
+    # medicion P0 (nota-devops-k2-medicion.md, 06-10-2026) hizo cinco llamadas sin
+    # error. `Arrearage` y `Throttling*` son codigos documentados de DashScope; el
+    # resto son los que suelen devolver las APIs compatibles. Se coteja con el campo
+    # `quota_error` del ledger y se sustituye por el codigo real al capturar uno.
+    CODIGOS_CUOTA = (
+        "Throttling",
+        "Throttling.AllocationQuota",
+        "Throttling.RateQuota",
+        "Arrearage",
+        "AllocationQuota",
+        "insufficient_quota",
+        "QuotaExhausted",
+    )
+
+    MEDIA_ROUTES = frozenset({
+        ("POST", "/api/v1/services/aigc/multimodal-generation/generation"),
+        ("POST", "/api/v1/services/aigc/video-generation/video-synthesis"),
+        ("POST", "/api/v1/services/audio/tts/SpeechSynthesizer"),
+    })
+    TASK_RE = re.compile(r"^/api/v1/tasks/[A-Za-z0-9_-]+$")
+    MODEL_RE = re.compile(rb'"model"\s*:\s*"([^"\\]{1,100})"')
+
+    HOP_BY_HOP = frozenset({
+        "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+        "te", "trailer", "trailers", "transfer-encoding", "upgrade",
+    })
+    # Salen del request hacia el upstream ademas de los hop-by-hop: las repone el
+    # gateway (authorization, x-plan-account) o las recalcula httpx (host,
+    # content-length); accept-encoding se fija a identity para reenviar bytes tal cual.
+    DROP_REQUEST = frozenset({"host", "content-length", "authorization", "x-plan-account", "accept-encoding"})
+
+    _sem = asyncio.Semaphore(MAX_CONCURRENT)
+    _client = None
+    # Los tests inyectan aqui un httpx.MockTransport; en produccion es None.
+    _transport = None
+
+
+    class _TooBig(Exception):
+        pass
+
+
+    class _Gone(Exception):
+        pass
+
+
+    def _get_client():
+        global _client
+        if _client is None or _client.is_closed:
+            _client = httpx.AsyncClient(
+                transport=_transport,
+                timeout=httpx.Timeout(connect=10.0, read=300.0, write=60.0, pool=30.0),
+            )
+        return _client
+
+
+    def _keys():
+        return {a: os.environ[e] for a, e in ACCOUNT_ENVS.items() if os.environ.get(e)}
+
+
+    def _caller(authorization):
+        scheme, _, token = authorization.partition(" ")
+        token = token.strip()
+        if scheme.lower() != "bearer" or not token:
+            return None
+        found = None
+        for name, value in os.environ.items():
+            if name.startswith(TOKEN_ENV_PREFIX) and value.strip():
+                # sin cortocircuito: recorre todos para no dar el tiempo del acierto
+                if hmac.compare_digest(token.encode(), value.strip().encode()):
+                    found = name[len(TOKEN_ENV_PREFIX):].lower()
+        return found
+
+
+    def _quota_body(raw):
+        """True si el cuerpo JSON lleva un codigo de cuota agotada (CODIGOS_CUOTA)."""
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return False
+        if not isinstance(data, dict):
+            return False
+        error = data.get("error")
+        for code in (data.get("code"), error.get("code") if isinstance(error, dict) else None):
+            if isinstance(code, str) and code.startswith(CODIGOS_CUOTA):
+                return True
+        return False
+
+
+    def _ledger(**row):
+        line = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **row}
+        sys.stdout.write(json.dumps(line, separators=(",", ":")) + "\n")
+        sys.stdout.flush()
+
+
+    async def _send_json(send, status, payload, account=None):
+        body = json.dumps(payload).encode()
+        headers = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]
+        if account:
+            headers.append((b"x-plan-account", account.encode()))
+        await send({"type": "http.response.start", "status": status, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+
+    async def _read_body(receive, declared):
+        if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+            raise _TooBig
+        chunks, size = [], 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                raise _Gone
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > MAX_BODY_BYTES:
+                raise _TooBig
+            chunks.append(chunk)
+            if not message.get("more_body"):
+                return b"".join(chunks)
+
+
+    def _forward_headers(raw_headers, key):
+        named = {
+            t.strip().lower()
+            for k, v in raw_headers if k.decode("latin-1").lower() == "connection"
+            for t in v.decode("latin-1").split(",")
+        }
+        out = {}
+        for k, v in raw_headers:
+            name = k.decode("latin-1").lower()
+            if name in HOP_BY_HOP or name in DROP_REQUEST or name in named:
+                continue
+            out[name] = v.decode("latin-1")
+        out["authorization"] = f"Bearer {key}"
+        out["accept-encoding"] = "identity"
+        return out
+
+
+    def _response_headers(resp, account, length=None):
+        skip = HOP_BY_HOP | {"x-plan-account"} | ({"content-length"} if length is not None else set())
+        out = [
+            (k.encode("latin-1"), v.encode("latin-1"))
+            for k, v in resp.headers.multi_items() if k.lower() not in skip
+        ]
+        if length is not None:
+            out.append((b"content-length", str(length).encode()))
+        out.append((b"x-plan-account", account.encode()))
+        return out
+
+
+    async def _order(keys):
+        """Cuenta del sorteo primero (selector canonico del proxy), la otra detras."""
+        names = sorted(keys)
+        first = await session_router.draw_account(names)
+        return [first] + [a for a in names if a != first]
+
+
+    async def _handle(scope, receive, send):
+        method, path = scope["method"], scope["path"]
+        task = method == "GET" and TASK_RE.match(path) is not None
+        if not task and (method, path) not in MEDIA_ROUTES:
+            return await _send_json(send, 404, {"error": "not_found"})
+        raw_headers = scope["headers"]
+        lookup = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in raw_headers}
+        caller = _caller(lookup.get("authorization", ""))
+        if caller is None:
+            return await _send_json(send, 401, {"error": "unauthorized"})
+        keys = _keys()
+        if not keys:
+            return await _send_json(send, 503, {"error": "no_plan_keys"})
+        pinned = lookup.get("x-plan-account") if task else None
+        if pinned is not None and pinned not in keys:
+            return await _send_json(send, 400, {"error": "unknown_account"})
+        try:
+            body = await _read_body(receive, lookup.get("content-length", ""))
+        except _TooBig:
+            return await _send_json(send, 413, {"error": "request_too_large"})
+        except _Gone:
+            return
+        found = MODEL_RE.search(body[:65536]) if body else None
+        model = found.group(1).decode("utf-8", "replace") if found else None
+
+        async with _sem:
+            order = [pinned] if pinned else (await _order(keys))[:2]
+            client = _get_client()
+            last = None  # ultima respuesta REAL ya bufferizada: (account, status, resp, raw)
+            failure = None
+            for attempt, account in enumerate(order, 1):
+                started = time.monotonic()
+                row = dict(caller=caller, method=method, path=path, model=model,
+                           attempt=attempt, account=account)
+                try:
+                    request = client.build_request(
+                        method, UPSTREAM_BASE + path,
+                        headers=_forward_headers(raw_headers, keys[account]),
+                        content=body or None,
+                    )
+                    resp = await client.send(request, stream=True)
+                    status = resp.status_code
+                    buffered = (status == 429 or "application/json" in resp.headers.get("content-type", "")
+                                or (task and status >= 300))
+                    raw = None
+                    if buffered:
+                        try:
+                            raw = b"".join([c async for c in resp.aiter_raw()])
+                        finally:
+                            await resp.aclose()
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+                    # Antes de enviar: nada llego al upstream, reintentar es seguro.
+                    failure = (account, 502, "upstream_unreachable")
+                    _ledger(**row, status=None, quota_error=False, error=type(exc).__name__,
+                            ms=round((time.monotonic() - started) * 1000))
+                    continue
+                except httpx.HTTPError as exc:
+                    # Despues de enviar (ReadTimeout...): un POST pudo crear y cobrar la tarea.
+                    timeout = isinstance(exc, httpx.TimeoutException)
+                    failure = (account, 504 if timeout else 502, "upstream_timeout" if timeout else "upstream_error")
+                    _ledger(**row, status=None, quota_error=False, error=type(exc).__name__,
+                            ms=round((time.monotonic() - started) * 1000))
+                    if method == "GET":
+                        continue
+                    break
+                quota = raw is not None and (status == 429 or _quota_body(raw))
+                _ledger(**row, status=status, quota_error=quota,
+                        ms=round((time.monotonic() - started) * 1000))
+                # Tarea sin cuenta indicada: cualquier no-2xx prueba la otra cuenta.
+                again = quota or (task and not pinned and status >= 300)
+                if again and attempt < len(order):
+                    last = (account, status, resp, raw)
+                    continue
+                if raw is not None:
+                    return await _reply_buffered(send, account, status, resp, raw)
+                return await _reply_stream(send, account, status, resp)
+            if last is not None:
+                return await _reply_buffered(send, *last)
+            account, status, error = failure
+            return await _send_json(send, status, {"error": error}, account)
+
+
+    async def _reply_buffered(send, account, status, resp, raw):
+        await send({"type": "http.response.start", "status": status,
+                    "headers": _response_headers(resp, account, length=len(raw))})
+        await send({"type": "http.response.body", "body": raw})
+
+
+    async def _reply_stream(send, account, status, resp):
+        try:
+            await send({"type": "http.response.start", "status": status,
+                        "headers": _response_headers(resp, account)})
+            async for chunk in resp.aiter_raw():
+                await send({"type": "http.response.body", "body": chunk, "more_body": True})
+            await send({"type": "http.response.body", "body": b""})
+        finally:
+            await resp.aclose()
+
+
+    async def _lifespan(receive, send):
+        while True:
+            message = await receive()
+            if message["type"] == "lifespan.startup":
+                # Config del panel ANTES de aceptar trafico: un sorteo en frio saldria 50/50.
+                await session_router.warm_config()
+                await send({"type": "lifespan.startup.complete"})
+            elif message["type"] == "lifespan.shutdown":
+                if _client is not None:
+                    await _client.aclose()
+                await send({"type": "lifespan.shutdown.complete"})
+                return
+
+
+    async def app(scope, receive, send):
+        if scope["type"] == "lifespan":
+            await _lifespan(receive, send)
+        elif scope["type"] == "http":
+            await _handle(scope, receive, send)
+---
+# Un token por consumidor del gateway (items 1Password `plan-gateway-studio` y
+# `plan-gateway-omnivoice`), forma Connect (INFRA-511): `key: <item>` +
+# `property: <campo>`. Retain: un refresh fallido no deja al gateway sin tokens.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: plan-gateway-tokens
+  namespace: litellm
+spec:
+  refreshInterval: 24h
+  refreshPolicy: OnChange
+  secretStoreRef: { kind: ClusterSecretStore, name: onepassword-connect }
+  target:
+    name: plan-gateway-tokens
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: PLAN_GATEWAY_TOKEN_STUDIO
+      remoteRef: { key: plan-gateway-studio, property: password }
+    - secretKey: PLAN_GATEWAY_TOKEN_OMNIVOICE
+      remoteRef: { key: plan-gateway-omnivoice, property: password }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: plan-gateway
+  namespace: litellm
+spec:
+  maxUnavailable: 1
+  selector: { matchLabels: { app: plan-gateway } }
+---
+# CONTRACT: dgx.alibaba.plan-gateway.v1
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plan-gateway
+  namespace: litellm
+spec:
+  replicas: 2
+  # maxUnavailable 0: el pod nuevo esta Ready ANTES de que el viejo drene.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  progressDeadlineSeconds: 300
+  selector: { matchLabels: { app: plan-gateway } }
+  template:
+    metadata:
+      # `e-dani.com/vuelve-a-x86`: opt-in del descheduler, igual que litellm.
+      labels: { app: plan-gateway, e-dani.com/vuelve-a-x86: "true" }
+      annotations:
+        # Dos ConfigMaps gobiernan este pod y ninguno se relee en caliente: el
+        # codigo del gateway (plan-gateway-config) y el selector `session_router.py`
+        # que importa (litellm-config, el mismo que el proxy: nunca desfasados, y un
+        # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
+        # HASH de su ConfigMap; contrato y --fix en
+        # tests/test_configmap_revision_bump_contract.py.
+        config.k8s.e-dani.com/revision: config-1bc733d53578
+        plan-gateway/revision: plan-gateway-4ec40f1bbb19
+    spec:
+      enableServiceLinks: false
+      # uvicorn drena 120 s (--timeout-graceful-shutdown) y el pod tiene 150.
+      terminationGracePeriodSeconds: 150
+      tolerations:
+        - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+        - { key: role, operator: Equal, value: edge, effect: NoSchedule }
+        - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+        - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
+      # Mismo nodeAffinity que litellm: required ubuntu|sauvage (nunca los Sparks
+      # ni los ks5), preferred ubuntu.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [ubuntu, sauvage]
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [ubuntu]
+      containers:
+        - name: plan-gateway
+          # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
+          image: ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa
+          command:
+            - python
+            - -m
+            - uvicorn
+            - --app-dir
+            - /gw
+            - plan_gateway:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "4002"
+            - --timeout-graceful-shutdown
+            - "120"
+            # El ledger (una linea JSON por intento) es lo unico que sale a stdout.
+            - --no-access-log
+          ports:
+            - { name: http, containerPort: 4002 }
+          env:
+            - { name: PYTHONUNBUFFERED, value: "1" }
+            - { name: PLAN_UPSTREAM_BASE, value: "https://token-plan.ap-southeast-1.maas.aliyuncs.com" }
+            # Pesos por cuenta del panel (session_router._config, SWR): los mismos
+            # que reparten el chat.
+            - { name: MODEL_ROUTING_CONFIG_URL, value: "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/model-routing/config" }
+            # Las dos keys del plan, de los MISMOS Secrets que el proxy
+            # (litellm-alibaba y litellm-alibaba-2). `optional`: sin una, el
+            # gateway sirve con la otra; sin ninguna responde 503 visible.
+            - name: DASHSCOPE_API_KEY
+              valueFrom:
+                secretKeyRef: { name: litellm-alibaba, key: DASHSCOPE_API_KEY, optional: true }
+            - name: DASHSCOPE_API_KEY_2
+              valueFrom:
+                secretKeyRef: { name: litellm-alibaba-2, key: DASHSCOPE_API_KEY_2, optional: true }
+            # Tokens por consumidor. NO optional: sin ellos todo seria 401 con el
+            # pod aparentemente sano; mejor que el pod no arranque y se vea.
+            - name: PLAN_GATEWAY_TOKEN_STUDIO
+              valueFrom:
+                secretKeyRef: { name: plan-gateway-tokens, key: PLAN_GATEWAY_TOKEN_STUDIO }
+            - name: PLAN_GATEWAY_TOKEN_OMNIVOICE
+              valueFrom:
+                secretKeyRef: { name: plan-gateway-tokens, key: PLAN_GATEWAY_TOKEN_OMNIVOICE }
+          volumeMounts:
+            - { name: gateway-code, mountPath: /gw/plan_gateway.py, subPath: plan_gateway.py, readOnly: true }
+            - { name: litellm-config, mountPath: /gw/session_router.py, subPath: session_router.py, readOnly: true }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          # tcpSocket y no httpGet: la allowlist del gateway son CUATRO rutas y
+          # todo lo demas 404, tambien una ruta de salud. uvicorn solo escucha
+          # cuando el lifespan (warm_config) ha terminado, asi que el puerto
+          # abierto ya significa "arrancado con los pesos del panel".
+          readinessProbe:
+            tcpSocket: { port: 4002 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket: { port: 4002 }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: gateway-code
+          configMap: { name: plan-gateway-config }
+        - name: litellm-config
+          configMap: { name: litellm-config }
+---
+# CONTRACT: dgx.alibaba.plan-gateway.v1
+# ClusterIP y SIN IngressRoute: solo consumidores dentro del cluster. NO anadir el
+# 4002 al Service `litellm`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: plan-gateway
+  namespace: litellm
+spec:
+  type: ClusterIP
+  selector: { app: plan-gateway }
+  ports:
+    - { name: http, port: 4002, targetPort: 4002 }
+---
 # Internal access only: LAN and Tailscale clients use the LAN Traefik instance
 # (no SSO middleware — LiteLLM's API key remains the application gate).
 apiVersion: traefik.io/v1alpha1

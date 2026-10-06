@@ -854,3 +854,67 @@ contracts:
       registrado en callbacks DESPUES de websearch_interception) quita los
       restos en cada intento, reintento y salto de fallback. Lo fija
       tests/test_stream_options_without_stream_contract.py.
+  - id: dgx.alibaba.plan-gateway.v1
+    kind: http-route
+    value: plan-gateway
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-621 (plan DGX-619, 2026-10-06). Sitio UNICO por el que pasa la media
+      (imagen, video, voz) del Token Plan de Alibaba: Service `plan-gateway`
+      :4002 en ns `litellm`, ClusterIP y SIN IngressRoute (solo consumidores
+      dentro del cluster: Studio, omnivoice). Deployment propio, etiqueta
+      `app: plan-gateway` (nunca `app: litellm`), codigo inline en el ConfigMap
+      `plan-gateway-config` (`plan_gateway.py`). URL para los consumidores (espejo
+      en dgx-infra y k8s-ai, DGX-619 P2/P4):
+      `http://plan-gateway.litellm.svc.cluster.local:4002`.
+
+      ALLOWLIST EXACTA, todo lo demas 404: POST
+      /api/v1/services/aigc/multimodal-generation/generation (imagen, ASR),
+      POST /api/v1/services/aigc/video-generation/video-synthesis (video,
+      asincrono), POST /api/v1/services/audio/tts/SpeechSynthesizer (TTS) y GET
+      /api/v1/tasks/{id}. Host upstream fijo por env PLAN_UPSTREAM_BASE (default
+      el del token-plan). No hay ruta de salud: las sondas son tcpSocket.
+
+      AUTH: `Authorization: Bearer <token>`, UN token por consumidor
+      (PLAN_GATEWAY_TOKEN_STUDIO, PLAN_GATEWAY_TOKEN_OMNIVOICE; ExternalSecret
+      `plan-gateway-tokens`, items 1Password `plan-gateway-studio` y
+      `plan-gateway-omnivoice`), comparado con hmac.compare_digest; sin token o
+      con uno malo, 401. El nombre del consumidor es el `caller` del ledger. El
+      Authorization y el X-Plan-Account que entran se descartan y el gateway pone
+      la key de la cuenta elegida; hop-by-hop fuera; X-DashScope-Async y
+      X-DashScope-SSE pasan. Un consumidor nuevo = una variable
+      PLAN_GATEWAY_TOKEN_<NOMBRE> mas (aditivo).
+
+      CUENTA: la elige `session_router.draw_account` (la MISMA formula por pesos
+      del cupo, `alibaba_account_weights`, que una sesion nueva de chat; el
+      gateway no define formula propia, lo fija tests/test_plan_gateway_contract.py).
+      Toda respuesta proxied lleva `X-Plan-Account: k1|k2`. Sin estado: el
+      cliente guarda la cabecera del POST de video y la reenvia en
+      `GET /api/v1/tasks/{id}`; con cabecera va SOLO a esa cuenta (valor
+      desconocido, 400), sin ella prueba las dos en el orden del sorteo y devuelve
+      la primera 2xx (si ninguna, la ultima respuesta).
+
+      FAILOVER, un solo reintento a la otra cuenta cuando: (a) 429, (b) cuerpo
+      JSON con `code` (o `error.code`) que empiece por un valor de CODIGOS_CUOTA
+      (plan_gateway.py), (c) error de conexion ANTES de enviar. Un POST NUNCA se
+      reintenta tras ReadTimeout (la tarea pudo crearse y cobrarse): 504. Si
+      fallan las dos, se devuelve la ultima respuesta real del upstream tal cual
+      (status, cuerpo, X-Plan-Account); sin respuesta de ninguna, 502
+      `upstream_unreachable`. HIPOTESIS: CODIGOS_CUOTA no esta capturada de una
+      respuesta real de cuota agotada (la medicion P0 de k2,
+      nota-devops-k2-medicion, hizo cinco llamadas sin error); el reintento de 429
+      si esta fundado. Se sustituye por el codigo real cuando el ledger registre
+      un `quota_error`. Solo se bufferiza la respuesta application/json (y los 429
+      y errores de tarea) para inspeccionarla; el resto va en streaming. Request
+      siempre bufferizado, tope 32 MiB (413) y 8 llamadas simultaneas por replica.
+
+      LEDGER: una linea JSON por INTENTO en stdout (empieza por `{`): ts, caller,
+      method, path, model, attempt, account, status (null sin respuesta),
+      quota_error, ms; `error` (nombre de la excepcion) solo cuando no hubo
+      respuesta. Nunca keys ni tokens.
+
+      NO prometido: mapa de tareas, reparto por modelo (k2 acepta los cuatro
+      modelos, medido), ruta de salud, IngressRoute.
