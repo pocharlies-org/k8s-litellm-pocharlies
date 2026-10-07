@@ -7235,6 +7235,8 @@ data:
     #      ENCOLA si está lleno, NUNCA rechazo instantáneo (es decisión del
     #      usuario); alibaba -> alibaba; claude -> no-op aquí (las peticiones
     #      Anthropic ni pasan por LiteLLM; la puerta vive en el claude-router x86).
+    #   3b. BURST Alibaba (SC-2082 P6c): company.bots_alibaba + key de los bots (BOT_BURST_KEYS) + clase
+    #      company + residente -> alibaba, por petición y sin ligadura (ver _apply).
     #   4. sticky (solo sesiones de plan default): binding en Valkey; destino solo
     #      si está sano (residente: compute-mode listo y, con la válvula activa,
     #      hueco < local_slots; alibaba: sin cooldown); si hay hueco se re-vincula.
@@ -7459,6 +7461,13 @@ data:
     # por LiteLLM): lo aplica el claude-router del x86.
     ALIBABA_PREFIX = "alibaba-"
     DEFAULT_COMPANY = {"claude": True, "alibaba": True}
+    # SC-2082 P6c (BURST Alibaba): `company.bots_alibaba` manda las peticiones de la key
+    # de los bots de la compañía (BOT_BURST_KEYS, clase company) a su gemelo de Alibaba mientras dure
+    # el BURST de Alibaba del panel. Campo ADITIVO de dgx.model-routing.config.v2 y de
+    # polaridad CONTRARIA a DEFAULT_COMPANY (aquí solo un `true` bool enciende), por eso
+    # NO está en DEFAULT_COMPANY y _sanitize lo trata aparte. Lista FIJA (no bot_keys,
+    # que incluye aurora-rca y brain): solo la key de los bots de Hermes de la compañía.
+    BOT_BURST_KEYS = ("hermes-batch",)
 
     # Interruptores «Fallbacks a Alibaba» (25-09-2026, Dani: poder dejar de usar Alibaba sin
     # PR). Los guarda el panel /inferencia (tarjeta ALIBABA · TOKEN PLAN) en el campo ADITIVO
@@ -7573,7 +7582,7 @@ data:
         "local_slots": DEFAULT_LOCAL_SLOTS,
         "default_plan": "local",
         "session_plans": {},
-        "company": dict(DEFAULT_COMPANY),
+        "company": {**DEFAULT_COMPANY, "bots_alibaba": False},
         "alibaba": dict(DEFAULT_ALIBABA),
         "overflow_exempt": {k: list(v) for k, v in DEFAULT_OVERFLOW_EXEMPT.items()},
         # Presupuesto KV (27-09-2026, ADITIVOS): con el panel viejo estos defaults
@@ -7772,6 +7781,9 @@ data:
         # Solo un false bool apaga un interruptor de la compañía: ausente, null o basura = hoy.
         company = raw.get("company") if isinstance(raw.get("company"), dict) else {}
         config["company"] = {k: company.get(k) is not False for k in DEFAULT_COMPANY}
+        # SC-2082 P6c: polaridad contraria — solo un `true` bool enciende; ausente, null,
+        # "true" o 1 = apagado. Sin ligadura sticky: lo dicta la config por petición.
+        config["company"]["bots_alibaba"] = company.get("bots_alibaba") is True
         alibaba = raw.get("alibaba") if isinstance(raw.get("alibaba"), dict) else {}
         config["alibaba"] = {k: alibaba.get(k) is not False for k in DEFAULT_ALIBABA}
         config["overflow_exempt"] = _sanitize_exempt(raw.get("overflow_exempt"))
@@ -9136,6 +9148,21 @@ data:
             info["decision"] = (
                 "plan_explicito_alibaba_degradado" if info["cool"] is not False
                 else "plan_explicito_alibaba_modelo_no_residente")
+            return False
+
+        # ── BURST Alibaba (SC-2082 P6c): los bots de la compañía a Alibaba ──
+        # Lo dicta la config del panel (company.bots_alibaba, que sigue el reloj del
+        # BURST), por petición y como un plan explícito: NO escribe ligadura sticky ni
+        # sesiones, así que al acabar el BURST las peticiones vuelven solas al local.
+        # Sellada, uncensored y alibaba.overflow=false ya devolvieron más arriba.
+        if (company and (config.get("company") or {}).get("bots_alibaba") is True
+                and key_alias in BOT_BURST_KEYS and model == RESIDENT_MODEL):
+            if _overflow_ok_info(info):
+                info["decision"] = "burst_alibaba"
+                _rewrite(data, sid, "burst_alibaba")
+                return True
+            info["decision"] = "burst_alibaba_degradado"
+            info["active"] = True  # degradar es notable: que salga la línea de decisión
             return False
 
         if not config["sticky"] and not config["instant_reject"] and not company_overflow:
@@ -11220,7 +11247,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a3dfd741198a
+        config.k8s.e-dani.com/revision: config-8db27b00394f
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12070,7 +12097,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a3dfd741198a
+        config.k8s.e-dani.com/revision: config-8db27b00394f
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

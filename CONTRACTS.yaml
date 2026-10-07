@@ -307,6 +307,15 @@ contracts:
       publicando bot_keys explicito lo manda sobre el default; ausente o
       malformado = el default nuevo. Pinned by
       tests/test_bot_keys_default_contract.py.
+      2026-10-07 (SC-2082 P6c, BURST Alibaba): campo ADITIVO
+      company.bots_alibaba (bool; ausente, null o basura = false; solo un true
+      bool lo enciende, polaridad contraria a company.claude/alibaba). Con el
+      true, session_router manda al gemelo de Alibaba las peticiones de la key
+      `hermes-batch` con clase `company` al modelo residente, por peticion y
+      sin ligadura sticky (decision `burst_alibaba`, o
+      `burst_alibaba_degradado` si Alibaba esta en cooldown). Sellada
+      (company.alibaba=false), `-uncensored` y alibaba.overflow=false ganan.
+      Sin .vN+1: no hay cambio incompatible. Productor: dgx-infra (P6d).
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba

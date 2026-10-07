@@ -1083,13 +1083,17 @@ def _policy(mod, cfg, data, requested="tooling"):
 
 
 def test_company_sanitize_solo_un_false_bool_apaga(router_mod):
-    assert router_mod._sanitize({})["company"] == {"claude": True, "alibaba": True}
+    # `bots_alibaba` (SC-2082 P6c) tiene la polaridad contraria y vale False por defecto.
+    assert router_mod._sanitize({})["company"] == {
+        "claude": True, "alibaba": True, "bots_alibaba": False}
     assert router_mod._sanitize({"company": {"alibaba": "false", "claude": 0}})["company"] == {
-        "claude": True, "alibaba": True}
+        "claude": True, "alibaba": True, "bots_alibaba": False}
     assert router_mod._sanitize({"company": {"alibaba": False}})["company"] == {
-        "claude": True, "alibaba": False}
-    assert router_mod._sanitize({"company": ["basura"]})["company"] == {"claude": True, "alibaba": True}
-    assert router_mod.DEFAULT_CONFIG["company"] == {"claude": True, "alibaba": True}
+        "claude": True, "alibaba": False, "bots_alibaba": False}
+    assert router_mod._sanitize({"company": ["basura"]})["company"] == {
+        "claude": True, "alibaba": True, "bots_alibaba": False}
+    assert router_mod.DEFAULT_CONFIG["company"] == {
+        "claude": True, "alibaba": True, "bots_alibaba": False}
 
 
 def test_company_con_alibaba_permitido_no_toca_nada(router_mod):
@@ -1812,3 +1816,188 @@ def test_anotada_la_plan_local_exlicita(router_mod):
     assert data["model"] == RESIDENT
     assert env.writes == []            # sticky solo para sesiones de plan default
     assert len(env.ledger) == 1        # pero el consumo se anota
+
+
+# ── SC-2082 P6c: BURST Alibaba — la key hermes-batch de la compañía a Alibaba ──
+# `company.bots_alibaba` lo publica el panel mientras dura el BURST de Alibaba. Campo
+# aditivo de dgx.model-routing.config.v2; ausente = apagado. Los casos que NO deben
+# reescribir pesan tanto como el que sí: el hook está en la ruta de todas las peticiones.
+
+
+def _burst_data(alias="hermes-batch", clase=True, **extra):
+    meta = {"user_api_key_alias": alias} if alias else {}
+    if clase:
+        meta["headers"] = {"x-claude-class": "company"}
+    return _data(metadata=meta, **extra)
+
+
+def _burst_cfg(valor=True, **over):
+    company = {"claude": True, "alibaba": True}
+    if valor is not None:
+        company["bots_alibaba"] = valor
+    return _cfg(company=company, **over)
+
+
+def _via_sanitize(router_mod, company_raw, data, requested="tooling", cooldown=False):
+    cfg = router_mod._sanitize({"company": company_raw} if company_raw is not None else {})
+    env = _Env(router_mod, cfg, cooldown=cooldown)
+    return env, env.run(data, requested=requested)
+
+
+def test_burst_bots_alibaba_true_reescribe_hermes_batch_company_residente(router_mod):
+    env, rewrote = _via_sanitize(router_mod, {"bots_alibaba": True}, _burst_data())
+    assert rewrote is True
+
+
+def test_burst_bots_alibaba_true_deja_metadata_y_modelo(router_mod):
+    data = _burst_data()
+    env, rewrote = _via_sanitize(router_mod, {"bots_alibaba": True}, data)
+    assert rewrote is True
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_reason"] == "burst_alibaba"
+    assert data["metadata"]["_session_routing_rerouted"] is True
+    # Sin ligadura sticky ni anotación de sesión: al acabar el BURST vuelven solas.
+    assert env.writes == [] and env.ledger == []
+    assert env.albind_touches == [] and env.albind_clears == []
+
+
+def test_burst_bots_alibaba_funciona_con_los_flags_apagados(router_mod):
+    """El campo manda por sí solo: sticky e instant_reject apagados (el estado normal)."""
+    env = _Env(router_mod, _burst_cfg(sticky=False, instant_reject=False))
+    data = _burst_data()
+    assert env.run(data) is True and data["model"] == OVERFLOW
+
+
+@pytest.mark.parametrize("raw", [
+    {"bots_alibaba": False}, {}, {"bots_alibaba": None}, {"bots_alibaba": "true"},
+    {"bots_alibaba": 1}, {"bots_alibaba": "yes"}, {"bots_alibaba": [True]},
+    "basura", None,
+])
+def test_burst_solo_un_true_bool_enciende(router_mod, raw):
+    data = _burst_data()
+    env, rewrote = _via_sanitize(router_mod, raw, data)
+    assert rewrote is False
+    assert data["model"] == RESIDENT
+    assert "_session_routing_reason" not in data["metadata"]
+
+
+def test_burst_sanitize_conserva_company_claude_y_alibaba(router_mod):
+    out = router_mod._sanitize({"company": {"bots_alibaba": True, "alibaba": False, "claude": False}})["company"]
+    assert out == {"claude": False, "alibaba": False, "bots_alibaba": True}
+
+
+@pytest.mark.parametrize("alias", ["hermes", "claude-local", "aurora-rca", "brain", None])
+def test_burst_solo_la_key_hermes_batch(router_mod, alias):
+    env = _Env(router_mod, _burst_cfg())
+    data = _burst_data(alias=alias)
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_burst_la_key_se_compara_en_minusculas(router_mod):
+    env = _Env(router_mod, _burst_cfg())
+    data = _burst_data(alias="Hermes-Batch")
+    assert env.run(data) is True
+
+
+def test_burst_no_vale_aunque_bot_keys_incluya_otra(router_mod):
+    """La lista es FIJA: añadir keys a bot_keys (presupuesto) no las manda a Alibaba."""
+    env = _Env(router_mod, _burst_cfg(bot_keys=["hermes-batch", "aurora-rca", "brain"]))
+    data = _burst_data(alias="brain")
+    assert env.run(data) is False
+
+
+def test_burst_exige_clase_company(router_mod):
+    env = _Env(router_mod, _burst_cfg())
+    data = _burst_data(clase=False)
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_burst_modelo_no_residente_no_se_toca(router_mod):
+    env = _Env(router_mod, _burst_cfg())
+    data = _burst_data()
+    data["model"] = "qwen3-vl"  # fuera de ROUTED_MODELS
+    assert env.run(data) is False
+    assert data["model"] == "qwen3-vl"
+
+
+def test_burst_sellada_gana(router_mod):
+    env = _Env(router_mod, _burst_cfg())
+    data = _burst_data(disable_fallbacks=True)
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+@pytest.mark.parametrize("pedido", ["tooling-uncensored", "qwen38-u-off"])
+def test_burst_uncensored_nunca_se_reescribe(router_mod, pedido):
+    env = _Env(router_mod, _burst_cfg())
+    data = _burst_data()
+    assert env.run(data, requested=pedido) is False
+    assert data["model"] == RESIDENT
+
+
+def test_burst_modelo_uncensored_resuelto_intacto(router_mod):
+    env = _Env(router_mod, _burst_cfg())
+    data = _burst_data(model=RESIDENT + "-uncensored")
+    assert env.run(data, requested=RESIDENT + "-uncensored") is False
+    assert data["model"] == RESIDENT + "-uncensored"
+
+
+def test_burst_desborde_apagado_gana(router_mod):
+    """alibaba.overflow=false en el panel corta el BURST de los bots (el global gana)."""
+    env = _Env(router_mod, _burst_cfg(alibaba={"overflow": False}))
+    data = _burst_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_burst_company_alibaba_false_sella_y_no_reescribe(router_mod):
+    """company.alibaba=false: apply_company_policy sella la petición antes del hook."""
+    cfg = _burst_cfg()
+    cfg["company"]["alibaba"] = False
+    env = _Env(router_mod, cfg)
+    data = _burst_data()
+    denegada, _ = asyncio.run(router_mod.apply_company_policy(data, "tooling"))
+    assert denegada is False and data["disable_fallbacks"] is True
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_burst_con_alibaba_en_cooldown_degrada_al_local(router_mod):
+    env = _Env(router_mod, _burst_cfg(), cooldown=True)
+    data = _burst_data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == []
+
+
+def test_burst_decision_degradada_se_registra(router_mod, caplog):
+    env = _Env(router_mod, _burst_cfg(), cooldown=True)
+    data = _burst_data()
+    with caplog.at_level("INFO"):
+        env.run(data)
+    assert "burst_alibaba_degradado" in caplog.text
+
+
+def test_burst_la_reescritura_deja_linea_de_log_warning(router_mod, caplog):
+    env = _Env(router_mod, _burst_cfg())
+    with caplog.at_level("WARNING"):
+        env.run(_burst_data())
+    assert "burst_alibaba" in caplog.text
+
+
+def test_burst_no_deja_ligadura_para_la_siguiente_peticion(router_mod):
+    """Apagado el BURST, la misma sesión vuelve al residente: nada quedó ligado."""
+    env = _Env(router_mod, _burst_cfg())
+    assert env.run(_burst_data()) is True
+    env2 = _Env(router_mod, _burst_cfg(valor=False))
+    data = _burst_data()
+    assert env2.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+def test_burst_sanitize_esta_cableado_en_el_hook_real(router_src):
+    """Fallo clásico: verde en unidad y sin efecto en producción si _sanitize descarta el campo."""
+    assert 'BOT_BURST_KEYS = ("hermes-batch",)' in router_src
+    assert 'company.get("bots_alibaba") is True' in router_src

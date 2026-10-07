@@ -331,8 +331,10 @@ def test_el_modulo_no_hardcodea_alias_ni_niveles():
     # bot_keys (DEFAULT_BOT_KEYS, contrato dgx.model-routing.config.v2). Es otra
     # decision (umbral de KV de los bots), no el mapa de prioridad: las lineas que
     # hablan de bot_keys no cuentan; cualquier otra aparicion sigue parando aqui.
+    # Segunda excepcion (SC-2082 P6c): BOT_BURST_KEYS, la lista FIJA de la key de los
+    # bots de la compania que manda el BURST de Alibaba. Tampoco es prioridad.
     src = "\n".join(l for l in ROUTER_SRC.splitlines()
-                    if "bot_keys" not in l.lower())
+                    if "bot_keys" not in l.lower() and "BOT_BURST_KEYS =" not in l)
     for token in ("open-webui-v3", "hermes-batch", "priority_by_alias: {",
                   "-10", "+10"):
         assert token not in src, f"{token!r} hardcodeado en session_router"
