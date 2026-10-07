@@ -153,7 +153,7 @@ contracts:
       cuando la lectura de Valkey FALLA: un GET correcto que devuelve None es un pin
       caducado, no una lectura fallida.
 
-      Cuenta de una sesion nueva o caducada = sha256(api-key-hash:sid) sobre los
+      Cuenta de una sesion nueva o caducada = sha256(api-key-hash:sid:epoca) sobre los
       tramos de `alibaba_account_weights` = {"kN": peso >= 0} (cupo diario restante
       de cada cuenta, lo proyecta el dashboard en /api/model-routing/config desde
       2026-09-29): el hash se lee como un punto de [0,1) y cae en la cuenta cuyo
@@ -183,6 +183,16 @@ contracts:
       .v2). `draw_account` y `warm_config` son el seam publico unico del selector:
       el futuro gateway de media del plan (DGX-621) los llama literalmente,
       prohibida cualquier formula propia.
+
+      ADITIVO (DGX-639, 2026-10-07): la cuenta de una sesion nueva o caducada se
+      sortea con la epoca de ventana `floor(time.time() /
+      ALIBABA_ACCOUNT_PIN_TTL_SECONDS)` dentro del hash: el re-sorteo tras caducar el
+      pin es independiente del anterior (antes el hash daba SIEMPRE el mismo punto y
+      una sesion pesada con sid estable, p. ej. hermes-batch, caia en la misma cuenta
+      en cada re-sorteo). Dentro del TTL el pin manda y no se re-sortea; las replicas
+      coinciden sin hablar entre si (mismo reloj de pared; en el borde de ventana
+      manda el SET NX); clave, valor y TTL intactos; `draw_account` sin cambios (sin
+      .v2: es la entrada del hash que ya describe esta nota, no la superficie).
   - id: dgx.session-router.deployment-affinity-key.v1
     kind: schema
     value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>

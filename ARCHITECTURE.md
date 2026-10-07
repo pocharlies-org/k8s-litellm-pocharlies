@@ -49,7 +49,7 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
 | Lista de modelos | bloque `model_name:` | `k8s/manifest.yaml` (**citar, no copiar**) | todo el estate |
 | Contratos del router | registry | `CONTRACTS.yaml` | session-router, Hermes, dashboard |
 | Afinidad Alibaba por cuenta | `tests/integration/alibaba_account_affinity_router.py` | ídem | CI |
-| **Selector de cuenta Alibaba** (UNA fórmula) | `session_router.preferred_account` + el seam `draw_account(accounts)`/`warm_config()` | `dev/session_router.py` = embed de `litellm-config` (`tests/test_session_router_dev_copy_contract.py` los iguala; manda el manifiesto) | chat sin sid (`alibaba_account_filter`) y `plan-gateway`: nadie define otra fórmula (`tests/test_plan_gateway_contract.py`, test AST) |
+| **Selector de cuenta Alibaba** (UNA fórmula; la época de ventana = TTL del pin entra en el hash, DGX-639) | `session_router.preferred_account` + el seam `draw_account(accounts)`/`warm_config()` | `dev/session_router.py` = embed de `litellm-config` (`tests/test_session_router_dev_copy_contract.py` los iguala; manda el manifiesto) | chat sin sid (`alibaba_account_filter`) y `plan-gateway`: nadie define otra fórmula (`tests/test_plan_gateway_contract.py`, test AST) |
 | Gateway de media del plan | `plan_gateway.py` | `k8s/manifest.yaml`, ConfigMap `plan-gateway-config` (inline, sin copia en `dev/`) | Studio, omnivoice |
 | Compatibilidad Anthropic | `doc/anthropic-compat.md` | ídem | Claude CLI |
 

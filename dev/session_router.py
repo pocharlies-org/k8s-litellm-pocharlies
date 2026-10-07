@@ -1445,7 +1445,8 @@ def stamp_alibaba_session_affinity(data):
 #   - Clave `alibaba_account_pin:v1:<api-key-hash>:<sid>` -> "k1" | "k2" en la
 #     Valkey del session router (misma URL/password). TTL de inactividad (el del
 #     vinculo de plan a Alibaba) renovado por keepalive en cada acierto.
-#   - Cuenta de una sesion NUEVA = hash(api-key-hash, sid) % cuentas: las dos
+#   - Cuenta de una sesion NUEVA o CADUCADA = hash(api-key-hash, sid, epoca) por
+#     tramos de peso, con epoca = floor(ahora / TTL del pin) (DGX-639): las dos
 #     replicas eligen LA MISMA sin hablar entre si, asi que ni un corte de
 #     Valkey ni una carrera entre pods mezclan una sesion nueva. El SET NX solo
 #     guarda la eleccion (y las mudanzas).
@@ -1540,8 +1541,20 @@ def account_pin_key(user_key, sid):
     return f"{ALIBABA_ACCOUNT_PIN_PREFIX}:{user_key}:{sid}"
 
 
-def preferred_account(user_key, sid, accounts, weights=None):
-    """Cuenta determinista para una sesion nueva: la misma en todos los pods.
+def _pin_epoch(now=None):
+    """Ventana de re-sorteo (DGX-639): el TTL del pin. Un pin caduca por inactividad
+    en t > ultimo_acierto + TTL, asi que el re-sorteo cae SIEMPRE en una ventana
+    posterior a la del sorteo anterior: otra entrada del hash, otro punto."""
+    now = time.time() if now is None else now
+    return int(now // max(1, ALIBABA_ACCOUNT_PIN_TTL_SECONDS))
+
+
+def preferred_account(user_key, sid, accounts, weights=None, epoch=0):
+    """Cuenta determinista para una sesion nueva o caducada: la misma en todos los pods.
+
+    El hash es sha256(api-key-hash:sid:epoch) (DGX-639): con la epoca de `_pin_epoch`
+    el re-sorteo tras caducar el pin es independiente del anterior; sin ella
+    (`draw_account`, epoch=0 sobre un uuid aleatorio) ya lo es por construccion.
 
     Con `weights` (29-09-2026, `alibaba_account_weights` de /api/model-routing/config:
     el cupo diario que le queda a cada cuenta) el hash se lee como un punto en [0, 1) y
@@ -1550,7 +1563,7 @@ def preferred_account(user_key, sid, accounts, weights=None):
     cuenta en los dos pods). Pesos que no cubren todas las cuentas o que suman 0 => el
     reparto uniforme de siempre."""
     ordered = sorted(accounts)
-    digest = hashlib.sha256(f"{user_key}:{sid}".encode("utf-8")).digest()
+    digest = hashlib.sha256(f"{user_key}:{sid}:{epoch}".encode("utf-8")).digest()
     h = int.from_bytes(digest[:8], "big")
     # UNA sola formula para los dos casos (29-09-2026). Antes el reparto con
     # pesos leia el hash como un punto en [0, total) y el uniforme como
@@ -1703,7 +1716,8 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 
     if pinned is not None:
         # Su cuenta no tiene deployment sano en este grupo: mudanza ENTERA.
-        target = preferred_account(user_key, sid, by_account, await _account_weights())
+        target = preferred_account(user_key, sid, by_account, await _account_weights(),
+                                   epoch=_pin_epoch())
         ACCOUNT_AFFINITY_STATS["moves"] += 1
         log.warning("session_router: sesion %s muda de cuenta Alibaba %s -> %s (%s sin deployment sano)",
                     sid[:24], pinned, target, model)
@@ -1727,7 +1741,7 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
             ACCOUNT_AFFINITY_STATS["seeded"] += 1
     if choice is None:
         weights = await _account_weights()
-        choice = preferred_account(user_key, sid, by_account, weights)
+        choice = preferred_account(user_key, sid, by_account, weights, epoch=_pin_epoch())
         if weights:
             ACCOUNT_AFFINITY_STATS["weighted"] += 1
     if client is not None:
