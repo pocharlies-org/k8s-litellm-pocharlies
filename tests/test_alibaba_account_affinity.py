@@ -332,6 +332,7 @@ def test_valkey_lenta_cuenta_como_caida_y_no_estira_la_peticion():
         out = await pod.alibaba_account_filter("alibaba-q38-max", _deps("alibaba-q38-max"), _kwargs("ses-s"))
         return out, asyncio.get_running_loop().time() - t0
 
+    pod._pin_epoch = lambda now=None: 0   # con la epoca real cruzaria la ventana (DGX-639)
     out, dt = run(go())
     assert _account(out) == pod.preferred_account(KEY_A, "ses-s", {"k1": 1, "k2": 1})
     assert dt < 1.0
@@ -609,3 +610,89 @@ def test_pesos_uniformes_y_cachefria_eligen_la_misma_cuenta():
     sesgados = [pod.preferred_account(KEY_A, f"w{i}", ["k1", "k2"], {"k1": 0.45, "k2": 0.55})
                 for i in range(4000)]
     assert 0.41 < sesgados.count("k2") / len(sesgados) < 0.59
+
+
+# ── re-sorteo independiente tras caducar el pin (DGX-639) ────────────────────
+# Sesgo medido el 06-10: el hash(api-key-hash, sid) daba SIEMPRE el mismo punto, asi
+# que una sesion pesada con sid estable (hermes-batch) caia en la misma cuenta en
+# cada re-sorteo (k1 34 % del gasto con peso 0,16). La epoca de ventana = TTL del
+# pin entra en el hash: otra ventana, otro punto.
+
+SIDS_PESADAS = ["hermes-batch-pfx", "pfx-a1b2c3", "ses-pesada-1", "ses-pesada-2", "ses-pesada-3"]
+
+
+def _epoca(pod, e):
+    pod._pin_epoch = lambda now=None, e=e: e
+
+
+def test_resorteo_tras_caducar_el_pin_es_independiente_entre_ventanas():
+    valkey = FakeValkey()
+    pod = _con_pesos(_pod(valkey), {"k1": 0.16, "k2": 0.84})
+
+    async def go(sid):
+        cuentas = []
+        for e in range(600):
+            _epoca(pod, e)
+            # lo que hace un pin que caduco por inactividad: ni Valkey ni memoria local
+            valkey.data.clear()
+            valkey.ttl.clear()
+            pod._account_pins_local.clear()
+            out = await pod.alibaba_account_filter(
+                "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(sid))
+            cuentas.append(_account(out))
+        return cuentas
+
+    for sid in SIDS_PESADAS:
+        cuentas = run(go(sid))
+        fraccion = cuentas.count("k1") / len(cuentas)
+        assert abs(fraccion - 0.16) <= 0.06, (sid, fraccion)
+        assert len(set(cuentas)) == 2, (sid, set(cuentas))
+
+
+def test_la_epoca_nace_de_el_ttl_del_pin():
+    pod = _pod(None)
+    pod.ALIBABA_ACCOUNT_PIN_TTL_SECONDS = 600
+    assert pod._pin_epoch(0) == 0
+    assert pod._pin_epoch(599.9) == 0
+    assert pod._pin_epoch(600) == 1
+    rnd = random.Random(7)
+    for _ in range(1000):
+        t_nac = rnd.uniform(0, 10 ** 9)
+        # un pin caduca por inactividad: el re-sorteo llega tras nacimiento + TTL
+        assert pod._pin_epoch(t_nac + pod.ALIBABA_ACCOUNT_PIN_TTL_SECONDS + 1) != pod._pin_epoch(t_nac)
+    pod.ALIBABA_ACCOUNT_PIN_TTL_SECONDS = 0   # sin division por cero
+    assert pod._pin_epoch(5) == 5
+
+
+def test_pin_vivo_no_se_re_sortea_aunque_cambie_la_epoca():
+    valkey = FakeValkey()
+    pod = _con_pesos(_pod(valkey), {"k1": 0.5, "k2": 0.5})
+    _epoca(pod, 0)
+    antes = _account(run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("viva"))))
+    claims = pod.ACCOUNT_AFFINITY_STATS["claims"]
+    for e in (1, 5, 100):
+        _epoca(pod, e)
+        out = run(pod.alibaba_account_filter(
+            "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("viva")))
+        assert _account(out) == antes
+    assert pod.ACCOUNT_AFFINITY_STATS["claims"] == claims
+
+
+def test_dos_pods_sin_valkey_misma_epoca_misma_cuenta():
+    a = _con_pesos(_pod(None), {"k1": 0.3, "k2": 0.7})
+    b = _con_pesos(_pod(None), {"k1": 0.3, "k2": 0.7})
+    _epoca(a, 41)
+    _epoca(b, 41)
+
+    async def cuentas(pod, sids):
+        return [_account(await pod.alibaba_account_filter(
+            "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(sid))) for sid in sids]
+
+    sids = [f"rep{i}" for i in range(200)]
+    en_a = run(cuentas(a, sids))
+    assert en_a == run(cuentas(b, sids))
+    # no es trivial: otra epoca en otro pod mueve al menos un sid
+    c = _con_pesos(_pod(None), {"k1": 0.3, "k2": 0.7})
+    _epoca(c, 42)
+    assert en_a != run(cuentas(c, sids))
