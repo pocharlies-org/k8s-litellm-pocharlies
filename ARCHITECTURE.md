@@ -53,6 +53,12 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
 | Gateway de media del plan | `plan_gateway.py` | `k8s/manifest.yaml`, ConfigMap `plan-gateway-config` (inline, sin copia en `dev/`) | Studio, omnivoice |
 | Compatibilidad Anthropic | `doc/anthropic-compat.md` | ídem | Claude CLI |
 
+**BURST Alibaba (SC-2082 P6c).** `session_router._apply` lee `company.bots_alibaba` de `/api/model-routing/config` (campo aditivo
+de v2, saneado aparte de `DEFAULT_COMPANY`: solo un `true` bool enciende). Con él, la key `hermes-batch` (lista fija
+`BOT_BURST_KEYS`) con clase `company` y modelo residente se reescribe a `alibaba-q38-flash` por petición, sin ligadura sticky.
+Sellada (`company.alibaba=false`), `-uncensored` y `alibaba.overflow=false` ganan. Interruptor sin rollout: apagar el BURST de
+Alibaba en el panel (<6 s).
+
 ## 5. Cómo se construye aquí
 
 Un modelo nuevo = entrada en `manifest.yaml` + test de contrato en `tests/test_*_contract.py` + entrada en
