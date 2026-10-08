@@ -66,6 +66,12 @@ exención y retorno 4c). Por eso `default_plan=alibaba` **ya no vale de valla** 
 Contrato `dgx.model-routing.config.v3` (v2 deprecated). La valla de tráfico para medir va al árbitro con caducidad (DGX-744 P3,
 `dgx-infra`), no a esta palanca.
 
+**Valla de medición (DGX-744 P1b).** El `valla` de `/config` v3 (`{vigente, hasta}`, contrato `dgx.arbiter.measure-fence.v1`) se lee en
+la misma lectura de config; `_sanitize` guarda `valla_hasta` y `_apply` la compara con su reloj (la config se sirve de caché). En vigor
+cuenta como `resident_ready=false`: sesiones nuevas a Alibaba y ligadas al local con `rebind_alibaba`; al vencer vuelven solas por 4c, sin
+nada que levantar. Rota, sin `hasta`, infinita o vencida = no en vigor. No alcanza a lo que no desborda por construcción: sellado
+(`disable_fallbacks`), uncensored, plan explícito de sesión, `alibaba.overflow=false` y flags apagados.
+
 ## 5. Cómo se construye aquí
 
 Un modelo nuevo = entrada en `manifest.yaml` + test de contrato en `tests/test_*_contract.py` + entrada en
@@ -97,4 +103,4 @@ bash tests/integration/run_alibaba_account_affinity.sh   # integración de afini
 - El manifiesto cambia mucho (varias sesiones a la vez): releer justo antes de escribir.
 - `doc/node-affinity-ubuntu.md`: afinidad a nodo `ubuntu` del proxy; revisar al mover control-plane a KS-5.
 
-Última verificación contra el código: 2026-10-09 · 30d6505 (origin/main) + DGX-744 P1
+Última verificación contra el código: 2026-10-09 · 30d6505 (origin/main) + DGX-744 P1/P1b

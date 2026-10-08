@@ -2071,3 +2071,108 @@ def test_burst_sanitize_esta_cableado_en_el_hook_real(router_src):
     """Fallo clásico: verde en unidad y sin efecto en producción si _sanitize descarta el campo."""
     assert 'BOT_BURST_KEYS = ("hermes-batch",)' in router_src
     assert 'company.get("bots_alibaba") is True' in router_src
+
+
+# ── DGX-744 P1b: la valla de medición del árbitro (dgx.arbiter.measure-fence.v1) ──
+# /config v3 publica `valla` {vigente, hasta, ...}. En vigor cuenta como residente NO
+# disponible: las sesiones nuevas van a Alibaba y las del local se re-vinculan por la vía de
+# siempre (rebind_alibaba). Vencida, rota o ausente: el comportamiento de hoy. No hay nada que
+# levantar: al vencer, la sesión vuelve sola por la regla de retorno 4c.
+
+
+def _valla(**over):
+    """La valla como la publica /config v3: en vigor, a 10 min de su fin."""
+    return {"vigente": True, "hasta": time.time() + 600, "desde": "2026-10-09T02:00:00Z",
+            "por": "dani", "motivo": "DGX-680", **over}
+
+
+def _via_valla(router_mod, raw, data, requested=RESIDENT, **env_kw):
+    """El payload de /config (sticky + `raw`) pasa por _sanitize, como en el hook real."""
+    env = _Env(router_mod, router_mod._sanitize({"sticky": True, **raw}), **env_kw)
+    return env, env.run(data, requested=requested)
+
+
+@pytest.mark.parametrize("pedido", [RESIDENT, "tooling"])
+@pytest.mark.parametrize("bound", [None, "local"])
+def test_valla_en_vigor_aparta_al_residente(router_mod, pedido, bound):
+    """El hook dice que el residente está Ready (resident_ready=True): lo aparta la valla."""
+    data = _data()
+    env, rewrote = _via_valla(router_mod, {"valla": _valla()}, data, requested=pedido, bound=bound)
+    assert rewrote is True
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_reason"] == "rebind_alibaba"
+    assert env.writes == [(SID, "alibaba")]
+
+
+def test_valla_en_vigor_con_alibaba_en_cooldown_degrada_al_local(router_mod):
+    data = _data()
+    env, rewrote = _via_valla(router_mod, {"valla": _valla()}, data, cooldown=True)
+    assert rewrote is False
+    assert data["model"] == RESIDENT
+    assert env.writes == []
+
+
+def test_valla_retiene_a_la_sesion_en_alibaba_y_al_vencer_vuelve_sola(router_mod):
+    """Compactó y cabe: sin valla volvería (4c). Con valla se queda; vencida, vuelve sin que
+    nadie levante nada."""
+    kw = {"bound": "alibaba", "kv_cap": 1_000_000, "kv_total": 100_000}
+    data = _data(messages=_big_msg(10_000))
+    env, rewrote = _via_valla(router_mod, {"valla": _valla()}, data, **kw)
+    assert rewrote is True and data["model"] == OVERFLOW
+    assert env.writes == [(SID, "alibaba")]
+    data = _data(messages=_big_msg(10_000))
+    env, rewrote = _via_valla(router_mod, {"valla": _valla(hasta=time.time() - 1)}, data, **kw)
+    assert rewrote is False and data["model"] == RESIDENT
+    assert env.writes == [(SID, "local")]
+
+
+@pytest.mark.parametrize("raw", [
+    pytest.param({"valla": _valla(hasta=time.time() - 1)}, id="vencida"),
+    pytest.param({"valla": _valla(vigente=False)}, id="vigente-false-manda"),
+    pytest.param({"valla": {"vigente": True}}, id="sin-hasta"),
+    pytest.param({"valla": _valla(hasta=None)}, id="hasta-null"),
+    pytest.param({"valla": _valla(hasta="mañana")}, id="hasta-texto"),
+    pytest.param({"valla": _valla(hasta=True)}, id="hasta-bool"),
+    pytest.param({"valla": _valla(hasta=float("nan"))}, id="hasta-nan"),
+    pytest.param({"valla": _valla(hasta=float("inf"))}, id="hasta-infinito"),
+    pytest.param({"valla": _valla(vigente="true")}, id="vigente-texto"),
+    pytest.param({"valla": _valla(vigente=1)}, id="vigente-entero"),
+    pytest.param({"valla": "basura"}, id="valla-texto"),
+    pytest.param({"valla": []}, id="valla-lista"),
+    pytest.param({"valla": None}, id="valla-null"),
+    pytest.param({}, id="sin-valla"),
+])
+def test_valla_vencida_rota_o_ausente_es_el_comportamiento_de_hoy(router_mod, raw):
+    hoy = _data()
+    env_hoy, rewrote_hoy = _via_valla(router_mod, {}, hoy)
+    data = _data()
+    env, rewrote = _via_valla(router_mod, raw, data)
+    assert (rewrote, data["model"], env.writes) == (rewrote_hoy, hoy["model"], env_hoy.writes)
+    assert rewrote is False and data["model"] == RESIDENT and env.writes == [(SID, "local")]
+
+
+def test_valla_cacheada_ya_vencida_no_se_obedece(router_mod):
+    """La config se sirve de caché (último bueno) aunque el panel caiga: el reloj de este módulo
+    decide al enrutar, no el `vigente` de hace horas."""
+    env = _Env(router_mod, _cfg(sticky=True, valla_hasta=time.time() - 1))
+    data = _data()
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
+@pytest.mark.parametrize("data,pedido", [
+    (_data(disable_fallbacks=True), RESIDENT),
+    (_data(), "tooling-uncensored"),
+])
+def test_valla_no_toca_sellada_ni_uncensored(router_mod, data, pedido):
+    env, rewrote = _via_valla(router_mod, {"valla": _valla()}, data, requested=pedido)
+    assert rewrote is False
+    assert data["model"] == RESIDENT
+
+
+def test_valla_sanitize_solo_un_vigente_true_con_hasta_finito(router_mod):
+    hasta = time.time() + 600
+    assert router_mod._sanitize({"valla": _valla(hasta=hasta)})["valla_hasta"] == hasta
+    assert router_mod._sanitize({"valla": _valla(vigente=False)})["valla_hasta"] == 0
+    assert router_mod._sanitize({})["valla_hasta"] == 0
+    assert router_mod.DEFAULT_CONFIG["valla_hasta"] == 0

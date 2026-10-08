@@ -341,8 +341,35 @@ contracts:
       default_plan. La capacidad (residente no Ready, local_slots, presupuesto
       KV) no mira default_plan y manda igual. El productor (dgx-infra, DGX-744
       P3) puede anadir campos al documento; este consumidor ignora las claves
-      que no conoce. Pinned by tests/test_session_routing_contract.py
-      (nombra_el_residente, nombrar_el_residente_no_toca_la_capacidad).
+      que no conoce, salvo `valla` (ver dgx.arbiter.measure-fence.v1). Pinned by
+      tests/test_session_routing_contract.py (nombra_el_residente,
+      nombrar_el_residente_no_toca_la_capacidad).
+  - id: dgx.arbiter.measure-fence.v1
+    kind: http-route
+    value: /api/model-routing/valla
+    anchor: valla_hasta
+    role: consumer
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-09 (DGX-744 P1b, decision del CTO). Lado consumidor de la valla de
+      medicion del arbitro (dgx-infra, P3: PUT/DELETE /api/model-routing/valla;
+      este repo no la escribe). Lee el campo `valla` {vigente, hasta, ...} del
+      documento dgx.model-routing.config.v3, en la misma lectura de config que
+      ya hace el hook (CONFIG_URL, cache de 5 s): ningun lector nuevo. EN VIGOR
+      = `vigente` true bool con un `hasta` (epoch s) finito y todavia en el
+      futuro segun el reloj de ESTE modulo (la config se sirve de cache aunque
+      el panel caiga); entrada rota, sin hasta, infinito o vencida = no en
+      vigor = el comportamiento de antes. En vigor, session_router._apply trata
+      al residente como no disponible (resident_ready=false): las sesiones
+      nuevas van a Alibaba y las ligadas al local se re-vinculan con el motivo
+      rebind_alibaba de siempre; al vencer vuelven solas por la regla de retorno
+      4c, no hay nada que levantar. No cubre lo que no desborda a Alibaba por
+      construccion: peticiones selladas (disable_fallbacks), uncensored, plan
+      explicito de sesion, desborde apagado en el panel ni los flags apagados.
+      Pinned by tests/test_session_routing_contract.py (test_valla_*).
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba

@@ -407,6 +407,7 @@ DEFAULT_CONFIG = {
     "return_max_tokens": DEFAULT_RETURN_MAX_TOKENS,
     "alibaba_return_after_s": DEFAULT_ALIBABA_RETURN_AFTER_S,
     "bot_keys": list(DEFAULT_BOT_KEYS),
+    "valla_hasta": 0,
 }
 
 _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
@@ -618,6 +619,17 @@ def _sanitize(raw):
             else default
         )
     config["alibaba_account_weights"] = _sanitize_account_weights(raw.get("alibaba_account_weights"))
+    # CONTRACT: dgx.arbiter.measure-fence.v1
+    # DGX-744 P1b: valla de medición del árbitro (`valla` de /config v3). `valla_hasta` = fin
+    # de una valla EN VIGOR, 0 si no lo está: solo un `vigente` true bool con un `hasta`
+    # finito cuenta (rota, sin fin o ausente = hoy). `_apply` lo compara con SU reloj porque
+    # esta config se sirve de caché aunque el panel caiga.
+    valla = raw.get("valla") if isinstance(raw.get("valla"), dict) else {}
+    hasta = valla.get("hasta")
+    config["valla_hasta"] = (
+        hasta if valla.get("vigente") is True and isinstance(hasta, (int, float))
+        and not isinstance(hasta, bool) and math.isfinite(hasta) else 0
+    )
     bots = raw.get("bot_keys")
     config["bot_keys"] = (
         sorted({str(x).strip().lower() for x in bots if isinstance(x, str) and x.strip()})
@@ -1892,6 +1904,10 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     # la capacidad (no Ready, local_slots, KV) no lo mira y manda igual.
     if requested_model == RESIDENT_MODEL:
         config = {**config, "default_plan": "local"}
+    # DGX-744 P1b: una valla de medición EN VIGOR cuenta como residente no disponible; sigue la
+    # vía de siempre (rebind_alibaba) y, al vencer, la regla de retorno 4c: nada que levantar.
+    if time.time() < config.get("valla_hasta", 0):
+        resident_ready = False
     sid = _session_id(data) or _prefix_affinity_key(data)
     info["sid"] = sid
     # La clase se lee aquí (no dentro de la válvula) para que la línea de
