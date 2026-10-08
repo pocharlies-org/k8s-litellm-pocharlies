@@ -34,9 +34,26 @@ import pytest
 import yaml
 
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
+_DOCS = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
 
-RESIDENT = "qwen38-flash-next"
-OVERFLOW = "alibaba-q38-flash"
+
+def _router_default(nombre):
+    """Literal por defecto de la constante `nombre` del hook (session_router.py del
+    ConfigMap): `X = os.environ.get("ENV", "<default>")` o `X = frozenset({...})`.
+    El residente rota: el test lo lee del manifiesto en runtime, no lo nombra."""
+    src = next(
+        d for d in _DOCS
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
+    )["data"]["session_router.py"]
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == nombre for t in node.targets):
+            return ast.literal_eval(node.value.args[-1])
+    raise AssertionError(f"session_router.py ya no define {nombre}")
+
+
+RESIDENT = _router_default("RESIDENT_MODEL")
+OVERFLOW = _router_default("OVERFLOW_MODEL")
+UNCENSORED_ALIASES = sorted(_router_default("UNCENSORED_ALIASES"))
 SID = "33283bc9-8ac3-4445-990c-c1c86d8add8c"
 
 REDIS_COUNTER_ATTRS = {
@@ -48,7 +65,7 @@ REDIS_COUNTER_ATTRS = {
 
 @pytest.fixture(scope="module")
 def docs():
-    return [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+    return _DOCS
 
 
 @pytest.fixture(scope="module")
@@ -89,6 +106,14 @@ def router_mod(router_src):
         else:
             sys.modules.pop("httpx", None)
     return module
+
+
+def test_constantes_derivadas_coinciden_con_el_modulo(router_mod):
+    """RESIDENT/OVERFLOW/UNCENSORED_ALIASES salen del default del hook (ast, al
+    importar). Si el módulo ejecutado diverge (p. ej. una env fijada), este test
+    lo dice antes que decenas de aserciones rotas."""
+    assert (router_mod.RESIDENT_MODEL, router_mod.OVERFLOW_MODEL) == (RESIDENT, OVERFLOW)
+    assert router_mod.UNCENSORED_ALIASES == frozenset(UNCENSORED_ALIASES)
 
 
 # ── Mandato 1: Valkey solo mapa sticky; contador = tracker + sidecar ─────────
@@ -512,7 +537,7 @@ def test_sellado_gana_a_todo(router_mod):
     assert data["model"] == RESIDENT and env.writes == []
 
 
-@pytest.mark.parametrize("pedido", ["tooling-uncensored", "qwen38-u-off"])
+@pytest.mark.parametrize("pedido", UNCENSORED_ALIASES)
 def test_uncensored_por_nombre_pedido_no_cae_a_alibaba(router_mod, pedido):
     env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"))
     data = _data()
@@ -522,9 +547,9 @@ def test_uncensored_por_nombre_pedido_no_cae_a_alibaba(router_mod, pedido):
 
 def test_uncensored_resuelto_pasa_de_largo(router_mod):
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0))
-    data = _data(model="qwen38-flash-next-uncensored")
+    data = _data(model=RESIDENT + "-uncensored")
     assert env.run(data) is False
-    assert data["model"] == "qwen38-flash-next-uncensored"
+    assert data["model"] == RESIDENT + "-uncensored"
 
 
 def test_plan_explicito_local_nunca_se_rechaza(router_mod):
@@ -676,7 +701,7 @@ def test_peticion_al_grupo_alibaba_no_se_toca(router_mod):
 def test_modelos_ajenos_pasan_de_largo(router_mod):
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0),
                inflight=99)
-    for modelo in ("claude-opus-4", "or-gpt5", "qwen38-27b", "tooling"):
+    for modelo in ("claude-opus-4", "or-gpt5", "modelo-ajeno", "tooling"):
         data = _data(model=modelo)
         assert env.run(data) is False
         assert data["model"] == modelo
@@ -1113,7 +1138,7 @@ def test_company_sin_alibaba_sella_la_peticion(router_mod):
 
 
 def test_company_sin_alibaba_rechaza_un_alibaba_explicito(router_mod):
-    for pedido in ("alibaba-q38-max", "alibaba-qwen38-max", "ALIBABA-q38-flash"):
+    for pedido in ("alibaba-explicito-a", "alibaba-explicito-b", "ALIBABA-explicito-c"):
         data = _company_data(model=pedido)
         denegada, detalle = _policy(router_mod, _cfg(company={"alibaba": False}), data, requested=pedido)
         assert denegada is True
@@ -1123,7 +1148,7 @@ def test_company_sin_alibaba_rechaza_un_alibaba_explicito(router_mod):
 
 def test_sin_clase_company_el_interruptor_no_aplica(router_mod):
     for data in (_data(), _data(metadata={"headers": {"x-claude-class": "interactive"}}),
-                 _data(model="alibaba-q38-max")):
+                 _data(model="alibaba-explicito-a")):
         assert _policy(router_mod, _cfg(company={"claude": False, "alibaba": False}), data,
                        requested=data["model"]) == (False, None)
         assert "disable_fallbacks" not in data
@@ -1173,8 +1198,8 @@ def test_company_por_v1_messages_lee_litellm_metadata(router_mod):
     assert router_mod._claude_class(data) == "company"
     assert _policy(router_mod, _cfg(company={"claude": True, "alibaba": False}), data) == (False, None)
     assert data["disable_fallbacks"] is True
-    data = {"model": "alibaba-q38-max", "litellm_metadata": {"headers": {"x-claude-class": "company"}}}
-    denegada, detalle = _policy(router_mod, _cfg(company={"alibaba": False}), data, requested="alibaba-q38-max")
+    data = {"model": "alibaba-explicito-a", "litellm_metadata": {"headers": {"x-claude-class": "company"}}}
+    denegada, detalle = _policy(router_mod, _cfg(company={"alibaba": False}), data, requested="alibaba-explicito-a")
     assert denegada is True and detalle["error"] == "company_alibaba_disabled"
 
 
@@ -1224,14 +1249,14 @@ def test_cola_atascada_no_desvia_a_quien_no_tiene_valvula(router_mod):
 def test_parse_vllm_gauges_suma_engines_y_filtra_modelo(router_mod):
     texto = "\n".join([
         "# HELP vllm:num_requests_waiting x",
-        'vllm:num_requests_waiting{engine="0",model_name="qwen38-flash-next"} 2.0',
-        'vllm:num_requests_waiting{engine="1",model_name="qwen38-flash-next"} 1.0',
-        'vllm:num_requests_running{engine="0",model_name="qwen38-flash-next"} 9.0',
+        f'vllm:num_requests_waiting{{engine="0",model_name="{RESIDENT}"}} 2.0',
+        f'vllm:num_requests_waiting{{engine="1",model_name="{RESIDENT}"}} 1.0',
+        f'vllm:num_requests_running{{engine="0",model_name="{RESIDENT}"}} 9.0',
         'vllm:num_requests_waiting{engine="0",model_name="otro"} 50.0',
-        'vllm:num_requests_waiting_by_reason{model_name="qwen38-flash-next",reason="capacity"} 7.0',
+        f'vllm:num_requests_waiting_by_reason{{model_name="{RESIDENT}",reason="capacity"}} 7.0',
     ])
-    assert router_mod._parse_vllm_gauges(texto, "qwen38-flash-next") == (3.0, 9.0)
-    assert router_mod._parse_vllm_gauges("nada", "qwen38-flash-next") == (None, None)
+    assert router_mod._parse_vllm_gauges(texto, RESIDENT) == (3.0, 9.0)
+    assert router_mod._parse_vllm_gauges("nada", RESIDENT) == (None, None)
 
 
 @pytest.fixture
@@ -1673,7 +1698,7 @@ def test_parse_cache_capacity_desde_metrics(fresh_mod):
         "# TYPE vllm:cache_config_info gauge",
         'vllm:cache_config_info{block_size="16",cache_dtype="auto",gpu_memory_cache_size_bytes="0",'
         'num_cpu_blocks="0",num_gpu_blocks="173451",some_other="x"} 1.0',
-        'vllm:num_requests_waiting{model_name="qwen38-flash-next"} 2.0',
+        f'vllm:num_requests_waiting{{model_name="{RESIDENT}"}} 2.0',
     ])
     assert fresh_mod._parse_cache_capacity(texto) == 173451 * 16
     assert fresh_mod._parse_cache_capacity("") is None
@@ -1917,9 +1942,9 @@ def test_burst_exige_clase_company(router_mod):
 def test_burst_modelo_no_residente_no_se_toca(router_mod):
     env = _Env(router_mod, _burst_cfg())
     data = _burst_data()
-    data["model"] = "qwen3-vl"  # fuera de ROUTED_MODELS
+    data["model"] = "modelo-fuera-de-ruta"  # fuera de ROUTED_MODELS
     assert env.run(data) is False
-    assert data["model"] == "qwen3-vl"
+    assert data["model"] == "modelo-fuera-de-ruta"
 
 
 def test_burst_sellada_gana(router_mod):
@@ -1929,7 +1954,7 @@ def test_burst_sellada_gana(router_mod):
     assert data["model"] == RESIDENT
 
 
-@pytest.mark.parametrize("pedido", ["tooling-uncensored", "qwen38-u-off"])
+@pytest.mark.parametrize("pedido", UNCENSORED_ALIASES)
 def test_burst_uncensored_nunca_se_reescribe(router_mod, pedido):
     env = _Env(router_mod, _burst_cfg())
     data = _burst_data()
