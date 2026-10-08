@@ -294,8 +294,14 @@ contracts:
     files:
       - dev/session_router.py
       - k8s/manifest.yaml
-    status: active
+    status: deprecated
+    replaced_by: dgx.model-routing.config.v3
+    remove_after: "2026-11-30"
     note: >-
+      DEPRECATED 2026-10-09 (DGX-744): sustituido por
+      dgx.model-routing.config.v3 — misma ruta y mismos campos; cambia solo el
+      significado de default_plan (decide solo para quien no trae eleccion
+      propia). Lo que sigue describe la superficie tal como era.
       2026-09-30 (DGX-454, C7 de DGX-451). Misma ruta y mismos campos que
       dgx.model-routing.config.v1 (su nota los describe todos); el unico cambio
       es el DEFAULT de bot_keys (modulo session_router, DEFAULT_BOT_KEYS):
@@ -316,15 +322,26 @@ contracts:
       `burst_alibaba_degradado` si Alibaba esta en cooldown). Sellada
       (company.alibaba=false), `-uncensored` y alibaba.overflow=false ganan.
       Sin .vN+1: no hay cambio incompatible. Productor: dgx-infra (P6d).
-      2026-10-09 (DGX-744, decision de Dani): cambia el SIGNIFICADO de
-      default_plan en el consumidor, no su forma — decide solo para quien no
-      trae eleccion propia. Una peticion cuyo requested_model (el nombre
-      literal del cliente) es el residente va como si default_plan valiera
-      local (sesion nueva, exencion y retorno 4c incluidos); tooling y los
-      alias siguen bajo default_plan. La capacidad (residente no Ready,
-      local_slots, presupuesto KV) no mira default_plan y manda igual. Sin
-      .vN+1: ningun campo ni valor cambia; la forma nueva del documento llega
-      con el productor (DGX-744 P3). Pinned by tests/test_session_routing_contract.py
+  - id: dgx.model-routing.config.v3
+    kind: http-route
+    value: /api/model-routing/config
+    role: consumer
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-09 (DGX-744, decision de Dani). Misma ruta y mismos campos que
+      dgx.model-routing.config.v2 (su nota y la de v1 los describen todos,
+      incluido company.bots_alibaba); cambia el SIGNIFICADO de default_plan: ya
+      no vale de valla para quien trae eleccion propia. Una peticion cuyo
+      requested_model (el nombre literal del cliente, antes de resolver alias)
+      es el residente va como si default_plan valiera local (sesion nueva,
+      exencion y retorno 4c incluidos); tooling y los alias siguen bajo
+      default_plan. La capacidad (residente no Ready, local_slots, presupuesto
+      KV) no mira default_plan y manda igual. El productor (dgx-infra, DGX-744
+      P3) puede anadir campos al documento; este consumidor ignora las claves
+      que no conoce. Pinned by tests/test_session_routing_contract.py
       (nombra_el_residente, nombrar_el_residente_no_toca_la_capacidad).
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route

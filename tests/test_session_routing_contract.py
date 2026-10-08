@@ -599,6 +599,24 @@ def test_no_nombra_el_residente_default_plan_alibaba_si_reescribe(router_mod):
     assert env.writes == [(SID, "alibaba")]
 
 
+@pytest.mark.parametrize("pedido,escribe", [("tooling", []), (RESIDENT, [(SID, "local")])])
+def test_default_plan_claude_nombrar_el_residente_va_a_local(router_mod, pedido, escribe):
+    """DGX-744: tercer valor de PLANES. Con default_plan=claude y sesión nueva,
+    `tooling` sigue siendo plan_claude_puerta_en_router (el hook no hace nada, la
+    puerta es del claude-router): sin binding ni válvula. Quien nombra el residente
+    es la entrada propia: va a local, se liga como local y la válvula le aplica."""
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="claude"))
+    data = _data()
+    assert env.run(data, requested=pedido) is False
+    assert data["model"] == RESIDENT
+    assert env.writes == escribe
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2,
+                                default_plan="claude"), inflight=2)
+    data = _data()
+    assert env.run(data, requested=pedido) is (pedido == RESIDENT)
+    assert data["model"] == (OVERFLOW if pedido == RESIDENT else RESIDENT)
+
+
 @pytest.mark.parametrize("cfg_extra,env_kw,run_kw,tokens,motivo", [
     ({}, {}, {"resident_ready": False}, None, "rebind_alibaba"),
     ({"instant_reject": True, "local_slots": 2}, {"inflight": 2}, {}, None, "instant_reject"),
