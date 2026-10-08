@@ -2142,6 +2142,7 @@ data:
         company: 5        # sesion de la compania: por delante del lote, detras del resto
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
+      frigate: 10         # descripciones genai de las camaras (INFRA-777): aguantan espera, como el lote
     # DGX-601: lo UNCENSORED (`_is_uncensored`: sufijo `-uncensored` o
     # UNCENSORED_ALIASES) NO tiene proveedor de alternativa -- el sello abliterado
     # solo existe en el residente y a proposito no lleva `fallbacks` (ver el aviso
@@ -2290,7 +2291,7 @@ data:
     }
     # 24-09-2026 (Dani, DGX-366): la capacidad cae a su gemelo cloud cuando NINGUN
     # residente esta Ready, para TODAS las keys salvo NO_FALLBACK_KEY_ALIASES
-    # (aurora-rca, synapse, brain, claude-cloudblue: `disable_fallbacks`). Antes era () y falla-cerrado: cada
+    # (aurora-rca, synapse, brain, claude-cloudblue, frigate: `disable_fallbacks`). Antes era () y falla-cerrado: cada
     # redeploy/reinicio del residente (15-20 min) dejaba `tooling`/`qwen38-off` en 503
     # `tooling_resident_not_ready` y Hermes, Jarvis y Open WebUI sin cerebro — el
     # fallback del router (`qwen38-flash-next` -> `alibaba-q38-flash`) no llega a
@@ -4150,12 +4151,15 @@ data:
     #               datos de CloudBlue. Esos prompts no pueden salir a Alibaba (ni a
     #               ningun tercero): se queda en el residente o falla visible. Su
     #               allowlist de la key solo tiene qwen38-flash-next y -uncensored.
+    #   frigate     INFRA-777 (08-10-2026): descripciones genai de las imagenes de las
+    #               camaras de casa. Nunca a un tercero: sin residente Ready `tooling`
+    #               da 503 y el evento queda sin descripcion, que es aceptable.
     #
     # Ojo: esto NO es lo mismo que recortar el allowlist `models` de la key. El
     # allowlist gobierna lo que la key puede PEDIR; esto gobierna a donde puede
     # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
     # Alibaba sin que nadie lo pida.
-    NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse", "brain", "claude-cloudblue"})
+    NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse", "brain", "claude-cloudblue", "frigate"})
 
     # ── Línea de facturación de Claude Code (23-09-2026) ─────────────────────────
     # Claude Code pone como PRIMER bloque del system `x-anthropic-billing-header:
@@ -11247,7 +11251,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8db27b00394f
+        config.k8s.e-dani.com/revision: config-678a4ae3f539
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12097,7 +12101,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8db27b00394f
+        config.k8s.e-dani.com/revision: config-678a4ae3f539
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

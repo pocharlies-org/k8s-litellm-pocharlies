@@ -395,7 +395,7 @@ contracts:
       (redeploy/restart, 15-20 min) the hook degrades them to their cloud twin
       `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
-      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue) keep failing closed via
+      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue, frigate) keep failing closed via
       disable_fallbacks, and the abliterated aliases have no chain. Guarded by
       tests/test_tooling_profile_contract.py and
       tests/test_aurora_fallback_policy_contract.py.
@@ -415,6 +415,11 @@ contracts:
       2026-09-26 (PR 159 restored the q38-flash* bridge because Open WebUI
       still requested those names; PR 164 retires it again once dgx-infra#678
       moved the chat catalog to qwen38-*). No change to TOOLING_FALLBACKS.
+      2026-10-08 (INFRA-777, ADDITIVE): `frigate` (the home-camera genai
+      descriptions) joins NO_FALLBACK_KEY_ALIASES. The camera images never go to a
+      third party: with no resident Ready `tooling` answers 503 and the event is
+      left without a description. TOOLING_FALLBACKS itself is unchanged, so there is
+      no .v2. Guarded by tests/test_frigate_no_fallback_contract.py.
   - id: dgx.litellm.active-requests.v1
     kind: http-route
     value: /internal/active-requests
@@ -687,6 +692,33 @@ contracts:
       (el gate corre en el pre-call sobre el modelo pedido), asi que `alibaba-q38-flash`
       no hace falta en la lista. Renombrar el alias o retirar un modelo es un cambio
       de este contrato: mover a Aurora (values) en el mismo push.
+  - id: dgx.litellm.virtual-key.frigate.v1
+    # kind allowlist: allowlist `models` de la key virtual `frigate` (alias real).
+    # Vive solo en la Postgres de LiteLLM (/key/generate, creada por IT); lo que
+    # este manifiesto fija es el sello `disable_fallbacks` (NO_FALLBACK_KEY_ALIASES)
+    # y su nivel de cola (`priority_by_alias`).
+    kind: allowlist
+    value: frigate
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-08 (INFRA-777, epica INFRA-701, P3 de INFRA-715). Clave virtual de
+      LiteLLM que usa Frigate (k8s-frigate-pocharlies) para las descripciones genai
+      de las imagenes de las camaras de casa. Su `models` es solo `tooling`, sin
+      equipo, y la clave NO figura en LITELLM_OPENROUTER_ALLOWED_KEYS ni en las
+      listas de los grok-* y del abliterado. Ese allowlist NO frena el fallback del
+      Router a la nube (precedente INFRA-431, virtual-key.aurora-rca.v1), asi que
+      `frigate` entra tambien en NO_FALLBACK_KEY_ALIASES (`disable_fallbacks`, que un
+      body con false no deshace) y en `priority_by_alias` con 10, detras de lo
+      interactivo y a la par del lote. Fail-closed: sin residente Ready `tooling`
+      responde 503 y el evento queda sin descripcion. Es la R10 del encendido real
+      de genai en cualquier camara que no sea de prueba (P5, INFRA-717). Renombrar
+      el alias o quitarlo de NO_FALLBACK_KEY_ALIASES es un cambio de este contrato:
+      mover a Frigate (values) en el mismo push. Guarded by
+      tests/test_frigate_no_fallback_contract.py y
+      tests/test_priority_injection_contract.py.
   - id: dgx.litellm.virtual-key.copilot-jake-chat.v1
     # kind allowlist: allowlist `models` de la key virtual `copilot-jake-chat`
     # (copiloto del side panel de agent-jake). La allowlist se fijo en el
@@ -836,7 +868,7 @@ contracts:
       OpenRouter: no conocen el campo y devolverian 400. La decision vive en
       el mapa top-level `priority_by_alias` del ConfigMap `litellm-config`
       (config.yaml) y NO en codigo: alias sin mapa, alias no mappeado o
-      prioridad 0 => no se añade el campo; el fallo de lectura del config es
+      prioridad 0 => no se añade el campo; ADITIVO (INFRA-777, 2026-10-08): alias `frigate: 10` (descripciones genai de las camaras, a la par de hermes-batch); el fallo de lectura del config es
       fail-open (no inyecta, nunca lanza). Consumidor del valor: el vLLM del
       residente (queue_sort por prioridad). Productor: session_router.apply_priority
       llamado desde litellm_strip_params.py. Verificado contra el parser real

@@ -316,6 +316,8 @@ def test_cache_no_reparsea_sin_cambio_de_mtime(tmp_path):
 def test_el_mapa_vive_en_config_yaml():
     assert CONFIG_YAML["priority_by_alias"] == {
         "open-webui-v3": -10, "hermes": -10, "hermes-batch": 10, "brain": 20,
+        # INFRA-777: descripciones genai de las camaras; aguantan espera como el lote.
+        "frigate": 10,
         # DGX-601 (Dani): `claude-local` es la misma key para la compania y para el
         # uso personal, asi que su nivel va MAPA por clase, no entero.
         "claude-local": {"default": -5, "company": 5},
