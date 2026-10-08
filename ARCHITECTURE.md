@@ -29,7 +29,7 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
   Langfuse (callbacks), 1Password/ExternalSecrets.
 - **Dependen de él** — todo el estate: sesiones de la compañía (router local de Claude), Hermes, document-intake, auto-reply,
   dashboards. **`CONTRACTS.yaml`** publica ~22 contratos (`dgx.claude.class-header.v1`, `dgx.session-router.*`,
-  `dgx.model-routing.config.v1/v2`, `dgx.litellm.active-requests.v1`, `dgx.hermes.profile-header.v1`, `dgx.litellm.virtual-key.*`,
+  `dgx.model-routing.config.v1/v2/v3`, `dgx.litellm.active-requests.v1`, `dgx.hermes.profile-header.v1`, `dgx.litellm.virtual-key.*`,
   `litellm.reasoning-effort.v1`…): nunca renombrar, solo `.vN+1` con `Contract-Change:`.
 - **ArgoCD** `litellm`: repo `pocharlies-org/k8s-litellm-pocharlies`, path `k8s`, tronco **`main`**.
 
@@ -58,6 +58,19 @@ de v2, saneado aparte de `DEFAULT_COMPANY`: solo un `true` bool enciende). Con �
 `BOT_BURST_KEYS`) con clase `company` y modelo residente se reescribe a `alibaba-q38-flash` por petición, sin ligadura sticky.
 Sellada (`company.alibaba=false`), `-uncensored` y `alibaba.overflow=false` ganan. Interruptor sin rollout: apagar el BURST de
 Alibaba en el panel (<6 s).
+
+**Entrada propia (DGX-744 P1).** `session_router._apply` trata el `requested_model` literal del cliente (antes de resolver alias)
+igual al residente como la elección de la sesión: para esa petición `default_plan` vale `local` en todo el hook (sesión nueva,
+exención y retorno 4c). Por eso `default_plan=alibaba` **ya no vale de valla** para quien nombra el residente; sigue mandando sobre
+`tooling` y los alias. La capacidad no cambia: residente no Ready (`rebind_alibaba`), `instant_reject` y `kv_budget` desvían igual.
+Contrato `dgx.model-routing.config.v3` (v2 deprecated). La valla de tráfico para medir va al árbitro con caducidad (DGX-744 P3,
+`dgx-infra`), no a esta palanca.
+
+**Valla de medición (DGX-744 P1b).** El `valla` de `/config` v3 (`{vigente, hasta}`, contrato `dgx.arbiter.measure-fence.v1`) se lee en
+la misma lectura de config; `_sanitize` guarda `valla_hasta` y `_apply` la compara con su reloj (la config se sirve de caché). En vigor
+cuenta como `resident_ready=false`: sesiones nuevas a Alibaba y ligadas al local con `rebind_alibaba`; al vencer vuelven solas por 4c, sin
+nada que levantar. Rota, sin `hasta`, infinita o vencida = no en vigor. No alcanza a lo que no desborda por construcción: sellado
+(`disable_fallbacks`), uncensored, plan explícito de sesión, `alibaba.overflow=false` y flags apagados.
 
 ## 5. Cómo se construye aquí
 
@@ -90,4 +103,4 @@ bash tests/integration/run_alibaba_account_affinity.sh   # integración de afini
 - El manifiesto cambia mucho (varias sesiones a la vez): releer justo antes de escribir.
 - `doc/node-affinity-ubuntu.md`: afinidad a nodo `ubuntu` del proxy; revisar al mover control-plane a KS-5.
 
-Última verificación contra el código: 2026-10-06 · 615d3ca (origin/main) + DGX-621
+Última verificación contra el código: 2026-10-09 · 30d6505 (origin/main) + DGX-744 P1/P1b
