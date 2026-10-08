@@ -50,6 +50,9 @@
 #   4. sticky (solo sesiones de plan default): binding en Valkey; destino solo
 #      si está sano (residente: compute-mode listo y, con la válvula activa,
 #      hueco < local_slots; alibaba: sin cooldown); si hay hueco se re-vincula.
+#      default_plan decide solo para quien no trae entrada propia (DGX-744): una
+#      petición que pide el residente por NOMBRE (requested_model) va como si
+#      valiera local; tooling y los alias siguen bajo default_plan.
 #   4b. VÁLVULA DE PRESUPUESTO KV (27-09-2026): una sesión NUEVA (sin binding)
 #      que pediría el residente se liga a Alibaba si su prompt estimado + la
 #      suma de los prompts de las sesiones locales VIVAS (actividad en los
@@ -1883,6 +1886,12 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         return False
 
     config = await _config()
+    # DGX-744 (Dani): pedir el residente por NOMBRE es la entrada propia de la
+    # sesión; default_plan solo decide para quien no trae ninguna. Para esta
+    # petición vale local en todo el hook (sesión nueva, exención y retorno 4c);
+    # la capacidad (no Ready, local_slots, KV) no lo mira y manda igual.
+    if requested_model == RESIDENT_MODEL:
+        config = {**config, "default_plan": "local"}
     sid = _session_id(data) or _prefix_affinity_key(data)
     info["sid"] = sid
     # La clase se lee aquí (no dentro de la válvula) para que la línea de

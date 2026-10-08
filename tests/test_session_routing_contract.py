@@ -563,12 +563,57 @@ def test_plan_explicito_alibaba_con_cooldown_degrada(router_mod):
     assert data["model"] == RESIDENT
 
 
-def test_sticky_default_alibaba_vincula_y_reescribe(router_mod):
+@pytest.mark.parametrize("pedido,reescribe", [("tooling", True), (RESIDENT, False)])
+def test_sticky_default_alibaba_vincula_y_reescribe(router_mod, pedido, reescribe):
+    """DGX-744: default_plan decide solo para quien no trae elección propia.
+    `tooling` (alias) no nombra el residente: vincula y reescribe. El residente
+    por nombre es la entrada de la sesión: va a local como con default_plan=local."""
     env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"))
     data = _data()
-    assert env.run(data) is True
+    assert env.run(data, requested=pedido) is reescribe
+    assert data["model"] == (OVERFLOW if reescribe else RESIDENT)
+    assert env.writes == [(SID, "alibaba" if reescribe else "local")]
+
+
+def test_nombra_el_residente_y_default_plan_alibaba_no_lo_pisa(router_mod):
+    """DGX-744: sticky, default_plan=alibaba, residente Ready y con hueco, y el
+    cliente pide `qwen38-flash-next` por nombre: no se reescribe y la sesión no
+    se liga a Alibaba (aterriza en local, como cualquier sesión de plan local)."""
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"))
+    data = _data()
+    assert env.run(data, requested=RESIDENT) is False
+    assert data["model"] == RESIDENT
+    assert "_session_routing_rerouted" not in data["metadata"]
+    assert env.writes == [(SID, "local")]
+    assert env.albind_touches == []
+
+
+def test_no_nombra_el_residente_default_plan_alibaba_si_reescribe(router_mod):
+    """Par del anterior: `tooling` no es el residente por nombre, así que el
+    plan por defecto sigue mandando."""
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"))
+    data = _data()
+    assert env.run(data, requested="tooling") is True
     assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_reason"] == "default_alibaba"
     assert env.writes == [(SID, "alibaba")]
+
+
+@pytest.mark.parametrize("cfg_extra,env_kw,run_kw,tokens,motivo", [
+    ({}, {}, {"resident_ready": False}, None, "rebind_alibaba"),
+    ({"instant_reject": True, "local_slots": 2}, {"inflight": 2}, {}, None, "instant_reject"),
+    ({}, {"kv_cap": 1_000_000, "kv_total": 820_000}, {}, 50_000, "kv_budget"),
+])
+def test_nombrar_el_residente_no_toca_la_capacidad(router_mod, cfg_extra, env_kw, run_kw,
+                                                   tokens, motivo):
+    """DGX-744: la entrada propia no desactiva la capacidad. Residente no Ready,
+    en vuelo >= local_slots o presupuesto KV lleno desvían a Alibaba igual que
+    con default_plan=local, cada uno por SU motivo (no por default_alibaba)."""
+    env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba", **cfg_extra), **env_kw)
+    data = _data(messages=_big_msg(tokens)) if tokens else _data()
+    assert env.run(data, requested=RESIDENT, **run_kw) is True
+    assert data["model"] == OVERFLOW
+    assert data["metadata"]["_session_routing_reason"] == motivo
 
 
 def test_sticky_binding_local_conserva_residente(router_mod):
@@ -908,13 +953,17 @@ def test_ex_company_exenta_suelta_el_binding_alibaba(router_mod):
     assert env.writes == [(SID, "local")]
 
 
-def test_ex_default_plan_alibaba_no_se_suelta(router_mod):
-    """default_plan=alibaba es orden del operador: la exención no la deshace."""
+@pytest.mark.parametrize("pedido,reescribe", [("tooling", True), (RESIDENT, False)])
+def test_ex_default_plan_alibaba_no_se_suelta(router_mod, pedido, reescribe):
+    """default_plan=alibaba es orden del operador: la exención no la deshace.
+    Salvo para quien nombra el residente (DGX-744): a esa petición el plan por
+    defecto no le aplica y la exención suelta el binding como siempre."""
     env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"),
                bound="alibaba", inflight=0)
     data = _company_data()
-    assert env.run(data) is True
-    assert data["model"] == OVERFLOW
+    assert env.run(data, requested=pedido) is reescribe
+    assert data["model"] == (OVERFLOW if reescribe else RESIDENT)
+    assert env.writes == [(SID, "alibaba" if reescribe else "local")]
 
 
 def test_ex_plan_explicito_alibaba_gana_a_la_exencion(router_mod):
@@ -1611,14 +1660,17 @@ def test_gran_recien_ligada_no_vuelve_a_medio_rollo(router_mod):
     assert env.albind_touches == [SID]  # renueva el TTL del nacimiento, no el valor
 
 
-def test_default_plan_alibaba_no_autoretorna(router_mod):
+@pytest.mark.parametrize("pedido,reescribe", [("tooling", True), (RESIDENT, False)])
+def test_default_plan_alibaba_no_autoretorna(router_mod, pedido, reescribe):
     """default_plan=alibaba es orden del operador: la regla de retorno no la
-    deshace (criterio igual que el de exentos)."""
+    deshace (criterio igual que el de exentos). Quien nombra el residente
+    (DGX-744) no recibe esa orden: su sesión compactada y con cabida vuelve."""
     env = _Env(router_mod, _cfg(sticky=True, default_plan="alibaba"), bound="alibaba",
                kv_cap=1_000_000, kv_total=100_000)
     data = _data(messages=_big_msg(10_000))
-    assert env.run(data) is True
-    assert data["model"] == OVERFLOW
+    assert env.run(data, requested=pedido) is reescribe
+    assert data["model"] == (OVERFLOW if reescribe else RESIDENT)
+    assert env.writes == [(SID, "alibaba" if reescribe else "local")]
 
 
 def test_retorno_respeta_residente_no_ready(router_mod):
