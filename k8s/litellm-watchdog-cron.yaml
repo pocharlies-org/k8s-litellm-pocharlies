@@ -814,9 +814,13 @@ spec:
                           raise SystemExit(SALIDA)
                       enviado = False
                       try:
-                          body = urllib.parse.urlencode({
+                          aviso = {
                               "chat_id": chat, "parse_mode": "HTML",
-                              "disable_web_page_preview": "true", "text": texto}).encode()
+                              "disable_web_page_preview": "true", "text": texto}
+                          hilo = os.environ.get("TELEGRAM_THREAD_ID", "")
+                          if hilo:
+                              aviso["message_thread_id"] = int(hilo)
+                          body = urllib.parse.urlencode(aviso).encode()
                           req = urllib.request.Request(
                               "https://api.telegram.org/bot%s/sendMessage" % tok,
                               data=body, method="POST")
@@ -862,11 +866,13 @@ spec:
                 - name: LITELLM_MASTER_KEY
                   valueFrom:
                     secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY }
-                # Chat PRIVADO con @paxanguero. Los ids negativos son grupos; este es
-                # positivo porque es una persona. Mismo destino que el vigilante del
-                # re-embebido del brain.
+                # Grupo «Pocharlies Operations» (foro) + topic «Infra» (hilo 1248):
+                # los avisos de infra viven ahí, no en el DM de Dani. El bot está
+                # en el grupo y puede escribir en el foro.
                 - name: TELEGRAM_CHAT_ID
-                  value: "33285833"
+                  value: "-1004409526898"
+                - name: TELEGRAM_THREAD_ID
+                  value: "1248"
                 # La imagen es UTC. Sin esto, "vuelve el jueves a las 03:30" seria
                 # dos horas antes de la verdad y el humano miraria cuando no toca.
                 - name: TZ
