@@ -57,9 +57,9 @@ def _thinking_kwargs() -> dict:
 def _local_aliases_with_efforts() -> list[tuple[str, list[str]]]:
     """Alias servidos DENTRO del cluster que declaran niveles de esfuerzo.
 
-    El discriminador es el `api_base`: los alias de nube declaran
-    low/medium/xhigh/ultra y hacen bien -- su effort viaja al upstream, que si los
-    honra. Los locales pasan por _apply_thinking_tier, y ahi manda la tabla.
+    El discriminador es el `api_base`: los alias de nube declaran su receta
+    oficial (none/low/medium/xhigh desde DGX-842) y hacen bien -- su effort viaja al
+    upstream, que la honra. Los locales pasan por _apply_thinking_tier, y ahi manda la tabla.
     """
     config = yaml.safe_load(_configmap_value("model_list:"))
     out = []
