@@ -114,6 +114,21 @@ def router_mod(router_src):
 # ── 1. forma de los deployments ──────────────────────────────────────────────
 
 
+# 12-10-2026 (DGX-842): lo que Model Studio publica para sus qwen3.8. `high` y `max`
+# se ACEPTAN pero el proveedor los mapea a `xhigh`, y anunciarlos ponia dos opciones
+# iguales en todo picker que lee el menu del proxy (opencode, el seed de Hermes, Paseo).
+# Doc: alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses
+RECETA_OFICIAL_QWEN38 = ["none", "low", "medium", "xhigh"]
+
+
+@pytest.mark.parametrize("grupo", ["alibaba-q38-max", "alibaba-q38-flash"])
+def test_el_menu_de_effort_de_los_qwen38_es_la_receta_oficial(deployments_by_group, grupo):
+    """Ni un nivel mas: la escalera anunciada es la que honra el proveedor (k1 y k2)."""
+    for k, dep in enumerate(deployments_by_group[grupo]):
+        assert (dep.get("model_info") or {}).get("supported_reasoning_efforts") == \
+            RECETA_OFICIAL_QWEN38, f"{grupo}-k{k + 1}"
+
+
 def test_dos_deployments_por_grupo_y_espejo_exacto(deployments_by_group):
     for g in GROUPS:
         deps = deployments_by_group[g]
