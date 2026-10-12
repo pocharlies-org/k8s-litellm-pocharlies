@@ -34,6 +34,7 @@ WANT_FN = {
     "_tooling_target_for_compute_mode",
 }
 WANT_CONST = {
+    "KEY_DIRECT_FALLBACK_MODELS",
     "KEY_TOOLING_FALLBACKS",
     "NO_FALLBACK_KEY_ALIASES",
     "TOOLING_FALLBACKS",

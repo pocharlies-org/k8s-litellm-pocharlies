@@ -4157,6 +4157,17 @@ data:
     # Alibaba sin que nadie lo pida.
     NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse", "brain", "claude-cloudblue"})
 
+    # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
+    # Alibaba». El sellado de `synapse` (arriba) hacia que, con el residente caido, su
+    # llamada a `qwen38-flash-next` muriera en 500 `Connection error` (Service sin
+    # endpoints, ~2 s) en vez de seguir la arista `qwen38-flash-next ->
+    # alibaba-q38-flash` de router_settings.fallbacks: el clasificador de correo se
+    # quedo 2 h sin clasificar el 12-10. Se abre SOLO ese camino: la key nombra el
+    # residente directo (el adapter gmail lo elige con su knob `model`). Con
+    # `tooling`, un `-uncensored` o cualquier otro modelo `synapse` sigue sellada, y
+    # las otras tres keys no tienen excepcion.
+    KEY_DIRECT_FALLBACK_MODELS = {"synapse": frozenset({"qwen38-flash-next"})}
+
     # ── Línea de facturación de Claude Code (23-09-2026) ─────────────────────────
     # Claude Code pone como PRIMER bloque del system `x-anthropic-billing-header:
     # cc_version=<v>.<3 hex>; cc_entrypoint=...;`, y los 3 hex dependen del
@@ -4236,7 +4247,8 @@ data:
 
     def _apply_key_fallback_policy(data, user_api_key_dict):
         """Stamp the Router kill switch and return the effective per-request policy."""
-        if _resolve_key_label(user_api_key_dict) in NO_FALLBACK_KEY_ALIASES:
+        key = _resolve_key_label(user_api_key_dict)
+        if key in NO_FALLBACK_KEY_ALIASES and data.get("model") not in KEY_DIRECT_FALLBACK_MODELS.get(key, ()):
             data["disable_fallbacks"] = True
         return data.get("disable_fallbacks") is True
 
@@ -11247,7 +11259,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8db27b00394f
+        config.k8s.e-dani.com/revision: config-59e55daf1974
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12097,7 +12109,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8db27b00394f
+        config.k8s.e-dani.com/revision: config-59e55daf1974
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
