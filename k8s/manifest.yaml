@@ -1108,13 +1108,13 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
-        # pregunta, /v1/chat/completions): `none` -> reasoning_content 0;
-        # low/medium/high/max/xhigh -> reasoning_content 358/418/420/557/512
-        # chars. Los seis se aceptan con 200 y gradiente. Sin esto, opencode
-        # (que filtra sus variantes de effort por esta lista) no pinta ningun
-        # nivel para el alias.
-        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        # 12-10-2026 (DGX-842): al dia del menu que el 23-09 ya tenian el residente y
+        # su espejo del primer proxy: none/low/medium/xhigh, la receta oficial de Model
+        # Studio (help/en/model-studio/qwen-api-via-openai-responses). La sonda del 21-09
+        # trato ruido de 6 muestras como niveles y anunciaba `high` y `max`, que son
+        # `xhigh` (lo traduce THINKING_KWARGS aqui y Alibaba alla). Siguen ACEPTADOS:
+        # solo se retiran de la oferta, no de la traduccion.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
@@ -1150,13 +1150,13 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
-        # pregunta, /v1/chat/completions): `none` -> reasoning_content 0;
-        # low/medium/high/max/xhigh -> reasoning_content 358/418/420/557/512
-        # chars. Los seis se aceptan con 200 y gradiente. Sin esto, opencode
-        # (que filtra sus variantes de effort por esta lista) no pinta ningun
-        # nivel para el alias.
-        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        # 12-10-2026 (DGX-842): al dia del menu que el 23-09 ya tenian el residente y
+        # su espejo del primer proxy: none/low/medium/xhigh, la receta oficial de Model
+        # Studio (help/en/model-studio/qwen-api-via-openai-responses). La sonda del 21-09
+        # trato ruido de 6 muestras como niveles y anunciaba `high` y `max`, que son
+        # `xhigh` (lo traduce THINKING_KWARGS aqui y Alibaba alla). Siguen ACEPTADOS:
+        # solo se retiran de la oferta, no de la traduccion.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
         disable_background_health_check: true
     # ── El gemelo cloud del residente. UN alias, y por el plano OpenAI ───────
     #
@@ -1236,12 +1236,13 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
-        # pregunta, /v1/chat/completions): `none` -> reasoning 0; low/medium/
-        # high/max/xhigh -> reasoning_content presente (343/355/337/286/327
-        # chars). Es lo que filtra los variants del picker de opencode
-        # (plugin opencode-litellm, mapping.ts).
-        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        # 12-10-2026 (DGX-842): al dia del menu que el 23-09 ya tenian el residente y
+        # su espejo del primer proxy: none/low/medium/xhigh, la receta oficial de Model
+        # Studio (help/en/model-studio/qwen-api-via-openai-responses). La sonda del 21-09
+        # trato ruido de 6 muestras como niveles y anunciaba `high` y `max`, que son
+        # `xhigh` (lo traduce THINKING_KWARGS aqui y Alibaba alla). Siguen ACEPTADOS:
+        # solo se retiran de la oferta, no de la traduccion.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
         disable_background_health_check: true
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
@@ -1284,12 +1285,13 @@ data:
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
-        # 21-09-2026, medido hoy contra el endpoint real (6 sondas, misma
-        # pregunta, /v1/chat/completions): `none` -> reasoning 0; low/medium/
-        # high/max/xhigh -> reasoning_content presente (343/355/337/286/327
-        # chars). Es lo que filtra los variants del picker de opencode
-        # (plugin opencode-litellm, mapping.ts).
-        supported_reasoning_efforts: [none, low, medium, high, max, xhigh]
+        # 12-10-2026 (DGX-842): al dia del menu que el 23-09 ya tenian el residente y
+        # su espejo del primer proxy: none/low/medium/xhigh, la receta oficial de Model
+        # Studio (help/en/model-studio/qwen-api-via-openai-responses). La sonda del 21-09
+        # trato ruido de 6 muestras como niveles y anunciaba `high` y `max`, que son
+        # `xhigh` (lo traduce THINKING_KWARGS aqui y Alibaba alla). Siguen ACEPTADOS:
+        # solo se retiran de la oferta, no de la traduccion.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
         disable_background_health_check: true
     - model_name: alibaba-q37-plus
       litellm_params:
@@ -11264,7 +11266,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e90d975472b2
+        config.k8s.e-dani.com/revision: config-1b686087a752
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12114,7 +12116,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e90d975472b2
+        config.k8s.e-dani.com/revision: config-1b686087a752
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
