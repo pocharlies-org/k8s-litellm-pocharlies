@@ -396,7 +396,11 @@ contracts:
       `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
       NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue) keep failing closed via
-      disable_fallbacks, and the abliterated aliases have no chain. Guarded by
+      disable_fallbacks, and the abliterated aliases have no chain. ADDITIVE
+      (DGX-841, 2026-10-12, Dani): the one exception is `synapse` naming the
+      resident directly (`qwen38-flash-next`, KEY_DIRECT_FALLBACK_MODELS): it is
+      not sealed and the Router edge `qwen38-flash-next` -> `alibaba-q38-flash`
+      applies; `synapse` on `tooling` or any `-uncensored` stays sealed. Guarded by
       tests/test_tooling_profile_contract.py and
       tests/test_aurora_fallback_policy_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
