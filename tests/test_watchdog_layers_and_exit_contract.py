@@ -640,6 +640,26 @@ def test_el_yaml_declara_rbac_minimo_para_esa_lectura():
         "clavado al residente: no es un get de deployments del namespace")
 
 
+def test_el_aviso_va_al_topic_infra_del_grupo_no_al_dm():
+    """12-10-2026 (Dani): los avisos de infra viven en el topic «Infra» (hilo
+    1248) del grupo Pocharlies Operations, no en el DM. El chat_id positivo es
+    una persona: si alguien lo devuelve a 33285833, el aviso se pierde del
+    canal donde hace guardia. Y sin message_thread_id el mensaje cae en el
+    General del foro, que tampoco es el sitio."""
+    docs = [d for d in yaml.safe_load_all(WATCHDOG.read_text()) if d]
+    cron = next(d for d in docs if d.get("kind") == "CronJob")
+    envs = {e["name"]: e.get("value") for e in
+            cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+            ["containers"][0]["env"]}
+    assert envs["TELEGRAM_CHAT_ID"] == "-1004409526898", (
+        "el destino tiene que ser el grupo (id negativo), no un DM")
+    assert envs["TELEGRAM_THREAD_ID"] == "1248", (
+        "el topic «Infra» es el hilo 1248 del foro")
+    script = _watchdog_script()
+    assert "message_thread_id" in script, (
+        "el sendMessage no lleva el hilo: caería en el General del foro")
+
+
 def test_ultimo_statement_del_script_es_un_system_exit_con_salida():
     """El bug de la linea ~291: si el ultimo statement del bloque no es un raise,
     al caer al final del todo se sale con 0 por defecto."""
