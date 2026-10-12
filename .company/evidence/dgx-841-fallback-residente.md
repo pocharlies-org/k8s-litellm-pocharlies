@@ -40,12 +40,12 @@ Sin sello cae a Alibaba en 2.7 s (< 20 s); con sello es exactamente el 500 del p
 Donde: `python3 -m pytest tests/ -p no:cacheprovider` en esta rama (py3.12.3, pytest 9.0.3).
 
 ```
-PASS  893 passed in 93.00s
+PASS  894 passed in 92.22s
 ```
 
 Primero el test que falla: `tests/test_synapse_resident_fallback_contract.py` sin el cambio del manifest:
 `1 failed, 12 passed` (`test_synapse_con_el_residente_directo_no_se_sella`: `assert True is False`).
-Con el cambio: `13 passed`.
+Con el cambio: `14 passed` (tras el rework del architect, +1 test).
 
 ## Criterios
 

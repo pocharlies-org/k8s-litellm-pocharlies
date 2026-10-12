@@ -30,6 +30,10 @@ def _router_fallbacks():
     }
 
 
+def test_las_excepciones_son_de_keys_selladas(hook):  # noqa: F811
+    assert set(hook.KEY_DIRECT_FALLBACK_MODELS) <= hook.NO_FALLBACK_KEY_ALIASES
+
+
 def test_synapse_con_el_residente_directo_no_se_sella(hook):  # noqa: F811
     request, disabled = _policy(hook, "synapse", {"model": RESIDENTE})
 

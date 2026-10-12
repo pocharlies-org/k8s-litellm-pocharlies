@@ -2114,6 +2114,13 @@ data:
       # peticion que caiga aqui sale con el comportamiento base del modelo de
       # Alibaba. Por eso NO se pone fallback en `-uncensored`: ahi el sello es el
       # proposito de la ruta y perderlo en silencio seria peor que un error.
+      #
+      # 12-10-2026 (DGX-841): la arista tambien cubre `Connection refused` con el
+      # Service del residente SIN endpoints (Sparks ocupados, rollout): el fallo sale
+      # en ~2 s (medido: 500 `Connection error` en 2-5 s) y el Router sigue a
+      # Alibaba. La consume `synapse` cuando nombra `qwen38-flash-next` directo
+      # (KEY_DIRECT_FALLBACK_MODELS en el hook); sin esa excepcion su sello
+      # `disable_fallbacks` cortaba aqui. `tooling` y `-uncensored` siguen SIN entrada.
       fallbacks:
         - qwen38-flash-next: ["alibaba-q38-flash"]
     # DGX-453 (29-09-2026): prioridad de cola del residente (campo `priority` en
@@ -4135,16 +4142,18 @@ data:
     # LiteLLM v1.96.0 pops that kwarg in Router.async_function_with_fallbacks and
     # re-raises the original error when it is true. It is deliberately overwritten,
     # not setdefault: this policy cannot be undone by a client body containing false.
-    # Keys que NUNCA deben degradar a un fallback: se les estampa
-    # `disable_fallbacks` y el Router se queda con el deployment pedido o falla.
+    # Keys que NUNCA deben degradar a un fallback, salvo `KEY_DIRECT_FALLBACK_MODELS`
+    # (abajo): se les estampa `disable_fallbacks` y el Router se queda con el
+    # deployment pedido o falla.
     #
     #   aurora-rca  mide, y una medida degradada es una medida falsa.
-    #   synapse     20-09-2026, decision del owner: Synapse NO es agentico —
-    #               hace llamadas acotadas, no conduce un bucle de herramientas —
-    #               asi que no gana nada saltando a la nube y si pierde: el salto
-    #               SACA EL PROMPT DE LA MAQUINA a un tercero de pago. Se queda en
-    #               el Spark local o falla de forma visible, que para una llamada
-    #               puntual es la respuesta correcta. Hermes, que si es agentico y
+    #   synapse     sellada salvo cuando nombra `qwen38-flash-next` directo
+    #               (KEY_DIRECT_FALLBACK_MODELS): en ese caso su prompt SI sale a
+    #               Alibaba. Con `tooling`, `-uncensored` o cualquier otro modelo
+    #               sigue sellada (20-09-2026, decision del owner: Synapse NO es
+    #               agentico, asi que el salto no le aporta y SACA EL PROMPT DE LA
+    #               MAQUINA a un tercero de pago; se queda en el Spark local o falla
+    #               de forma visible). Hermes, que si es agentico y
     #               conversacional, SI lleva fallback a proposito.
     #   claude-cloudblue  05-10-2026, decision del owner: Claude Code del Mac con
     #               datos de CloudBlue. Esos prompts no pueden salir a Alibaba (ni a
@@ -4158,14 +4167,10 @@ data:
     NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse", "brain", "claude-cloudblue"})
 
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
-    # Alibaba». El sellado de `synapse` (arriba) hacia que, con el residente caido, su
-    # llamada a `qwen38-flash-next` muriera en 500 `Connection error` (Service sin
-    # endpoints, ~2 s) en vez de seguir la arista `qwen38-flash-next ->
-    # alibaba-q38-flash` de router_settings.fallbacks: el clasificador de correo se
-    # quedo 2 h sin clasificar el 12-10. Se abre SOLO ese camino: la key nombra el
-    # residente directo (el adapter gmail lo elige con su knob `model`). Con
-    # `tooling`, un `-uncensored` o cualquier otro modelo `synapse` sigue sellada, y
-    # las otras tres keys no tienen excepcion.
+    # Alibaba». Con el sellado entero, el clasificador de correo de Synapse murio en
+    # 500 con el residente caido y estuvo 2 h sin clasificar. Las claves de este
+    # mapa deben estar en NO_FALLBACK_KEY_ALIASES; las otras tres keys no tienen
+    # excepcion.
     KEY_DIRECT_FALLBACK_MODELS = {"synapse": frozenset({"qwen38-flash-next"})}
 
     # ── Línea de facturación de Claude Code (23-09-2026) ─────────────────────────
@@ -11259,7 +11264,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-59e55daf1974
+        config.k8s.e-dani.com/revision: config-e90d975472b2
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12109,7 +12114,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-59e55daf1974
+        config.k8s.e-dani.com/revision: config-e90d975472b2
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
