@@ -410,6 +410,13 @@ contracts:
       applies; `synapse` on `tooling` or any `-uncensored` stays sealed. Guarded by
       tests/test_tooling_profile_contract.py and
       tests/test_aurora_fallback_policy_contract.py.
+      ADDITIVE (DGX-874, 2026-10-13): the same exception covers
+      `correo-clasificador`, a second direct name for the resident Service with
+      timeout 6 and num_retries 0 (Synapse's mail classifier), with its own Router
+      edge `correo-clasificador` -> `alibaba-q38-flash`. `qwen38-flash-next` keeps
+      its entry in KEY_DIRECT_FALLBACK_MODELS and its edge. The key `synapse`
+      reaches the alias only once its allowlist (Postgres, outside git) names it.
+      Guarded by tests/test_correo_clasificador_alias_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
       from the /inferencia panel (ALIBABA · TOKEN PLAN, field
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
