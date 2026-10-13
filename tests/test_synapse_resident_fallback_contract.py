@@ -75,8 +75,15 @@ def test_un_cliente_de_synapse_puede_pedir_no_caer(hook):  # noqa: F811
     assert request["disable_fallbacks"] is True
 
 
-def test_el_router_solo_tiene_la_arista_del_residente():
-    """C3: ni `tooling` ni ninguna ruta abliterada tienen salto en el Router."""
+def test_el_router_solo_tiene_las_aristas_del_residente_y_del_clasificador():
+    """C3: ni `tooling` ni ninguna ruta abliterada tienen salto en el Router.
+
+    13-10-2026 (DGX-874): segunda arista, `correo-clasificador` (el mismo residente con
+    timeout 6 para el clasificador de correo de Synapse) al mismo gemelo de Alibaba.
+    """
     graph = _router_fallbacks()
 
-    assert graph == {RESIDENTE: ["alibaba-q38-flash"]}
+    assert graph == {
+        RESIDENTE: ["alibaba-q38-flash"],
+        "correo-clasificador": ["alibaba-q38-flash"],
+    }

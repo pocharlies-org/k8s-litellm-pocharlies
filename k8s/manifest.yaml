@@ -252,7 +252,7 @@ data:
     # 8 = la zona donde la latencia medida sigue siendo usable; el
     # tope de KV real del motor sigue sin medir, esto es admision, no fisica.
     - model_name: qwen38-flash-next
-      litellm_params:
+      litellm_params: &qwen38_resident_params
         model: openai/qwen38-flash-next
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
@@ -269,7 +269,7 @@ data:
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
         # comportamiento base del modelo.
         extra_body: { cache_salt: "refusal:0" }
-      model_info:
+      model_info: &qwen38_resident_info
         mode: chat
         backend: dgx1+dgx2
         max_input_tokens: 262144
@@ -345,6 +345,62 @@ data:
         # `health_check_skip_disabled_background_models`: un `GET /health` a mano
         # sigue sondeando de verdad (y ese si puede llevar effort/max_tokens a mano).
         disable_background_health_check: true
+    # ── `correo-clasificador`: el residente con un respaldo que SI llega a tiempo ──
+    #
+    # 13-10-2026 (DGX-874, epica DGX-869). El clasificador de correo de Synapse (adapter de
+    # Gmail, key `synapse`) corta a los 30 s (`classifier_timeout_s`) y `qwen38-flash-next`
+    # solo suelta a su respaldo a los 240 s (`timeout`, arriba), con una cola por pod cuya
+    # espera no cuenta para ese timeout: la arista `qwen38-flash-next -> alibaba-q38-flash`
+    # existe y nunca llegaba a tiempo. El 12-10: 182 intentos fallidos para 37 correos.
+    #
+    # Este alias es el MISMO Service del residente (sus `litellm_params` por ancla, no
+    # copiados: api_base, sello `cache_salt: refusal:0`, tope de paralelo) con dos cambios:
+    #   - `timeout: 6`. El prompt del clasificador es corto y va sin pensar: si el residente
+    #     no contesta en 6 s no va a contestar a tiempo, y esos 6 s mas lo que tarde Alibaba
+    #     tienen que caber en los 15 s que el adapter tendra en el tenant skirmshop (L1 de
+    #     DGX-874 lo mide).
+    #   - `num_retries: 0`. Sin el, el Router reintenta el MISMO deployment
+    #     (`router_settings.num_retries: 1`) antes de caer al respaldo: 2 x 6 s y la espera
+    #     entre reintentos (14 s medidos con el Router real de litellm 1.100.0; con el
+    #     cero, 6,5 s).
+    # El semaforo (`max_parallel_requests`, por deployment y por pod) es propio: el
+    # clasificador no hace cola detras del trafico del residente. UNA sola deployment (dos
+    # bajo un alias se comen peticiones, ver arriba); el respaldo vive en
+    # `router_settings.fallbacks`. No esta en THINKING_TIERS ni en SWAPPABLE_ALIASES a
+    # proposito: el adapter manda `reasoning_effort: none`, que el hook traduce a
+    # `enable_thinking: false` con cualquier alias, y su temperatura 0 llega intacta.
+    # Lo fija tests/test_correo_clasificador_alias_contract.py.
+    #
+    # OJO, dos sitios mas, y ninguno es este fichero. La allowlist `models` de la key
+    # `synapse` vive en la Postgres de LiteLLM y va ANTES que el manifiesto (INFRA-431,
+    # mas abajo): el alias no se alcanza hasta que se anade a la key. Y el hook sella la
+    # key `synapse` con `disable_fallbacks` salvo para los modelos de
+    # KEY_DIRECT_FALLBACK_MODELS: `correo-clasificador` esta en esa lista, o su respaldo no
+    # dispararia nunca (DGX-841).
+    - model_name: correo-clasificador
+      litellm_params:
+        <<: *qwen38_resident_params
+        timeout: 6
+        num_retries: 0
+      model_info:
+        <<: *qwen38_resident_info
+        # Solo `none`: este alias no piensa, y el menu del residente (none/low/medium/xhigh)
+        # mentiria. `none` y no la lista vacia, como `qwen38-off`: Hermes lee «sin
+        # declaracion» como la escalera completa.
+        supported_reasoning_efforts: [none]
+        # 60, no los 900 del residente. Aquel aparca largo porque cada rebote NUEVO a
+        # Alibaba factura un prefijo de ~81.000 tokens; aqui el prompt es corto y Alibaba
+        # es barato, asi que no hay razon para dejar al residente fuera 15 min.
+        # OJO: es lo que dura el cooldown SI el Router aparca el deployment, y con litellm
+        # 1.100.0 un grupo de UN deployment no entra en cooldown por timeouts ni por 5xx: el
+        # `allowed_fails: 3` del router es el defecto de litellm y se lee como «no puesto»
+        # (medido con el Router real, DGX-874: 12 fallos seguidos, 12 golpes al residente,
+        # ningun cooldown). O sea: cada peticion prueba antes al residente y paga su timeout
+        # de 6 s antes de caer al respaldo, que es lo que se quiere (el local primero). El
+        # mando que el Router SI lee por deployment para aparcar es
+        # `model_info.allowed_fails_policy`; no se pone: aparcado, todo el correo del alias
+        # iria a Alibaba mientras durase el cooldown.
+        cooldown_time: 60
     # ── `qwen38-flash-next-uncensored`: el residente llm-tp, abliterado ────────
     #
     # MISMO backend, mismo head, misma GPU. Lo unico que cambia es que esta peticion
@@ -2123,8 +2179,14 @@ data:
       # Alibaba. La consume `synapse` cuando nombra `qwen38-flash-next` directo
       # (KEY_DIRECT_FALLBACK_MODELS en el hook); sin esa excepcion su sello
       # `disable_fallbacks` cortaba aqui. `tooling` y `-uncensored` siguen SIN entrada.
+      #
+      # 13-10-2026 (DGX-874): segunda arista, la de `correo-clasificador`, el mismo
+      # residente con `timeout: 6` y `num_retries: 0` (ver su entrada en el model_list):
+      # la de arriba solo dispara a los 240 s y el clasificador de Synapse corta a los
+      # 30. Mismo gemelo de destino, misma excepcion de la key `synapse` en el hook.
       fallbacks:
         - qwen38-flash-next: ["alibaba-q38-flash"]
+        - correo-clasificador: ["alibaba-q38-flash"]
     # DGX-453 (29-09-2026): prioridad de cola del residente (campo `priority` en
     # extra_body, menor = mas urgente, default 0) segun el ALIAS de la virtual key,
     # decidido AQUI y no en codigo: se reordena la cola sin tocar el hook.
@@ -4149,10 +4211,10 @@ data:
     # deployment pedido o falla.
     #
     #   aurora-rca  mide, y una medida degradada es una medida falsa.
-    #   synapse     sellada salvo cuando nombra `qwen38-flash-next` directo
-    #               (KEY_DIRECT_FALLBACK_MODELS): en ese caso su prompt SI sale a
-    #               Alibaba. Con `tooling`, `-uncensored` o cualquier otro modelo
-    #               sigue sellada (20-09-2026, decision del owner: Synapse NO es
+    #   synapse     sellada salvo cuando nombra `qwen38-flash-next` o
+    #               `correo-clasificador` directo (KEY_DIRECT_FALLBACK_MODELS): en ese
+    #               caso su prompt SI sale a Alibaba. Con `tooling`, `-uncensored` o
+    #               cualquier otro modelo sigue sellada (20-09-2026, decision del owner: Synapse NO es
     #               agentico, asi que el salto no le aporta y SACA EL PROMPT DE LA
     #               MAQUINA a un tercero de pago; se queda en el Spark local o falla
     #               de forma visible). Hermes, que si es agentico y
@@ -4173,7 +4235,12 @@ data:
     # 500 con el residente caido y estuvo 2 h sin clasificar. Las claves de este
     # mapa deben estar en NO_FALLBACK_KEY_ALIASES; las otras tres keys no tienen
     # excepcion.
-    KEY_DIRECT_FALLBACK_MODELS = {"synapse": frozenset({"qwen38-flash-next"})}
+    # 13-10-2026 (DGX-874): entra `correo-clasificador`, el mismo residente con un
+    # timeout de 6 s para el clasificador de correo (ver su entrada en el model_list).
+    # Por el mismo motivo que `qwen38-flash-next`: sellado, su respaldo a Alibaba no
+    # dispararia nunca. La clave del residente se queda: los demas tenants de Synapse
+    # siguen pidiendo `qwen38-flash-next`.
+    KEY_DIRECT_FALLBACK_MODELS = {"synapse": frozenset({"qwen38-flash-next", "correo-clasificador"})}
 
     # ── Línea de facturación de Claude Code (23-09-2026) ─────────────────────────
     # Claude Code pone como PRIMER bloque del system `x-anthropic-billing-header:
@@ -11266,7 +11333,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1b686087a752
+        config.k8s.e-dani.com/revision: config-383f30f586da
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12116,7 +12183,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1b686087a752
+        config.k8s.e-dani.com/revision: config-383f30f586da
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
