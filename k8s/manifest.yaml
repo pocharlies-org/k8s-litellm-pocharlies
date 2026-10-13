@@ -2176,9 +2176,10 @@ data:
       # 12-10-2026 (DGX-841): la arista tambien cubre `Connection refused` con el
       # Service del residente SIN endpoints (Sparks ocupados, rollout): el fallo sale
       # en ~2 s (medido: 500 `Connection error` en 2-5 s) y el Router sigue a
-      # Alibaba. La consume `synapse` cuando nombra `qwen38-flash-next` directo
-      # (KEY_DIRECT_FALLBACK_MODELS en el hook); sin esa excepcion su sello
-      # `disable_fallbacks` cortaba aqui. `tooling` y `-uncensored` siguen SIN entrada.
+      # Alibaba. La consumio `synapse` con `qwen38-flash-next` directo hasta el 13-10
+      # (KEY_DIRECT_FALLBACK_MODELS en el hook); desde DGX-874 C1 esa key va sellada con
+      # ese nombre y solo la usan las keys sin sello. `tooling` y `-uncensored` siguen SIN
+      # entrada.
       #
       # 13-10-2026 (DGX-874): segunda arista, la de `correo-clasificador`, el mismo
       # residente con `timeout: 6` y `num_retries: 0` (ver su entrada en el model_list):
@@ -4211,9 +4212,10 @@ data:
     # deployment pedido o falla.
     #
     #   aurora-rca  mide, y una medida degradada es una medida falsa.
-    #   synapse     sellada salvo cuando nombra `qwen38-flash-next` o
-    #               `correo-clasificador` directo (KEY_DIRECT_FALLBACK_MODELS): en ese
-    #               caso su prompt SI sale a Alibaba. Con `tooling`, `-uncensored` o
+    #   synapse     sellada salvo cuando nombra `correo-clasificador`
+    #               (KEY_DIRECT_FALLBACK_MODELS): en ese caso su prompt SI sale a
+    #               Alibaba, y solo por la arista del Router cuando el residente falla.
+    #               Con `qwen38-flash-next`, `tooling`, `-uncensored` o
     #               cualquier otro modelo sigue sellada (20-09-2026, decision del owner: Synapse NO es
     #               agentico, asi que el salto no le aporta y SACA EL PROMPT DE LA
     #               MAQUINA a un tercero de pago; se queda en el Spark local o falla
@@ -4237,10 +4239,16 @@ data:
     # excepcion.
     # 13-10-2026 (DGX-874): entra `correo-clasificador`, el mismo residente con un
     # timeout de 6 s para el clasificador de correo (ver su entrada en el model_list).
-    # Por el mismo motivo que `qwen38-flash-next`: sellado, su respaldo a Alibaba no
-    # dispararia nunca. La clave del residente se queda: los demas tenants de Synapse
-    # siguen pidiendo `qwen38-flash-next`.
-    KEY_DIRECT_FALLBACK_MODELS = {"synapse": frozenset({"qwen38-flash-next", "correo-clasificador"})}
+    # Sellado, su respaldo a Alibaba no dispararia nunca.
+    # 13-10-2026 (DGX-874, C1 de security): sale `qwen38-flash-next`. Sin el sello, el
+    # session router (`session_router.py`) trataba a `synapse` como a cualquier key (plan
+    # por defecto, valvula `instant_reject`, presupuesto KV, sticky, re-bind) y la mandaba
+    # a Alibaba por carga: el 78 % de sus peticiones del 13-10, todas con
+    # `attempted_fallbacks=0`. El respaldo ratificado es solo el de la arista del Router, y
+    # solo para el clasificador. `correo-clasificador` no esta en ROUTED_MODELS: el session
+    # router no lo toca aunque vaya sin sello. Los demas tenants de Synapse piden
+    # `qwen38-flash-next`: con el residente caido fallan a la vista y su bucle reintenta.
+    KEY_DIRECT_FALLBACK_MODELS = {"synapse": frozenset({"correo-clasificador"})}
 
     # ── Línea de facturación de Claude Code (23-09-2026) ─────────────────────────
     # Claude Code pone como PRIMER bloque del system `x-anthropic-billing-header:
@@ -11333,7 +11341,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-383f30f586da
+        config.k8s.e-dani.com/revision: config-dd04e1ae7b8b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12183,7 +12191,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-383f30f586da
+        config.k8s.e-dani.com/revision: config-dd04e1ae7b8b
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

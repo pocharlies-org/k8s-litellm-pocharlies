@@ -404,19 +404,30 @@ contracts:
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
       NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue) keep failing closed via
       disable_fallbacks, and the abliterated aliases have no chain. ADDITIVE
-      (DGX-841, 2026-10-12, Dani): the one exception is `synapse` naming the
-      resident directly (`qwen38-flash-next`, KEY_DIRECT_FALLBACK_MODELS): it is
-      not sealed and the Router edge `qwen38-flash-next` -> `alibaba-q38-flash`
-      applies; `synapse` on `tooling` or any `-uncensored` stays sealed. Guarded by
-      tests/test_tooling_profile_contract.py and
+      (DGX-841, 2026-10-12, Dani): `synapse` naming the resident directly
+      (`qwen38-flash-next`) was left unsealed (KEY_DIRECT_FALLBACK_MODELS) so the
+      Router edge `qwen38-flash-next` -> `alibaba-q38-flash` applied; `synapse` on
+      `tooling` or any `-uncensored` stays sealed. Narrowed by DGX-874 C1, below.
+      Guarded by tests/test_tooling_profile_contract.py and
       tests/test_aurora_fallback_policy_contract.py.
-      ADDITIVE (DGX-874, 2026-10-13): the same exception covers
-      `correo-clasificador`, a second direct name for the resident Service with
-      timeout 6 and num_retries 0 (Synapse's mail classifier), with its own Router
-      edge `correo-clasificador` -> `alibaba-q38-flash`. `qwen38-flash-next` keeps
-      its entry in KEY_DIRECT_FALLBACK_MODELS and its edge. The key `synapse`
-      reaches the alias only once its allowlist (Postgres, outside git) names it.
-      Guarded by tests/test_correo_clasificador_alias_contract.py.
+      ADDITIVE (DGX-874, 2026-10-13): `correo-clasificador`, a second direct name
+      for the resident Service with timeout 6 and num_retries 0 (Synapse's mail
+      classifier), with its own Router edge `correo-clasificador` ->
+      `alibaba-q38-flash`; the one model `synapse` has left unsealed. The key
+      `synapse` reaches the alias only once its allowlist (Postgres, outside git)
+      names it. Guarded by tests/test_correo_clasificador_alias_contract.py.
+      MIGRATION (DGX-874 C1, 2026-10-13, security): no diversion by load for
+      `synapse`. With `qwen38-flash-next` unsealed, the hook's session router
+      (default plan, instant_reject valve, KV budget, sticky, re-bind) rewrote the
+      key's requests to `alibaba-q38-flash`: 78 % of them on 2026-10-13, all with
+      attempted_fallbacks=0. `qwen38-flash-next` leaves KEY_DIRECT_FALLBACK_MODELS:
+      `synapse` is sealed again with it (the resident answers or the call fails in
+      plain sight, and the Gmail adapter's reclassification loop retries); its
+      Router edge stays for the keys that are not sealed. The only way `synapse`
+      reaches Alibaba is now a Router edge, and only for `correo-clasificador`,
+      which is not in ROUTED_MODELS so the session router never touches it.
+      TOOLING_FALLBACKS itself is unchanged. Guarded by
+      tests/test_synapse_resident_fallback_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
       from the /inferencia panel (ALIBABA · TOKEN PLAN, field
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
