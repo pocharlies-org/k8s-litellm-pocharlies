@@ -10070,6 +10070,8 @@ data:
     # en su tarjeta y el panel no podia cruzarlas con la cola de su motor.
     SERVER_BY_SERVICE = {
         "qwen38-flash-next": "qwen38-flash-next-head",
+        # DGX-906: el TP=1 de dgx3 del 2+1; sin el, sus peticiones salian «not attributed».
+        "qwen38-flash-next-tp1": "qwen38-flash-next-worker-dgx3",
     }
 
 
@@ -11793,7 +11795,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-3acc7c06b354
+        config.k8s.e-dani.com/revision: config-ff01ac87e879
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12652,7 +12654,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-3acc7c06b354
+        config.k8s.e-dani.com/revision: config-ff01ac87e879
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
