@@ -79,8 +79,8 @@ def test_una_conversacion_un_backend_en_toda_la_familia_y_entre_pods():
 
     seen = run(go())
     share = list(seen.values()).count("tp2") / len(seen)
-    # reparto por capacidad medido (3:1), con la deriva de un sorteo por ventana
-    assert 0.62 < share < 0.92, f"el reparto 3:1 salio {share:.2f} de tp2"
+    # reparto 2:1 (DGX-897), con la deriva de un sorteo por ventana
+    assert 0.55 < share < 0.78, f"el reparto 2:1 salio {share:.2f} de tp2"
 
 
 def test_sin_valkey_los_dos_pods_eligen_el_mismo_backend():
@@ -224,7 +224,7 @@ def test_peticion_anonima_sorteo_ponderado_y_no_escribe_pin():
 
     vistos = run(go())
     share = vistos.count("tp2") / len(vistos)
-    assert 0.62 < share < 0.92, f"el reparto 3:1 salio {share:.2f}"
+    assert 0.55 < share < 0.78, f"el reparto 2:1 salio {share:.2f}"
     assert not valkey.data, "sin sid no hay conversacion que clavar"
 
 
@@ -277,10 +277,10 @@ def test_pesos_mal_escritos_dejan_de_ser_ponderados_pero_no_rompen(monkeypatch):
     assert _backend(out) in GEM
 
 
-def test_el_default_de_pesos_es_la_capacidad_medida():
+def test_el_default_de_pesos_es_2_a_1():
     pod = _pod(None)
-    assert pod.RESIDENT_BACKEND_WEIGHTS_DEFAULT == "tp2=3,tp1=1"
-    assert pod._resident_backend_weights() == {"tp2": 3.0, "tp1": 1.0}
+    assert pod.RESIDENT_BACKEND_WEIGHTS_DEFAULT == "tp2=2,tp1=1"
+    assert pod._resident_backend_weights() == {"tp2": 2.0, "tp1": 1.0}
 
 
 # ── el sid que necesita el filtro tiene que llegar en la peticion ────────────
@@ -362,6 +362,11 @@ def test_los_gemelos_del_residente_solo_difieren_en_el_motor():
         assert pa.pop("api_base") != pb.pop("api_base"), f"{alias}: los dos al mismo Service"
         assert ia.pop("id") != ib.pop("id"), f"{alias}: los dos gemelos con el mismo id"
         assert ia.pop("backend") != ib.pop("backend"), f"{alias}: los dos en el mismo nodo"
+        # DGX-897: el tope por pod es lo otro que cambia, el `--max-num-seqs` de cada motor
+        # entre las dos replicas del proxy (TP=2 16, TP=1 8).
+        topes = {a["model_info"]["id"][-3:]: pa.pop("max_parallel_requests"),
+                 b["model_info"]["id"][-3:]: pb.pop("max_parallel_requests")}
+        assert topes == {"tp2": 8, "tp1": 4}, f"{alias}: topes por pod {topes}"
         assert pa == pb, f"{alias}: litellm_params divergen entre gemelos"
         assert ia == ib, f"{alias}: model_info diverge entre gemelos"
 

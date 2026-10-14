@@ -439,7 +439,7 @@ class _Env:
     Alibaba (regla de retorno 4c)."""
 
     def __init__(self, mod, cfg, bound=None, cooldown=False, inflight=0, stuck=False,
-                 kv_cap=None, kv_total=None, kv_born=None):
+                 kv_cap=None, kv_total=None, kv_born=None, up=()):
         self.writes = []
         self.ledger = []
         self.albind_touches = []
@@ -448,6 +448,9 @@ class _Env:
         mod._ensure_vllm_poller = lambda: None
         mod._ensure_sessions_poller = lambda: None
         mod._queue_stuck = lambda now=None: stuck
+        # Servidores con /metrics fresco (DGX-897): reset SIEMPRE, mismo motivo que las cachés de abajo.
+        mod._vllm_up.clear()
+        mod._vllm_up.update(dict.fromkeys(up, time.monotonic()))
         # Cachés de los sondeos: reset SIEMPRE (el módulo es scope=module y
         # comparte estado entre tests; sin esto un test con capacidad filtraría
         # al siguiente).
@@ -651,6 +654,24 @@ def test_valvula_por_debajo_de_slots_no_actua(router_mod):
     data = _data()
     assert env.run(data) is False
     assert data["model"] == RESIDENT
+
+
+@pytest.mark.parametrize("vivos, umbral", [((0, 1), 24), ((0,), 16), ((1,), 8)])
+def test_desborde_a_la_suma_de_los_servidores_vivos(router_mod, vivos, umbral):
+    """DGX-897: con el panel de techo a 24, Alibaba entra a 24 en vuelo con los dos
+    servidores, a 16 solo con el TP=2 y a 8 solo con el TP=1."""
+    up = [router_mod.VLLM_METRICS_URLS[i] for i in vivos]
+    for inflight, desborda in ((umbral - 1, False), (umbral, True)):
+        env = _Env(router_mod, _cfg(instant_reject=True, local_slots=24), inflight=inflight, up=up)
+        assert env.run(_data()) is desborda, (vivos, inflight)
+
+
+def test_el_panel_es_techo_y_sin_lectura_manda_solo(router_mod):
+    env = _Env(router_mod, _cfg(instant_reject=True, local_slots=10), inflight=10,
+               up=router_mod.VLLM_METRICS_URLS)
+    assert env.run(_data()) is True  # 10 < 24: manda el panel
+    env = _Env(router_mod, _cfg(instant_reject=True, local_slots=24), inflight=23)
+    assert env.run(_data()) is False  # sondeo sin dato: el panel, como antes
 
 
 def test_valvula_con_cooldown_desconocido_degrada(router_mod):
