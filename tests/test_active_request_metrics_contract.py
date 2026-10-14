@@ -182,6 +182,9 @@ def test_resident_service_maps_to_its_dashboard_card():
     base = "http://qwen38-flash-next.llm.svc.cluster.local:8000/v1"
     assert resolve(None, base) == "qwen38-flash-next-head"
     assert resolve("openai/qwen38-flash-next", base) == "qwen38-flash-next-head"
+    # DGX-906: el TP=1 del 2+1 cae en la tarjeta de dgx3, no en «not attributed».
+    tp1 = "http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1"
+    assert resolve("openai/qwen38-flash-next", tp1) == "qwen38-flash-next-worker-dgx3"
     # Lo externo sigue sin servidor: Alibaba no es una tarjeta del panel.
     assert resolve(None, "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1") is None
 

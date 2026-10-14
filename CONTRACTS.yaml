@@ -523,7 +523,8 @@ contracts:
       Consumed by dgx-infra services/dashboard/api/litellm_active.py and
       api/routes_hud.py: the /inferencia cards put each live request on its
       engine card by `server_id` (MUST equal the card's srv.id, e.g.
-      `qwen38-flash-next-head`) and derive the per-request phase
+      `qwen38-flash-next-head`; since 2026-10-15 the TP=1 Service
+      `qwen38-flash-next-tp1` maps to `qwen38-flash-next-worker-dgx3`) and derive the per-request phase
       (queue/prefill vs decode) from `ttft_ms`, `completion_tokens` and the
       live `output_speed_tps`. Fields are additive; null means "not
       measured", never zero. Since 2026-09-23 the resident is measured live
