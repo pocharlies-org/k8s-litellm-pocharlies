@@ -10,7 +10,10 @@
 #
 # QUÉ POSEE Y QUÉ NO (mandato 1):
 #   - Valkey dedicado (litellm-valkey): el mapa sticky sid -> "local" |
-#     "alibaba", el HASH de sesiones `session-router:sessions` (sid ->
+#     "alibaba", los pines sid -> backend del residente `resident_backend_pin:v1`
+#     (DGX-852, 2+1: una conversacion se sirve siempre en el mismo vLLM porque
+#     las cachés de prefijo NO se comparten entre motores) y el HASH de sesiones
+#     `session-router:sessions` (sid ->
 #     json{t,ts}: prompt estimado y última actividad de las peticiones
 #     servidas por el residente — válvula de presupuesto KV, 27-09-2026) y
 #     las claves de nacimiento `session-router:albind:<sid>` (SETNX, TTL 24 h:
@@ -313,9 +316,18 @@ RESIDENT_FAMILY = frozenset(
         or f"{RESIDENT_MODEL},{RESIDENT_MODEL}-uncensored"
     ).split(",") if n.strip()
 )
-VLLM_METRICS_URL = os.environ.get(
-    "SESSION_ROUTER_VLLM_METRICS_URL",
-    "http://qwen38-flash-next.llm.svc.cluster.local:8000/metrics",
+# Lista separada por comas: desde DGX-852 el residente son DOS vLLM (TP=2 y
+# TP=1) con metricas propias, y la valvula decide sobre el POOL. Un URL que no
+# contesta se salta (fail-open como hoy); la capacidad suma solo los que
+# contestan, o sea que se APRIETA cuando un backend deja de publicar /metrics,
+# que es la direccion segura: a un motor que no dice nada no le mandas contexto
+# nuevo.
+VLLM_METRICS_URLS = tuple(
+    u.strip() for u in os.environ.get(
+        "SESSION_ROUTER_VLLM_METRICS_URL",
+        "http://qwen38-flash-next.llm.svc.cluster.local:8000/metrics,"
+        "http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/metrics",
+    ).split(",") if u.strip()
 )
 VLLM_MODEL_NAME = os.environ.get("SESSION_ROUTER_VLLM_MODEL_NAME", RESIDENT_MODEL)
 WAIT_TOLERANCE_SECONDS = float(os.environ.get("SESSION_ROUTER_WAIT_TOLERANCE_S", "5"))
@@ -836,25 +848,41 @@ def _note_vllm_sample(waiting, running, now=None):
         _vllm_queue["since"] = None
 
 
+async def _poll_vllm_once(client):
+    """Un ciclo sobre TODOS los backends del pool (DGX-852: TP=2 y TP=1).
+
+    Suma cola y capacidad sobre los que contestan: la válvula decide sobre el
+    pool, no sobre un motor. Un URL que falla se salta y no invalida a los
+    demás (fail-open como con uno solo). Si no contesta NINGUNO no se anota
+    nada: último-bueno, la válvula sigue decidiendo con lo que ya sabía."""
+    waiting = running = capacity = None
+    for url in VLLM_METRICS_URLS:
+        try:
+            response = await client.get(url)
+            response.raise_for_status()
+            w, r = _parse_vllm_gauges(response.text)
+            if w is not None:
+                waiting = (waiting or 0.0) + w
+                running = (running or 0.0) + (r or 0.0)
+            # Capacidad KV (27-09): MISMA lectura que la cola, cero I/O extra.
+            c = _parse_cache_capacity(response.text)
+            if c:
+                capacity = (capacity or 0) + c
+        except Exception as exc:
+            _warn_throttled(f"vllm_poll:{url}",
+                            f"sondeo de la cola de vLLM falló en {url} ({exc.__class__.__name__}); "
+                            "se suma sin ese backend")
+    if waiting is not None:
+        _note_vllm_sample(waiting, running)
+    if capacity:
+        _kv_capacity["tokens"] = capacity
+        _kv_capacity["read_at"] = time.monotonic()
+
+
 async def _poll_vllm_forever():
     client = httpx.AsyncClient(timeout=httpx.Timeout(VLLM_POLL_TIMEOUT_SECONDS))
     while True:
-        try:
-            response = await client.get(VLLM_METRICS_URL)
-            response.raise_for_status()
-            waiting, running = _parse_vllm_gauges(response.text)
-            if waiting is not None:
-                _note_vllm_sample(waiting, running)
-            # Capacidad KV (27-09): MISMA lectura que la cola, cero I/O extra.
-            # Último-bueno: la cache solo cambia al reiniciar el motor, y el
-            # siguiente sondeo bueno la sustituye; sin sondeo la válvula sigue
-            # decidiendo con el último valor conocido.
-            capacity = _parse_cache_capacity(response.text)
-            if capacity:
-                _kv_capacity["tokens"] = capacity
-                _kv_capacity["read_at"] = time.monotonic()
-        except Exception as exc:
-            _warn_throttled("vllm_poll", f"sondeo de la cola de vLLM falló ({exc.__class__.__name__}); sin válvula de cola")
+        await _poll_vllm_once(client)
         await asyncio.sleep(VLLM_POLL_SECONDS)
 
 
@@ -1496,26 +1524,36 @@ _ACCOUNT_KEY_RE = re.compile(r"k[0-9]+")
 # un GET correcto que devuelve None —pin caducado— rebote en la memoria del pod y
 # la sesion no se re-sorteo nunca, que es el fallo que este cambio venia a cerrar.
 _account_pins_local = {}
-_ACCOUNT_PINS_LOCAL_MAX = 20000
+# 20000 por FAMILIA de pines: cada store se acota solo (los del residente no
+# desalojan a los de Alibaba y viceversa), ver _remember_pin.
+_PINS_LOCAL_MAX = 20000
 
 
-def _remember_pin(key, account):
+def _remember_pin(key, account, store=None, ttl=None):
     """Memoria local acotada (orden de insercion: se cae lo mas viejo) y con
-    caducidad: dura lo que duraria el pin en Valkey desde este acierto."""
-    _account_pins_local.pop(key, None)
-    _account_pins_local[key] = (account, time.monotonic() + ALIBABA_ACCOUNT_PIN_TTL_SECONDS)
-    while len(_account_pins_local) > _ACCOUNT_PINS_LOCAL_MAX:
-        _account_pins_local.pop(next(iter(_account_pins_local)))
+    caducidad: dura lo que duraria el pin en Valkey desde este acierto.
+
+    `store`/`ttl` por defecto los del pin de cuenta de Alibaba; el filtro del
+    residente pasa los suyos — una familia de pines no comparte memoria ni
+    caducidad con la otra."""
+    store = _account_pins_local if store is None else store
+    ttl = ALIBABA_ACCOUNT_PIN_TTL_SECONDS if ttl is None else ttl
+    store.pop(key, None)
+    store[key] = (account, time.monotonic() + ttl)
+    while len(store) > _PINS_LOCAL_MAX:
+        store.pop(next(iter(store)))
 
 
-def _local_pin(key):
-    """Cuenta recordada por este pod, solo si aun no caduco (ver _remember_pin)."""
-    hit = _account_pins_local.get(key)
+def _local_pin(key, store=None):
+    """Pin recordado por este pod (cuenta de Alibaba o backend del residente),
+    solo si aun no caduco (ver _remember_pin)."""
+    store = _account_pins_local if store is None else store
+    hit = store.get(key)
     if not hit:
         return None
     account, deadline = hit
     if deadline <= time.monotonic():
-        _account_pins_local.pop(key, None)
+        store.pop(key, None)
         return None
     return account
 ACCOUNT_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "seeded": 0, "weighted": 0, "redis_errors": 0}
@@ -1553,12 +1591,16 @@ def account_pin_key(user_key, sid):
     return f"{ALIBABA_ACCOUNT_PIN_PREFIX}:{user_key}:{sid}"
 
 
-def _pin_epoch(now=None):
+def _pin_epoch(now=None, ttl=None):
     """Ventana de re-sorteo (DGX-639): el TTL del pin. Un pin caduca por inactividad
     en t > ultimo_acierto + TTL, asi que el re-sorteo cae SIEMPRE en una ventana
-    posterior a la del sorteo anterior: otra entrada del hash, otro punto."""
+    posterior a la del sorteo anterior: otra entrada del hash, otro punto.
+
+    `ttl` por familia: el del pin de cuenta de Alibaba por defecto, el del
+    backend del residente cuando lo llama ese filtro (DGX-852)."""
     now = time.time() if now is None else now
-    return int(now // max(1, ALIBABA_ACCOUNT_PIN_TTL_SECONDS))
+    ttl = ALIBABA_ACCOUNT_PIN_TTL_SECONDS if ttl is None else ttl
+    return int(now // max(1, ttl))
 
 
 def preferred_account(user_key, sid, accounts, weights=None, epoch=0):
@@ -1634,10 +1676,12 @@ async def _pin_get(client, key):
     return await asyncio.wait_for(client.get(key), timeout=REDIS_OP_TIMEOUT_SECONDS)
 
 
-async def _pin_claim(client, key, account):
-    """SET NX: gana el primero. Devuelve la cuenta que queda guardada."""
+async def _pin_claim(client, key, account, ttl=None):
+    """SET NX: gana el primero. Devuelve el valor que queda guardado (cuenta de
+    Alibaba o backend del residente). `ttl` por familia de pines (ver _pin_epoch)."""
+    ttl = ALIBABA_ACCOUNT_PIN_TTL_SECONDS if ttl is None else ttl
     ok = await asyncio.wait_for(
-        client.set(key, account, nx=True, ex=ALIBABA_ACCOUNT_PIN_TTL_SECONDS),
+        client.set(key, account, nx=True, ex=ttl),
         timeout=REDIS_OP_TIMEOUT_SECONDS,
     )
     if ok:
@@ -1646,12 +1690,13 @@ async def _pin_claim(client, key, account):
     return current or account
 
 
-async def _pin_keepalive(client, key):
+async def _pin_keepalive(client, key, ttl=None, stats=None):
+    """`stats`: el contador de la familia que renueva (ver _pin_epoch)."""
     try:
-        await asyncio.wait_for(client.expire(key, ALIBABA_ACCOUNT_PIN_TTL_SECONDS),
+        await asyncio.wait_for(client.expire(key, ttl or ALIBABA_ACCOUNT_PIN_TTL_SECONDS),
                                timeout=STICKY_WRITE_TIMEOUT_SECONDS)
     except Exception:
-        ACCOUNT_AFFINITY_STATS["redis_errors"] += 1
+        (stats if stats is not None else ACCOUNT_AFFINITY_STATS)["redis_errors"] += 1
 
 
 async def _native_pin_account(client, model_group, user_key, sid):
@@ -1766,6 +1811,213 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
     ACCOUNT_AFFINITY_STATS["claims"] += 1
     _remember_pin(key, choice)
     return by_account[choice]
+
+
+# ── Afinidad por BACKEND del residente (14-10-2026, DGX-852) ─────────────────
+#
+# Desde el 2+1 el residente son DOS vLLM que sirven el MISMO modelo: TP=2
+# (`qwen38-flash-next`, ~3,2M de tokens KV y 16 secuencias) y TP=1
+# (`qwen38-flash-next-tp1`, ~1,0M y 8). Sus cachés de prefijo NO se comparten:
+# si los turnos de una conversacion alternan entre los dos, cada salto
+# re-prefría el contexto entero (25-30 s medidos a 64K). Criterio de Dani: UN
+# solo pool, cada conversacion clavada a UN backend, y las nuevas repartidas por
+# capacidad.
+#
+# Espejo de `alibaba_account_filter` con estado PROPIO: otra familia de claves,
+# otros pesos y otro TTL. No se cruzan nunca — la misma sid puede vivir en la
+# cuenta k1 de Alibaba y en el backend tp2 del residente, y los dos pines se
+# leen y se escriben por separado:
+#   - clave   `resident_backend_pin:v1:<api-key-hash>:<sid>` -> "tpN"
+#   - pesos   `SESSION_ROUTER_RESIDENT_WEIGHTS` (env), NO `alibaba_account_weights`
+#             (config del panel): aqui el reparto es de capacidad fisica, no de
+#             cupo gastado.
+#   - TTL     `STICKY_TTL_LOCAL_SECONDS` (30 min): lo que defiende es la caché de
+#             prefijo del MOTOR y el vinculo de la sesion a local caduca a la vez.
+#   - memoria `_backend_pins_local`, separada de `_account_pins_local`.
+#
+# Reglas: el backend clavado esta sano -> se queda. No lo esta (el Router lo
+# aparcó por `allowed_fails`) -> MUDANZA entera y el pin se reescribe, sin ida y
+# vuelta. Sin sid -> sorteo ponderado sin pin. Sin pin y con UN solo backend en
+# la lista -> la lista pasa INTACTA y NO se escribe pin: no hay nada que elegir
+# y una sesion que nazca durante una caida no debe heredarse una ligadura que la
+# ate a donde no habia eleccion. Cualquier excepcion -> lista intacta.
+# CONTRACT: dgx.session-router.resident-backend-pin.v1
+# (ancla: resident_backend_pin:v1:) valor "tpN", Valkey del session router.
+RESIDENT_BACKEND_PIN_PREFIX = "resident_backend_pin:v1"
+RESIDENT_BACKEND_PIN_TTL_SECONDS = int(os.environ.get(
+    "RESIDENT_BACKEND_PIN_TTL_SECONDS", str(STICKY_TTL_LOCAL_SECONDS)))
+# shortcut: peso ESTATICO = la proporcion de capacidad medida (TP=2 ~3,2M de
+# tokens KV y 16 secuencias frente a TP=1 ~1,0M y 8). Si en produccion se ve que
+# el reparto esta mal (una de las dos colas siempre llena mientras la otra
+# espera), lo que toca es subir esto a peso por KV LIBRE, leido en el MISMO
+# sondeo de /metrics que ya alimenta la valvula (`_poll_vllm_once`), no cambiar
+# de numeros a ojo.
+RESIDENT_BACKEND_WEIGHTS_DEFAULT = "tp2=3,tp1=1"
+_BACKEND_RE = re.compile(r"-(tp[0-9]+)$")
+_backend_pins_local = {}
+BACKEND_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "weighted": 0,
+                          "redis_errors": 0}
+
+
+def _resident_backend_weights():
+    """`tp2=3,tp1=1` -> {"tp2": 3.0, "tp1": 1.0}. Lo que no tiene esa forma se
+    ignora en silencio: tramos que no cubren todos los backends ya son reparto
+    uniforme dentro de `preferred_account`, que es la salida correcta para una
+    config mal escrita."""
+    out = {}
+    raw = os.environ.get("SESSION_ROUTER_RESIDENT_WEIGHTS",
+                         RESIDENT_BACKEND_WEIGHTS_DEFAULT)
+    for par in str(raw).split(","):
+        nombre, sep, valor = par.partition("=")
+        if not sep:
+            continue
+        try:
+            out[nombre.strip().lower()] = float(valor)
+        except ValueError:
+            continue
+    return out
+
+
+def _deployment_backend(deployment):
+    """"tp2" / "tp1" del id estable del deployment (`<alias>-tpN`), o None."""
+    info = deployment.get("model_info") if isinstance(deployment, dict) else None
+    model_id = info.get("id") if isinstance(info, dict) else None
+    m = _BACKEND_RE.search(str(model_id or ""))
+    return m.group(1) if m else None
+
+
+def backend_pin_key(user_key, sid):
+    return f"{RESIDENT_BACKEND_PIN_PREFIX}:{user_key}:{sid}"
+
+
+def preferred_backend(backends, weights=None):
+    """SEAM del selector del residente: sorteo ponderado por capacidad con la
+    MISMA formula (`preferred_account` por tramos) que una sesion nueva, sobre un
+    id aleatorio. Equivalente a `draw_account` en Alibaba: sin pin, sin Valkey."""
+    return preferred_account("draw", uuid.uuid4().hex, backends,
+                             _resident_backend_weights() if weights is None else weights)
+
+
+def stamp_resident_session_affinity(data):
+    """metadata["session_id"] = sid del hook para peticiones del residente
+    (DGX-852). `resident_backend_filter` corre en `async_filter_deployments`,
+    donde solo ve `request_kwargs`: el sid tiene que ir estampado aqui, con el
+    MISMO extractor que usa el sticky de sesion (`_session_id`, y el prefijo de
+    conversacion de `_prefix_affinity_key` cuando el cliente no manda id
+    estable), para que vinculo sesion->plan y ligadura sesion->backend hablen de
+    la misma conversacion. El id del cliente se PISA, igual que en Alibaba."""
+    if str(data.get("model") or "") not in RESIDENT_FAMILY:
+        return None
+    sid = _session_id(data) or _prefix_affinity_key(data)
+    if not sid:
+        return None
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        data["metadata"] = metadata
+    metadata["session_id"] = str(sid)
+    return metadata["session_id"]
+
+
+async def resident_backend_filter(model, healthy_deployments, request_kwargs):
+    """Deja en `healthy_deployments` solo los del backend de la sesion.
+
+    Lo llama el Router en CADA eleccion de deployment (reintentos incluidos) a
+    traves de StripUnsupportedParams.async_filter_deployments, junto al filtro de
+    cuenta de Alibaba. Fail-open: cualquier cosa que no sea un alias de la
+    familia del residente con ids `-tpN` pasa intacta, y tambien un fallo del
+    filtro o de Valkey."""
+    if str(model or "") not in RESIDENT_FAMILY or not healthy_deployments:
+        return healthy_deployments
+    by_backend = {}
+    for dep in healthy_deployments:
+        backend = _deployment_backend(dep)
+        if backend is None:
+            return healthy_deployments
+        by_backend.setdefault(backend, []).append(dep)
+    request_kwargs = request_kwargs or {}
+    sid = _affinity_session_id(request_kwargs)
+    weights = _resident_backend_weights()
+
+    if not sid:
+        # Peticion anonima: no hay conversacion que clavar, pero si capacidad
+        # que respetar (el simple-shuffle del Router ignora el 3:1).
+        if len(by_backend) < 2:
+            return healthy_deployments
+        try:
+            return by_backend[preferred_backend(by_backend, weights)]
+        except Exception:
+            return healthy_deployments
+
+    user_key = _affinity_user_key(request_kwargs)
+    key = backend_pin_key(user_key, sid)
+
+    client = None
+    pinned = None
+    leido = False
+    try:
+        client = await _redis()
+        if client is not None:
+            pinned = await _pin_get(client, key)
+            leido = True
+    except Exception:
+        BACKEND_AFFINITY_STATS["redis_errors"] += 1
+        client = None
+    if pinned is None and not leido:
+        # Solo cuando Valkey no contesto (ver el mismo criterio en Alibaba,
+        # DGX-592): un GET correcto que devuelve None es un pin CADUCADO.
+        pinned = _local_pin(key, store=_backend_pins_local)
+
+    if pinned in by_backend:
+        BACKEND_AFFINITY_STATS["hits"] += 1
+        _remember_pin(key, pinned, store=_backend_pins_local,
+                      ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS)
+        if client is not None:
+            _schedule(_pin_keepalive(client, key,
+                                     ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS,
+                                     stats=BACKEND_AFFINITY_STATS))
+        return by_backend[pinned]
+
+    epoch = _pin_epoch(ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS)
+    if pinned is not None:
+        # Su backend se quedo sin deployment sano (cooldown): MUDANZA entera.
+        target = preferred_account(user_key, sid, by_backend, weights, epoch=epoch)
+        BACKEND_AFFINITY_STATS["moves"] += 1
+        log.warning("session_router: sesion %s muda de backend del residente %s -> %s (%s)",
+                    sid[:24], pinned, target, model)
+        _remember_pin(key, target, store=_backend_pins_local,
+                      ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS)
+        if client is not None:
+            try:
+                await asyncio.wait_for(
+                    client.set(key, target, ex=RESIDENT_BACKEND_PIN_TTL_SECONDS),
+                    timeout=REDIS_OP_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                BACKEND_AFFINITY_STATS["redis_errors"] += 1
+        return by_backend[target]
+
+    if len(by_backend) < 2:
+        # Sesion sin pin y un solo backend sano: no hay eleccion que decidir, y
+        # no se le escribe un pin que no eligio nadie (la sesion que nace durante
+        # una caida vuelve a sortearse cuando el gemelo vuelve, que es lo que
+        # quiere quien aun no tiene cache en ningun lado).
+        return healthy_deployments
+    choice = preferred_account(user_key, sid, by_backend, weights, epoch=epoch)
+    if weights:
+        BACKEND_AFFINITY_STATS["weighted"] += 1
+    if client is not None:
+        try:
+            won = await _pin_claim(client, key, choice,
+                                   ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS)
+            if won in by_backend:
+                choice = won
+        except Exception:
+            BACKEND_AFFINITY_STATS["redis_errors"] += 1
+    BACKEND_AFFINITY_STATS["claims"] += 1
+    _remember_pin(key, choice, store=_backend_pins_local,
+                  ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS)
+    return by_backend[choice]
 
 
 async def alibaba_switches():

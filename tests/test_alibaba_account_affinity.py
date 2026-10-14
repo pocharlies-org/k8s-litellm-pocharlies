@@ -340,7 +340,9 @@ def test_valkey_lenta_cuenta_como_caida_y_no_estira_la_peticion():
 
 def test_memoria_local_acotada():
     pod = _pod(None)
-    pod._ACCOUNT_PINS_LOCAL_MAX = 50
+    # DGX-852: el tope es `_PINS_LOCAL_MAX`, compartido por las dos familias de
+    # ancla (cuenta de Alibaba y backend del residente).
+    pod._PINS_LOCAL_MAX = 50
 
     async def go():
         for i in range(500):

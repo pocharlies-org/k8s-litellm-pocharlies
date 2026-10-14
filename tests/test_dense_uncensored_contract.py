@@ -40,6 +40,22 @@ def _entradas() -> dict[str, dict]:
     return {e["model_name"]: e for e in _config()["model_list"]}
 
 
+def _backends_chat_locales() -> dict[str, set]:
+    """nombre -> {backend} de TODAS sus deployments locales de chat.
+
+    DGX-852: `_entradas()` se queda con la ultima deployment por nombre y desde el
+    2+1 un nombre tiene dos motores; esta vista por nombre NO pierde la otra.
+    """
+    out: dict[str, set] = {}
+    for e in _config()["model_list"]:
+        info = e.get("model_info") or {}
+        base = str((e.get("litellm_params") or {}).get("api_base") or "")
+        if ".llm.svc.cluster.local" not in base or info.get("mode") != "chat":
+            continue
+        out.setdefault(e["model_name"], set()).add(info["backend"])
+    return out
+
+
 def test_uncensored_is_the_creative_backend_owning_tooling_and_dense_aliases():
     """Lapida del 27B (26-09-2026). Desde el 2026-07-26 el 27B abliterado era el
     unico modelo denso del cluster y por eso tenia `tooling` (capacidad) y
@@ -71,8 +87,9 @@ def test_qwen_direct_name_is_not_a_capability_alias():
 
 
 def test_los_dos_backends_locales_y_sus_formas_de_exclusion():
-    """2 backends locales de chat: el residente TP=2 en los dos Sparks y el
-    alias de capacidad, que no nombra nodo.
+    """Los backends locales de chat: el residente (desde DGX-852, dos motores: el
+    par dgx2+dgx1 y el TP=1 de dgx3), su copia abliterada, el alias de capacidad
+    --que no nombra nodo-- y `correo-clasificador`.
 
     Actualizado 2026-08-13 (ventana RHO backend-sync): eran 4. Se retiraron
     `ornith-dgx1` y `nvidia-qwen36-dgx1`, los dos candidatos al asiento de DGX1:
@@ -83,19 +100,20 @@ def test_los_dos_backends_locales_y_sus_formas_de_exclusion():
     memoria. Y el 26-09 el ultimo `dgx1` de chat —`qwen38-27b`— salio del
     model_list: el perfil `creative` llevaba retirado desde el 21-09.
     """
-    entradas = _entradas()
-    por_backend = {
-        n: e["model_info"]["backend"]
-        for n, e in entradas.items()
-        if ".llm.svc.cluster.local" in str((e.get("litellm_params") or {}).get("api_base") or "")
-        and (e.get("model_info") or {}).get("mode") == "chat"
-    }
-    assert set(por_backend.values()) == {"dgx1+dgx2", "profile-resident"}
+    por_backend = _backends_chat_locales()
+    assert {b for bs in por_backend.values() for b in bs} == {
+        "dgx1+dgx2", "dgx3", "profile-resident"}
     assert "qwen38-27b" not in por_backend
-    assert por_backend["qwen38-flash-next"] == "dgx1+dgx2"
+    # DGX-852 (14-10-2026): el nombre directo lo sirven los DOS motores del 2+1 — el
+    # par dgx2+dgx1 y el TP=1 de dgx3, mismo checkpoint y mismo sello `refusal:λ`.
+    assert por_backend["qwen38-flash-next"] == {"dgx1+dgx2", "dgx3"}
+    assert por_backend["qwen38-flash-next-uncensored"] == {"dgx1+dgx2", "dgx3"}
+    # `correo-clasificador` sigue SOLO en el par: es una llamada corta de 6 s y el
+    # ancla de la que hereda no puede llevarla al TP=1 sin llevarse el resto.
+    assert por_backend["correo-clasificador"] == {"dgx1+dgx2"}
     # (SC-384) `qwen35-4b` retirado: era el unico chat en la RTX.
     # El alias de capacidad no nombra un nodo a proposito: lo resuelve el perfil.
-    assert por_backend["tooling"] == "profile-resident"
+    assert por_backend["tooling"] == {"profile-resident"}
 
     texto = _texto()
     for dead in ("gemma-dgx1", "qwen36-35b-dgx1", "qwen36-35b-dgx2",

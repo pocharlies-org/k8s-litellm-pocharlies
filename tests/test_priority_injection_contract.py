@@ -333,8 +333,12 @@ def test_el_modulo_no_hardcodea_alias_ni_niveles():
     # hablan de bot_keys no cuentan; cualquier otra aparicion sigue parando aqui.
     # Segunda excepcion (SC-2082 P6c): BOT_BURST_KEYS, la lista FIJA de la key de los
     # bots de la compania que manda el BURST de Alibaba. Tampoco es prioridad.
+    # DGX-852: fuera las lineas de comentario. Lo que se prohíbe es el NIVEL en
+    # código; en prosa `-10` era un falso positivo permanente (una fecha dd-mm-2026
+    # como la del encabezado de la seccion del backend del residente).
     src = "\n".join(l for l in ROUTER_SRC.splitlines()
-                    if "bot_keys" not in l.lower() and "BOT_BURST_KEYS =" not in l)
+                    if "bot_keys" not in l.lower() and "BOT_BURST_KEYS =" not in l
+                    and not l.lstrip().startswith("#"))
     for token in ("open-webui-v3", "hermes-batch", "priority_by_alias: {",
                   "-10", "+10"):
         assert token not in src, f"{token!r} hardcodeado en session_router"

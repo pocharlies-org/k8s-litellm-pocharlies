@@ -1707,6 +1707,59 @@ def test_sondeo_de_vllm_alimenta_la_capacidad(router_src):
     assert '_kv_capacity["tokens"] = capacity' in router_src
 
 
+def test_el_sondeo_suma_cola_y_capacidad_sobre_los_dos_backends(fresh_mod):
+    """DGX-852: el residente es 2 + 1 y la valvula decide sobre el POOL.
+
+    Un ciclo con las DOS URL contestando = suma de colas y suma de KV. Con una
+    caida se suma SIN esa y el ciclo sigue (un motor muerto no puede apagar el
+    sondeo del otro); sin ninguna no se anota nada (ultimo-bueno), que es lo que
+    impide que un rollout desvie trafico a Alibaba por falta de datos. Que la
+    capacidad baje a la del motor que contesta es la direccion segura: a un
+    backend que no publica /metrics no le mandas contexto nuevo.
+    """
+    m = fresh_mod
+    assert len(m.VLLM_METRICS_URLS) == 2, m.VLLM_METRICS_URLS
+    tp2, tp1 = m.VLLM_METRICS_URLS
+
+    def cuerpo(waiting, running, kv):
+        return (
+            f'vllm:num_requests_waiting{{model_name="{m.VLLM_MODEL_NAME}"}} {waiting}\n'
+            f'vllm:num_requests_running{{model_name="{m.VLLM_MODEL_NAME}"}} {running}\n'
+            f'vllm:cache_config_info{{kv_cache_size_tokens="{kv}"}} 1.0\n'
+        )
+
+    class Resp:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            pass
+
+    class Cliente:
+        def __init__(self, paginas):
+            self.paginas = paginas
+
+        async def get(self, url):
+            if url not in self.paginas:
+                raise ConnectionError("backend caido")
+            return Resp(self.paginas[url])
+
+    asyncio.run(m._poll_vllm_once(
+        Cliente({tp2: cuerpo(4, 10, 3200000), tp1: cuerpo(1, 5, 1000000)})))
+    assert m._vllm_queue["waiting"] == 5.0
+    assert m._vllm_queue["running"] == 15.0
+    assert m._kv_capacity["tokens"] == 4200000
+
+    asyncio.run(m._poll_vllm_once(Cliente({tp2: cuerpo(2, 8, 3200000)})))
+    assert m._vllm_queue["waiting"] == 2.0
+    assert m._kv_capacity["tokens"] == 3200000
+
+    antes = m._vllm_queue["waiting"]
+    asyncio.run(m._poll_vllm_once(Cliente({})))
+    assert m._vllm_queue["waiting"] == antes == 2.0
+    assert m._kv_capacity["tokens"] == 3200000
+
+
 def test_estimacion_prompt_tokens(fresh_mod):
     m = fresh_mod
     data = {"messages": [{"role": "user", "content": "x" * 3500}]}
