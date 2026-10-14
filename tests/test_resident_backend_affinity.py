@@ -362,6 +362,11 @@ def test_los_gemelos_del_residente_solo_difieren_en_el_motor():
         assert pa.pop("api_base") != pb.pop("api_base"), f"{alias}: los dos al mismo Service"
         assert ia.pop("id") != ib.pop("id"), f"{alias}: los dos gemelos con el mismo id"
         assert ia.pop("backend") != ib.pop("backend"), f"{alias}: los dos en el mismo nodo"
+        # DGX-897: el tope por pod es lo otro que cambia, el `--max-num-seqs` de cada motor
+        # entre las dos replicas del proxy (TP=2 16, TP=1 8).
+        topes = {a["model_info"]["id"][-3:]: pa.pop("max_parallel_requests"),
+                 b["model_info"]["id"][-3:]: pb.pop("max_parallel_requests")}
+        assert topes == {"tp2": 8, "tp1": 4}, f"{alias}: topes por pod {topes}"
         assert pa == pb, f"{alias}: litellm_params divergen entre gemelos"
         assert ia == ib, f"{alias}: model_info diverge entre gemelos"
 

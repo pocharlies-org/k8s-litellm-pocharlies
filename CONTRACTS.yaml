@@ -377,6 +377,12 @@ contracts:
       `burst_alibaba_degradado` si Alibaba esta en cooldown). Sellada
       (company.alibaba=false), `-uncensored` y alibaba.overflow=false ganan.
       Sin .vN+1: no hay cambio incompatible. Productor: dgx-infra (P6d).
+      2026-10-14 (DGX-897, Dani): local_slots pasa a ser TECHO global. El umbral
+      de la valvula en vuelo es el menor entre local_slots y la suma del tope de
+      los servidores del residente con /metrics fresco (SESSION_ROUTER_VLLM_SLOTS,
+      default 16,8 = TP=2 y TP=1): 24 con los dos, 16 solo el TP=2, 8 solo el
+      TP=1. Sin ninguna lectura fresca manda solo local_slots, como antes. Mismo
+      campo y mismo rango: sin .vN+1.
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba

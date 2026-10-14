@@ -263,7 +263,9 @@ data:
         # 4 por pod son 8 por entrada. Antes, 16 por entrada y nunca se llenaba, así que un cliente podía
         # acaparar el residente (16 ranuras). Lo que pase ESPERA aquí (encola, no rechaza; su espera no cuenta
         # para `timeout`) y es FIFO: la prioridad por key solo la ordena la cola del vLLM. ROLLBACK: 8.
-        max_parallel_requests: 4
+        # 14-10-2026 (DGX-897, Dani): 4 -> 8 por pod = 16 entre las dos réplicas, el `--max-num-seqs` del TP=2.
+        # Los gemelos TP=1 lo pisan a 4 (8, su `--max-num-seqs`). ROLLBACK: 4.
+        max_parallel_requests: 8
         # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
         # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
@@ -382,15 +384,15 @@ data:
     # (los dos gemelos, o el bucle de LiteLLM sigue gastando inferencias que no
     # informan de nada).
     #
-    # El semaforo `max_parallel_requests: 4` (8 entre las dos replicas del
-    # proxy) se hereda igual, y en ESTE motor significa otra cosa: son justo los
-    # 8 slots de ejecucion del TP=1, o sea que aqui no queda margen de cola como
-    # en el TP=2 (16 seqs con 8 admitidos). Si su cola se ve llena mientras el
-    # TP=2 espera, se baja en esta entrada, NUNCA en el ancla.
+    # El semaforo se pisa aqui (DGX-897, 14-10): `max_parallel_requests: 4`, 8
+    # entre las dos replicas del proxy, justo los 8 slots de ejecucion del TP=1
+    # (`--max-num-seqs 8`), frente a los 16 del TP=2 que lleva el ancla. Se
+    # cambia en esta entrada, NUNCA en el ancla.
     - model_name: qwen38-flash-next
       litellm_params:
         <<: *qwen38_resident_params
         api_base: http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1
+        max_parallel_requests: 4
       model_info:
         <<: *qwen38_resident_info
         id: qwen38-flash-next-tp1
@@ -492,8 +494,9 @@ data:
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        # DGX-587: 8 -> 4 (por pod). Detalle en el comentario de qwen38-flash-next.
-        max_parallel_requests: 4
+        # DGX-587: 8 -> 4 (por pod). DGX-897 (14-10): 4 -> 8, 16 en el TP=2; su gemelo TP=1 lo pisa a 4.
+        # Detalle en el comentario de qwen38-flash-next.
+        max_parallel_requests: 8
         extra_body: { cache_salt: "refusal:1.0" }
       model_info: &qwen38_uncensored_info
         # DGX-852: id estable con sufijo de backend, mismo criterio que su
@@ -551,6 +554,7 @@ data:
       litellm_params:
         <<: *qwen38_uncensored_params
         api_base: http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1
+        max_parallel_requests: 4  # DGX-897: 8 entre las dos replicas, el `--max-num-seqs` del TP=1
       model_info:
         <<: *qwen38_uncensored_info
         id: qwen38-flash-next-uncensored-tp1
@@ -7781,6 +7785,23 @@ data:
     # Sin lectura buena en este tiempo el dato no vale: la válvula de cola no actúa.
     VLLM_STALE_SECONDS = 5.0
     _vllm_queue = {"waiting": None, "running": None, "since": None, "read_at": None}
+    # DGX-897 (14-10-2026, Dani): el desborde a Alibaba salta a la SUMA del tope de los
+    # servidores que contestan su /metrics, en el MISMO orden que
+    # SESSION_ROUTER_VLLM_METRICS_URL (TP=2, TP=1): 24 con los dos, 16 solo el TP=2 y 8
+    # solo el TP=1. Cada tope es el `--max-num-seqs` de su vLLM. El `local_slots` del
+    # panel queda como techo global (manda el menor) y, sin ninguna lectura fresca
+    # (sondeo caido), manda solo el panel, como antes.
+
+
+    def _parse_slots(raw):
+        try:
+            return tuple(int(s) for s in str(raw).split(",") if s.strip())
+        except ValueError:
+            return ()
+
+
+    VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "16,8"))
+    _vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
     _vllm_poller = None
     # Filas en vuelo de las OTRAS réplicas (agregado del sidecar menos las de este pod,
     # leídas en el mismo ciclo) y cuándo se leyeron.
@@ -8305,6 +8326,7 @@ data:
             try:
                 response = await client.get(url)
                 response.raise_for_status()
+                _vllm_up[url] = time.monotonic()
                 w, r = _parse_vllm_gauges(response.text)
                 if w is not None:
                     waiting = (waiting or 0.0) + w
@@ -8592,6 +8614,17 @@ data:
             return None
         since = _vllm_queue["since"]
         return since is not None and now - since >= WAIT_TOLERANCE_SECONDS
+
+
+    def _pool_slots(now=None):
+        """Suma del tope de los servidores con /metrics fresco (DGX-897). None si no
+        se sabe: topes que no casan con los URL o ningun servidor fresco."""
+        now = time.monotonic() if now is None else now
+        if len(VLLM_SLOTS) != len(VLLM_METRICS_URLS):
+            return None
+        vivos = [s for url, s in zip(VLLM_METRICS_URLS, VLLM_SLOTS)
+                 if now - _vllm_up.get(url, float("-inf")) <= VLLM_STALE_SECONDS]
+        return sum(vivos) if vivos else None
 
 
     async def _inflight_resident(tracker):
@@ -9790,7 +9823,12 @@ data:
             inflight = await _inflight_resident(tracker)
             info["inflight"] = inflight
             stuck = _queue_stuck()
-            lleno = inflight is not None and inflight >= config["local_slots"]
+            slots = config["local_slots"]
+            pool = _pool_slots()
+            if pool is not None:
+                slots = min(slots, pool)
+            info["slots"] = slots
+            lleno = inflight is not None and inflight >= slots
             if (lleno or stuck) and _overflow_ok_info(info):
                 if config["sticky"] and sid:
                     await _sticky_set(sid, "alibaba")
@@ -9802,7 +9840,7 @@ data:
                 data["metadata"]["_session_routing_trigger"] = motivo
                 log.warning(
                     "session_router: %s (%s) sid=%s en_vuelo=%s slots=%s cola_vllm=%s -> %s",
-                    razon, motivo, sid or "-", inflight, config["local_slots"],
+                    razon, motivo, sid or "-", inflight, slots,
                     _vllm_queue["waiting"], OVERFLOW_MODEL,
                 )
                 return True
@@ -11755,7 +11793,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cb7fe22912f8
+        config.k8s.e-dani.com/revision: config-3acc7c06b354
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12614,7 +12652,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cb7fe22912f8
+        config.k8s.e-dani.com/revision: config-3acc7c06b354
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

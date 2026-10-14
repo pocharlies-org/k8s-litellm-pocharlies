@@ -336,6 +336,23 @@ VLLM_POLL_TIMEOUT_SECONDS = 0.8
 # Sin lectura buena en este tiempo el dato no vale: la válvula de cola no actúa.
 VLLM_STALE_SECONDS = 5.0
 _vllm_queue = {"waiting": None, "running": None, "since": None, "read_at": None}
+# DGX-897 (14-10-2026, Dani): el desborde a Alibaba salta a la SUMA del tope de los
+# servidores que contestan su /metrics, en el MISMO orden que
+# SESSION_ROUTER_VLLM_METRICS_URL (TP=2, TP=1): 24 con los dos, 16 solo el TP=2 y 8
+# solo el TP=1. Cada tope es el `--max-num-seqs` de su vLLM. El `local_slots` del
+# panel queda como techo global (manda el menor) y, sin ninguna lectura fresca
+# (sondeo caido), manda solo el panel, como antes.
+
+
+def _parse_slots(raw):
+    try:
+        return tuple(int(s) for s in str(raw).split(",") if s.strip())
+    except ValueError:
+        return ()
+
+
+VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "16,8"))
+_vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
 _vllm_poller = None
 # Filas en vuelo de las OTRAS réplicas (agregado del sidecar menos las de este pod,
 # leídas en el mismo ciclo) y cuándo se leyeron.
@@ -860,6 +877,7 @@ async def _poll_vllm_once(client):
         try:
             response = await client.get(url)
             response.raise_for_status()
+            _vllm_up[url] = time.monotonic()
             w, r = _parse_vllm_gauges(response.text)
             if w is not None:
                 waiting = (waiting or 0.0) + w
@@ -1147,6 +1165,17 @@ def _queue_stuck(now=None):
         return None
     since = _vllm_queue["since"]
     return since is not None and now - since >= WAIT_TOLERANCE_SECONDS
+
+
+def _pool_slots(now=None):
+    """Suma del tope de los servidores con /metrics fresco (DGX-897). None si no
+    se sabe: topes que no casan con los URL o ningun servidor fresco."""
+    now = time.monotonic() if now is None else now
+    if len(VLLM_SLOTS) != len(VLLM_METRICS_URLS):
+        return None
+    vivos = [s for url, s in zip(VLLM_METRICS_URLS, VLLM_SLOTS)
+             if now - _vllm_up.get(url, float("-inf")) <= VLLM_STALE_SECONDS]
+    return sum(vivos) if vivos else None
 
 
 async def _inflight_resident(tracker):
@@ -2345,7 +2374,12 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         inflight = await _inflight_resident(tracker)
         info["inflight"] = inflight
         stuck = _queue_stuck()
-        lleno = inflight is not None and inflight >= config["local_slots"]
+        slots = config["local_slots"]
+        pool = _pool_slots()
+        if pool is not None:
+            slots = min(slots, pool)
+        info["slots"] = slots
+        lleno = inflight is not None and inflight >= slots
         if (lleno or stuck) and _overflow_ok_info(info):
             if config["sticky"] and sid:
                 await _sticky_set(sid, "alibaba")
@@ -2357,7 +2391,7 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
             data["metadata"]["_session_routing_trigger"] = motivo
             log.warning(
                 "session_router: %s (%s) sid=%s en_vuelo=%s slots=%s cola_vllm=%s -> %s",
-                razon, motivo, sid or "-", inflight, config["local_slots"],
+                razon, motivo, sid or "-", inflight, slots,
                 _vllm_queue["waiting"], OVERFLOW_MODEL,
             )
             return True
