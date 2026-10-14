@@ -193,6 +193,66 @@ contracts:
       coinciden sin hablar entre si (mismo reloj de pared; en el borde de ventana
       manda el SET NX); clave, valor y TTL intactos; `draw_account` sin cambios (sin
       .v2: es la entrada del hash que ya describe esta nota, no la superficie).
+  - id: dgx.session-router.resident-backend-pin.v1
+    kind: schema
+    value: resident_backend_pin:v1:<api-key-hash>:<sid>
+    anchor: "resident_backend_pin:v1:"
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-852 (2026-10-14, Dani): una conversacion vive en UN motor del residente.
+      Desde el 2+1 `qwen38-flash-next` lo sirven DOS vLLM independientes con el
+      MISMO modelo (par TP=2 en dgx2+dgx1, ~3,2M de tokens KV y 16 secuencias;
+      TP=1 en dgx3, ~1,0M y 8) y sus cachés de prefijo NO se comparten: un turno
+      que cambia de motor re-prefría el contexto entero (25-30 s medidos a 64K).
+      Criterio de Dani: un solo pool, cada conversacion clavada a un backend y las
+      nuevas repartidas por capacidad.
+
+      Publisher y lector: session_router.resident_backend_filter, llamado por el
+      Router en cada eleccion de deployment a traves de
+      StripUnsupportedParams.async_filter_deployments, DESPUES del filtro de cuenta
+      de Alibaba y cada uno fail-open por su cuenta. Valkey del session router
+      (litellm-valkey, db de REDIS_URL); valor "tpN" = sufijo del model_info.id
+      estable `<alias>-tpN` del deployment (los ids son explicitos en el
+      model_list: son a la vez la clave del pin, la del cooldown del Router y la
+      del filtro); SET NX = gana el primero. <api-key-hash> = user_api_key_hash
+      (sha256), igual que en Alibaba, pero es OTRA familia de claves: la misma sid
+      puede estar clavada a la cuenta k1 de Alibaba y al backend tp2 del
+      residente, y los dos pines se leen y se escriben por separado.
+
+      TTL DE INACTIVIDAD RESIDENT_BACKEND_PIN_TTL_SECONDS, default
+      STICKY_TTL_LOCAL_SECONDS (30 min) y keepalive (`EXPIRE`) en cada acierto: lo
+      que defiende es la caché de prefijo del MOTOR y el vinculo de la sesion a
+      local caduca a la vez. La memoria local del pod (`_backend_pins_local`,
+      tope compartido `_PINS_LOCAL_MAX`) caduca igual y solo se consulta cuando la
+      lectura de Valkey FALLA.
+
+      Backend de una sesion nueva o caducada = sha256(api-key-hash:sid:epoca)
+      sobre los tramos de `SESSION_ROUTER_RESIDENT_WEIGHTS` (env, default
+      "tp2=3,tp1=1" = la proporcion de capacidad medida; NO
+      `alibaba_account_weights`, que es cupo gastado y otra decision). Pesos que
+      no cubren todos los backends o que suman 0 = reparto uniforme, la MISMA
+      formula de tramos que Alibaba. Determinista: las dos replicas coinciden sin
+      Valkey. Peticion sin sid (ni cabecera ni prefijo de conversacion): sorteo
+      ponderado sobre `preferred_backend` SIN escribir pin.
+
+      Mudanza: el backend clavado se queda; si el Router lo dejo sin deployment
+      sano (cooldown) la sesion MUDA ENTERA, el pin se reescribe y no vuelve. Sin
+      pin y con UN solo backend en la lista la lista pasa INTACTA (`is`, no copia)
+      y NO se escribe pin: una sesion que nace durante una caida no hereda una
+      ligadura que no eligio nadie, y vuelve a sortearse cuando el gemelo vuelve.
+      Cualquier excepcion = lista intacta.
+
+      ADITIVO en esta misma entrada (no .v2): el sid tiene que llegar al filtro,
+      que solo ve `request_kwargs`; `stamp_resident_session_affinity` lo estampa
+      en `metadata["session_id"]` en el pre_call_hook para los alias de
+      `RESIDENT_FAMILY`, con el mismo extractor que el vinculo sesion->plan.
+      Tests: tests/test_resident_backend_affinity.py (unitarios, valkey de pega) y
+      los contratos del model_list gemelo en tests/test_dense_uncensored_contract.py
+      y tests/test_model_limits_contract.py.
   - id: dgx.session-router.deployment-affinity-key.v1
     kind: schema
     value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>

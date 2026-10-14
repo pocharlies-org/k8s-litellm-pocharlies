@@ -49,7 +49,14 @@ def test_el_alias_es_el_mismo_service_del_residente_y_no_una_copia():
     """Todo salvo `timeout` y `num_retries` es el del residente: api_base, modelo, tope de
     paralelo y el sello `cache_salt` llegan por ancla, y si el residente cambia el alias
     lo sigue. Una copia que se desvia es justo como dos nombres dejan de significar lo mismo."""
-    (residente,) = _entradas(RESIDENTE)
+    # DGX-852: el residente son dos deployments (TP=2 y TP=1) bajo el mismo nombre.
+    # El clasificador hereda del PAR TP=2 y ahi se queda: es una llamada corta y
+    # latencia-critica cuyo contexto vive en la caché de prefijo de ese motor, y el
+    # ancla de la que hereda es la del residente censurado de siempre.
+    residente = next(
+        e for e in _entradas(RESIDENTE)
+        if (e.get("model_info") or {}).get("id") == "qwen38-flash-next-tp2"
+    )
     propios = {"timeout", "num_retries"}
 
     def sin_propios(params):

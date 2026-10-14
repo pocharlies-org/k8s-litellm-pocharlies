@@ -60,10 +60,30 @@ def locales(config):
     return salida
 
 
-def test_el_model_info_usa_los_nombres_de_litellm(config, locales):
+@pytest.fixture(scope="module")
+def despliegues(config):
+    """[(model_name, entrada)] de TODAS las deployments locales de chat.
+
+    DGX-852: `locales` va por nombre y desde el 2+1 un nombre tiene dos deployments
+    (TP=2 y TP=1); lo que es un invariante POR DEPLOYMENT se comprueba aqui, que no
+    descarta la segunda.
+    """
+    salida = []
+    for entrada in config["model_list"]:
+        params = entrada.get("litellm_params") or {}
+        info = entrada.get("model_info") or {}
+        if ".llm.svc.cluster.local" not in str(params.get("api_base") or ""):
+            continue
+        if info.get("mode") != "chat":
+            continue
+        salida.append((entrada["model_name"], entrada))
+    return salida
+
+
+def test_el_model_info_usa_los_nombres_de_litellm(config, despliegues):
     """`context_window` era un campo inventado. Los que litellm lee de verdad son
     `max_input_tokens` y `max_output_tokens`."""
-    for nombre, entrada in locales.items():
+    for nombre, entrada in despliegues:
         info = entrada["model_info"]
         assert "max_input_tokens" in info, nombre
         assert "max_output_tokens" in info, nombre
@@ -73,7 +93,7 @@ def test_el_model_info_usa_los_nombres_de_litellm(config, locales):
     assert "context_window" not in yaml.dump(config)
 
 
-def test_ningun_alias_hereda_sus_limites(locales):
+def test_ningun_alias_hereda_sus_limites(despliegues):
     """Un default en un campo que describe al HARDWARE deja que un alias nuevo
     publique los numeros de otro. Asi es como el 27B anuncio 262144.
 
@@ -82,7 +102,7 @@ def test_ningun_alias_hereda_sus_limites(locales):
     publicaria vacios, no ajenos, pero seguiria mintiendo por omision.
     """
     sin_limites = [
-        n for n, e in locales.items()
+        n for n, e in despliegues
         if not e["model_info"].get("max_input_tokens")
         or not e["model_info"].get("max_output_tokens")
     ]
@@ -95,18 +115,25 @@ def test_qwen38_flash_next_publica_la_ventana_operativa_de_256k(locales):
     assert info["max_output_tokens"] == 16384
 
 
-def test_qwen38_flash_next_publica_su_nombre_directo_solo_en_su_backend(locales):
+def test_qwen38_flash_next_publica_su_nombre_directo_solo_en_su_backend(despliegues):
     """El nombre directo de un modelo no puede resolver a otro checkpoint.
 
     `tooling` es el alias de CAPACIDAD y puede cambiar de dueño con el perfil;
     `qwen38-flash-next` nombra un modelo concreto y tiene que ir a ese servidor o
     fallar en duro.
+
+    DGX-852: «ese servidor» son DOS motores del MISMO checkpoint (el par TP=2 y el
+    TP=1 de dgx3), cada uno con su Service. Lo que sigue prohibido es un tercero que
+    no sea del residente, y que el nombre directo pierda el Service del par — es el
+    que lleva las etiquetas del pool que usan `tooling` y el arbitro.
     """
-    directo = locales[QWEN38_FLASH_NEXT]["litellm_params"]["api_base"]
-    assert "qwen38-flash-next.llm.svc.cluster.local" in directo
+    bases = [e["litellm_params"]["api_base"]
+             for n, e in despliegues if n == QWEN38_FLASH_NEXT]
+    assert len(bases) == 2, f"el nombre directo debe servirse en los dos motores: {bases}"
+    assert "qwen38-flash-next.llm.svc.cluster.local" in " ".join(bases)
     otros = {
         n: e["litellm_params"]["api_base"]
-        for n, e in locales.items()
+        for n, e in despliegues
         if n.startswith("qwen38-flash-next")
     }
     assert all("qwen38-flash-next" in base for base in otros.values()), otros
