@@ -10070,6 +10070,10 @@ data:
     # en su tarjeta y el panel no podia cruzarlas con la cola de su motor.
     SERVER_BY_SERVICE = {
         "qwen38-flash-next": "qwen38-flash-next-head",
+        # Servicio del TP=1 que crea compute_mode.py (selector
+        # app=qwen38-flash-next-worker-dgx3): sin esta entrada las peticiones
+        # balanceadas al worker DGX3 salian sin server_id (DGX-903).
+        "qwen38-flash-next-tp1": "qwen38-flash-next-worker-dgx3",
     }
 
 
