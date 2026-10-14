@@ -568,6 +568,12 @@ contracts:
       semaphores) admits 4 in flight per pod (8 across the 2 replicas): a request over
       that waits in LiteLLM's per-deployment semaphore before reaching the engine, so
       it shows here with no `ttft_ms` (queue phase) longer than before. No field change. Since 2026-10-05 (DGX-589) each row also carries the additive `priority`: the vLLM priority apply_priority stamped in extra_body (int; null = no priority, i.e. 0, or a non-resident destination). The /inferencia panel orders its estimated engine queue with it (lower first, then oldest). Pinned by tests/test_active_request_priority_contract.py.
+      Since 2026-10-15 (DGX-903) the tracker also resolves the service
+      `qwen38-flash-next-tp1` (the TP=1 replica compute_mode.py creates, selector
+      app=qwen38-flash-next-worker-dgx3) to card id `qwen38-flash-next-worker-dgx3`
+      via SERVER_BY_SERVICE. Before it, requests the load balancer sent to that
+      service carried server_id null and landed in «not attributed» (web) / «Otros
+      servidores» (iOS). No field change — a new value in server_id's domain.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema
