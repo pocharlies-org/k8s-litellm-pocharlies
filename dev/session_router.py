@@ -1846,13 +1846,14 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 RESIDENT_BACKEND_PIN_PREFIX = "resident_backend_pin:v1"
 RESIDENT_BACKEND_PIN_TTL_SECONDS = int(os.environ.get(
     "RESIDENT_BACKEND_PIN_TTL_SECONDS", str(STICKY_TTL_LOCAL_SECONDS)))
-# shortcut: peso ESTATICO = la proporcion de capacidad medida (TP=2 ~3,2M de
-# tokens KV y 16 secuencias frente a TP=1 ~1,0M y 8). Si en produccion se ve que
-# el reparto esta mal (una de las dos colas siempre llena mientras la otra
-# espera), lo que toca es subir esto a peso por KV LIBRE, leido en el MISMO
-# sondeo de /metrics que ya alimenta la valvula (`_poll_vllm_once`), no cambiar
-# de numeros a ojo.
-RESIDENT_BACKEND_WEIGHTS_DEFAULT = "tp2=3,tp1=1"
+# shortcut: peso ESTATICO, 2:1 por decision de Dani (14-10, DGX-897). Con 3:1,
+# la proporcion de capacidad medida (TP=2 ~3,2M de tokens KV y 16 secuencias
+# frente a TP=1 ~1,0M y 8), el TP=1 se llevo el 33 % de las conversaciones pero
+# solo el 1,6 % de los tokens en su primera media hora: el sorteo es por
+# conversacion y unas pocas sesiones largas pesan casi todo. Si el reparto sigue
+# mal, lo que toca es peso por KV LIBRE, leido en el MISMO sondeo de /metrics que
+# ya alimenta la valvula (`_poll_vllm_once`).
+RESIDENT_BACKEND_WEIGHTS_DEFAULT = "tp2=2,tp1=1"
 _BACKEND_RE = re.compile(r"-(tp[0-9]+)$")
 _backend_pins_local = {}
 BACKEND_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "weighted": 0,
@@ -1860,7 +1861,7 @@ BACKEND_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "weighted": 0,
 
 
 def _resident_backend_weights():
-    """`tp2=3,tp1=1` -> {"tp2": 3.0, "tp1": 1.0}. Lo que no tiene esa forma se
+    """`tp2=2,tp1=1` -> {"tp2": 2.0, "tp1": 1.0}. Lo que no tiene esa forma se
     ignora en silencio: tramos que no cubren todos los backends ya son reparto
     uniforme dentro de `preferred_account`, que es la salida correcta para una
     config mal escrita."""
@@ -1941,7 +1942,7 @@ async def resident_backend_filter(model, healthy_deployments, request_kwargs):
 
     if not sid:
         # Peticion anonima: no hay conversacion que clavar, pero si capacidad
-        # que respetar (el simple-shuffle del Router ignora el 3:1).
+        # que respetar (el simple-shuffle del Router ignora el 2:1).
         if len(by_backend) < 2:
             return healthy_deployments
         try:
