@@ -233,3 +233,29 @@ def test_hook_feeds_tracker_from_the_openai_chunk_and_restores_the_seal():
 def test_tracking_id_also_rides_litellm_metadata_for_messages():
     hook = _config_data()["litellm_strip_params.py"]
     assert 'data["litellm_metadata"]["_tracking_id"] = tracking_id' in hook
+
+
+def test_server_is_stamped_when_the_router_dispatches():
+    # DGX-924: sin stream el server_id llegaba al terminar; con el residente
+    # repartido entre dos vLLM, synapse/brain/cb-review no tenian linea en vuelo.
+    hook = _config_data()["litellm_strip_params.py"]
+    start = hook.index("def log_pre_api_call(self, model, messages, kwargs)")
+    pre_api = hook[start:hook.index("async def async_log_failure_event", start)]
+    assert "_stamp_backend(kwargs, tracking_id)" in pre_api
+
+    stamp = next(
+        node for node in ast.walk(ast.parse(hook))
+        if isinstance(node, ast.FunctionDef) and node.name == "_stamp_backend"
+    )
+    calls = []
+
+    class Tracker:
+        def update_backend(self, tracking_id, *, model, api_base):
+            calls.append((tracking_id, model, api_base))
+
+    namespace = {"request_tracker": Tracker()}
+    exec(compile(ast.Module(body=[stamp], type_ignores=[]), "stamp", "exec"), namespace)
+    tp1 = "http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1"
+    namespace["_stamp_backend"]({"litellm_params": {"api_base": tp1}}, "r1")
+    namespace["_stamp_backend"]({"litellm_params": {}, "api_base": None}, "r2")
+    assert calls == [("r1", None, tp1)]
