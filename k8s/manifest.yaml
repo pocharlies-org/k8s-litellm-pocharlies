@@ -3359,6 +3359,19 @@ data:
             if getattr(usage, name, None) is not None
         }
 
+    def _stamp_backend(details, tracking_id):
+        """El api_base que ya eligio el Router -> server_id de la fila del tracker."""
+        params = details.get("litellm_params")
+        api_base = (
+            (params.get("api_base") if isinstance(params, dict) else None)
+            or details.get("api_base")
+        )
+        if api_base:
+            # model=None: solo el servidor; el modelo que ensena el
+            # panel lo sigue poniendo quien ya lo ponia.
+            request_tracker.update_backend(
+                tracking_id, model=None, api_base=api_base)
+
     def _track_live_chunk(stream, usage):
         """Uso acumulado del chunk -> tracker, desde el CustomStreamWrapper.
 
@@ -3381,16 +3394,7 @@ data:
                 state = {"tracking_id": tracking_id}
                 stream._active_request_state = state
                 if tracking_id:
-                    params = details.get("litellm_params")
-                    api_base = (
-                        (params.get("api_base") if isinstance(params, dict) else None)
-                        or details.get("api_base")
-                    )
-                    if api_base:
-                        # model=None: solo el servidor; el modelo que ensena el
-                        # panel lo sigue poniendo quien ya lo ponia.
-                        request_tracker.update_backend(
-                            tracking_id, model=None, api_base=api_base)
+                    _stamp_backend(details, tracking_id)
             tracking_id = state["tracking_id"]
             if not tracking_id:
                 return
@@ -7213,6 +7217,16 @@ data:
                 _note_fallback_from_payload(kwargs)
             except Exception as e:
                 log.debug("track_fallback pre_api error: %s", e)
+            # DGX-924: y el servidor se sella aqui, al despachar. Esperar al primer
+            # chunk (stream) o al final (no-stream) dejaba sin servidor el prefill,
+            # o todo el vuelo de synapse/brain/cb-review; con el residente
+            # repartido entre dos vLLM, el panel no puede deducirlo del alias.
+            try:
+                tracking_id = _tracking_id_from_payload(kwargs)
+                if tracking_id:
+                    _stamp_backend(kwargs, tracking_id)
+            except Exception as e:
+                log.debug("track_backend pre_api error: %s", e)
 
         async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
             # Con el grupo del intento que ha fallado: si la fila ya esta en el
@@ -11795,7 +11809,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-ff01ac87e879
+        config.k8s.e-dani.com/revision: config-9d4208c5a532
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12654,7 +12668,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-ff01ac87e879
+        config.k8s.e-dani.com/revision: config-9d4208c5a532
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
