@@ -604,8 +604,9 @@ contracts:
       without extra_body, the one its alias deployment declares, e.g. 1.0 for
       qwen38-flash-next-uncensored), else the runtime's global dial. Before, it was always
       the dial, so with the dial at 0 an uncensored-alias request was stamped 0 although
-      the engine served it at 1.0. Pinned by tests/test_refusal_dial.py and
-      tests/test_uncensored_alias_contract.py.
+      the engine served it at 1.0. A non-finite salt (inf, nan) is not a seal:
+      `refusal_lambda` is always a finite number or absent. Pinned by
+      tests/test_refusal_dial.py and tests/test_uncensored_alias_contract.py.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema
