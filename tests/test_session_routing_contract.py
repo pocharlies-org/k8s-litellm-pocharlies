@@ -1770,6 +1770,9 @@ def test_el_sondeo_suma_cola_y_capacidad_sobre_los_dos_backends(fresh_mod):
     assert m._vllm_queue["waiting"] == 5.0
     assert m._vllm_queue["running"] == 15.0
     assert m._kv_capacity["tokens"] == 4200000
+    # DGX-974: ademas de la suma, la lectura de CADA motor (cola, en marcha).
+    assert m._vllm_by_url[tp2][:2] == (4.0, 10.0)
+    assert m._vllm_by_url[tp1][:2] == (1.0, 5.0)
 
     asyncio.run(m._poll_vllm_once(Cliente({tp2: cuerpo(2, 8, 3200000)})))
     assert m._vllm_queue["waiting"] == 2.0

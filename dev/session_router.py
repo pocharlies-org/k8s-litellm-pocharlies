@@ -353,6 +353,11 @@ def _parse_slots(raw):
 
 VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "16,8"))
 _vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
+# DGX-974: la ultima lectura de CADA motor, url -> (waiting, running, read_at), y
+# cuantas peticiones nuevas le ha dado ESTE pod desde esa lectura: el reparto de
+# las conversaciones nuevas mira la carga de cada uno, no la suma del pool.
+_vllm_by_url = {}
+_claims_since_read = {}
 _vllm_poller = None
 # Filas en vuelo de las OTRAS réplicas (agregado del sidecar menos las de este pod,
 # leídas en el mismo ciclo) y cuándo se leyeron.
@@ -882,6 +887,8 @@ async def _poll_vllm_once(client):
             if w is not None:
                 waiting = (waiting or 0.0) + w
                 running = (running or 0.0) + (r or 0.0)
+                _vllm_by_url[url] = (w, r or 0.0, time.monotonic())
+                _claims_since_read[url] = 0
             # Capacidad KV (27-09): MISMA lectura que la cola, cero I/O extra.
             c = _parse_cache_capacity(response.text)
             if c:
@@ -1866,7 +1873,9 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 #
 # Reglas: el backend clavado esta sano -> se queda. No lo esta (el Router lo
 # aparcó por `allowed_fails`) -> MUDANZA entera y el pin se reescribe, sin ida y
-# vuelta. Sin sid -> sorteo ponderado sin pin. Sin pin y con UN solo backend en
+# vuelta. Una conversacion NUEVA (y una peticion sin sid, sin pin) va al motor con
+# mas plazas libres AHORA (`least_loaded_backend`, DGX-974); con empate o sin
+# lectura fresca de /metrics, al sorteo ponderado. Sin pin y con UN solo backend en
 # la lista -> la lista pasa INTACTA y NO se escribe pin: no hay nada que elegir
 # y una sesion que nazca durante una caida no debe heredarse una ligadura que la
 # ate a donde no habia eleccion. Cualquier excepcion -> lista intacta.
@@ -1875,19 +1884,17 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 RESIDENT_BACKEND_PIN_PREFIX = "resident_backend_pin:v1"
 RESIDENT_BACKEND_PIN_TTL_SECONDS = int(os.environ.get(
     "RESIDENT_BACKEND_PIN_TTL_SECONDS", str(STICKY_TTL_LOCAL_SECONDS)))
-# shortcut: peso ESTATICO, 3:1 por decision de Dani (16-10, DGX-950). Con 2:1
-# (14-10, DGX-897) el TP=1 se llenaba y hacia cola con el TP=2 con plazas libres
-# (22 min de cola en 6 h, 21 de ellos con hueco en el TP=2). Antes de DGX-897 ya
-# era 3:1 y en su primera media hora el TP=1 se llevo el 33 % de las
-# conversaciones pero solo el 1,6 % de los tokens: el sorteo es por
-# conversacion y unas pocas sesiones largas pesan casi todo. Si el reparto sigue
-# mal, lo que toca es peso por KV LIBRE, leido en el MISMO sondeo de /metrics que
-# ya alimenta la valvula (`_poll_vllm_once`).
+# El peso (3:1, decision de Dani 16-10, DGX-950) solo decide con empate de plazas
+# libres o sin lectura fresca de /metrics: una conversacion nueva va al motor con
+# mas hueco AHORA (`least_loaded_backend`, DGX-974). Con el 3:1 fijo el sorteo era
+# por conversacion y no miraba la carga: el 16-10 a las 07:53Z habia 27
+# conversaciones ligadas al TP=2 y 10 al TP=1, las del TP=1 paradas, y el TP=1 a 0
+# con el TP=2 lleno y 2 en cola.
 RESIDENT_BACKEND_WEIGHTS_DEFAULT = "tp2=3,tp1=1"
 _BACKEND_RE = re.compile(r"-(tp[0-9]+)$")
 _backend_pins_local = {}
 BACKEND_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "weighted": 0,
-                          "redis_errors": 0}
+                          "by_load": 0, "redis_errors": 0}
 
 
 def _resident_backend_weights():
@@ -1927,6 +1934,43 @@ def preferred_backend(backends, weights=None):
     id aleatorio. Equivalente a `draw_account` en Alibaba: sin pin, sin Valkey."""
     return preferred_account("draw", uuid.uuid4().hex, backends,
                              _resident_backend_weights() if weights is None else weights)
+
+
+def _metrics_url(deployment):
+    """El /metrics del vLLM de un deployment: su `api_base` sin el `/v1`."""
+    params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+    base = str((params or {}).get("api_base") or "").rstrip("/")
+    if not base:
+        return None
+    return (base[:-3] if base.endswith("/v1") else base) + "/metrics"
+
+
+def least_loaded_backend(by_backend, now=None):
+    """DGX-974: el backend con MAS plazas libres ahora: su tope (`VLLM_SLOTS`, el
+    `--max-num-seqs` de cada vLLM) menos lo que tiene en marcha y en cola en la
+    ultima lectura fresca de SU /metrics, menos lo que este pod ya le ha dado desde
+    esa lectura. None si a alguno le falta el dato (sondeo caido o viejo) o si
+    empatan: entonces decide el peso, como antes."""
+    now = time.monotonic() if now is None else now
+    slots = dict(zip(VLLM_METRICS_URLS, VLLM_SLOTS))
+    free = {}
+    for backend, deps in by_backend.items():
+        url = _metrics_url(deps[0])
+        sample = _vllm_by_url.get(url)
+        if url not in slots or sample is None or now - sample[2] > VLLM_STALE_SECONDS:
+            return None
+        waiting, running, _ = sample
+        free[backend] = slots[url] - running - waiting - _claims_since_read.get(url, 0)
+    best = max(free, key=free.get)
+    return None if list(free.values()).count(free[best]) > 1 else best
+
+
+def _note_backend_claim(deps):
+    """Una plaza menos en ese motor hasta su lectura siguiente (DGX-974): una
+    rafaga de conversaciones nuevas entre dos lecturas no cae entera en el mismo."""
+    url = _metrics_url(deps[0]) if deps else None
+    if url in _vllm_by_url:
+        _claims_since_read[url] = _claims_since_read.get(url, 0) + 1
 
 
 def stamp_resident_session_affinity(data):
@@ -1972,11 +2016,14 @@ async def resident_backend_filter(model, healthy_deployments, request_kwargs):
 
     if not sid:
         # Peticion anonima: no hay conversacion que clavar, pero si capacidad
-        # que respetar (el simple-shuffle del Router ignora el 2:1).
+        # que respetar (el simple-shuffle del Router ignora la carga).
         if len(by_backend) < 2:
             return healthy_deployments
         try:
-            return by_backend[preferred_backend(by_backend, weights)]
+            elegido = by_backend[least_loaded_backend(by_backend)
+                                 or preferred_backend(by_backend, weights)]
+            _note_backend_claim(elegido)
+            return elegido
         except Exception:
             return healthy_deployments
 
@@ -2034,9 +2081,15 @@ async def resident_backend_filter(model, healthy_deployments, request_kwargs):
         # una caida vuelve a sortearse cuando el gemelo vuelve, que es lo que
         # quiere quien aun no tiene cache en ningun lado).
         return healthy_deployments
-    choice = preferred_account(user_key, sid, by_backend, weights, epoch=epoch)
-    if weights:
-        BACKEND_AFFINITY_STATS["weighted"] += 1
+    # Por carga solo con Valkey: su SET NX hace que las dos replicas coincidan.
+    # Sin Valkey, el sorteo determinista, que coincide sin hablarse.
+    choice = least_loaded_backend(by_backend) if client is not None else None
+    if choice is not None:
+        BACKEND_AFFINITY_STATS["by_load"] += 1
+    else:
+        choice = preferred_account(user_key, sid, by_backend, weights, epoch=epoch)
+        if weights:
+            BACKEND_AFFINITY_STATS["weighted"] += 1
     if client is not None:
         try:
             won = await _pin_claim(client, key, choice,
@@ -2048,6 +2101,7 @@ async def resident_backend_filter(model, healthy_deployments, request_kwargs):
     BACKEND_AFFINITY_STATS["claims"] += 1
     _remember_pin(key, choice, store=_backend_pins_local,
                   ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS)
+    _note_backend_claim(by_backend[choice])
     return by_backend[choice]
 
 

@@ -230,7 +230,13 @@ contracts:
       tope compartido `_PINS_LOCAL_MAX`) caduca igual y solo se consulta cuando la
       lectura de Valkey FALLA.
 
-      Backend de una sesion nueva o caducada = sha256(api-key-hash:sid:epoca)
+      Backend de una sesion nueva o caducada (DGX-974, 16-10): el que tenga MAS
+      plazas libres en ese momento, `--max-num-seqs` (SESSION_ROUTER_VLLM_SLOTS)
+      menos en marcha y en cola de la ultima lectura fresca de SU /metrics (el
+      sondeo de la valvula; cada deployment se casa con su /metrics por su
+      api_base), menos lo que ese pod ya le dio desde la lectura. Solo con Valkey,
+      cuyo SET NX hace coincidir a las dos replicas. Con empate, sin lectura fresca
+      o sin Valkey: sha256(api-key-hash:sid:epoca)
       sobre los tramos de `SESSION_ROUTER_RESIDENT_WEIGHTS` (env, default
       "tp2=3,tp1=1" desde DGX-950, decision de Dani del 16-10: con "tp2=2,tp1=1"
       (DGX-897, 14-10) el TP=1 se llenaba y hacia cola con plazas libres en el TP=2;
@@ -238,8 +244,9 @@ contracts:
       `alibaba_account_weights`, que es cupo gastado y otra decision). Pesos que
       no cubren todos los backends o que suman 0 = reparto uniforme, la MISMA
       formula de tramos que Alibaba. Determinista: las dos replicas coinciden sin
-      Valkey. Peticion sin sid (ni cabecera ni prefijo de conversacion): sorteo
-      ponderado sobre `preferred_backend` SIN escribir pin.
+      Valkey. Peticion sin sid (ni cabecera ni prefijo de conversacion): el motor
+      con mas plazas libres, o si no el sorteo ponderado de `preferred_backend`,
+      SIN escribir pin.
 
       Mudanza: el backend clavado se queda; si el Router lo dejo sin deployment
       sano (cooldown) la sesion MUDA ENTERA, el pin se reescribe y no vuelve. Sin

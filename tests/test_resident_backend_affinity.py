@@ -394,3 +394,99 @@ def test_la_url_de_metricas_del_despliegue_son_las_dos_del_pool():
     assert len(urls) == 2, urls
     assert all(u.endswith("/metrics") for u in urls)
     assert any("-tp1." in u for u in urls), "falta el TP=1"
+
+
+# ── DGX-974: las nuevas, al motor con mas plazas libres ──────────────────────
+
+URL_TP2 = "http://qwen38-flash-next.llm.svc.cluster.local:8000/metrics"
+URL_TP1 = "http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/metrics"
+
+
+def _con_motor(deps):
+    """Los gemelos con su `api_base` real: asi casa cada uno con su /metrics."""
+    for d in deps:
+        tp1 = d["model_info"]["id"].endswith("-tp1")
+        host = "qwen38-flash-next-tp1" if tp1 else "qwen38-flash-next"
+        d["litellm_params"]["api_base"] = f"http://{host}.llm.svc.cluster.local:8000/v1"
+    return deps
+
+
+def _carga(pod, tp2, tp1, edad=0.0):
+    """Lo que leyo el sondeo de cada motor, (en marcha, en cola), hace `edad` s."""
+    t = pod.time.monotonic() - edad
+    pod._vllm_by_url.update({URL_TP2: (tp2[1], tp2[0], t), URL_TP1: (tp1[1], tp1[0], t)})
+    pod._claims_since_read.clear()
+
+
+def _elige(pod, sid):
+    kwargs = _kwargs(sid) if sid else {"metadata": {"user_api_key_hash": KEY_A}}
+    return _backend(run(pod.resident_backend_filter(
+        FAMILIA[0], _con_motor(_gemelos(FAMILIA[0])), kwargs)))
+
+
+def _reparto(pod, n=400):
+    vistos = []
+    for i in range(n):
+        vistos.append(_elige(pod, f"ses-{i}"))
+        pod._claims_since_read.clear()      # todas miran la misma lectura
+    return vistos.count("tp2") / n
+
+
+def test_la_nueva_va_al_motor_con_mas_plazas_libres():
+    """El caso del 16-10, 07:53Z: el TP=2 con 16 en marcha y 2 en cola, el TP=1 vacio."""
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+    _carga(pod, tp2=(16, 2), tp1=(0, 0))
+    assert _elige(pod, "ses-nueva") == "tp1"
+    assert valkey.data[pod.backend_pin_key(KEY_A, "ses-nueva")] == "tp1"
+    assert pod.BACKEND_AFFINITY_STATS["by_load"] == 1
+    _carga(pod, tp2=(4, 0), tp1=(1, 0))      # 12 libres frente a 7: el grande
+    assert _elige(pod, "ses-otra") == "tp2"
+
+
+def test_con_empate_o_sin_lectura_fresca_decide_el_peso_de_siempre():
+    pod = _pod(FakeValkey())
+    _carga(pod, tp2=(8, 0), tp1=(0, 0))      # 8 libres en los dos
+    assert 0.64 < _reparto(pod) < 0.86
+    pod = _pod(FakeValkey())
+    _carga(pod, tp2=(16, 2), tp1=(0, 0), edad=pod.VLLM_STALE_SECONDS + 1)
+    assert 0.64 < _reparto(pod) < 0.86, "una lectura vieja no decide"
+    assert pod.BACKEND_AFFINITY_STATS["by_load"] == 0
+
+
+def test_sin_valkey_decide_el_sorteo_que_coincide_entre_pods():
+    """Sin SET NX que arbitre, dos replicas con lecturas distintas no deben ligar
+    la misma conversacion a motores distintos: decide el sorteo determinista."""
+    a, b = _pod(None), _pod(None)
+    _carga(a, tp2=(16, 2), tp1=(0, 0))
+    _carga(b, tp2=(0, 0), tp1=(8, 0))
+    for i in range(50):
+        assert _elige(a, f"ses-{i}") == _elige(b, f"ses-{i}")
+
+
+def test_una_rafaga_entre_dos_lecturas_no_cae_entera_en_el_mismo_motor():
+    pod = _pod(FakeValkey())
+    _carga(pod, tp2=(14, 0), tp1=(4, 0))     # 2 libres frente a 4
+    assert [_elige(pod, f"r-{i}") for i in range(2)] == ["tp1", "tp1"]
+    assert pod._claims_since_read[URL_TP1] == 2
+    # Con las dos plazas de ventaja ya dadas empatan y vuelve a decidir el peso.
+    assert pod.least_loaded_backend({"tp2": _con_motor(_deps(FAMILIA[0], ("tp2",))),
+                                     "tp1": _con_motor(_deps(FAMILIA[0], ("tp1",)))}) is None
+    _carga(pod, tp2=(14, 0), tp1=(4, 0))     # la lectura siguiente pone el contador a 0
+    assert pod._claims_since_read == {}
+
+
+def test_la_ligada_no_se_mueve_aunque_su_motor_vaya_lleno():
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+    valkey.data[pod.backend_pin_key(KEY_A, "ses-vieja")] = "tp2"
+    _carga(pod, tp2=(16, 2), tp1=(0, 0))
+    assert _elige(pod, "ses-vieja") == "tp2"
+
+
+def test_la_peticion_sin_sesion_tambien_va_al_motor_con_hueco():
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+    _carga(pod, tp2=(16, 2), tp1=(0, 0))
+    assert _elige(pod, None) == "tp1"
+    assert not valkey.data, "sin sid no hay conversacion que clavar"
