@@ -362,8 +362,8 @@ data:
     # prefijo APARTE. Por eso existe `session_router.resident_backend_filter`:
     # clava cada conversacion a UN de los dos (alternarlos re-prefria el contexto
     # entero, 25-30 s medidos a 64K) y reparte las NUEVAS por capacidad
-    # `tp2=2,tp1=1` (decision de Dani, 14-10, DGX-897; la capacidad es ~3,2M de
-    # tokens KV y 16 secuencias frente a ~1,0M y 8).
+    # `tp2=3,tp1=1` (decision de Dani, 16-10, DGX-950; antes 2:1 por DGX-897; la
+    # capacidad es ~3,2M de tokens KV y 16 secuencias frente a ~1,0M y 8).
     #
     # `litellm_params` y `model_info` por ANCLA con su gemelo -- no copiados --
     # y pisando aqui lo unico que cambia de verdad: `api_base` al Service PROPIO
@@ -11810,7 +11810,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c18f7b0db770
+        config.k8s.e-dani.com/revision: config-75dffa7d6751
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12669,7 +12669,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c18f7b0db770
+        config.k8s.e-dani.com/revision: config-75dffa7d6751
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
