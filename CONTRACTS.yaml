@@ -598,6 +598,14 @@ contracts:
       `cache_read_input_tokens`); null until a usage reports it, and reset with the other
       usage fields on a fallback. Nothing is renamed or removed. Pinned by
       tests/test_active_request_cached_tokens_contract.py.
+      Since 2026-10-16 (DGX-980) no field is renamed or removed, but `refusal_lambda`
+      (here and in spend_logs_metadata) is the lambda the request is SERVED with: its
+      per-request seal `cache_salt: refusal:<x>` when it carries one (the request's or,
+      without extra_body, the one its alias deployment declares, e.g. 1.0 for
+      qwen38-flash-next-uncensored), else the runtime's global dial. Before, it was always
+      the dial, so with the dial at 0 an uncensored-alias request was stamped 0 although
+      the engine served it at 1.0. Pinned by tests/test_refusal_dial.py and
+      tests/test_uncensored_alias_contract.py.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema

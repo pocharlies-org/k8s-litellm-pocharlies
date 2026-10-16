@@ -458,3 +458,21 @@ def test_it_never_raises_on_a_broken_request(sealed):
     for data in ({"extra_body": {"a": 1}}, {"model": None, "extra_body": {}},
                  {"model": "x", "extra_body": "no soy un dict"}):
         sealed._preserve_uncensored_seal(data)   # no debe lanzar
+
+
+def test_dgx980_the_stamp_is_the_lambda_the_request_is_SERVED_with():
+    """El sello del panel (refusal_lambda) era el dial global: con el dial a 0, una
+    peticion del alias -uncensored salia sellada censurada aunque el motor la sirviera
+    con su `refusal:1.0` (medido 16-10 por LiteLLM: censurado «I cannot provide…»,
+    uncensored «There is no single best way…»). Se sella el lambda del sello por
+    peticion cuando lo hay, y el dial solo si no."""
+    src = next(
+        d["data"]["litellm_strip_params.py"]
+        for d in _docs()
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
+    )
+    i = src.index("_rl, _rt_key = await _refusal_lambda_for_async(model, api_base)")
+    j = src.index('_slm["refusal_lambda"] = str(_rl)', i)
+    stamp = src[i:j]
+    assert "_salt_lambda(" in stamp and "_deployment_cache_salt(" in stamp
+    assert stamp.index("_rl = _sl") < stamp.index("if _rl is not None:")

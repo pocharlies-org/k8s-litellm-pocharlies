@@ -204,6 +204,16 @@ class DialTest(unittest.TestCase):
             ns["_refusal_fleet_name"](by["qwen38-27b-nvfp4"]),
             "vllm-qwen38-27b-uncensored")
 
+    def test_dgx980_el_sello_por_peticion_se_lee_como_su_lambda(self):
+        # El alias -uncensored lleva `refusal:1.0`; el motor lo aplica por encima
+        # del dial, y es lo que hay que sellar. Lo que no es un sello de refusal, nada.
+        f = ns["_salt_lambda"]
+        self.assertEqual(f("refusal:1.0"), 1.0)
+        self.assertEqual(f("refusal:0"), 0.0)
+        self.assertIsNone(f(None))
+        self.assertIsNone(f("conversacion-42"))
+        self.assertIsNone(f("refusal:x"))
+
     def test_estado_publicado_lleva_alias_on_lambda_y_per_rank(self):
         heads[QW] = {"lambda": 1.0, "consistent": True, "per_rank": [1.0]}
         run(ns["_refusal_lambda_for_async"]("tooling", None))

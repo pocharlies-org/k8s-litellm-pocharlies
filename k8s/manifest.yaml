@@ -3794,6 +3794,22 @@ data:
         return await _refusal_lambda_now_async(rt), rt["key"]
 
 
+    def _salt_lambda(salt):
+        """Lambda del sello POR PETICION (`cache_salt: refusal:<x>`), o None.
+
+        DGX-980: el motor aplica ese lambda a la peticion por encima del dial global
+        (medido 16-10: dial 0 y `refusal:1.0` -> contesta; sin sello -> rechaza). Un
+        alias `-uncensored` lo lleva siempre, asi que sellar el dial pintaba censurada
+        una peticion que se sirvio sin censura.
+        """
+        if not isinstance(salt, str) or not salt.startswith("refusal:"):
+            return None
+        try:
+            return float(salt[len("refusal:"):])
+        except ValueError:
+            return None
+
+
     # ── El dial por el propio proxy: leer Y CONMUTAR ─────────────────────────────
     #
     # Dos rutas. La de lectura no contesta "que hay en el vLLM" sino la pregunta que
@@ -7097,6 +7113,14 @@ data:
             _rt_key = None
             try:
                 _rl, _rt_key = await _refusal_lambda_for_async(model, api_base)
+                # DGX-980: se sella el lambda con el que se SIRVE la peticion: el de
+                # su sello por peticion si lo lleva (el de la peticion o, si no trae
+                # extra_body, el que declara la deployment del alias), si no el dial.
+                _body = data.get("extra_body") if isinstance(data.get("extra_body"), dict) else {}
+                _sl = _salt_lambda(_body.get("cache_salt") or data.get("cache_salt")
+                                   or _deployment_cache_salt((model or "").strip()))
+                if _rt_key and _sl is not None:
+                    _rl = _sl
                 if _rl is not None:
                     # "metadata" en chat/completions; "litellm_metadata" en
                     # threads/assistants. Se respeta el que ya traiga la peticion.
@@ -10446,11 +10470,12 @@ data:
                     "model": str(model or "unknown"),
                     "call_type": str(call_type or "unknown"),
                     "server_id": resolve_server_id(model, api_base),
-                    # Lambda de la proyeccion rank-1 VIGENTE al empezar la peticion.
-                    # Es un modo GLOBAL que cambia en caliente, asi que el valor
-                    # actual no dice como se sirvio una peticion de hace diez
-                    # minutos: hay que sellarlo aqui. None = backend sin dial, o no
-                    # se pudo leer.
+                    # Lambda de la proyeccion rank-1 con el que se SIRVE la peticion:
+                    # el de su sello por peticion (alias -uncensored, DGX-980) o, sin
+                    # sello, el dial GLOBAL vigente al empezar, que cambia en caliente:
+                    # el valor actual no dice como se sirvio una peticion de hace diez
+                    # minutos, hay que sellarlo aqui. None = backend sin dial, o no se
+                    # pudo leer.
                     "refusal_lambda": refusal_lambda,
                     # QUE runtime lo sello. Con dos modelos con dial el numero solo
                     # ya no identifica el estado: 1.0 es uncensored en Qwen3.8 y
@@ -11920,7 +11945,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-727db74ef5d4
+        config.k8s.e-dani.com/revision: config-5ce83d53393c
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12785,7 +12810,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-727db74ef5d4
+        config.k8s.e-dani.com/revision: config-5ce83d53393c
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
