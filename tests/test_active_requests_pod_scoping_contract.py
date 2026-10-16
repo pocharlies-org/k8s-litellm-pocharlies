@@ -665,6 +665,12 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
         for row in shape_new.get("active") or []:
             assert "priority" in row, "falta priority en la fila"
             row.pop("priority")
+        # Y para `cached_tokens` (16-10, DGX-951): de prompt_tokens, los que
+        # salieron de la caché de prefijo del motor. ADITIVA, el panel la lee con
+        # .get() (sin ella, la fila no pinta caché).
+        for row in shape_new.get("active") or []:
+            assert "cached_tokens" in row, "falta cached_tokens en la fila"
+            row.pop("cached_tokens")
         assert _shape(body_old) == shape_new, (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
             f"ahora: {json.dumps(shape_new)}"

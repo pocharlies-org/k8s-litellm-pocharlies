@@ -2345,6 +2345,7 @@ data:
         resolve_active_file,
         resolve_server_id,
         usage_from_response,
+        cached_from_response,
     )
     # INFRA-208: sticky routing por sesión + rechazo instantáneo. NO es un
     # segundo callback (mandato 2 del arquitecto): este módulo importa el
@@ -3398,13 +3399,14 @@ data:
             tracking_id = state["tracking_id"]
             if not tracking_id:
                 return
-            prompt_tokens, completion_tokens = usage_from_response(
-                {"usage": _usage_snapshot(usage)})
+            snapshot = {"usage": _usage_snapshot(usage)}
+            prompt_tokens, completion_tokens = usage_from_response(snapshot)
             if prompt_tokens is not None or completion_tokens is not None:
                 request_tracker.update_usage(
                     tracking_id,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
+                    cached_tokens=cached_from_response(snapshot),
                 )
         except Exception as e:
             log.debug("track_live_chunk error: %s", e)
@@ -4251,6 +4253,7 @@ data:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 force_flush=force_flush,
+                cached_tokens=cached_from_response(response_obj),
             )
         return tracking_id
 
@@ -10208,10 +10211,7 @@ data:
         return None
 
 
-    def usage_from_response(
-        response_obj: Any,
-    ) -> Tuple[Optional[int], Optional[int]]:
-        """Extract cumulative input/output token counts from a response."""
+    def _usage_of(response_obj: Any) -> Any:
         if isinstance(response_obj, dict):
             usage = response_obj.get("usage")
             hidden_params = response_obj.get("_hidden_params")
@@ -10220,12 +10220,34 @@ data:
             hidden_params = getattr(response_obj, "_hidden_params", None)
         if usage is None and isinstance(hidden_params, dict):
             usage = hidden_params.get("live_usage")
+        return usage
+
+
+    def usage_from_response(
+        response_obj: Any,
+    ) -> Tuple[Optional[int], Optional[int]]:
+        """Extract cumulative input/output token counts from a response."""
+        usage = _usage_of(response_obj)
         if usage is None:
             return None, None
         return (
             _usage_value(usage, "prompt_tokens", "input_tokens"),
             _usage_value(usage, "completion_tokens", "output_tokens"),
         )
+
+
+    def cached_from_response(response_obj: Any) -> Optional[int]:
+        """Tokens de entrada servidos desde la caché de prefijo (DGX-951):
+        `prompt_tokens_details.cached_tokens` (vLLM, OpenAI, Alibaba) o
+        `cache_read_input_tokens` (Anthropic). None si el uso no lo dice: el vLLM
+        lo manda en cada chunk desde el parche de su receta, y antes solo al final."""
+        usage = _usage_of(response_obj)
+        if usage is None:
+            return None
+        details = (usage.get("prompt_tokens_details") if isinstance(usage, dict)
+                   else getattr(usage, "prompt_tokens_details", None))
+        cached = _usage_value(details, "cached_tokens") if details is not None else None
+        return cached if cached is not None else _usage_value(usage, "cache_read_input_tokens")
 
 
     def resolve_active_file(base: Optional[str] = None) -> str:
@@ -10370,6 +10392,9 @@ data:
                     # el tamaño antes del primer token. No sustituye a
                     # prompt_tokens, que sigue siendo solo el del backend.
                     "prompt_tokens_estimate": prompt_estimate,
+                    # DGX-951: de prompt_tokens, los que salieron de la caché de
+                    # prefijo del motor. None hasta que el uso lo trae.
+                    "cached_tokens": None,
                     "completion_tokens": None,
                     "output_speed_tps": None,
                     "ttft_ms": None,
@@ -10385,12 +10410,15 @@ data:
             prompt_tokens: Optional[int],
             completion_tokens: Optional[int],
             force_flush: bool = False,
+            cached_tokens: Optional[int] = None,
         ) -> Optional[Dict[str, Any]]:
             now = self.clock()
             with self._lock:
                 record = self._records.get(request_id)
                 if record is None:
                     return None
+                if cached_tokens is not None:
+                    record["cached_tokens"] = max(0, int(cached_tokens))
 
                 first_usage = (
                     record["prompt_tokens"] is None
@@ -10551,7 +10579,7 @@ data:
                 record["refusal_runtime"] = None
                 for key in (
                     "first_token_ts", "last_sample_ts", "prompt_tokens",
-                    "completion_tokens", "output_speed_tps", "ttft_ms",
+                    "cached_tokens", "completion_tokens", "output_speed_tps", "ttft_ms",
                 ):
                     record[key] = None
                 self._samples[request_id] = deque()
@@ -10935,6 +10963,7 @@ data:
                     "priority": raw.get("priority"),
                     "prompt_tokens": raw.get("prompt_tokens"),
                     "prompt_tokens_estimate": raw.get("prompt_tokens_estimate"),
+                    "cached_tokens": raw.get("cached_tokens"),
                     "completion_tokens": raw.get("completion_tokens"),
                     "output_speed_tps": raw.get("output_speed_tps"),
                     "ttft_ms": raw.get("ttft_ms"),
@@ -11809,7 +11838,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9d4208c5a532
+        config.k8s.e-dani.com/revision: config-c0e399ac86f5
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12668,7 +12697,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9d4208c5a532
+        config.k8s.e-dani.com/revision: config-c0e399ac86f5
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
