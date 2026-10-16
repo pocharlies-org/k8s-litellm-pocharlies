@@ -63,6 +63,10 @@ contracts:
       metadata.headers AND litellm_metadata.headers: on LiteLLM's
       LITELLM_METADATA_ROUTES (/v1/messages, i.e. all of Claude Code) the
       request headers land in litellm_metadata, measured live 2026-09-23.
+      SC-2504 (2026-10-16, Dani): the switch is for the company's work (stories, epics, Requests), not for its
+      supervisor: a company request whose x-hermes-profile is in ALIBABA_SIEMPRE (today {"cto"}) is neither sealed nor
+      rejected, so the CTO of Hermes keeps its alibaba-* fallback with the switch off. Read from the same three header
+      sources; forging it only costs Alibaba spend, attributed to the forger's key.
   - id: dgx.session-router.sticky-key.v1
     kind: schema
     value: session-router:sticky:<sid>

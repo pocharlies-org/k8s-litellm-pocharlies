@@ -261,6 +261,7 @@ UNCENSORED_SUFFIX = "-uncensored"
 # CONTRACTS.yaml dgx.claude.class-header.v1 (publisher: el wrapper x86;
 # consumer: este hook).
 CLASS_HEADER = "x-claude-class"
+ALIBABA_SIEMPRE = frozenset({"cto"})   # perfiles de Hermes a los que el interruptor de la compañía no corta Alibaba
 COMPANY_CLASS = "company"
 
 # Interruptor «Fallback Alibaba» de la compañía (23-09-2026). El panel Settings de
@@ -585,6 +586,26 @@ def _claude_class(data):
         try:
             for key, value in source.items():
                 if isinstance(key, str) and key.lower() == CLASS_HEADER and value:
+                    return str(value).strip().lower() or None
+        except (AttributeError, TypeError):
+            continue
+    return None
+
+
+def _hermes_profile(data):
+    """El perfil de Hermes de x-hermes-profile (SC-2502), leído de las mismas tres fuentes que _claude_class; None si
+    falta o la forma es rara. Falsificable como la clase: solo sirve para la excepción del interruptor de Alibaba."""
+    try:
+        sources = [data.get("headers"), (data.get("metadata") or {}).get("headers"),
+                   (data.get("litellm_metadata") or {}).get("headers")]
+    except AttributeError:
+        return None
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        try:
+            for key, value in source.items():
+                if isinstance(key, str) and key.lower() == "x-hermes-profile" and value:
                     return str(value).strip().lower() or None
         except (AttributeError, TypeError):
             continue
@@ -2129,6 +2150,10 @@ async def apply_company_policy(data, requested_model):
     Fail-open: cualquier fallo o config fría = (False, None) = comportamiento anterior."""
     try:
         if _claude_class(data) != COMPANY_CLASS:
+            return False, None
+        # SC-2504 (Dani, 16-10): el interruptor es para el trabajo de la compañía (historias, épicas, Requests); el
+        # supervisor —el CTO de Hermes— conserva siempre su respaldo de Alibaba.
+        if _hermes_profile(data) in ALIBABA_SIEMPRE:
             return False, None
         config = await _config()
         if (config.get("company") or {}).get("alibaba", True) is not False:
