@@ -578,6 +578,12 @@ contracts:
       during its prefill, so the panel could only count them as not attributed. A
       request still waiting in LiteLLM's per-deployment semaphore keeps it null.
       Pinned by tests/test_active_request_metrics_contract.py.
+      Since 2026-10-16 (DGX-951), additive: every row carries `cached_tokens` (int|null),
+      the part of `prompt_tokens` served from the engine's prefix cache, as the provider
+      reports it in `usage.prompt_tokens_details.cached_tokens` (or Anthropic-style
+      `cache_read_input_tokens`); null until a usage reports it, and reset with the other
+      usage fields on a fallback. Nothing is renamed or removed. Pinned by
+      tests/test_active_request_cached_tokens_contract.py.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema
