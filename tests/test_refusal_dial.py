@@ -1,5 +1,5 @@
 """Prueba el bloque del dial EXTRAIDO del ConfigMap, con httpx y router falsos."""
-import json, logging, os, sys, textwrap, threading, time, types, unittest
+import json, logging, math, os, sys, textwrap, threading, time, types, unittest
 from pathlib import Path
 
 import yaml
@@ -73,7 +73,7 @@ SYNTH = [
 ]
 os.environ["LITELLM_REFUSAL_RUNTIMES"] = json.dumps(SYNTH)
 
-ns = {"os": os, "json": json, "time": time, "threading": threading,
+ns = {"os": os, "json": json, "math": math, "time": time, "threading": threading,
       "httpx": httpx_stub, "log": logging.getLogger("t")}
 exec(compile(BLOCK, "dial", "exec"), ns)
 del os.environ["LITELLM_REFUSAL_RUNTIMES"]
@@ -204,6 +204,20 @@ class DialTest(unittest.TestCase):
             ns["_refusal_fleet_name"](by["qwen38-27b-nvfp4"]),
             "vllm-qwen38-27b-uncensored")
 
+    def test_dgx980_el_sello_por_peticion_se_lee_como_su_lambda(self):
+        # El alias -uncensored lleva `refusal:1.0`; el motor lo aplica por encima
+        # del dial, y es lo que hay que sellar. Lo que no es un sello de refusal, nada.
+        f = ns["_salt_lambda"]
+        self.assertEqual(f("refusal:1.0"), 1.0)
+        self.assertEqual(f("refusal:0"), 0.0)
+        self.assertIsNone(f(None))
+        self.assertIsNone(f("conversacion-42"))
+        self.assertIsNone(f("refusal:x"))
+        # No finitos: la sal es entrada del cliente y romperia el JSON del panel.
+        self.assertIsNone(f("refusal:inf"))
+        self.assertIsNone(f("refusal:nan"))
+        self.assertIsNone(f("refusal:1e999"))
+
     def test_estado_publicado_lleva_alias_on_lambda_y_per_rank(self):
         heads[QW] = {"lambda": 1.0, "consistent": True, "per_rank": [1.0]}
         run(ns["_refusal_lambda_for_async"]("tooling", None))
@@ -300,7 +314,7 @@ class GemelosTest(unittest.TestCase):
         os.environ.pop("LITELLM_REFUSAL_RUNTIMES", None)
         # Segunda ejecucion del MISMO bloque extraido, sin override: los runtimes
         # y los matches que corren en el cluster.
-        real = {"os": os, "json": json, "time": time, "threading": threading,
+        real = {"os": os, "json": json, "math": math, "time": time, "threading": threading,
                 "httpx": httpx_stub, "log": logging.getLogger("t")}
         exec(compile(BLOCK, "dial-real", "exec"), real)
         real["_alias_runtime_cache"].update({"ts": 0.0, "map": {}})
