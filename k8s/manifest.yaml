@@ -362,8 +362,8 @@ data:
     # prefijo APARTE. Por eso existe `session_router.resident_backend_filter`:
     # clava cada conversacion a UN de los dos (alternarlos re-prefria el contexto
     # entero, 25-30 s medidos a 64K) y reparte las NUEVAS por capacidad
-    # `tp2=2,tp1=1` (decision de Dani, 14-10, DGX-897; la capacidad es ~3,2M de
-    # tokens KV y 16 secuencias frente a ~1,0M y 8).
+    # `tp2=3,tp1=1` (decision de Dani, 16-10, DGX-950; antes 2:1 por DGX-897; la
+    # capacidad es ~3,2M de tokens KV y 16 secuencias frente a ~1,0M y 8).
     #
     # `litellm_params` y `model_info` por ANCLA con su gemelo -- no copiados --
     # y pisando aqui lo unico que cambia de verdad: `api_base` al Service PROPIO
@@ -9338,14 +9338,15 @@ data:
     RESIDENT_BACKEND_PIN_PREFIX = "resident_backend_pin:v1"
     RESIDENT_BACKEND_PIN_TTL_SECONDS = int(os.environ.get(
         "RESIDENT_BACKEND_PIN_TTL_SECONDS", str(STICKY_TTL_LOCAL_SECONDS)))
-    # shortcut: peso ESTATICO, 2:1 por decision de Dani (14-10, DGX-897). Con 3:1,
-    # la proporcion de capacidad medida (TP=2 ~3,2M de tokens KV y 16 secuencias
-    # frente a TP=1 ~1,0M y 8), el TP=1 se llevo el 33 % de las conversaciones pero
-    # solo el 1,6 % de los tokens en su primera media hora: el sorteo es por
+    # shortcut: peso ESTATICO, 3:1 por decision de Dani (16-10, DGX-950). Con 2:1
+    # (14-10, DGX-897) el TP=1 se llenaba y hacia cola con el TP=2 con plazas libres
+    # (22 min de cola en 6 h, 21 de ellos con hueco en el TP=2). Antes de DGX-897 ya
+    # era 3:1 y en su primera media hora el TP=1 se llevo el 33 % de las
+    # conversaciones pero solo el 1,6 % de los tokens: el sorteo es por
     # conversacion y unas pocas sesiones largas pesan casi todo. Si el reparto sigue
     # mal, lo que toca es peso por KV LIBRE, leido en el MISMO sondeo de /metrics que
     # ya alimenta la valvula (`_poll_vllm_once`).
-    RESIDENT_BACKEND_WEIGHTS_DEFAULT = "tp2=2,tp1=1"
+    RESIDENT_BACKEND_WEIGHTS_DEFAULT = "tp2=3,tp1=1"
     _BACKEND_RE = re.compile(r"-(tp[0-9]+)$")
     _backend_pins_local = {}
     BACKEND_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "weighted": 0,
@@ -11809,7 +11810,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9d4208c5a532
+        config.k8s.e-dani.com/revision: config-75dffa7d6751
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12668,7 +12669,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9d4208c5a532
+        config.k8s.e-dani.com/revision: config-75dffa7d6751
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

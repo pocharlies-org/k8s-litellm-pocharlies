@@ -232,8 +232,9 @@ contracts:
 
       Backend de una sesion nueva o caducada = sha256(api-key-hash:sid:epoca)
       sobre los tramos de `SESSION_ROUTER_RESIDENT_WEIGHTS` (env, default
-      "tp2=2,tp1=1" desde DGX-897, decision de Dani del 14-10; antes "tp2=3,tp1=1",
-      la proporcion de capacidad medida, y el TP=1 se quedaba casi sin trabajo; NO
+      "tp2=3,tp1=1" desde DGX-950, decision de Dani del 16-10: con "tp2=2,tp1=1"
+      (DGX-897, 14-10) el TP=1 se llenaba y hacia cola con plazas libres en el TP=2;
+      antes de DGX-897 ya era 3:1 y el TP=1 se quedaba casi sin trabajo; NO
       `alibaba_account_weights`, que es cupo gastado y otra decision). Pesos que
       no cubren todos los backends o que suman 0 = reparto uniforme, la MISMA
       formula de tramos que Alibaba. Determinista: las dos replicas coinciden sin
