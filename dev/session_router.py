@@ -1875,14 +1875,15 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 RESIDENT_BACKEND_PIN_PREFIX = "resident_backend_pin:v1"
 RESIDENT_BACKEND_PIN_TTL_SECONDS = int(os.environ.get(
     "RESIDENT_BACKEND_PIN_TTL_SECONDS", str(STICKY_TTL_LOCAL_SECONDS)))
-# shortcut: peso ESTATICO, 2:1 por decision de Dani (14-10, DGX-897). Con 3:1,
-# la proporcion de capacidad medida (TP=2 ~3,2M de tokens KV y 16 secuencias
-# frente a TP=1 ~1,0M y 8), el TP=1 se llevo el 33 % de las conversaciones pero
-# solo el 1,6 % de los tokens en su primera media hora: el sorteo es por
+# shortcut: peso ESTATICO, 3:1 por decision de Dani (16-10, DGX-950). Con 2:1
+# (14-10, DGX-897) el TP=1 se llenaba y hacia cola con el TP=2 con plazas libres
+# (22 min de cola en 6 h, 21 de ellos con hueco en el TP=2). Antes de DGX-897 ya
+# era 3:1 y en su primera media hora el TP=1 se llevo el 33 % de las
+# conversaciones pero solo el 1,6 % de los tokens: el sorteo es por
 # conversacion y unas pocas sesiones largas pesan casi todo. Si el reparto sigue
 # mal, lo que toca es peso por KV LIBRE, leido en el MISMO sondeo de /metrics que
 # ya alimenta la valvula (`_poll_vllm_once`).
-RESIDENT_BACKEND_WEIGHTS_DEFAULT = "tp2=2,tp1=1"
+RESIDENT_BACKEND_WEIGHTS_DEFAULT = "tp2=3,tp1=1"
 _BACKEND_RE = re.compile(r"-(tp[0-9]+)$")
 _backend_pins_local = {}
 BACKEND_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "weighted": 0,
