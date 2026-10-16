@@ -63,6 +63,10 @@ contracts:
       metadata.headers AND litellm_metadata.headers: on LiteLLM's
       LITELLM_METADATA_ROUTES (/v1/messages, i.e. all of Claude Code) the
       request headers land in litellm_metadata, measured live 2026-09-23.
+      SC-2504 (2026-10-16, Dani): the switch is for the company's work (stories, epics, Requests), not for its
+      supervisor: a company request whose x-hermes-profile is in ALIBABA_SIEMPRE (today {"cto"}) is neither sealed nor
+      rejected, so the CTO of Hermes keeps its alibaba-* fallback with the switch off. Read from the same three header
+      sources; forging it only costs Alibaba spend, attributed to the forger's key.
   - id: dgx.session-router.sticky-key.v1
     kind: schema
     value: session-router:sticky:<sid>
@@ -607,8 +611,14 @@ contracts:
       The strip_params hook reads it (case-insensitive key, lowercased value,
       anything not matching [a-z0-9][a-z0-9_.-]{0,63} is dropped) and the
       tracker serves it as `profile` on /internal/active-requests. Label only:
-      no routing, admission or billing decision depends on it. Pinned by
-      tests/test_active_request_profile_contract.py.
+      no routing, admission or billing decision depends on it — with one
+      exception since 2026-10-16 (SC-2504): session_router.apply_company_policy
+      exempts a profile in ALIBABA_SIEMPRE ({"cto"}) from the company Alibaba
+      switch (`company_alibaba_disabled`), read by session_router._hermes_profile
+      with the same normalisation. Spoofable like x-claude-class (every client
+      holds the same key); the only gain is Alibaba fallback for one request.
+      Pinned by tests/test_active_request_profile_contract.py and
+      tests/test_session_routing_contract.py::test_el_cto_de_hermes_conserva_alibaba_con_el_interruptor_apagado.
   - id: dgx.litellm.refusal-probe-stamp.v1
     # Claves que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de refusal. Mismo kind que class-header: es una
