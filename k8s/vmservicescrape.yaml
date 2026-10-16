@@ -6,10 +6,10 @@ metadata:
 spec:
   # INFRA-882: `selector: {}` atrapaba TODOS los Services del namespace, incluido
   # `plan-gateway` (puerto http=4002), cuyo /metrics responde 404 -> TargetDown y
-  # TooManyScrapeErrors permanentes. Los LiteLLM proxy (litellm, litellm-alibaba,
-  # litellm-openrouter) comparten el selector `app: litellm`; plan-gateway usa
-  # `app: plan-gateway`. Acotar aqui deja fuera plan-gateway (y litellm-valkey, que
-  # ademas no tiene puerto http) sin perder ningun target de LiteLLM.
+  # TooManyScrapeErrors permanentes. El selector mira las etiquetas del SERVICE (no
+  # su spec.selector de pods): solo los tres proxies (litellm, litellm-alibaba,
+  # litellm-openrouter) llevan `app: litellm` en metadata (k8s/manifest.yaml); asi
+  # quedan fuera plan-gateway, litellm-active-peers y litellm-valkey.
   selector:
     matchLabels:
       app: litellm

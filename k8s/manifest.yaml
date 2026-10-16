@@ -12303,6 +12303,8 @@ kind: Service
 metadata:
   name: litellm
   namespace: litellm
+  labels:
+    app: litellm   # lo selecciona el VMServiceScrape `litellm` (INFRA-882)
 spec:
   selector: { app: litellm }
   ports:
@@ -12357,6 +12359,8 @@ kind: Service
 metadata:
   name: litellm-openrouter
   namespace: litellm
+  labels:
+    app: litellm   # lo selecciona el VMServiceScrape `litellm` (INFRA-882)
 spec:
   selector: { app: litellm }
   ports:
@@ -12372,6 +12376,8 @@ kind: Service
 metadata:
   name: litellm-alibaba
   namespace: litellm
+  labels:
+    app: litellm   # lo selecciona el VMServiceScrape `litellm` (INFRA-882)
 spec:
   selector: { app: litellm }
   ports:

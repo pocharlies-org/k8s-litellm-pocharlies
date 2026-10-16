@@ -417,6 +417,9 @@ contracts:
       fell from ~93 % to ~70 % cached. /v1/messages is back on DashScope's
       IMPLICIT (text-prefix) cache; /v1/chat/completions still forwards the
       markers a client sends.
+      2026-10-16 (INFRA-882): the Service gains the metadata label `app: litellm`
+      so the VMServiceScrape `litellm` selects it; name, selector and port are
+      unchanged. Additive: no .vN+1.
 
   - id: litellm.reasoning-effort.v1
     kind: schema
