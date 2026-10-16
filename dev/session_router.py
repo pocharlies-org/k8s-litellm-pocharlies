@@ -592,8 +592,9 @@ def _claude_class(data):
     return None
 
 
+# CONTRACT: dgx.hermes.profile-header.v1 — desde SC-2504 decide una admisión (ALIBABA_SIEMPRE), no solo etiqueta.
 def _hermes_profile(data):
-    """El perfil de Hermes de x-hermes-profile (SC-2502), leído de las mismas tres fuentes que _claude_class; None si
+    """El perfil de Hermes de x-hermes-profile (SC-2504), leído de las mismas tres fuentes que _claude_class; None si
     falta o la forma es rara. Falsificable como la clase: solo sirve para la excepción del interruptor de Alibaba."""
     try:
         sources = [data.get("headers"), (data.get("metadata") or {}).get("headers"),
