@@ -9295,6 +9295,20 @@ data:
             if account is None:
                 return healthy_deployments
             by_account.setdefault(account, []).append(dep)
+
+        # DGX-1036: peso 0 = el panel dice que esa cuenta NO le tiene cupo (lo saca del
+        # % restante de la ventana en `pesos_cuentas_alibaba`, no del precio). Se descarta
+        # ANTES del pin: honrado el pin primero, la sesion clavada en una cuenta muerta
+        # sigue yendo a ella y solo se muda cuando su cooldown de 60 s la deja fuera —
+        # un 429 pagado por vuelta mientras la ventana este agotada. Un peso bajo NO
+        # mueve a nadie (la afinidad de siempre), y si no queda otra cuenta la lista se
+        # queda intacta: mejor intentarlo que dejar el grupo sin deployment.
+        weights = await _account_weights()
+        sin_cupo = {a for a in by_account if weights.get(a, 1.0) <= 0.0} if weights else set()
+        if sin_cupo and len(sin_cupo) < len(by_account):
+            for a in sin_cupo:
+                by_account.pop(a)
+
         request_kwargs = request_kwargs or {}
         sid = _affinity_session_id(request_kwargs)
         if not sid:
@@ -9335,12 +9349,13 @@ data:
             return by_account[pinned]
 
         if pinned is not None:
-            # Su cuenta no tiene deployment sano en este grupo: mudanza ENTERA.
-            target = preferred_account(user_key, sid, by_account, await _account_weights(),
-                                       epoch=_pin_epoch())
+            # Su cuenta no tiene deployment sano en este grupo, o no le queda cupo
+            # (DGX-1036): mudanza ENTERA.
+            target = preferred_account(user_key, sid, by_account, weights, epoch=_pin_epoch())
             ACCOUNT_AFFINITY_STATS["moves"] += 1
-            log.warning("session_router: sesion %s muda de cuenta Alibaba %s -> %s (%s sin deployment sano)",
-                        sid[:24], pinned, target, model)
+            log.warning("session_router: sesion %s muda de cuenta Alibaba %s -> %s (%s %s)",
+                        sid[:24], pinned, target, model,
+                        "sin cupo" if pinned in sin_cupo else "sin deployment sano")
             _remember_pin(key, target)
             if client is not None:
                 try:
@@ -9360,7 +9375,6 @@ data:
                 choice = seeded
                 ACCOUNT_AFFINITY_STATS["seeded"] += 1
         if choice is None:
-            weights = await _account_weights()
             choice = preferred_account(user_key, sid, by_account, weights, epoch=_pin_epoch())
             if weights:
                 ACCOUNT_AFFINITY_STATS["weighted"] += 1
@@ -11959,7 +11973,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f7a644f10b22
+        config.k8s.e-dani.com/revision: config-bb309f2dedd0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12028,7 +12042,7 @@ spec:
             limits: { memory: 64Mi }
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa
+          image: ghcr.io/berriai/litellm:v1.105.1@sha256:b7b9e2c306343721802253d0dd9436b9634a2eb4e14da7c7cf06c5c7b7530802
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -12824,7 +12838,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f7a644f10b22
+        config.k8s.e-dani.com/revision: config-bb309f2dedd0
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
@@ -12855,7 +12869,7 @@ spec:
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa
+          image: ghcr.io/berriai/litellm:v1.105.1@sha256:b7b9e2c306343721802253d0dd9436b9634a2eb4e14da7c7cf06c5c7b7530802
           command:
             - python
             - -m

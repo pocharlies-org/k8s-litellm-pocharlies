@@ -467,20 +467,62 @@ def test_con_pesos_sigue_siendo_determinista_entre_pods():
     run(go())
 
 
-def test_el_peso_no_mueve_una_sesion_ya_clavada():
+def test_un_peso_bajo_no_mueve_una_sesion_ya_clavada():
+    """El reparto es proporcional al cupo, no un freno: una cuenta con poco cupo
+    sigue sirviendo a quien ya esta clavado en ella (afinidad, DGX-619)."""
     valkey = FakeValkey()
     pod = _pod(valkey)
 
     async def go():
         out = await pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("fija"))
         antes = _account(out)
-        otra = "k2" if antes == "k1" else "k1"
-        _con_pesos(pod, {antes: 0.0, otra: 1.0})
+        _con_pesos(pod, {antes: 0.05, "k1" if antes == "k2" else "k2": 0.95})
         out = await pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("fija"))
         return antes, _account(out)
 
     antes, despues = run(go())
     assert antes == despues
+
+
+def test_la_cuenta_sin_cupo_no_recibe_ni_una_peticion_aunque_tenga_el_pin():
+    """DGX-1036: peso 0 = el panel dice que no le queda cupo. Antes mandaba el pin y
+    la sesion pagaba un 429 en cada vuelta (el cooldown de Alibaba dura 60 s y la
+    cuenta volvia a la rotacion). Se muda sola y el pin queda reescrito."""
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+
+    async def go():
+        antes = _account(await pod.alibaba_account_filter(
+            "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("clavada")))
+        otra = "k2" if antes == "k1" else "k1"
+        _con_pesos(pod, {antes: 0.0, otra: 1.0})
+        out = await pod.alibaba_account_filter(
+            "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("clavada"))
+        # Y en el OTRO grupo del plan, con las DOS cuentas sanas: tampoco pisa la
+        # que no tiene cupo (el filtro la descarta antes de mirar el pin).
+        otra_vez = _account(await pod.alibaba_account_filter(
+            "alibaba-q38-max", _deps("alibaba-q38-max"), _kwargs("clavada")))
+        return antes, _account(out), otra, otra_vez
+
+    antes, despues, otra, en_otro_grupo = run(go())
+    assert despues == otra != antes
+    assert valkey.data[pod.account_pin_key(KEY_A, "clavada")] == otra
+    assert pod.ACCOUNT_AFFINITY_STATS["moves"] == 1
+    assert en_otro_grupo == otra, "la cuenta sin cupo sigue recibiendo peticiones"
+
+
+def test_la_unica_cuenta_sana_con_peso_cero_no_deja_el_grupo_sin_deployment():
+    """El freno del peso 0 no puede vaciar `by_account`: si no hay otra cuenta, la del
+    0 es la unica a la que ir — mejor intentar contra ella que un `No deployments
+    available` seguro. Sin el guard, la sesion clavada se caia contra un dict vacio."""
+    valkey = FakeValkey()
+    pod = _con_pesos(_pod(valkey), {"k1": 0.0, "k2": 1.0})
+    sid = "sola-k1"
+    valkey.data[pod.account_pin_key(KEY_A, sid)] = "k1"          # clavada en la sin cupo
+    out = run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash", accounts=("k1",)), _kwargs(sid)))
+    assert _account(out) == "k1"
+    assert pod.ACCOUNT_AFFINITY_STATS["moves"] == 0
 
 
 def test_pin_caducado_con_valkey_sana_se_re_sortea_no_se_reactiva_local():
