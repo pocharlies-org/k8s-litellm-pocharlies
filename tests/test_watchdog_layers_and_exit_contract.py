@@ -476,6 +476,13 @@ def test_sin_buscador_no_insiste_cada_10_min():
         "el aviso de buscador se repite cada 10 min: a la tercera nadie lo lee")
 
 
+def test_sin_buscador_insiste_a_la_hora_sin_decir_recuperado():
+    previo = {"clase": "ok", "ultimo_aviso": int(time.time()) - 3601, "buscador_roto": True}
+    _run(_sin_buscador, estado_previo=previo)
+    salida = _avisos()
+    assert "SIN BUSCADOR" in salida and "RECUPERADO" not in salida, salida
+
+
 def test_el_vigilante_no_se_cura_a_si_mismo():
     """/search_tools/list usa get_config() (relee el fichero) y de paso RESTAURA el
     estado en memoria: llamarla desde aqui curaria el sintoma cada 10 min y el

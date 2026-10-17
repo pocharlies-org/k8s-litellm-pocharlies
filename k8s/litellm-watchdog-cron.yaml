@@ -688,10 +688,11 @@ spec:
                           marca = {"caido": "CAIDO", "cuota": "SIN CUOTA",
                                    "abliterado": "SIN CENSURA",
                                    "cargando": "CARGANDO"}[clase]
+                      elif buscador_roto:
+                          # Antes que roto_antes: la insistencia horaria llega con los dos a True.
+                          marca = "SIN BUSCADOR"
                       elif roto_antes:
                           marca = "BUSCADOR RECUPERADO"
-                      elif buscador_roto:
-                          marca = "SIN BUSCADOR"
                       else:
                           marca = "RECUPERADO"
                       detalle = "; ".join(fallos) if fallos else ""
