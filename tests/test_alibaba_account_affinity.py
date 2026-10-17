@@ -511,6 +511,20 @@ def test_la_cuenta_sin_cupo_no_recibe_ni_una_peticion_aunque_tenga_el_pin():
     assert en_otro_grupo == otra, "la cuenta sin cupo sigue recibiendo peticiones"
 
 
+def test_la_unica_cuenta_sana_con_peso_cero_no_deja_el_grupo_sin_deployment():
+    """El freno del peso 0 no puede vaciar `by_account`: si no hay otra cuenta, la del
+    0 es la unica a la que ir — mejor intentar contra ella que un `No deployments
+    available` seguro. Sin el guard, la sesion clavada se caia contra un dict vacio."""
+    valkey = FakeValkey()
+    pod = _con_pesos(_pod(valkey), {"k1": 0.0, "k2": 1.0})
+    sid = "sola-k1"
+    valkey.data[pod.account_pin_key(KEY_A, sid)] = "k1"          # clavada en la sin cupo
+    out = run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash", accounts=("k1",)), _kwargs(sid)))
+    assert _account(out) == "k1"
+    assert pod.ACCOUNT_AFFINITY_STATS["moves"] == 0
+
+
 def test_pin_caducado_con_valkey_sana_se_re_sortea_no_se_reactiva_local():
     """Un GET CORRECTO que devuelve None es un pin caducado, no una lectura fallida.
     Si la memoria del pod lo reactiva, el TTL corto no sirve de nada: la sesion se
