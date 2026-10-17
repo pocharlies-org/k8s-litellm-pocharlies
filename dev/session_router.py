@@ -1790,6 +1790,20 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
         if account is None:
             return healthy_deployments
         by_account.setdefault(account, []).append(dep)
+
+    # DGX-1036: peso 0 = el panel dice que esa cuenta NO le tiene cupo (lo saca del
+    # % restante de la ventana en `pesos_cuentas_alibaba`, no del precio). Se descarta
+    # ANTES del pin: honrado el pin primero, la sesion clavada en una cuenta muerta
+    # sigue yendo a ella y solo se muda cuando su cooldown de 60 s la deja fuera —
+    # un 429 pagado por vuelta mientras la ventana este agotada. Un peso bajo NO
+    # mueve a nadie (la afinidad de siempre), y si no queda otra cuenta la lista se
+    # queda intacta: mejor intentarlo que dejar el grupo sin deployment.
+    weights = await _account_weights()
+    sin_cupo = {a for a in by_account if weights.get(a, 1.0) <= 0.0} if weights else set()
+    if sin_cupo and len(sin_cupo) < len(by_account):
+        for a in sin_cupo:
+            by_account.pop(a)
+
     request_kwargs = request_kwargs or {}
     sid = _affinity_session_id(request_kwargs)
     if not sid:
@@ -1830,12 +1844,13 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
         return by_account[pinned]
 
     if pinned is not None:
-        # Su cuenta no tiene deployment sano en este grupo: mudanza ENTERA.
-        target = preferred_account(user_key, sid, by_account, await _account_weights(),
-                                   epoch=_pin_epoch())
+        # Su cuenta no tiene deployment sano en este grupo, o no le queda cupo
+        # (DGX-1036): mudanza ENTERA.
+        target = preferred_account(user_key, sid, by_account, weights, epoch=_pin_epoch())
         ACCOUNT_AFFINITY_STATS["moves"] += 1
-        log.warning("session_router: sesion %s muda de cuenta Alibaba %s -> %s (%s sin deployment sano)",
-                    sid[:24], pinned, target, model)
+        log.warning("session_router: sesion %s muda de cuenta Alibaba %s -> %s (%s %s)",
+                    sid[:24], pinned, target, model,
+                    "sin cupo" if pinned in sin_cupo else "sin deployment sano")
         _remember_pin(key, target)
         if client is not None:
             try:
@@ -1855,7 +1870,6 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
             choice = seeded
             ACCOUNT_AFFINITY_STATS["seeded"] += 1
     if choice is None:
-        weights = await _account_weights()
         choice = preferred_account(user_key, sid, by_account, weights, epoch=_pin_epoch())
         if weights:
             ACCOUNT_AFFINITY_STATS["weighted"] += 1

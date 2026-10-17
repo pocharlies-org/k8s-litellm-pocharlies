@@ -197,6 +197,19 @@ contracts:
       coinciden sin hablar entre si (mismo reloj de pared; en el borde de ventana
       manda el SET NX); clave, valor y TTL intactos; `draw_account` sin cambios (sin
       .v2: es la entrada del hash que ya describe esta nota, no la superficie).
+
+      ADITIVO (DGX-1036, 2026-10-17, Dani): una cuenta con peso 0 en
+      `alibaba_account_weights` sale de `by_account` ANTES de consultar el pin, asi
+      que una sesion clavada en ella MUDA en su primer intento en vez de pagar un 429
+      en cada vuelta (el cooldown de Alibaba dura 60 s: la cuenta muerta volvia a la
+      rotacion un minuto despues y el pin la reclamaba). Peso 0 es senal de cupo, no
+      de precio: `pesos_cuentas_alibaba` lo saca del % restante de la ventana mensual,
+      por debajo de su suelo. Un peso bajo NO mueve a nadie —la afinidad de arriba
+      sigue igual—, y si la unica cuenta sana es la del 0 la lista se queda intacta
+      (mejor intentarlo que un grupo sin deployment). Clave, valor, TTL y formula de
+      tramos intactos; sin .v2 por el mismo motivo que DGX-619: «el pin manda sobre el
+      peso» no era promesa de este contrato — la mudanza solo estaba descrita por
+      falta de deployment sano.
   - id: dgx.session-router.resident-backend-pin.v1
     kind: schema
     value: resident_backend_pin:v1:<api-key-hash>:<sid>
