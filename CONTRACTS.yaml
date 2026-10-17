@@ -498,7 +498,7 @@ contracts:
       `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
       NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue,
-      skirmbooks-ui) keep failing closed via
+      skirmbooks-ui, hindsight) keep failing closed via
       disable_fallbacks, and the abliterated aliases have no chain. ADDITIVE
       (DGX-841, 2026-10-12, Dani): `synapse` naming the resident directly
       (`qwen38-flash-next`) was left unsealed (KEY_DIRECT_FALLBACK_MODELS) so the
@@ -531,6 +531,10 @@ contracts:
       workflow parks the invoice as `cancelled` with reason "OCR cancelado" and
       the scheduled redrive recovers it. Guarded by
       tests/test_skirmbooks_ui_no_fallback_contract.py.
+      ADDITIVE (INFRA-940, 2026-10-18): `hindsight` (Hindsight, the agent memory
+      that replaces the brain) joins the sealed set like `brain`: with no resident
+      Ready its retain/reflect calls fail closed instead of reaching the cloud twin.
+      Guarded by tests/test_hindsight_no_fallback_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
       from the /inferencia panel (ALIBABA · TOKEN PLAN, field
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
