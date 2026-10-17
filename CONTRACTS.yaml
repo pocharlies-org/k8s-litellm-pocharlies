@@ -366,7 +366,7 @@ contracts:
       in bot_keys) held to the lower threshold; session_idle_s (int 30-86400,
       600) — a session counts as live while it shows activity inside this
       window; return_max_tokens (int 1000-1000000, 30000) and
-      alibaba_return_after_s (int 60-86400, 3600) — the rules that let an
+      alibaba_return_after_s (int 60-86400, 600 since 2026-10-17 DGX-1028, 3600 before) — the rules that let an
       Alibaba-bound session come back (compacted and fits / born long enough
       ago and fits); bot_keys (list of lower-cased key aliases, default
       [hermes, aurora-rca]) — which keys are bots for the threshold. Unknown

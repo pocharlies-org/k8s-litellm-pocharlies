@@ -1667,7 +1667,7 @@ def test_retorno_respeta_residente_no_ready(router_mod):
 
 @pytest.mark.parametrize("raw,esperado", [
     ({}, {"kv_budget_pct": 85, "bot_budget_pct": 60, "session_idle_s": 600,
-          "return_max_tokens": 30000, "alibaba_return_after_s": 3600,
+          "return_max_tokens": 30000, "alibaba_return_after_s": 600,
           "bot_keys": ["hermes-batch", "aurora-rca", "brain"]}),
     ({"kv_budget_pct": "85"}, {"kv_budget_pct": 85}),   # string => default
     ({"kv_budget_pct": True}, {"kv_budget_pct": 85}),   # bool => default
@@ -1693,7 +1693,7 @@ def test_kv_sanitize_defaults_explicitos(router_mod):
     assert cfg["bot_budget_pct"] == router_mod.DEFAULT_BOT_BUDGET_PCT == 60
     assert cfg["session_idle_s"] == router_mod.DEFAULT_SESSION_IDLE_S == 600
     assert cfg["return_max_tokens"] == router_mod.DEFAULT_RETURN_MAX_TOKENS == 30000
-    assert cfg["alibaba_return_after_s"] == router_mod.DEFAULT_ALIBABA_RETURN_AFTER_S == 3600
+    assert cfg["alibaba_return_after_s"] == router_mod.DEFAULT_ALIBABA_RETURN_AFTER_S == 600
     assert cfg["bot_keys"] == list(router_mod.DEFAULT_BOT_KEYS)
     assert router_mod.DEFAULT_CONFIG["kv_budget_pct"] == 85
 
