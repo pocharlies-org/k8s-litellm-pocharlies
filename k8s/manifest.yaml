@@ -12026,9 +12026,11 @@ spec:
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { memory: 64Mi }
+      imagePullSecrets:
+        - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm:v1.105.1@sha256:b7b9e2c306343721802253d0dd9436b9634a2eb4e14da7c7cf06c5c7b7530802
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-f5fcab9ad4@sha256:97de7c52386013d18240d6c8ff0b0dee023ce998d174d698d8e4653781f12b4f
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -12852,10 +12854,12 @@ spec:
                   - key: kubernetes.io/hostname
                     operator: In
                     values: [ubuntu]
+      imagePullSecrets:
+        - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: ghcr.io/berriai/litellm:v1.105.1@sha256:b7b9e2c306343721802253d0dd9436b9634a2eb4e14da7c7cf06c5c7b7530802
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-f5fcab9ad4@sha256:97de7c52386013d18240d6c8ff0b0dee023ce998d174d698d8e4653781f12b4f
           command:
             - python
             - -m

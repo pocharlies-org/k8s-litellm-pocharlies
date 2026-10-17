@@ -1090,3 +1090,8 @@ contracts:
       DGX-1035 (2026-10-17): el runtime pasa a ghcr.io/berriai/litellm:v1.105.1
       (el mismo pin que el proxy); `plan_gateway.py` solo usa stdlib, httpx y
       session_router, e importa limpio en esa imagen (medido).
+      Después, la misma historia lo pasa a la imagen de casa
+      harbor.lan.e-dani.com/homelab/litellm (v1.105.1 + Codex del fork
+      pocharlies-org/litellm, rama pocharlies-codex), que se descarga con
+      imagePullSecrets harbor-pull; el job de integración del CI importa
+      `plan_gateway.py` dentro de esa imagen antes del merge.

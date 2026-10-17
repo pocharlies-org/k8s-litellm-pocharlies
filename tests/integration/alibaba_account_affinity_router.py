@@ -1,6 +1,6 @@
 """Integracion: afinidad por CUENTA de Alibaba con el Router REAL de litellm.
 
-Corre DENTRO de la imagen pineada del proxy (ghcr.io/berriai/litellm:v1.100.0,
+Corre DENTRO de la imagen pineada del proxy (la de k8s/manifest.yaml,
 la del Deployment) contra una Valkey real, con el callback REAL
 (litellm_strip_params.proxy_handler_instance) y session_router tal como van en
 el ConfigMap. Las llamadas llevan `mock_response`: no salen a Alibaba.
