@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO=$(pwd)
-IMAGE=$(grep -E '^ +image: ghcr.io/berriai/litellm:' k8s/manifest.yaml | head -1 | awk '{print $2}')
+IMAGE=$(grep -E '^ +image: harbor.lan.e-dani.com/homelab/litellm:' k8s/manifest.yaml | head -1 | awk '{print $2}')
 NET=affinity-it-$$
 docker network create "$NET" >/dev/null
 trap 'docker rm -f "$NET-valkey" "$NET-cfg" >/dev/null 2>&1; docker network rm "$NET" >/dev/null 2>&1' EXIT

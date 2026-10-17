@@ -69,5 +69,11 @@ jobs:
           persist-credentials: false
       - name: Require x86_64 runner
         run: test "$(uname -m)" = "x86_64"
+      # DGX-1035: la imagen pineada (LiteLLM + Codex del fork) vive en Harbor, que pide login.
+      - name: Login to Harbor
+        env:
+          HARBOR_USER: ${{ secrets.HARBOR_USER }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: echo "$HARBOR_PASSWORD" | docker login harbor.lan.e-dani.com -u "$HARBOR_USER" --password-stdin
       - name: Router real + Valkey real, dos pods
         run: tests/integration/run_alibaba_account_affinity.sh
