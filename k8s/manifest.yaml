@@ -4391,12 +4391,22 @@ data:
     #               datos de CloudBlue. Esos prompts no pueden salir a Alibaba (ni a
     #               ningun tercero): se queda en el residente o falla visible. Su
     #               allowlist de la key solo tiene qwen38-flash-next y -uncensored.
+    #   skirmbooks-ui  17-10-2026 (SKIRM-183, epica SKIRM-177): el OCR de facturas de
+    #               clientes pide `tooling` con esta key (la misma que llevan los
+    #               adaptadores de banking por `envFrom: skirmbooks-ui-secrets`). Sin
+    #               sello, con los residentes caidos `tooling` degradaba a
+    #               `alibaba-q38-flash` y el texto de una factura de cliente sale a un
+    #               tercero de pago. Sellada: falla a la vista, el workflow la deja en
+    #               `cancelled` con motivo «OCR cancelado» y el redrive programado
+    #               (SKIRM-183) la recupera. La recuperacion no pasa por la nube.
     #
     # Ojo: esto NO es lo mismo que recortar el allowlist `models` de la key. El
     # allowlist gobierna lo que la key puede PEDIR; esto gobierna a donde puede
     # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
     # Alibaba sin que nadie lo pida.
-    NO_FALLBACK_KEY_ALIASES = frozenset({"aurora-rca", "synapse", "brain", "claude-cloudblue"})
+    NO_FALLBACK_KEY_ALIASES = frozenset(
+        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui"}
+    )
 
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
     # Alibaba». Con el sellado entero, el clasificador de correo de Synapse murio en
@@ -11949,7 +11959,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-bd1a373ae7ee
+        config.k8s.e-dani.com/revision: config-f7a644f10b22
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12814,7 +12824,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-bd1a373ae7ee
+        config.k8s.e-dani.com/revision: config-f7a644f10b22
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

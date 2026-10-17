@@ -1,5 +1,9 @@
-# Vigilante de LiteLLM. Avisa por Telegram al privado del humano cuando deja de
-# servir, y avisa TAMBIEN cuando se recupera.
+# Vigilante de LiteLLM. Registra en el log del Job cuando deja de servir y
+# cuando se recupera; el exit code (solo CAIDO pone el Job rojo) es la señal
+# para ArgoCD y para Keep via K8sCronJobFailed.
+#
+# INFRA-912 (2026-10-17, Dani: «las alertas en Telegram son inútiles»): fuera el
+# envío a Telegram (y el ExternalSecret litellm-watchdog-telegram).
 #
 # POR QUE EXISTE (2026-08-14)
 # ---------------------------
@@ -12,11 +16,8 @@
 # y dos OOMKilled. Esa salida ya está retirada; el watchdog sigue siendo necesario
 # para detectar fallos propios de LiteLLM y de los backends locales.
 #
-# NO se avisa por el webhook de synapse. Comprobado el mismo dia:
-# https://synapse.e-dani.com/webhooks/brain-audit devuelve 404, y su propio contrato
-# (webhook.brain_audit.received) dice "NO workflow triggers on it today". O sea que
-# ningun aviso mandado por ahi ha llegado NUNCA — tampoco los del audit diario del
-# brain, que sigue apuntando alli. Telegram directo al bot es lo unico demostrado.
+# (Historia: hasta 2026-10-17 el aviso salia por Telegram directo al bot; el
+# webhook de synapse estaba demostrado muerto desde 2026-08-14.)
 #
 # QUE COMPRUEBA, Y POR QUE ASI
 # ----------------------------
@@ -135,8 +136,8 @@ spec:
       #
       # Paso el 21-08-2026 a las 22:06 UTC: el cluster cambio a perfil `creative`
       # y qwen38-27b (quien sirve `tooling` ahi) tardo 21 min en escalar; el
-      # watchdog fallo dos veces, aviso por Telegram —que es el canal de verdad—
-      # y a las 22:45 ya volvia a dar `ok`. La app seguia Degraded.
+      # watchdog fallo dos veces (el aviso era Telegram entonces) y a las 22:45
+      # ya volvia a dar `ok`. La app seguia Degraded.
       #
       # 1 h deja evidencia suficiente para mirar el fallo y no miente el resto
       # del dia. Mismo valor y misma razon que los crons del brain.
@@ -176,8 +177,7 @@ spec:
                 - -I
                 - -c
                 - |
-                  import json, os, ssl, sys, time, urllib.error, urllib.parse, urllib.request
-                  import html   # escape del aviso: ver el bloque de mensajes Telegram
+                  import json, os, ssl, sys, time, urllib.error, urllib.request
 
                   BASE = "http://litellm.litellm.svc.cluster.local:4000"
                   KEY = os.environ.get("LITELLM_MASTER_KEY", "")
@@ -653,9 +653,8 @@ spec:
                       desde = antes.get("desde", ahora) if clase == clase_antes else ahora
 
                       def apunta(enviado):
-                          # ultimo_aviso solo se mueve si el mensaje SALIO. Si Telegram
-                          # falla, la proxima corrida vuelve a intentarlo en vez de dar
-                          # el aviso por dado.
+                          # ultimo_aviso solo se mueve si el aviso SALIO (quedo
+                          # registrado en el log; INFRA-912).
                           #
                           # `visto` es la HORA DE ESTA CORRIDA, avise o no avise. El
                           # panel lo usa para decir "la ultima sonda es de hace X":
@@ -681,173 +680,53 @@ spec:
                           apunta(False)
                           raise SystemExit(SALIDA)
 
-                      if clase == "cargando":
-                          # Solo se escribe si alguien lo ve (normalmente entra
-                          # en silencio: ok -> cargando no avisa).
-                          titulo = "🟡 <b>Residente cargando</b>"
-                          intro = ("El residente del perfil activo se esta "
-                                   "recreando (Recreate) y aun no publica. No "
-                                   "es una caida: es la ventana de carga.")
-                          cuerpo = ["· " + f for f in fallos] + [
-                              "· dentro de la ventana de carga (startupProbe del "
-                              "head permite 1 h)"]
-                          quehacer = ("Nada mientras quepa en la ventana. Si el "
-                                      "Deployment sigue sin replicas disponibles "
-                                      "pasada esa hora, el proximo aviso sera "
-                                      "CAIDO y ahi si hay que mirar.")
-                      elif clase == "caido":
-                          titulo = "\U0001F534 <b>LiteLLM CAIDO</b>"
-                          intro = "No esta sirviendo."
-                          # html.escape en TODO lo interpolado: el mensaje sale
-                          # con parse_mode=HTML y un fallo lleva angulos
-                          # ("<urlopen error [Errno 111]...>"). Sin escapar,
-                          # Telegram responde 400 y el aviso de CAIDO no llega:
-                          # paso el 29-09 con el residente caido ~45 min y el
-                          # log del Job diciendo "telegram fallo: HTTP Error
-                          # 400". Las etiquetas <b>/<code> son de la plantilla;
-                          # lo que viene de fuera (fallos, dial, buscador, la
-                          # fecha de reset) se escapa SIEMPRE.
-                          cuerpo = ["· " + html.escape(f) for f in fallos]
-                          quehacer = ("Lo usa TODO: OpenClaw, el brain, el panel.\n"
-                                      "Mira <code>kubectl get pods -n litellm</code>.\n"
-                                      "Si pone OOMKilled, el limite esta en el manifiesto.\n"
-                                      "Si un pod reinicia en bucle, mira SUS logs antes de\n"
-                                      "culpar a nadie — el aviso no sabe quien es.")
-                      elif clase == "cuota":
-                          cuando = (time.strftime("%a %d-%m a las %H:%M",
-                                                  time.localtime(vuelve))
-                                    if vuelve else "sin fecha en la respuesta")
-                          titulo = "\U0001F7E0 <b>LiteLLM SIN CUOTA</b>"
-                          intro = "El cluster esta bien; el plan de arriba agoto el limite."
-                          cuerpo = ["· %d modelos publicados, el catalogo sirve" % (modelos or 0),
-                                    "· la inferencia da 429 usage_limit_reached",
-                                    "· vuelve: <b>%s</b>" % html.escape(cuando)]
-                          quehacer = ("Nada en el cluster. No hay fallback local desde el\n"
-                                      "10-08, asi que ningun alias contesta hasta el reset.")
-                      elif clase == "abliterado":
-                          titulo = "\U0001F7E1 <b>LiteLLM SIN CENSURA (dial global)</b>"
-                          intro = ("Sirve bien, y por eso no se nota: el dial de abliteracion "
-                                   "esta activo para TODO el trafico, no solo para los alias "
-                                   "-uncensored.")
-                          cuerpo = ["· " + html.escape(d) for d in dial_alto] + [
-                              "· %d modelos · catalogo en %d ms" % (
-                                  modelos or 0, round(latencia or 0))]
-                          quehacer = ("El valor NO es el que declara el manifiesto.\n"
-                                      "Si fue un cambio querido, fijalo en git\n"
-                                      "(VLLM_REFUSAL_LAMBDA en k8s-ai) y ArgoCD lo\n"
-                                      "aguanta; si no, devuelvelo al valor declarado:\n"
-                                      "<code>POST /admin/refusal_lambda {\"lambda\": N}</code>\n"
-                                      "contra el head del residente vivo.\n"
-                                      "Un reinicio del pod lo devuelve al valor del\n"
-                                      "manifiesto: lo que avisa de esto es de que el\n"
-                                      "cambio en caliente SE VA A PERDER.\n"
-                                      "Para pedir SIN censura por peticion existe el alias\n"
-                                      "<code>tooling-uncensored</code>, que no toca a nadie mas.\n"
-                                      "OJO con lambda>1: no libera mas, EMPUJA el estado\n"
-                                      "fuera de donde el modelo aprendio.")
+                      # INFRA-912 (2026-10-17): fuera el envio a Telegram. El aviso
+                      # se registra en el log del Job; la señal para ArgoCD/Keep es
+                      # el exit code — solo `caido` pone el Job rojo, y ahi arriba
+                      # lo caza K8sCronJobFailed.
+                      if clase in ("caido", "cuota", "abliterado", "cargando"):
+                          marca = {"caido": "CAIDO", "cuota": "SIN CUOTA",
+                                   "abliterado": "SIN CENSURA",
+                                   "cargando": "CARGANDO"}[clase]
                       elif buscador_roto:
-                          titulo = "\U0001F7E0 <b>LiteLLM SIN BUSCADOR</b>"
-                          intro = ("LiteLLM sirve, y por eso no se nota: el Router no "
-                                   "tiene la herramienta de busqueda y WebSearch cae "
-                                   "al proveedor por defecto (Perplexity), que no "
-                                   "tiene key. Quien lo paga es Claude Code con\n"
-                                   "<code>PERPLEXITYAI_API_KEY is not set</code>.")
-                          cuerpo = ["· el Router reporta: %s"
-                                    % (", ".join(html.escape(t) for t in buscador)
-                                       if buscador else "NADA"),
-                                    "· se esperaba <code>%s</code>" % html.escape(BUSCADOR_ESPERADO),
-                                    "· %d modelos · catalogo en %d ms" % (
-                                        modelos or 0, round(latencia or 0))]
-                          quehacer = ("Comprueba las DOS vistas, solo la primera "
-                                      "decide:\n"
-                                      "<code>GET /v1/search/tools</code> (el Router) "
-                                      "y <code>GET /search_tools/list</code> (el "
-                                      "fichero).\n"
-                                      "Si el primero sale vacio y el segundo no, es "
-                                      "el reconcile de cada 30 s vaciando "
-                                      "`router.search_tools`.\n"
-                                      "El arreglo es que "
-                                      "<code>general_settings.supported_db_objects</code>"
-                                      " NO incluya <code>search_tools</code> (PR #87)."
-                                      "\n"
-                                      "Workaround de 5 s que NO arregla nada: llamar "
-                                      "a <code>/search_tools/list</code> relee el "
-                                      "fichero y restaura el estado hasta el "
-                                      "siguiente ciclo.\n"
-                                      "NO hace falta ninguna key de Perplexity: la "
-                                      "busqueda es por SearXNG self-hosted.")
-                      elif clase == "cargando":
-                          # Solo alcanzable si venimos de avisar `caido` y la
-                          # lectura del Deployment (recien aplicada la atenuacion,
-                          # o tras un 403 del API) dice que era un rollout: el
-                          # aviso anterior queda desmentido SIN decir "vuelve a
-                          # servir", porque aun no sirve.
-                          titulo = "\U0001F7E1 <b>Fue un rollout, no una caida</b>"
-                          intro = ("El residente sigue sin publicar, pero el "
-                                   "Deployment esta en Recreate: la ventana de "
-                                   "carga, no un incidente.")
-                          cuerpo = ["· " + f for f in fallos]
-                          quehacer = ("Nada mientras quepa en la ventana (1 h "
-                                      "desde que empezo). Pasada, el siguiente "
-                                      "aviso vuelve a ser CAIDO.")
+                          # Antes que roto_antes: la insistencia horaria llega con los dos a True.
+                          marca = "SIN BUSCADOR"
                       elif roto_antes:
-                          titulo = "\U0001F7E2 <b>LiteLLM BUSCADOR RECUPERADO</b>"
-                          intro = ("WebSearch vuelve a ver <code>%s</code> en el "
-                                   "Router." % html.escape(BUSCADOR_ESPERADO))
-                          cuerpo = ["· el Router reporta: %s"
-                                    % ", ".join(html.escape(t) for t in (buscador or []))]
-                          quehacer = "Nada. El aviso anterior queda desmentido."
+                          marca = "BUSCADOR RECUPERADO"
                       else:
-                          titulo = "\U0001F7E2 <b>LiteLLM RECUPERADO</b>"
-                          intro = "Vuelve a servir."
-                          cuerpo = ["· %d modelos · catalogo en %d ms" % (
-                              modelos or 0, round(latencia or 0))]
-                          quehacer = "Nada. El aviso anterior queda desmentido."
-
-                      texto = "\n".join([titulo, "", intro, ""] + cuerpo +
-                                        ["", "<b>Qué hacer</b>", quehacer])
-                      tok = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-                      chat = os.environ.get("TELEGRAM_CHAT_ID", "")
-                      if not tok or not chat:
-                          print("[litellm-watchdog] sin token/chat: no puedo avisar")
-                          apunta(False)
-                          raise SystemExit(SALIDA)
-                      enviado = False
-                      try:
-                          aviso = {
-                              "chat_id": chat, "parse_mode": "HTML",
-                              "disable_web_page_preview": "true", "text": texto}
-                          hilo = os.environ.get("TELEGRAM_THREAD_ID", "")
-                          if hilo:
-                              aviso["message_thread_id"] = int(hilo)
-                          body = urllib.parse.urlencode(aviso).encode()
-                          req = urllib.request.Request(
-                              "https://api.telegram.org/bot%s/sendMessage" % tok,
-                              data=body, method="POST")
-                          with urllib.request.urlopen(req, timeout=20) as r:
-                              enviado = bool(json.loads(r.read()).get("ok"))
-                              print("[litellm-watchdog] telegram:", enviado)
-                      except Exception as exc:
-                          print("[litellm-watchdog] telegram fallo:", str(exc)[:150])
-                      apunta(enviado)
+                          marca = "RECUPERADO"
+                      detalle = "; ".join(fallos) if fallos else ""
+                      if clase == "abliterado":
+                          # El log es ahora la unica senal leida por un humano:
+                          # el como volver atras viaja con el aviso.
+                          detalle = (detalle + " | " if detalle else "") + (
+                              "volver al valor del manifiesto: POST "
+                              "/admin/refusal_lambda {\"lambda\": N} al head "
+                              "del residente (o reiniciar el pod); sin censura "
+                              "por peticion: tooling-uncensored")
+                      print("[litellm-watchdog] AVISO %s%s" % (
+                          marca, (": " + detalle)[:400]))
+                      # El aviso "salio" (queda en el log): `ultimo_aviso` se mueve
+                      # para no insistir cada 10 min, mismo contrato que antes.
+                      apunta(True)
                   # ── SALIDA: el unico final del script, para TODAS las ramas ──────
                   #
                   # EL BUG QUE CIERRA ESTE BLOQUE (STA-9, 02-09-2026). Antes, el
                   # `raise SystemExit(SALIDA)` del final estaba DENTRO de la rama de
                   # aviso: con `not avisar` salia por el suyo, y cualquier excepcion
-                  # del propio script (el k8s API caido, una KeyError, el Telegram
-                  # roto) se iba por la pila por defecto — exit 1 por accidente, sin
+                  # del propio script (el k8s API caido, una KeyError) se iba por
+                  # la pila por defecto — exit 1 por accidente, sin
                   # escribir el estado, y con `activeDeadlineSeconds: 300` superado
                   # como en el Job litellm-watchdog-29805960 (Failed, 53 min). El
                   # exit code del Job no era el de la clase: era lo que tocara.
                   # Ahora:
                   #   - excepcion no prevista -> exit 1 y ADEMAS se intenta escribir
-                  #     el estado, porque un watchdog que muere sin avisar es peor
-                  #     que uno que miente;
+                  #     el estado, porque un watchdog que muere sin dejar rastro es
+                  #     peor que uno que miente;
                   #   - `SystemExit` sale con SALIDA, que vale 1 solo si la clase es
                   #     `caido`.
                   # El Job solo falla si LiteLLM esta CAIDO, para que quede en los
-                  # Jobs fallidos del namespace aunque Telegram no llegue.
+                  # Jobs fallidos del namespace (K8sCronJobFailed -> Keep).
                   except SystemExit:
                       raise
                   except BaseException as exc:
@@ -866,20 +745,10 @@ spec:
                 - name: LITELLM_MASTER_KEY
                   valueFrom:
                     secretKeyRef: { name: litellm-secrets, key: LITELLM_MASTER_KEY }
-                # Grupo «Pocharlies Operations» (foro) + topic «Infra» (hilo 1248):
-                # los avisos de infra viven ahí, no en el DM de Dani. El bot está
-                # en el grupo y puede escribir en el foro.
-                - name: TELEGRAM_CHAT_ID
-                  value: "-1004409526898"
-                - name: TELEGRAM_THREAD_ID
-                  value: "1248"
-                # La imagen es UTC. Sin esto, "vuelve el jueves a las 03:30" seria
-                # dos horas antes de la verdad y el humano miraria cuando no toca.
+                # La imagen es UTC. Sin esto, los timestamps del log del aviso
+                # serian dos horas antes de la verdad.
                 - name: TZ
                   value: Europe/Madrid
-                - name: TELEGRAM_BOT_TOKEN
-                  valueFrom:
-                    secretKeyRef: { name: litellm-watchdog-telegram, key: bot_token }
               resources:
                 requests: { cpu: 20m, memory: 64Mi }
                 limits: { memory: 256Mi }
@@ -954,27 +823,3 @@ subjects:
   - kind: ServiceAccount
     name: litellm-watchdog
     namespace: litellm
----
-# Token de @oppocharliesllmbot, el bot con el que el humano habla en privado.
-# Se lee de 1Password, del mismo sitio del que lo saca el telegram-router de
-# openclaw-qwen36, para que rote a la vez que el original.
-#
-# OJO: ese bot tiene un WEBHOOK activo (el router). No llamar a getUpdates ni a
-# deleteWebhook contra el o se queda el router de OpenClaw sin recibir nada.
-# sendMessage no le molesta.
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata:
-  name: litellm-watchdog-telegram
-  namespace: litellm
-spec:
-  refreshInterval: 24h
-  secretStoreRef:
-    kind: ClusterSecretStore
-    name: onepassword
-  target:
-    name: litellm-watchdog-telegram
-  data:
-    - secretKey: bot_token
-      remoteRef:
-        key: openclaw-qwen36-social/TELEGRAM_BOT_TOKEN

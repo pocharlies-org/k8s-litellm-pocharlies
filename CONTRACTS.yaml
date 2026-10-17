@@ -484,7 +484,8 @@ contracts:
       (redeploy/restart, 15-20 min) the hook degrades them to their cloud twin
       `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
-      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue) keep failing closed via
+      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue,
+      skirmbooks-ui) keep failing closed via
       disable_fallbacks, and the abliterated aliases have no chain. ADDITIVE
       (DGX-841, 2026-10-12, Dani): `synapse` naming the resident directly
       (`qwen38-flash-next`) was left unsealed (KEY_DIRECT_FALLBACK_MODELS) so the
@@ -510,6 +511,13 @@ contracts:
       which is not in ROUTED_MODELS so the session router never touches it.
       TOOLING_FALLBACKS itself is unchanged. Guarded by
       tests/test_synapse_resident_fallback_contract.py.
+      ADDITIVE (SKIRM-183, 2026-10-17): `skirmbooks-ui` — the key Skirmbooks' OCR
+      and its banking adapters call `tooling` with (envFrom skirmbooks-ui-secrets)
+      — joins the sealed set. With no resident Ready the text of a client invoice
+      no longer reaches the cloud twin: the call fails in plain sight, the
+      workflow parks the invoice as `cancelled` with reason "OCR cancelado" and
+      the scheduled redrive recovers it. Guarded by
+      tests/test_skirmbooks_ui_no_fallback_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
       from the /inferencia panel (ALIBABA · TOKEN PLAN, field
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
