@@ -8,7 +8,7 @@
 
 | cliente | repositorio / ruta | versión desplegada | cómo se despliega |
 |---|---|---|---|
-| Proxy LiteLLM | `k8s/manifest.yaml` | `ghcr.io/berriai/litellm:v1.105.1@sha256:b7b9e2c3…` | ArgoCD app `litellm` (path `k8s`, `main`) |
+| Proxy LiteLLM | `k8s/manifest.yaml` | `harbor.lan.e-dani.com/homelab/litellm` (v1.105.1 + Codex, fork `pocharlies-org/litellm`) | ArgoCD app `litellm` (path `k8s`, `main`) |
 | Redis (`redis:7-alpine`), CronJobs (watchdog, spendlogs index/retention; `python:3.12-slim`, `postgres:16-alpine`) | `k8s/litellm-watchdog-cron.yaml`, `spendlogs-*.yaml` | tags | ídem |
 | `plan-gateway` (Deployment propio, 2 réplicas, mismo digest que el proxy) | `k8s/manifest.yaml` (`plan-gateway-config` → `plan_gateway.py`) | ídem imagen | ArgoCD app `litellm`, mismo path |
 | Scrape de métricas | `k8s/vmservicescrape.yaml` | — | ídem |
