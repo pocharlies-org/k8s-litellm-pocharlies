@@ -29,7 +29,8 @@ motivaron la issue: el `Request(..., timeout=)` que rompia toda corrida (lo pill
 este harness en su primera ejecucion) y el `SystemExit` que no llegaba a ejecutarse.
 """
 import ast
-import html
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -106,8 +107,6 @@ def _verde(url):
             {"search_tool_name": "searxng-local", "search_provider": "searxng"}]})
     if "refusal_lambda" in url:
         raise _http_error(url, 404)
-    if "api.telegram.org" in url:
-        return _Resp({"ok": True})
     return None
 
 
@@ -118,13 +117,17 @@ def _estado_escrito(cuerpos):
     return json.loads(json.loads(escritos[-1])["data"]["estado"])
 
 
-def _telegram_enviado(cuerpos):
-    """El texto de los mensajes que salieron a Telegram, ya desentamados."""
-    return [urllib.parse.unquote_plus(urllib.parse.parse_qs(b).get("text", [""])[0])
-            for u, b in cuerpos if "api.telegram.org" in u]
+_ULTIMA_SALIDA = []
 
 
-def _run(handler, estado_previo="ok", token=True, cuerpos=None,
+def _avisos():
+    """El stdout de la ultima corrida del script: los avisos quedan en el log
+    (INFRA-912 retiró el envio a Telegram)."""
+    assert _ULTIMA_SALIDA, "el script no produzco salida: nadie vera los avisos"
+    return _ULTIMA_SALIDA[-1]
+
+
+def _run(handler, estado_previo="ok", cuerpos=None,
          deploy=(1, 1)):
     """Ejecuta el script del CronJob con urllib parcheado -> (exit_code, urls).
 
@@ -134,7 +137,7 @@ def _run(handler, estado_previo="ok", token=True, cuerpos=None,
     el estado completo, para probar dimensiones que no son la clase — el buscador.
     Si se pasa `cuerpos` (una lista), se van guardando como (url, cuerpo) TODAS
     las peticiones con cuerpo: es la unica forma de ver que escribio en el
-    ConfigMap y que mensaje mando a Telegram.
+    ConfigMap. Los avisos se leen con `_avisos()` (stdout de la corrida).
 
     `deploy=(replicas, availableReplicas)` es lo que responde el GET del
     Deployment del residente (29-09-2026: el watchdog lo lee para distinguir
@@ -176,19 +179,16 @@ def _run(handler, estado_previo="ok", token=True, cuerpos=None,
         return resultado
 
     os.environ["LITELLM_MASTER_KEY"] = "k"
-    if token:
-        os.environ["TELEGRAM_BOT_TOKEN"] = "tok-env"
-        os.environ["TELEGRAM_CHAT_ID"] = "33285833"
-    else:
-        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
-        os.environ.pop("TELEGRAM_CHAT_ID", None)
 
     exito = None
-    with mock.patch.object(urllib.request, "urlopen", fake_urlopen):
+    salida = io.StringIO()
+    with mock.patch.object(urllib.request, "urlopen", fake_urlopen), \
+            contextlib.redirect_stdout(salida):
         try:
             exec(compile(src, "<watchdog>", "exec"), {})  # noqa: S102
         except SystemExit as exc:
             exito = exc.code
+    _ULTIMA_SALIDA.append(salida.getvalue())
     assert exito is not None, (
         "el script termino sin SystemExit: el Job sale con el codigo que produzca "
         "la excepcion de turno, que es el bug de STA-9")
@@ -371,8 +371,7 @@ def test_cuota_legada_transiciona_sin_poner_el_job_rojo():
     cuerpos = []
     exito, _ = _run(_verde, estado_previo="cuota", cuerpos=cuerpos)
     assert exito == 0
-    textos = _telegram_enviado(cuerpos)
-    assert textos and "RECUPERADO" in textos[0], (
+    assert "RECUPERADO" in _avisos(), (
         "el estado legado `cuota` no transiciona: el panel se quedaria con el "
         "semaforo viejo colgado")
 
@@ -385,58 +384,20 @@ def test_abliterado_no_pone_el_job_rojo():
     assert _run(handler)[0] == 0
 
 
-def test_caido_con_telegram_roto_sigue_saliendo_con_uno():
-    """El Job fallido es la senal para ArgoCD aunque el mensaje no llegue."""
-    def handler(url):
-        if "liveliness" in url or "api.telegram.org" in url:
-            return None
-        return _verde(url)
-    assert _run(handler)[0] == 1
-
-
-def test_el_aviso_de_caido_es_HTML_valido_para_telegram():
-    """29-09-2026: el residente estuvo ~45 min caido y NADIE lo vio por Telegram.
-
-    El Job salio Failed (bien: ArgoCD lo pinto Degraded), pero el log decia
-    `telegram fallo: HTTP Error 400: Bad Request`. El motivo: el mensaje se manda
-    con `parse_mode=HTML` y el texto del fallo lleva angulos — un connection
-    refused se describe como `<urlopen error [Errno 111] Connection refused>` —
-    asi que Telegram lo rechaza por etiqueta mal cerrada y el aviso NO llega. El
-    unico aviso que existe para `caido` era el que se rompia.
-
-    Este test afirma el contrato: TODO lo que viene de fuera (fallos, cuerpos de
-    error, nombres de residente) va escapado en el mensaje. Se acepta que el
-    texto lleve nuestras etiquetas (<b>, <code>) pero NINGUN angulo suelto.
-    """
+def test_el_aviso_de_caido_queda_en_el_log():
+    """INFRA-912: sin Telegram, el log del Job es el aviso. Y tiene que llevar el
+    motivo del fallo: el log es lo unico que queda cuando ArgoCD pinta la app
+    Degraded."""
     def handler(url):
         if RESIDENTE_LLM_TP in url:
             raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
         return _verde(url)
-    cuerpos = []
-    exito, _ = _run(handler, cuerpos=cuerpos)
+    exito, _ = _run(handler)
     assert exito == 1, "con el residente sin contestar el Job tiene que ponerse rojo"
-    textos = _telegram_enviado(cuerpos)
-    assert textos, (
-        "no salio ningun aviso a Telegram con clase caido: es exactamente el "
-        "400 de HTML mal formado que dejo la caida de 45 min sin aviso")
-    texto = textos[0]
-    assert "urlopen error" in texto, "el aviso perdio el motivo del fallo"
-    sin_tags = texto.replace("<b>", "").replace("</b>", "") \
-                    .replace("<code>", "").replace("</code>", "")
-    assert "<" not in sin_tags and ">" not in sin_tags, (
-        "el aviso de caido interpola angulos sin escapar: Telegram responde 400 "
-        "y el humano no se entera. Escapa con html.escape lo que no sea "
-        "plantilla propia. -> " + repr(sin_tags[:200]))
-    assert html.unescape(texto).count("<urlopen error") == 1, (
-        "el escape no es reversible: lo que lee el humano no es el fallo real")
-
-
-def test_caido_sin_token_de_telegram_sigue_saliendo_con_uno():
-    """Antes del 02-09 esta rama existia pero el contrato no estaba escrito: sin
-    token el aviso no sale, y aun asi el Job tiene que ponerse rojo."""
-    def handler(url):
-        return None if "liveliness" in url else _verde(url)
-    assert _run(handler, token=False)[0] == 1
+    salida = _avisos()
+    assert "AVISO CAIDO" in salida, (
+        "el aviso de caido no quedo en el log: es la unica senal legible por un humano")
+    assert "urlopen error" in salida, "el aviso perdio el motivo del fallo"
 
 
 def test_una_excepcion_del_propio_watchdog_sale_con_uno():
@@ -469,7 +430,7 @@ def test_sin_buscador_no_es_caido_pero_si_es_aviso():
         "`sin buscador` pone el Job en rojo: con la inferencia intacta eso es un "
         "Degraded cada 10 min tapando un Degraded de verdad, mismo criterio que "
         "con la cuota y con el dial de abliteracion")
-    assert any("api.telegram.org" in u for u in llamadas), (
+    assert "SIN BUSCADOR" in _avisos(), (
         "`sin buscador` no avisa: WebSearch lleva horas devolviendo "
         "PERPLEXITYAI_API_KEY is not set y el unico que lo sabe es el que lo usa")
 
@@ -498,12 +459,12 @@ def test_la_recuperacion_del_buscador_se_anuncia_aunque_la_clase_no_se_mueva():
     cuerpos = []
     exito, _ = _run(_verde, estado_previo=previo, cuerpos=cuerpos)
     assert exito == 0
-    textos = _telegram_enviado(cuerpos)
-    assert textos, "no se aviso de la recuperacion del buscador"
-    assert "BUSCADOR RECUPERADO" in textos[0], (
+    salida = _avisos()
+    assert salida, "no se aviso de la recuperacion del buscador"
+    assert "BUSCADOR RECUPERADO" in salida, (
         "la recuperacion del buscador se anuncia como si LiteLLM hubiera estado "
         "caido: dice algo que nunca paso")
-    assert "SIN BUSCADOR" not in textos[0]
+    assert "SIN BUSCADOR" not in salida
 
 
 def test_sin_buscador_no_insiste_cada_10_min():
@@ -511,7 +472,7 @@ def test_sin_buscador_no_insiste_cada_10_min():
     ignoran solos. Se insiste cada hora."""
     previo = {"clase": "ok", "ultimo_aviso": int(time.time()), "buscador_roto": True}
     _, llamadas = _run(_sin_buscador, estado_previo=previo)
-    assert not any("api.telegram.org" in u for u in llamadas), (
+    assert "AVISO" not in _avisos(), (
         "el aviso de buscador se repite cada 10 min: a la tercera nadie lo lee")
 
 
@@ -536,7 +497,7 @@ def test_no_poder_leer_el_router_no_es_sin_buscador():
     cuerpos = []
     exito, llamadas = _run(handler, cuerpos=cuerpos)
     assert exito == 0
-    assert not any("api.telegram.org" in u for u in llamadas), (
+    assert "SIN BUSCADOR" not in _avisos(), (
         "un /v1/search/tools inaccesible se reporta como buscador roto: hay que "
         "distinguir "
         "\"le y no esta\" de \"no pude leerlo\"")
@@ -563,7 +524,7 @@ def test_rollout_del_residente_no_es_caido_no_pone_el_job_rojo_no_avisa():
     cuerpos = []
     exito, _ = _run(handler, estado_previo="ok", cuerpos=cuerpos, deploy=(1, 0))
     assert exito == 0, "rollout en curso no puede poner el Job en Failed"
-    assert not _telegram_enviado(cuerpos), (
+    assert "AVISO" not in _avisos(), (
         "entrar en la ventana de carga no avisa: no es un incidente")
     estado = _estado_escrito(cuerpos)
     assert estado["clase"] == "cargando"
@@ -587,8 +548,7 @@ def test_la_ventana_de_carga_tiene_techo_y_fuera_de_el_si_es_caido():
     cuerpos = []
     exito, _ = _run(handler, estado_previo=previo, cuerpos=cuerpos, deploy=(1, 0))
     assert exito == 1, "fuera de la ventana, rollout plantado es caido de verdad"
-    textos = _telegram_enviado(cuerpos)
-    assert textos and "CAIDO" in textos[0]
+    assert "AVISO CAIDO" in _avisos()
 
 
 def test_sin_permiso_para_leer_el_deployment_se_condena_como_antes():
@@ -619,7 +579,7 @@ def test_la_salida_de_la_ventana_no_anuncia_recuperado():
     cuerpos = []
     exito, _ = _run(_verde, estado_previo=previo, cuerpos=cuerpos)
     assert exito == 0
-    assert not _telegram_enviado(cuerpos)
+    assert "AVISO" not in _avisos()
     assert _estado_escrito(cuerpos)["clase"] == "ok"
 
 
@@ -640,35 +600,15 @@ def test_el_yaml_declara_rbac_minimo_para_esa_lectura():
         "clavado al residente: no es un get de deployments del namespace")
 
 
-def test_el_aviso_va_al_topic_infra_del_grupo_no_al_dm():
-    """12-10-2026 (Dani): los avisos de infra viven en el topic «Infra» (hilo
-    1248) del grupo Pocharlies Operations, no en el DM. El chat_id positivo es
-    una persona: si alguien lo devuelve a 33285833, el aviso se pierde del
-    canal donde hace guardia. Y sin message_thread_id el mensaje cae en el
-    General del foro, que tampoco es el sitio."""
-    docs = [d for d in yaml.safe_load_all(WATCHDOG.read_text()) if d]
-    cron = next(d for d in docs if d.get("kind") == "CronJob")
-    envs = {e["name"]: e.get("value") for e in
-            cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]
-            ["containers"][0]["env"]}
-    assert envs["TELEGRAM_CHAT_ID"] == "-1004409526898", (
-        "el destino tiene que ser el grupo (id negativo), no un DM")
-    assert envs["TELEGRAM_THREAD_ID"] == "1248", (
-        "el topic «Infra» es el hilo 1248 del foro")
-    script = _watchdog_script()
-    assert "message_thread_id" in script, (
-        "el sendMessage no lleva el hilo: caería en el General del foro")
-
-
 def test_ultimo_statement_del_script_es_un_system_exit_con_salida():
     """El bug de la linea ~291: si el ultimo statement del bloque no es un raise,
     al caer al final del todo se sale con 0 por defecto."""
     tree = ast.parse(_watchdog_script())
     trybloques = [n for n in tree.body if isinstance(n, ast.Try)]
     assert trybloques, "el cuerpo del script no envuelve nada: no hay contrato de salida"
-    final = [c for c in trybloques[-1].body if isinstance(c, (ast.Raise, ast.If))][-1]
-    while isinstance(final, ast.If):
-        final = (final.body + final.orelse)[-1]
+    # INFRA-912: el contrato es el ultimo statement del SCRIPT (el raise final
+    # tras el try/except), no el ultimo del try: dentro ya no hay rama que salga.
+    final = tree.body[-1]
     assert isinstance(final, ast.Raise) and isinstance(final.exc, ast.Call)
     assert getattr(final.exc.func, "id", "") == "SystemExit"
     assert getattr(final.exc.args[0], "id", "") == "SALIDA", (
