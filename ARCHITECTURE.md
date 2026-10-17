@@ -8,7 +8,7 @@
 
 | cliente | repositorio / ruta | versión desplegada | cómo se despliega |
 |---|---|---|---|
-| Proxy LiteLLM | `k8s/manifest.yaml` | `ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b…` | ArgoCD app `litellm` (path `k8s`, `main`) |
+| Proxy LiteLLM | `k8s/manifest.yaml` | `ghcr.io/berriai/litellm:v1.105.1@sha256:b7b9e2c3…` | ArgoCD app `litellm` (path `k8s`, `main`) |
 | Redis (`redis:7-alpine`), CronJobs (watchdog, spendlogs index/retention; `python:3.12-slim`, `postgres:16-alpine`) | `k8s/litellm-watchdog-cron.yaml`, `spendlogs-*.yaml` | tags | ídem |
 | `plan-gateway` (Deployment propio, 2 réplicas, mismo digest que el proxy) | `k8s/manifest.yaml` (`plan-gateway-config` → `plan_gateway.py`) | ídem imagen | ArgoCD app `litellm`, mismo path |
 | Scrape de métricas | `k8s/vmservicescrape.yaml` | — | ídem |
@@ -37,7 +37,7 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
 
 | pieza | versión | para qué | no se usa en su lugar |
 |---|---|---|---|
-| LiteLLM | v1.100.0 (digest) | routing multi-proveedor | proxies a medida |
+| LiteLLM | v1.105.1 (digest) | routing multi-proveedor | proxies a medida |
 | `plan-gateway` (`plan_gateway.py`, ASGI puro sobre uvicorn + httpx de la imagen del proxy) | DGX-621 | media del Token Plan (imagen, vídeo, voz): LiteLLM no soporta ahí el vídeo asíncrono ni TTS/ASR nativos del plan Team, y `pass_through_endpoints` no reparte ni reintenta ni registra por cuenta. **Excepción razonada** a «proxies a medida»: allowlist de 4 rutas, ~300 líneas, sin estado | un proxy general, un mapa de tareas en Valkey, una fórmula de elección propia |
 | Python 3.12 | CI (`.github/requirements/litellm-contracts.txt`, dependencias bloqueadas) | suite de contratos | — |
 | `dev/session_router.py` | repo | enrutador de sesión/afinidad (hook del proxy) | lógica en el cliente |
