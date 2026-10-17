@@ -221,7 +221,7 @@ DEFAULT_KV_BUDGET_PCT = 85
 DEFAULT_BOT_BUDGET_PCT = 60
 DEFAULT_SESSION_IDLE_S = 600
 DEFAULT_RETURN_MAX_TOKENS = 30000
-DEFAULT_ALIBABA_RETURN_AFTER_S = 3600
+DEFAULT_ALIBABA_RETURN_AFTER_S = 600
 # Bots por alias de virtual key (medido en SpendLogs; los interactivos —
 # claude-local SIN clase company, opencode-*, open-webui — NO están). La
 # identificación es fiable para los listados: cada bot usa su key. Una key
