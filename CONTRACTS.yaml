@@ -1086,3 +1086,7 @@ contracts:
 
       NO prometido: mapa de tareas, reparto por modelo (k2 acepta los cuatro
       modelos, medido), ruta de salud, IngressRoute.
+
+      DGX-1035 (2026-10-17): el runtime pasa a ghcr.io/berriai/litellm:v1.105.1
+      (el mismo pin que el proxy); `plan_gateway.py` solo usa stdlib, httpx y
+      session_router, e importa limpio en esa imagen (medido).
