@@ -26,12 +26,8 @@ def _exec_module(source, name):
     return namespace
 
 
-def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
-    tracker_module = _exec_module(
-        _config_data()["active_request_tracking.py"],
-        "active_request_tracking_contract",
-    )
-
+def _tracker_with_clock(tracker_module, temp_dir):
+    # Reloj falso: los contratos miden con segundos exactos.
     class Clock:
         value = 100.0
 
@@ -39,12 +35,22 @@ def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
             return self.value
 
     clock = Clock()
+    tracker = tracker_module["ActiveRequestTracker"](
+        str(Path(temp_dir) / "active.json"),
+        clock=clock,
+    )
+    return clock, tracker
+
+
+def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
+    tracker_module = _exec_module(
+        _config_data()["active_request_tracking.py"],
+        "active_request_tracking_contract",
+    )
+
     with tempfile.TemporaryDirectory() as temp_dir:
+        clock, tracker = _tracker_with_clock(tracker_module, temp_dir)
         active_file = Path(temp_dir) / "active.json"
-        tracker = tracker_module["ActiveRequestTracker"](
-            str(active_file),
-            clock=clock,
-        )
         tracker.start(
             "request-1",
             trace_id="trace-123",
@@ -274,19 +280,9 @@ def test_tracker_estimates_live_output_from_chunks_without_usage():
         "active_request_tracking_chunk_contract",
     )
 
-    class Clock:
-        value = 100.0
-
-        def __call__(self):
-            return self.value
-
-    clock = Clock()
     with tempfile.TemporaryDirectory() as temp_dir:
+        clock, tracker = _tracker_with_clock(tracker_module, temp_dir)
         active_file = Path(temp_dir) / "active.json"
-        tracker = tracker_module["ActiveRequestTracker"](
-            str(active_file),
-            clock=clock,
-        )
         tracker.start(
             "request-1",
             trace_id="trace-1",
