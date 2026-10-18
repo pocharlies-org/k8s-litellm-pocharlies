@@ -55,6 +55,9 @@ contracts:
       only effect is to get the company's overflow policy. Absent or any
       other value keeps the instant_reject behavior; any read error is
       fail-open.
+      DGX-1066 (2026-10-18, Dani): both valves (company overflow and
+      instant_reject) only move a conversation with no prior assistant
+      turn; one that already has context queues on the resident.
       Since 2026-09-23 the value "company" also gates the company Alibaba
       switch (field company.alibaba of dgx.model-routing.config.v1): when it
       is false, company requests are sealed with disable_fallbacks and an
@@ -408,6 +411,23 @@ contracts:
       default 16,8 = TP=2 y TP=1): 24 con los dos, 16 solo el TP=2, 8 solo el
       TP=1. Sin ninguna lectura fresca manda solo local_slots, como antes. Mismo
       campo y mismo rango: sin .vN+1.
+  - id: dgx.litellm.service-alias.chatgpt.v1
+    kind: http-route
+    value: litellm-chatgpt
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1053 (2026-10-18). Service alias of `litellm` (same selector and
+      port 4000, label `app: litellm`) consumed by Hermes
+      (k8s-openclaw-qwen36-pocharlies#658, extraProviders `litellm-chatgpt`)
+      so its /model picker renders the `gpt-*` aliases (ChatGPT account,
+      dgx.litellm.chatgpt-oauth.v1) in their own row. Same reason as
+      litellm-openrouter / dgx.litellm.service-alias.alibaba.v1: Hermes groups
+      picker rows by (base_url, credential, api_mode). Not a backend and not an
+      access control: routing stays by model name and the `gpt-` gate decides
+      who may call.
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba
@@ -498,7 +518,7 @@ contracts:
       `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
       NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue,
-      skirmbooks-ui) keep failing closed via
+      skirmbooks-ui, hindsight) keep failing closed via
       disable_fallbacks, and the abliterated aliases have no chain. ADDITIVE
       (DGX-841, 2026-10-12, Dani): `synapse` naming the resident directly
       (`qwen38-flash-next`) was left unsealed (KEY_DIRECT_FALLBACK_MODELS) so the
@@ -531,6 +551,10 @@ contracts:
       workflow parks the invoice as `cancelled` with reason "OCR cancelado" and
       the scheduled redrive recovers it. Guarded by
       tests/test_skirmbooks_ui_no_fallback_contract.py.
+      ADDITIVE (INFRA-940, 2026-10-18): `hindsight` (Hindsight, the agent memory
+      that replaces the brain) joins the sealed set like `brain`: with no resident
+      Ready its retain/reflect calls fail closed instead of reaching the cloud twin.
+      Guarded by tests/test_hindsight_no_fallback_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
       from the /inferencia panel (ALIBABA · TOKEN PLAN, field
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
@@ -711,6 +735,31 @@ contracts:
       UNCENSORED_ALLOWED_KEY_ALIASES es coherente con este veto: su motivo
       de entrada (la medicion interna) ya no existe. Pinned by
       tests/test_master_inference_veto_contract.py.
+  - id: dgx.litellm.chatgpt-oauth.v1
+    kind: allowlist
+    value: gpt-
+    anchor: 'def _chatgpt_access_denied(requested, key_label):'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1053 (2026-10-18). Siete alias `gpt-6.1-sol`, `gpt-6-astra`,
+      `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` y
+      `gpt-5.6-luna` contra la cuenta ChatGPT Plus de Dani por el provider
+      `chatgpt/` (OAuth) de la imagen de casa (DGX-1035), coste 0. Solo
+      seleccion manual: ningun fallback, router_settings, model_group_alias
+      ni desvio de vision llega a ellos (la causa de los baneos de agosto de
+      la cuenta anterior). Gate fail-closed por prefijo `gpt-` en el
+      pre_call_hook: LITELLM_CHATGPT_ALLOWED_KEYS = claude-local (Claude CLI
+      y Paseo por claude-local-router) y hermes; vacia = nadie, ni la master.
+      Token: el pod de litellm lee CHATGPT_TOKEN_DIR=/var/run/chatgpt-oauth,
+      el Secret litellm-chatgpt-token montado en solo lectura. Lo crea desde
+      la semilla de 1Password (ExternalSecret litellm-chatgpt-oauth, item
+      litellm campo CHATGPT_OAUTH_AUTH_JSON) y lo renueva con 72 h de margen
+      SOLO el CronJob chatgpt-token-keeper: OpenAI rota el refresh token y el
+      provider no tiene cerrojo. Pinned by
+      tests/test_chatgpt_oauth_contract.py.
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que
@@ -1016,7 +1065,7 @@ contracts:
       del proxy litellm 1.100.0 que una clave top-level desconocida en
       config.yaml se ignora sin error, por eso el mapa es top-level. ADITIVO (INFRA-364, 2026-10-01): alias `brain: 20`, la prioridad mas
       baja de todas (detras de hermes-batch: 10); `brain` entra tambien en
-      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`. ADITIVO (DGX-601, 2026-10-06): el valor del mapa puede ser ENTERO (como siempre) o MAPA por clase de sesion (`{default: int, "<x-claude-class>": int}`), y el config gana una clave top-level `priority_uncensored` que manda sobre el mapa cuando el destino resuelto es uncensored (`_is_uncensored`). El campo que sale hacia vLLM es el mismo `priority` (int) y el gate del residente no cambia; `claude-local` pasa a `{default: -5, company: 5}` y lo uncensored a -20. Forma rara en un valor => ese alias no inyecta (fail-open de siempre).
+      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`. ADITIVO (DGX-601, 2026-10-06): el valor del mapa puede ser ENTERO (como siempre) o MAPA por clase de sesion (`{default: int, "<x-claude-class>": int}`), y el config gana una clave top-level `priority_uncensored` que manda sobre el mapa cuando el destino resuelto es uncensored (`_is_uncensored`). El campo que sale hacia vLLM es el mismo `priority` (int) y el gate del residente no cambia; `claude-local` pasa a `{default: -5, company: 5}` y lo uncensored a -20. Forma rara en un valor => ese alias no inyecta (fail-open de siempre). ADITIVO (INFRA-940, 2026-10-18): alias `hindsight: 20` (Hindsight, que sustituye al brain), la misma prioridad que `brain`; el campo y el gate no cambian.
   - id: dgx.litellm.stream-options-guard.v1
     kind: schema
     value: stream_options

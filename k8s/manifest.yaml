@@ -797,33 +797,103 @@ data:
     # el bloque de pensamiento se dispara y el TTFT se va al garete -- medido a
     # low, TTFT mediana 0.209s. Todo eso vive ahora en FAMILY_SAMPLING.
 
-    # ── PUENTE EXTERNO gpt-5.x — RETIRADO 03-09-2026 ─────────────────────────────
+    # ── GPT por la cuenta ChatGPT Plus de Dani (OAuth) — DGX-1053, 18-10-2026 ──────
+    # CONTRACT: dgx.litellm.chatgpt-oauth.v1
     #
-    # Aqui vivian seis alias (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
-    # `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`) que salian a un proxy interno de UNA
-    # replica contra una suscripcion externa. Se retiran enteros junto con ese
-    # Deployment y su ConfigMap (su manifiesto se borra en este mismo commit), el
-    # gate de keys que los cerraba y la credencial de Vault.
+    # HISTORIA: hasta el 03-09-2026 aqui vivian seis alias `gpt-5.x` (`gpt-5.6-sol`,
+    # `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`) contra un
+    # proxy interno de UNA replica y una suscripcion externa. Se retiraron enteros: el
+    # Deployment llevaba dias a 0 y el alias apuntaba a un Service sin backends. Y el
+    # motivo de fondo, que SIGUE VALIENDO: el desvio de vision hacia esa cuenta es la
+    # via por la que el catalogo de airsoft provoco los dos baneos del 20/21-08 («Acts
+    # of Violence») — 478 de 494 llamadas con imagen llevaban «replica».
     #
-    # POR QUE AHORA: el Deployment llevaba dias a 0 replicas y su volumen de
-    # credenciales no existia en el nodo, asi que lo unico que seguia publicado era
-    # el alias — apuntando a un Service sin backends. Eso no da «modelo
-    # desconocido», da un fallo de conexion, que es peor de diagnosticar.
+    # VUELVEN el 18-10-2026 por decision de Dani (DGX-1053), ahora contra SU cuenta
+    # ChatGPT Plus con el provider nativo `chatgpt/` de la imagen de casa (DGX-1035), y
+    # con lo que faltaba la otra vez:
+    #   - SOLO seleccion manual: ningun fallback, ningun router_settings, ningun
+    #     model_group_alias, ningun desvio de vision o catalogo apunta aqui. Lo vigila
+    #     tests/test_chatgpt_oauth_contract.py.
+    #   - Cerrados por el gate fail-closed `_chatgpt_access_denied` (prefijo `gpt-`,
+    #     LITELLM_CHATGPT_ALLOWED_KEYS): solo `claude-local` (Claude CLI y Paseo) y
+    #     `hermes`. La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
+    #     desde antes de la purga del 21-08 y lo heredaria sola al volver el alias: el
+    #     gate la para. Cualquier key nueva, igual.
+    #   - El riesgo de baneo NO desaparece: si alguien elige a mano un `gpt-*` para una
+    #     tarea de Skirmshop con fotos de producto, se reabre la causa de agosto.
     #
-    # NO SE REPUBLICAN, Y EL MOTIVO NO ES TECNICO: el desvio de vision hacia esa
-    # cuenta es la via por la que el catalogo de airsoft provoco los dos baneos del
-    # 20/21-08 («Acts of Violence») — 478 de 494 llamadas con imagen llevaban
-    # «replica». Volver a publicarlos reabre exactamente esa causa.
+    # Que modelos: los que la cuenta Plus acepta por Codex, medidos el 18-10-2026 con
+    # el token real (los `-pro` y gpt-5.5/5.4/5.3 los rechaza: «not supported when
+    # using Codex with a ChatGPT account»). Coste 0: es suscripcion, la cuota la cuenta
+    # OpenAI. El token: el Secret litellm-chatgpt-token, montado en solo lectura en el
+    # pod y escrito SOLO por el CronJob chatgpt-token-keeper (k8s/chatgpt-token-keeper.yaml,
+    # que tambien trae la semilla, el ExternalSecret litellm-chatgpt-oauth).
     #
-    # SI ALGUIEN LOS REPUBLICA, LEER ESTO ANTES: la key `sauvage-shield` lleva
-    # `gpt-5.6-luna` en su allowlist explicito desde antes de la purga del 21-08
-    # (['tooling','gpt-5.6-luna','qwen35-4b']). Es una entrada MUERTA mientras el
-    # alias no exista, pero en el instante en que vuelva al model_list esa key lo
-    # hereda SOLA, sin que nadie la toque. El gate de keys que lo impedia se va en
-    # este mismo commit: no queda gate, solo esta advertencia y el test.
-    #
-    # La lapida la sostiene tests/test_retired_gpt5_bridge_contract.py, con el mismo
-    # criterio que test_retired_routing_aliases_contract.py.
+    # tests/test_retired_gpt5_bridge_contract.py sigue sosteniendo la lapida de los
+    # nombres de enrutado automatico (router/auto/...), que no vuelven.
+    - model_name: gpt-6.1-sol
+      litellm_params:
+        model: chatgpt/gpt-6.1-sol
+      model_info:
+        name: GPT-6.1 Sol · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6.1 Sol - el mas nuevo (29-09-2026) via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
+    - model_name: gpt-6-astra
+      litellm_params:
+        model: chatgpt/gpt-6-astra
+      model_info:
+        name: GPT-6 Astra · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6 Astra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
+    - model_name: gpt-6-sol
+      litellm_params:
+        model: chatgpt/gpt-6-sol
+      model_info:
+        name: GPT-6 Sol · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6 Sol via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
+    - model_name: gpt-6-luna
+      litellm_params:
+        model: chatgpt/gpt-6-luna
+      model_info:
+        name: GPT-6 Luna · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
+    - model_name: gpt-5.6-sol
+      litellm_params:
+        model: chatgpt/gpt-5.6-sol
+      model_info:
+        name: GPT-5.6 Sol · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-5.6 Sol via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
+    - model_name: gpt-5.6-terra
+      litellm_params:
+        model: chatgpt/gpt-5.6-terra
+      model_info:
+        name: GPT-5.6 Terra · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-5.6 Terra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
+    - model_name: gpt-5.6-luna
+      litellm_params:
+        model: chatgpt/gpt-5.6-luna
+      model_info:
+        name: GPT-5.6 Luna · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-5.6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
     # >>> openrouter-free — BLOQUE DE ALIAS `or-*` DEL CATALOGO `:free` DE OPENROUTER
     # ESTE BLOQUE SE MANTIENE A MANO, en este fichero, en este commit. No hay panel ni
     # generador detras: `openrouter.e-dani.com` no existe (404 en todo el dominio, sin
@@ -2294,6 +2364,7 @@ data:
         company: 5        # sesion de la compania: por delante del lote, detras del resto
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
+      hindsight: 20       # Hindsight (retain/reflect, INFRA-940): sustituye al brain, misma prioridad
     # DGX-601: lo UNCENSORED (`_is_uncensored`: sufijo `-uncensored` o
     # UNCENSORED_ALIASES) NO tiene proveedor de alternativa -- el sello abliterado
     # solo existe en el residente y a proposito no lleva `fallbacks` (ver el aviso
@@ -2842,6 +2913,38 @@ data:
             "requested": requested,
             "key": key_label,
             "allowed": sorted(GROK_ALLOWED_KEY_ALIASES),
+        }
+
+    # 18-10-2026 (DGX-1053): gate de la cuenta ChatGPT Plus de Dani (alias `gpt-*`,
+    # provider `chatgpt/` por OAuth). Mismo patron que grok-* y or-*: por PREFIJO y
+    # fail-closed. Motivo doble: `models: []` en la mayoria de keys los abriria a
+    # todas al publicarse, y `sauvage-shield` ya lleva `gpt-5.6-luna` en su allowlist
+    # desde agosto. Ver la historia (y el riesgo de baneo) junto a los alias.
+    CHATGPT_ALIAS_PREFIX = "gpt-"
+
+    CHATGPT_ALLOWED_KEY_ALIASES = frozenset(
+        alias.strip()
+        for alias in os.environ.get("LITELLM_CHATGPT_ALLOWED_KEYS", "").split(",")
+        if alias.strip()
+    )
+
+    def _chatgpt_access_denied(requested, key_label):
+        """(bool, detalle) si esta key NO puede pedir un alias de la cuenta ChatGPT.
+
+        FALLA CERRADO: sin LITELLM_CHATGPT_ALLOWED_KEYS nadie pasa, ni la master.
+        Un despliegue sin la variable deja los `gpt-*` inservibles, que es el
+        fallo seguro; el peligroso es que una key de catalogo o de facturas mande
+        imagenes de airsoft a la cuenta personal de Dani.
+        """
+        if not str(requested or "").startswith(CHATGPT_ALIAS_PREFIX):
+            return False, None
+        if key_label in CHATGPT_ALLOWED_KEY_ALIASES:
+            return False, None
+        return True, {
+            "error": "this key may not request the ChatGPT account aliases",
+            "requested": requested,
+            "key": key_label,
+            "allowed": sorted(CHATGPT_ALLOWED_KEY_ALIASES),
         }
 
     # (SC-384) El gate del lane barato `qwen35-4b-fast` se retira junto con el
@@ -4428,7 +4531,7 @@ data:
     # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
     # Alibaba sin que nadie lo pida.
     NO_FALLBACK_KEY_ALIASES = frozenset(
-        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui"}
+        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight"}
     )
 
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
@@ -6768,6 +6871,17 @@ data:
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
 
+            # Gate de la cuenta ChatGPT (DGX-1053), detras del de Grok y por el mismo
+            # motivo: deny-por-defecto antes de resolver alias.
+            _denied, _detail = _chatgpt_access_denied(
+                requested_model, _resolve_key_label(user_api_key_dict)
+            )
+            if _denied:
+                router_log.warning(
+                    "chatgpt: key %r pidio %r y no esta en la lista",
+                    _detail["key"], _detail["requested"])
+                raise HTTPException(status_code=403, detail=_detail)
+
             # Antes de resolver el alias: si el residente ha desaparecido, esta
             # misma politica impide que el hook lo reescriba a otra ruta. La marca queda
             # en ``data`` para que el Router cubra tambien el caso distinto en que
@@ -8880,6 +8994,11 @@ data:
         return _group_in_cooldown(OVERFLOW_MODEL) is False
 
 
+    def _has_context(data):
+        """True si la conversación ya trae un turno del asistente: no es su primera petición."""
+        return any(isinstance(m, dict) and m.get("role") == "assistant" for m in data.get("messages") or ())
+
+
     def _rewrite(data, sid, reason):
         """Residente -> Alibaba. Espejo del desvío de visión: se limpian api_base/
         api_key (el grupo de Alibaba lleva los suyos en el model_list) y se marcan
@@ -9990,7 +10109,12 @@ data:
         # 22 % de acierto de caché, 198 M tokens en 4 h). Con la sesión quieta la caché
         # funciona en los dos lados — medido el mismo día: Alibaba 19.712/20.553 y
         # 20.480/20.803 tokens cacheados en turnos seguidos; vLLM 22.400/28.046.
-        valvula = not exempt and (
+        #
+        # 18-10-2026 (DGX-1066, Dani: «rechaza solo las sesiones con 0 contexto»): una
+        # conversación con un turno previo del asistente ENCOLA en el residente. Mudarla paga
+        # su contexto entero en frío en Alibaba y otra vez al volver (medido el 18-10: 150-200k
+        # a caché 2 %, ttft 320-440 s). La válvula queda para las conversaciones nuevas.
+        valvula = not exempt and not _has_context(data) and (
             (company and company_overflow) or (not company and config["instant_reject"]))
         if valvula and model == RESIDENT_MODEL:
             _ensure_vllm_poller()
@@ -12066,7 +12190,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d90312f09416
+        config.k8s.e-dani.com/revision: config-a4913022983d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12295,6 +12419,10 @@ spec:
             # Falla CERRADO como el de OpenRouter: vacia = nadie, ni la master.
             # `grok-account` lleva el saldo (max_budget) y `grok-probe` solo la sonda.
             - { name: LITELLM_GROK_ALLOWED_KEYS, value: "grok-account,grok-probe" }
+            # DGX-1053: los alias `gpt-*` (cuenta ChatGPT Plus de Dani). Claude CLI y Paseo
+            # entran por `claude-local` (claude-local-router); Hermes por `hermes`.
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes" }
+            - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS
@@ -12308,6 +12436,9 @@ spec:
             - { name: config, mountPath: /app/active_request_tracking.py, subPath: active_request_tracking.py, readOnly: true }
             - { name: config, mountPath: /app/xai_account_provider.py, subPath: xai_account_provider.py, readOnly: true }
             - { name: xai-oauth, mountPath: /var/run/xai-oauth }
+            # DGX-1053: token de la cuenta ChatGPT. Solo lectura a proposito: lo
+            # renueva UNICAMENTE el CronJob chatgpt-token-keeper (ver alli por que).
+            - { name: chatgpt-oauth, mountPath: /var/run/chatgpt-oauth, readOnly: true }
             - { name: tracking, mountPath: /shared/tracking }
           resources:
             # 2026-08-14: 512Mi/3Gi eran de la era singleton y el OOM lo probo.
@@ -12427,6 +12558,12 @@ spec:
           secret: { secretName: litellm-xai-oauth }
         - name: xai-oauth
           emptyDir: { medium: Memory }
+        # DGX-1053: el Secret lo crea y lo renueva el CronJob chatgpt-token-keeper
+        # (no ESO, no ArgoCD). optional: sin el, el pod arranca y solo fallan los
+        # alias `gpt-*`. Un Secret montado (sin subPath) lo actualiza kubelet solo, y
+        # no es un sistema de ficheros de red en el camino del router (SC-381).
+        - name: chatgpt-oauth
+          secret: { secretName: litellm-chatgpt-token, optional: true, defaultMode: 0400 }
         - name: tracking
           # SC-403 (09-09): antes era un directorio del nodo montado tal cual
           # (con type: DirectoryOrCreate), y eso era lo que anclaba el pod a
@@ -12523,6 +12660,24 @@ apiVersion: v1
 kind: Service
 metadata:
   name: litellm-alibaba
+  namespace: litellm
+  labels:
+    app: litellm   # lo selecciona el VMServiceScrape `litellm` (INFRA-882)
+spec:
+  selector: { app: litellm }
+  ports:
+    - { name: http, port: 4000, targetPort: 4000 }
+---
+# Cuarta puerta al MISMO proxy, para la lane de la cuenta ChatGPT (`gpt-*`, DGX-1053),
+# por el mismo motivo que `litellm-openrouter`: Hermes pinta una fila por host
+# (k8s-openclaw-qwen36-pocharlies#658 apunta su fila `litellm-chatgpt` aqui). Alias de
+# `litellm`, no un backend: el routing sigue siendo por nombre de modelo y el acceso lo
+# cierra `_chatgpt_access_denied`, no el host.
+# CONTRACT: dgx.litellm.service-alias.chatgpt.v1 (lo consume Hermes; no renombrar)
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-chatgpt
   namespace: litellm
   labels:
     app: litellm   # lo selecciona el VMServiceScrape `litellm` (INFRA-882)
@@ -12933,7 +13088,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d90312f09416
+        config.k8s.e-dani.com/revision: config-a4913022983d
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

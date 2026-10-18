@@ -171,7 +171,7 @@ def test_la_lane_de_openrouter_tiene_su_propio_service_sobre_los_mismos_pods():
     assert "litellm-openrouter" in services, "sin host propio, Hermes vuelve a una sola fila"
 
     principal = services["litellm"]
-    for alias in ("litellm-openrouter", "litellm-alibaba"):
+    for alias in ("litellm-openrouter", "litellm-alibaba", "litellm-chatgpt"):
         assert alias in services, f"sin {alias}, Hermes vuelve a juntar filas"
         lane = services[alias]
         assert lane["spec"]["selector"] == principal["spec"]["selector"]

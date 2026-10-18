@@ -1,0 +1,273 @@
+# DGX-1053 · Token OAuth de la cuenta ChatGPT Plus de Dani para los alias `gpt-*`.
+#
+# Tres piezas, en este orden de vida:
+#   1. ExternalSecret litellm-chatgpt-oauth: la SEMILLA, el auth.json del login
+#      (device flow del provider chatgpt/, 18-10-2026), en 1Password item `litellm`
+#      campo CHATGPT_OAUTH_AUTH_JSON (lo escribio security). Solo se usa una vez.
+#   2. CronJob chatgpt-token-keeper: crea el Secret litellm-chatgpt-token desde la
+#      semilla si no existe y lo renueva con 72 h de margen. Es el UNICO que renueva
+#      (por que, en el docstring del script).
+#   3. El Deployment litellm monta litellm-chatgpt-token en solo lectura en
+#      CHATGPT_TOKEN_DIR (manifest.yaml).
+#
+# Sin RWX ni NFS a proposito: el provider lee el fichero en CADA peticion gpt-*, y
+# SC-381 dejo escrito que un montaje de red colgado en el pod de LiteLLM para todo
+# el trafico LLM. Un Secret montado lo sirve kubelet desde tmpfs local.
+#
+# Re-login (si el keeper sale en rojo con «hace falta un login nuevo»): device flow
+# con la imagen de LiteLLM (Authenticator().get_access_token() con CHATGPT_TOKEN_DIR
+# apuntando a un directorio privado), security sube el auth.json nuevo al mismo
+# campo, se borra el Secret litellm-chatgpt-token y se lanza el keeper a mano
+# (kubectl create job --from=cronjob/chatgpt-token-keeper). Nunca reutilizar ese
+# auth.json en un Codex CLI: se invalidarian mutuamente al renovar.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-chatgpt-oauth
+  namespace: litellm
+  labels: { app: chatgpt-token-keeper }
+spec:
+  refreshInterval: 24h
+  refreshPolicy: OnChange
+  secretStoreRef: { kind: ClusterSecretStore, name: onepassword-connect }
+  target:
+    name: litellm-chatgpt-oauth
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: auth.json
+      remoteRef: { key: litellm, property: CHATGPT_OAUTH_AUTH_JSON }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chatgpt-token-keeper
+  namespace: litellm
+  labels: { app: chatgpt-token-keeper }
+data:
+  chatgpt_token_keeper.py: |
+    """Renueva el token OAuth de la cuenta ChatGPT de LiteLLM (DGX-1053). UNICO renovador.
+
+    Por que existe: el provider `chatgpt/` de litellm renueva el token sin ningun cerrojo
+    y OpenAI ROTA el refresh token en cada renovacion. Con dos replicas de LiteLLM, dos
+    renovaciones a la vez = refresh token reutilizado = OpenAI revoca la sesion entera, y
+    el provider cae al device flow DENTRO del pod (espera 15 min a un humano). Aqui se
+    renueva con 72 h de margen sobre un token de 240 h, asi que los pods nunca lo ven
+    caducado y nunca renuevan.
+
+    Donde vive el token: el Secret `litellm-chatgpt-token`, que crea y escribe SOLO este
+    CronJob y que los pods montan en solo lectura. La primera vez se siembra desde el
+    auth.json de 1Password (ExternalSecret litellm-chatgpt-oauth, montado en /seed); despues
+    1Password queda viejo a proposito y nunca vuelve a pisar un token renovado.
+
+    Nunca imprime el token. Un fallo sale != 0 con el motivo y deja el CronJob en rojo.
+    """
+    import base64
+    import json
+    import os
+    import ssl
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+
+    NAMESPACE = "litellm"
+    SECRET = "litellm-chatgpt-token"
+    SEED = os.environ.get("CHATGPT_SEED", "/seed/auth.json")
+    RENEW_BEFORE_S = int(os.environ.get("RENEW_BEFORE_S", str(72 * 3600)))
+    # Mismos valores que litellm/llms/chatgpt/common_utils.py (CHATGPT_OAUTH_TOKEN_URL,
+    # CHATGPT_CLIENT_ID) y el mismo cuerpo que Authenticator._refresh_tokens. Si el provider
+    # los cambia en un rebase, se cambian aqui en el mismo PR.
+    TOKEN_URL = "https://auth.openai.com/oauth/token"
+    CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+    SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+    API = f"https://kubernetes.default.svc/api/v1/namespaces/{NAMESPACE}/secrets"
+
+
+    def kube(method, path="", body=None):
+        headers = {
+            "Authorization": "Bearer " + open(f"{SA}/token").read().strip(),
+            "Content-Type": "application/merge-patch+json" if method == "PATCH" else "application/json",
+        }
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(API + path, data=data, method=method, headers=headers)
+        ctx = ssl.create_default_context(cafile=f"{SA}/ca.crt")
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404 and method == "GET":
+                return None
+            raise
+
+
+    def jwt_exp(token):
+        payload = token.split(".")[1]
+        return int(json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["exp"])
+
+
+    def encode(record):
+        return {"auth.json": base64.b64encode(json.dumps(record).encode()).decode()}
+
+
+    def refresh(record):
+        body = json.dumps({
+            "client_id": CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": record["refresh_token"],
+            "scope": "openid profile email",
+        }).encode()
+        req = urllib.request.Request(TOKEN_URL, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.load(resp)
+        if not data.get("access_token") or not data.get("id_token"):
+            raise RuntimeError("la respuesta de renovacion no trae access_token/id_token")
+        return {
+            "access_token": data["access_token"],
+            "refresh_token": data.get("refresh_token") or record["refresh_token"],
+            "id_token": data["id_token"],
+            "expires_at": jwt_exp(data["access_token"]),
+            "account_id": record.get("account_id"),
+        }
+
+
+    def main():
+        current = kube("GET", f"/{SECRET}")
+        if current is None:
+            with open(SEED) as fh:
+                record = json.load(fh)
+            kube("POST", body={
+                "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+                "metadata": {"name": SECRET, "labels": {"app.kubernetes.io/managed-by": "chatgpt-token-keeper"}},
+                "data": encode(record),
+            })
+            print(f"{SECRET} creado desde la semilla de 1Password")
+        else:
+            record = json.loads(base64.b64decode(current["data"]["auth.json"]))
+        expires_at = record.get("expires_at") or jwt_exp(record["access_token"])
+        left = expires_at - time.time()
+        print(f"el token caduca en {left / 3600:.1f} h (se renueva por debajo de {RENEW_BEFORE_S / 3600:.0f} h)")
+        if left > RENEW_BEFORE_S:
+            return 0
+        try:
+            renewed = refresh(record)
+        except urllib.error.HTTPError as exc:
+            reason = exc.read().decode(errors="replace")[:300]
+            print(f"renovacion rechazada: HTTP {exc.code} {reason} -> hace falta un login nuevo", file=sys.stderr)
+            return 1
+        # El refresh token viejo ya no vale: si no se guarda el nuevo, la sesion se pierde.
+        for attempt in range(5):
+            try:
+                kube("PATCH", f"/{SECRET}", body={"data": encode(renewed)})
+                print(f"token renovado: caduca en {(renewed['expires_at'] - time.time()) / 3600:.1f} h")
+                return 0
+            except Exception as exc:  # noqa: BLE001
+                print(f"guardar el token renovado fallo (intento {attempt + 1}): {exc}", file=sys.stderr)
+                time.sleep(5)
+        print("token renovado pero NO guardado: el refresh token viejo ya no vale -> login nuevo", file=sys.stderr)
+        return 2
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: chatgpt-token-keeper
+  namespace: litellm
+  labels: { app: chatgpt-token-keeper }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: chatgpt-token-keeper
+  namespace: litellm
+  labels: { app: chatgpt-token-keeper }
+rules:
+  # create no admite resourceNames: el script solo crea litellm-chatgpt-token.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["litellm-chatgpt-token"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: chatgpt-token-keeper
+  namespace: litellm
+  labels: { app: chatgpt-token-keeper }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: chatgpt-token-keeper
+subjects:
+  - kind: ServiceAccount
+    name: chatgpt-token-keeper
+    namespace: litellm
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chatgpt-token-keeper
+  namespace: litellm
+  labels: { app: chatgpt-token-keeper }
+spec:
+  schedule: "17 */6 * * *"
+  timeZone: Europe/Madrid
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      # Sin reintentos: un segundo intento con el mismo refresh token, si el primero
+      # llego a OpenAI, seria justo la reutilizacion que revoca la sesion.
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels: { app: chatgpt-token-keeper }
+        spec:
+          tolerations:
+            - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
+            - { key: role, operator: Equal, value: edge, effect: NoSchedule }
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values: [ubuntu, sauvage]
+          restartPolicy: Never
+          serviceAccountName: chatgpt-token-keeper
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: keeper
+              image: python:3.12-slim
+              command: ["python3", "-I", "/keeper/chatgpt_token_keeper.py"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+              volumeMounts:
+                - { name: keeper, mountPath: /keeper, readOnly: true }
+                - { name: seed, mountPath: /seed, readOnly: true }
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { memory: 128Mi }
+          volumes:
+            - name: keeper
+              configMap: { name: chatgpt-token-keeper }
+            - name: seed
+              secret: { secretName: litellm-chatgpt-oauth, defaultMode: 0444 }
