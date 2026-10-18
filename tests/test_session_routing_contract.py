@@ -656,6 +656,23 @@ def test_valvula_por_debajo_de_slots_no_actua(router_mod):
     assert data["model"] == RESIDENT
 
 
+@pytest.mark.parametrize("stuck, inflight", [(False, 99), (True, 0)])
+@pytest.mark.parametrize("company", [False, True])
+def test_valvula_no_muda_una_conversacion_con_contexto(router_mod, stuck, inflight, company):
+    """DGX-1066: con un turno previo del asistente la petición encola en el residente,
+    ni por lleno ni por cola, ni la de la compañía; la primera petición desborda como antes."""
+    cfg = _cfg(sticky=True, instant_reject=True, local_slots=8, overflow_exempt=NADIE_EXENTO)
+    headers = {"x-claude-class": router_mod.COMPANY_CLASS} if company else {}
+    turnos = [{"role": "user", "content": "hola"}]
+    con_contexto = turnos + [{"role": "assistant", "content": "dime"}, {"role": "user", "content": "sigue"}]
+    for messages, desborda in ((con_contexto, False), (turnos, True)):
+        env = _Env(router_mod, cfg, inflight=inflight, stuck=stuck)
+        data = _data(messages=messages, metadata={"headers": headers})
+        assert env.run(data) is desborda, (messages, company, stuck)
+        assert data["model"] == (OVERFLOW if desborda else RESIDENT)
+        assert env.writes == [(SID, "alibaba" if desborda else "local")]
+
+
 @pytest.mark.parametrize("vivos, umbral", [((0, 1), 24), ((0,), 16), ((1,), 8)])
 def test_desborde_a_la_suma_de_los_servidores_vivos(router_mod, vivos, umbral):
     """DGX-897: con el panel de techo a 24, Alibaba entra a 24 en vuelo con los dos
@@ -1068,7 +1085,7 @@ def test_gate_de_valvula_exacto_y_helper_robusto(router_src):
     """La válvula: la compañía por SU interruptor, el resto por instant_reject, y
     siempre solo sobre el residente (no se ensancha a otras rutas). La lectura de la
     clase es case-insensitive por clave y el marcador de contrato está en el sitio."""
-    assert ('valvula = not exempt and (\n'
+    assert ('valvula = not exempt and not _has_context(data) and (\n'
             '        (company and company_overflow) or (not company and config["instant_reject"]))'
             in router_src)
     assert "if valvula and model == RESIDENT_MODEL:" in router_src
