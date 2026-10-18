@@ -816,7 +816,8 @@ data:
     #     tests/test_chatgpt_oauth_contract.py.
     #   - Cerrados por el gate fail-closed `_chatgpt_access_denied` (prefijo `gpt-`,
     #     LITELLM_CHATGPT_ALLOWED_KEYS): solo `claude-local` (Claude CLI y Paseo),
-    #     `hermes` y `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077). La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
+    #     `hermes` y `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077).
+    #     La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
     #     desde antes de la purga del 21-08 y lo heredaria sola al volver el alias: el
     #     gate la para. Cualquier key nueva, igual.
     #   - El riesgo de baneo NO desaparece: si alguien elige a mano un `gpt-*` para una
@@ -12172,7 +12173,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-51d444cdeb69
+        config.k8s.e-dani.com/revision: config-3b965c32cbc1
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13075,7 +13076,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-51d444cdeb69
+        config.k8s.e-dani.com/revision: config-3b965c32cbc1
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
