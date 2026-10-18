@@ -2187,6 +2187,12 @@ data:
       model_group_retry_policy:
         alibaba-q38-flash:
           BadRequestErrorRetries: 2
+        # 18-10-2026 (DGX-1075, Dani: «si la cola se atasca a los 240 s, que tire a Alibaba»): un
+        # Timeout del residente NO se reintenta en local (el `num_retries: 1` global pagaba otros
+        # 240 s, 480 s + Alibaba por encima de los 600 s de Claude CLI): va directo a la arista
+        # `qwen38-flash-next -> alibaba-q38-flash`. Los demás errores siguen con el global.
+        qwen38-flash-next:
+          TimeoutErrorRetries: 0
       # ── Afinidad de sesion por CUENTA de Alibaba ─────────────────────────
       #
       # 28-09-2026: el `session_affinity` nativo (model_group_affinity_config)
@@ -12097,7 +12103,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-df03daa5d702
+        config.k8s.e-dani.com/revision: config-b1e5e90a4ae9
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12995,7 +13001,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-df03daa5d702
+        config.k8s.e-dani.com/revision: config-b1e5e90a4ae9
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
