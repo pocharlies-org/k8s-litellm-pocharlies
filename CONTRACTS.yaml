@@ -954,6 +954,22 @@ contracts:
       LITELLM_UNCENSORED_ALLOWED_KEYS del Deployment con el default del hook mas
       este alias (sin tocar el codigo de litellm_strip_params.py). Renombrar o
       retirar el alias deja fuera la ruta abliterada para este consumidor.
+  - id: dgx.litellm.virtual-key.claude-casa.v1
+    kind: allowlist
+    value: claude-casa
+    anchor: hermes-cloudblue,claude-casa
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-18). Clave virtual de LiteLLM del Claude Code y Paseo del
+      MacBook de casa (antes compartia claude-local con el x86): cada maquina con
+      su key para que el panel le ponga su politica de cuentas de Claude
+      (claude_accounts). Mismos models que claude-local mas `claude-*`; entra en
+      LITELLM_UNCENSORED_ALLOWED_KEYS, LITELLM_CHATGPT_ALLOWED_KEYS y
+      priority_by_alias (-5, uso personal). Se crea por /key/generate; su valor
+      vive en el Mac (~/.config/claude-local/env), nunca en git.
   - id: dgx.litellm.virtual-key.keep-hub.v1
     # kind allowlist: la superficie es la allowlist `models` de la key virtual
     # `keep-hub`, que vive SOLO en la Postgres de LiteLLM (se fija por

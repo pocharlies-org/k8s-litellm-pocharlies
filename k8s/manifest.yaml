@@ -2486,6 +2486,7 @@ data:
       claude-local:
         default: -5       # sin clase: uso personal de Dani
         company: 5        # sesion de la compania: por delante del lote, detras del resto
+      claude-casa: -5     # DGX-1099: el Claude Code del MacBook de casa, uso personal como claude-local
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
       hindsight: 20       # Hindsight (retain/reflect, INFRA-940): sustituye al brain, misma prioridad
@@ -12900,7 +12901,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2d9663fe147d
+        config.k8s.e-dani.com/revision: config-1c30651241fa
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13099,7 +13100,7 @@ spec:
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-local,hermes,hermes-batch,synapse,hermes-cloudblue" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-local,hermes,hermes-batch,synapse,hermes-cloudblue,claude-casa" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -13113,7 +13114,7 @@ spec:
             # DGX-1053: los alias `gpt-*` (cuenta ChatGPT Plus de Dani). Claude CLI y Paseo
             # entran por `claude-local` (claude-local-router); Hermes por `hermes`; los
             # motores de imagen del DGX Studio por `studio-chatgpt` (DGX-1077).
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes,studio-chatgpt" }
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes,studio-chatgpt,claude-casa" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
             # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
@@ -13821,7 +13822,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2d9663fe147d
+        config.k8s.e-dani.com/revision: config-1c30651241fa
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
