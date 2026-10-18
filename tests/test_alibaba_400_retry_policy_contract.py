@@ -79,4 +79,10 @@ def test_no_es_una_politica_global(router_settings):
 def test_la_clave_no_se_replica_en_otros_grupos(router_settings):
     """Lo que no se midio no se toca: solo el grupo que dio los 400."""
     policy = router_settings.get("model_group_retry_policy") or {}
-    assert set(policy) == {GRUPO}, f"grupos con politica inesperada: {sorted(policy)}"
+    assert set(policy) == {GRUPO, "qwen38-flash-next"}, f"grupos con politica inesperada: {sorted(policy)}"
+
+
+def test_un_timeout_del_residente_salta_a_alibaba_sin_reintento_local(router_settings):
+    """DGX-1075: a los 240 s del residente, directo a su fallback; solo el Timeout, nada mas."""
+    assert router_settings["model_group_retry_policy"]["qwen38-flash-next"] == {"TimeoutErrorRetries": 0}
+    assert {"qwen38-flash-next": ["alibaba-q38-flash"]} in router_settings["fallbacks"]
