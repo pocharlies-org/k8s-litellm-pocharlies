@@ -77,8 +77,8 @@ def test_tooling_admission_follows_the_ready_resident_during_transitions():
 
 
 def test_llm_tp_sirve_con_cualquiera_de_sus_dos_motores():
-    """DGX-955h (corte del 18-10): con el TP=2 caido y el TP=1 de dgx3 Ready el
-    residente sirve; sin ninguno de los dos, no."""
+    """DGX-955h (corte del 18-10): el residente sirve con el TP=2 o con el TP=1
+    de dgx3, el que este Ready; sin ninguno de los dos, no."""
     gate = _pure_gate()
 
     def comp(name, ready):
@@ -93,10 +93,12 @@ def test_llm_tp_sirve_con_cualquiera_de_sus_dos_motores():
             "dgx3": [comp("qwen38-worker-dgx3", True)],
         },
     }
-    assert gate(state, "qwen38-flash-next") == (True, None)
+    assert gate(state, "qwen38-flash-next") == (True, None)      # solo el TP=1
     assert gate(state, "tooling") == (True, None)
     state["components"]["dgx3"] = [comp("qwen38-worker-dgx3", False)]
     assert gate(state, "qwen38-flash-next") == (False, "tooling_resident_not_ready")
+    state["components"]["dgx2"] = [comp("deepseek-head", True)]
+    assert gate(state, "qwen38-flash-next") == (True, None)      # solo el TP=2
 
 
 def test_hook_checks_mode_before_tracking_a_new_local_request():

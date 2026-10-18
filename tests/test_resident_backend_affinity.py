@@ -493,17 +493,22 @@ def test_la_peticion_sin_sesion_tambien_va_al_motor_con_hueco():
     assert not valkey.data, "sin sid no hay conversacion que clavar"
 
 
-def test_motor_que_no_contesta_su_metrics_sale_del_reparto():
-    """DGX-955h, corte de luz del 18-10: el TP=2 sin endpoints no contesta su
-    /metrics y el TP=1 si. Sin esto el sorteo 3:1 mandaba 3 de cada 4 nuevas al
-    motor muerto. Las nuevas nacen en el TP=1 sin pin (no hubo eleccion) y la
-    ligada al TP=2 muda entera."""
+@pytest.mark.parametrize("vivo, caido, url_vivo", [
+    ("tp1", "tp2", URL_TP1),     # el corte de luz del 18-10: TP=2 sin enlace
+    ("tp2", "tp1", URL_TP2),     # dgx3 en ventana creative o caido
+])
+def test_motor_que_no_contesta_su_metrics_sale_del_reparto(vivo, caido, url_vivo):
+    """DGX-955h: se cae cualquiera de los dos y su /metrics deja de contestar.
+    Las nuevas nacen en el vivo sin pin (no hubo eleccion) y la ligada al caido
+    muda entera. Sin esto el sorteo 3:1 seguia mandando nuevas al muerto. Con
+    los dos vivos reparte por plazas libres (tests de arriba); con ninguno, la
+    admision llm-tp ya lo manda a Alibaba."""
     valkey = FakeValkey()
     pod = _pod(valkey)
-    pod._vllm_by_url[URL_TP1] = (0.0, 0.0, pod.time.monotonic())
-    assert {_elige(pod, f"nueva-{i}") for i in range(40)} == {"tp1"}
+    pod._vllm_by_url[url_vivo] = (0.0, 0.0, pod.time.monotonic())
+    assert {_elige(pod, f"nueva-{i}") for i in range(40)} == {vivo}
     assert pod.backend_pin_key(KEY_A, "nueva-0") not in valkey.data
-    assert _elige(pod, None) == "tp1"
-    valkey.data[pod.backend_pin_key(KEY_A, "ses-vieja")] = "tp2"
-    assert _elige(pod, "ses-vieja") == "tp1"
-    assert valkey.data[pod.backend_pin_key(KEY_A, "ses-vieja")] == "tp1"
+    assert _elige(pod, None) == vivo
+    valkey.data[pod.backend_pin_key(KEY_A, "ses-vieja")] = caido
+    assert _elige(pod, "ses-vieja") == vivo
+    assert valkey.data[pod.backend_pin_key(KEY_A, "ses-vieja")] == vivo
