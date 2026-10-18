@@ -673,10 +673,11 @@ def test_valvula_no_muda_una_conversacion_con_contexto(router_mod, stuck, inflig
         assert env.writes == [(SID, "alibaba" if desborda else "local")]
 
 
-@pytest.mark.parametrize("vivos, umbral", [((0, 1), 24), ((0,), 16), ((1,), 8)])
+@pytest.mark.parametrize("vivos, umbral", [((0, 1), 13), ((0,), 8), ((1,), 5)])
 def test_desborde_a_la_suma_de_los_servidores_vivos(router_mod, vivos, umbral):
-    """DGX-897: con el panel de techo a 24, Alibaba entra a 24 en vuelo con los dos
-    servidores, a 16 solo con el TP=2 y a 8 solo con el TP=1."""
+    """DGX-897: con el panel de techo a 24, Alibaba entra a la suma de los `--max-num-seqs`
+    de los servidores que contestan: DGX-955h (18-10) 13 con los dos (8+5), 8 solo el
+    TP=2 y 5 solo el TP=1."""
     up = [router_mod.VLLM_METRICS_URLS[i] for i in vivos]
     for inflight, desborda in ((umbral - 1, False), (umbral, True)):
         env = _Env(router_mod, _cfg(instant_reject=True, local_slots=24), inflight=inflight, up=up)

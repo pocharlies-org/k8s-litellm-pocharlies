@@ -264,8 +264,10 @@ data:
         # acaparar el residente (16 ranuras). Lo que pase ESPERA aquí (encola, no rechaza; su espera no cuenta
         # para `timeout`) y es FIFO: la prioridad por key solo la ordena la cola del vLLM. ROLLBACK: 8.
         # 14-10-2026 (DGX-897, Dani): 4 -> 8 por pod = 16 entre las dos réplicas, el `--max-num-seqs` del TP=2.
-        # Los gemelos TP=1 lo pisan a 4 (8, su `--max-num-seqs`). ROLLBACK: 4.
-        max_parallel_requests: 8
+        # 18-10-2026 (DGX-955h, Dani): 8 -> 4 por pod = 8, el `--max-num-seqs` del TP=2 tras medir la
+        # saturación de prefill (x2,8 de 8 a 16 secuencias). Los gemelos TP=1 lo pisan a 3 (5, su
+        # `--max-num-seqs`: 3x2 réplicas admite 6 y la sexta encola dentro del motor). ROLLBACK: 8.
+        max_parallel_requests: 4
         # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
         # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
@@ -385,15 +387,16 @@ data:
     # (los dos gemelos, o el bucle de LiteLLM sigue gastando inferencias que no
     # informan de nada).
     #
-    # El semaforo se pisa aqui (DGX-897, 14-10): `max_parallel_requests: 4`, 8
-    # entre las dos replicas del proxy, justo los 8 slots de ejecucion del TP=1
-    # (`--max-num-seqs 8`), frente a los 16 del TP=2 que lleva el ancla. Se
-    # cambia en esta entrada, NUNCA en el ancla.
+    # El semaforo se pisa aqui (DGX-955h, 18-10): `max_parallel_requests: 3`, 6
+    # entre las dos replicas del proxy, para 5 slots de ejecucion del TP=1
+    # (`--max-num-seqs 5`): la sexta encola dentro del motor. El ancla lleva 4
+    # (8, el `--max-num-seqs` del TP=2). Se cambia en esta entrada, NUNCA en el
+    # ancla.
     - model_name: qwen38-flash-next
       litellm_params:
         <<: *qwen38_resident_params
         api_base: http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1
-        max_parallel_requests: 4
+        max_parallel_requests: 3
       model_info:
         <<: *qwen38_resident_info
         id: qwen38-flash-next-tp1
@@ -495,9 +498,9 @@ data:
         api_base: http://qwen38-flash-next.llm.svc.cluster.local:8000/v1
         api_key: not-used
         timeout: 600
-        # DGX-587: 8 -> 4 (por pod). DGX-897 (14-10): 4 -> 8, 16 en el TP=2; su gemelo TP=1 lo pisa a 4.
-        # Detalle en el comentario de qwen38-flash-next.
-        max_parallel_requests: 8
+        # DGX-587: 8 -> 4 (por pod). DGX-897 (14-10): 4 -> 8, 16 en el TP=2. DGX-955h (18-10): 8 -> 4
+        # (8 en el TP=2); su gemelo TP=1 lo pisa a 3 (5). Detalle en qwen38-flash-next.
+        max_parallel_requests: 4
         extra_body: { cache_salt: "refusal:1.0" }
       model_info: &qwen38_uncensored_info
         # DGX-852: id estable con sufijo de backend, mismo criterio que su
@@ -555,7 +558,7 @@ data:
       litellm_params:
         <<: *qwen38_uncensored_params
         api_base: http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1
-        max_parallel_requests: 4  # DGX-897: 8 entre las dos replicas, el `--max-num-seqs` del TP=1
+        max_parallel_requests: 3  # DGX-955h: 6 entre las dos replicas para 5 del TP=1 (la sexta encola en el motor)
       model_info:
         <<: *qwen38_uncensored_info
         id: qwen38-flash-next-uncensored-tp1
@@ -8065,10 +8068,13 @@ data:
     _vllm_queue = {"waiting": None, "running": None, "since": None, "read_at": None}
     # DGX-897 (14-10-2026, Dani): el desborde a Alibaba salta a la SUMA del tope de los
     # servidores que contestan su /metrics, en el MISMO orden que
-    # SESSION_ROUTER_VLLM_METRICS_URL (TP=2, TP=1): 24 con los dos, 16 solo el TP=2 y 8
-    # solo el TP=1. Cada tope es el `--max-num-seqs` de su vLLM. El `local_slots` del
-    # panel queda como techo global (manda el menor) y, sin ninguna lectura fresca
-    # (sondeo caido), manda solo el panel, como antes.
+    # SESSION_ROUTER_VLLM_METRICS_URL (TP=2, TP=1). Cada tope es el `--max-num-seqs` de
+    # su vLLM. El `local_slots` del panel queda como techo global (manda el menor) y,
+    # sin ninguna lectura fresca (sondeo caido), manda solo el panel, como antes.
+    # DGX-955h (18-10-2026, Dani): 16,8 -> 8,5 con los `--max-num-seqs` nuevos
+    # (k8s-ai-pocharlies#197): el desborde salta a 13, la capacidad REAL del residente;
+    # con el 24 viejo se admitían 11 peticiones más de las que cabían y encolaban dentro
+    # del motor (lento sin desbordar).
 
 
     def _parse_slots(raw):
@@ -8078,7 +8084,7 @@ data:
             return ()
 
 
-    VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "16,8"))
+    VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "8,5"))
     _vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
     # DGX-974: la ultima lectura de CADA motor, url -> (waiting, running, read_at), y
     # cuantas peticiones nuevas le ha dado ESTE pod desde esa lectura: el reparto de
@@ -8939,7 +8945,7 @@ data:
         sidecar :4001 (agregado menos /local, ver _poll_sidecar_forever), deduplicando
         por request_id. None => contador
         desconocido => la válvula NO actúa (fail-open hacia admitir local, con el
-        semaphore duro de 8 del Router detrás protegiendo igual)."""
+        semaphore duro de 4 por pod del Router (8 en el TP=2) detrás protegiendo igual)."""
         local_ids = set()
         local_n = 0
         try:
@@ -12392,7 +12398,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-72d58916abf3
+        config.k8s.e-dani.com/revision: config-60246ae23fd2
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13296,7 +13302,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-72d58916abf3
+        config.k8s.e-dani.com/revision: config-60246ae23fd2
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

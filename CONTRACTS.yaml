@@ -236,6 +236,11 @@ contracts:
       Criterio de Dani: un solo pool, cada conversacion clavada a un backend y las
       nuevas repartidas por capacidad.
 
+      DGX-955h (2026-10-18, Dani): capacidades medidas y recortadas — TP=2 16->8
+      secuencias (prefill x2,8 mas lento de 8 a 16 en vuelo, 16.100->5.700 tok/s) y
+      TP=1 8->5. Afecta a `least_loaded_backend` (plazas = slots - en marcha/cola) y a
+      la valvula de desborde (SESSION_ROUTER_VLLM_SLOTS default 16,8 -> 8,5).
+
       Publisher y lector: session_router.resident_backend_filter, llamado por el
       Router en cada eleccion de deployment a traves de
       StripUnsupportedParams.async_filter_deployments, DESPUES del filtro de cuenta
