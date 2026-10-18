@@ -24,3 +24,27 @@ def named(kind, name):
 
 def config_data(name="litellm-config"):
     return named("ConfigMap", name)["data"]
+
+
+def hook_gate(want_fn, want_const, env, name="hookgate"):
+    """Ejecuta aislados los gates por prefijo del hook (litellm_strip_params.py).
+
+    Extrae solo las funciones `want_fn` y las asignaciones `want_const` del modulo
+    y las corre con un `os.environ` falso: asi el test mide el gate tal como va en
+    el ConfigMap sin importar litellm. Compartido por los gates grok-* y gpt-*.
+    """
+    import ast
+    import types
+
+    tree = ast.parse(config_data()["litellm_strip_params.py"])
+    keep = [
+        n for n in tree.body
+        if (isinstance(n, ast.FunctionDef) and n.name in want_fn)
+        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in want_const for t in n.targets))
+    ]
+    missing = set(want_fn) - {n.name for n in keep if isinstance(n, ast.FunctionDef)}
+    assert not missing, f"el hook ya no define: {sorted(missing)}"
+    mod = types.ModuleType(name)
+    mod.os = types.SimpleNamespace(environ=dict(env))
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "<hook>", "exec"), mod.__dict__)  # noqa: S102
+    return mod

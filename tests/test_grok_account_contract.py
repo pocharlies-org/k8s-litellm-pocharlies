@@ -11,12 +11,12 @@ saldria sin token (litellm solo cablea use_xai_oauth en chat) y /v1/videos diria
 "video generation is not supported for xai". Si alguien lo quita del ConfigMap, de
 los callbacks o del volumeMount, los alias siguen en el catalogo y fallan en vivo.
 """
-import ast
-import types
 from pathlib import Path
 
 import pytest
 import yaml
+
+from manifest_docs import hook_gate
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,19 +45,7 @@ def _litellm_container():
 
 
 def _gate(env):
-    cm, _ = _config()
-    tree = ast.parse(cm["data"]["litellm_strip_params.py"])
-    keep = [
-        n for n in tree.body
-        if (isinstance(n, ast.FunctionDef) and n.name in WANT_FN)
-        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in WANT_CONST for t in n.targets))
-    ]
-    missing = WANT_FN - {n.name for n in keep if isinstance(n, ast.FunctionDef)}
-    assert not missing, f"el hook ya no define: {sorted(missing)}"
-    mod = types.ModuleType("grokgate")
-    mod.os = types.SimpleNamespace(environ=dict(env))
-    exec(compile(ast.Module(body=keep, type_ignores=[]), "<hook>", "exec"), mod.__dict__)  # noqa: S102
-    return mod
+    return hook_gate(WANT_FN, WANT_CONST, env, "grokgate")
 
 
 @pytest.fixture(scope="module")

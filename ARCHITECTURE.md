@@ -11,9 +11,17 @@
 | Proxy LiteLLM | `k8s/manifest.yaml` | `harbor.lan.e-dani.com/homelab/litellm` (v1.105.1 + Codex, fork `pocharlies-org/litellm`) | ArgoCD app `litellm` (path `k8s`, `main`) |
 | Redis (`redis:7-alpine`), CronJobs (watchdog, spendlogs index/retention; `python:3.12-slim`, `postgres:16-alpine`) | `k8s/litellm-watchdog-cron.yaml`, `spendlogs-*.yaml` | tags | ídem |
 | `plan-gateway` (Deployment propio, 2 réplicas, mismo digest que el proxy) | `k8s/manifest.yaml` (`plan-gateway-config` → `plan_gateway.py`) | ídem imagen | ArgoCD app `litellm`, mismo path |
+| CronJob `chatgpt-token-keeper` (`python:3.12-slim`, stdlib) + semilla `litellm-chatgpt-oauth` | `k8s/chatgpt-token-keeper.yaml` | tag | ídem |
 | Scrape de métricas | `k8s/vmservicescrape.yaml` | — | ídem |
 
 Los clientes del router (Claude CLI del x86, Hermes, OpenClaw, document-intake, auto-reply…) usan `https://litellm…`/`litellm.litellm.svc:4000`.
+
+**`chatgpt-token-keeper`** (DGX-1053) es el renovador **canónico** del token OAuth de la cuenta ChatGPT Plus de Dani y el
+**único escritor** del Secret `litellm-chatgpt-token`: lo crea desde la semilla de 1Password (ExternalSecret
+`litellm-chatgpt-oauth`, item `litellm` campo `CHATGPT_OAUTH_AUTH_JSON`) y lo renueva con 72 h de margen sobre 240 h. Los pods
+de `litellm` lo montan en solo lectura en `CHATGPT_TOKEN_DIR`: el provider `chatgpt/` no tiene cerrojo y OpenAI rota el
+refresh token, así que dos réplicas renovando revocarían la sesión. Sin RWX/NFS (SC-381). Re-login: cabecera del fichero.
+Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, gate `claude-local,hermes`, solo selección manual).
 
 **`plan-gateway`** (`plan-gateway.litellm.svc:4002`, solo dentro del cluster, sin IngressRoute) es el sitio único por el que
 pasa la **media** (imagen, vídeo, voz) del Token Plan de Alibaba. Consumidores, uno por token
@@ -52,6 +60,7 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
 | **Selector de cuenta Alibaba** (UNA fórmula; la época de ventana = TTL del pin entra en el hash, DGX-639) | `session_router.preferred_account` + el seam `draw_account(accounts)`/`warm_config()` | `dev/session_router.py` = embed de `litellm-config` (`tests/test_session_router_dev_copy_contract.py` los iguala; manda el manifiesto) | chat sin sid (`alibaba_account_filter`) y `plan-gateway`: nadie define otra fórmula (`tests/test_plan_gateway_contract.py`, test AST) |
 | Gateway de media del plan | `plan_gateway.py` | `k8s/manifest.yaml`, ConfigMap `plan-gateway-config` (inline, sin copia en `dev/`) | Studio, omnivoice |
 | Compatibilidad Anthropic | `doc/anthropic-compat.md` | ídem | Claude CLI |
+| Puertas al proxy por lane (alias del Service `litellm`, mismo selector y puerto; Hermes pinta una fila por host) | Services `litellm-openrouter`, `litellm-alibaba` y `litellm-chatgpt` (DGX-1053, `dgx.litellm.service-alias.chatgpt.v1`) | `k8s/manifest.yaml` | Hermes (`extraProviders`) |
 
 **BURST Alibaba (SC-2082 P6c).** `session_router._apply` lee `company.bots_alibaba` de `/api/model-routing/config` (campo aditivo
 de v2, saneado aparte de `DEFAULT_COMPANY`: solo un `true` bool enciende). Con él, la key `hermes-batch` (lista fija

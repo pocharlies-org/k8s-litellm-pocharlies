@@ -411,6 +411,23 @@ contracts:
       default 16,8 = TP=2 y TP=1): 24 con los dos, 16 solo el TP=2, 8 solo el
       TP=1. Sin ninguna lectura fresca manda solo local_slots, como antes. Mismo
       campo y mismo rango: sin .vN+1.
+  - id: dgx.litellm.service-alias.chatgpt.v1
+    kind: http-route
+    value: litellm-chatgpt
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1053 (2026-10-18). Service alias of `litellm` (same selector and
+      port 4000, label `app: litellm`) consumed by Hermes
+      (k8s-openclaw-qwen36-pocharlies#658, extraProviders `litellm-chatgpt`)
+      so its /model picker renders the `gpt-*` aliases (ChatGPT account,
+      dgx.litellm.chatgpt-oauth.v1) in their own row. Same reason as
+      litellm-openrouter / dgx.litellm.service-alias.alibaba.v1: Hermes groups
+      picker rows by (base_url, credential, api_mode). Not a backend and not an
+      access control: routing stays by model name and the `gpt-` gate decides
+      who may call.
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba
@@ -707,6 +724,31 @@ contracts:
       UNCENSORED_ALLOWED_KEY_ALIASES es coherente con este veto: su motivo
       de entrada (la medicion interna) ya no existe. Pinned by
       tests/test_master_inference_veto_contract.py.
+  - id: dgx.litellm.chatgpt-oauth.v1
+    kind: allowlist
+    value: gpt-
+    anchor: 'def _chatgpt_access_denied(requested, key_label):'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1053 (2026-10-18). Siete alias `gpt-6.1-sol`, `gpt-6-astra`,
+      `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` y
+      `gpt-5.6-luna` contra la cuenta ChatGPT Plus de Dani por el provider
+      `chatgpt/` (OAuth) de la imagen de casa (DGX-1035), coste 0. Solo
+      seleccion manual: ningun fallback, router_settings, model_group_alias
+      ni desvio de vision llega a ellos (la causa de los baneos de agosto de
+      la cuenta anterior). Gate fail-closed por prefijo `gpt-` en el
+      pre_call_hook: LITELLM_CHATGPT_ALLOWED_KEYS = claude-local (Claude CLI
+      y Paseo por claude-local-router) y hermes; vacia = nadie, ni la master.
+      Token: el pod de litellm lee CHATGPT_TOKEN_DIR=/var/run/chatgpt-oauth,
+      el Secret litellm-chatgpt-token montado en solo lectura. Lo crea desde
+      la semilla de 1Password (ExternalSecret litellm-chatgpt-oauth, item
+      litellm campo CHATGPT_OAUTH_AUTH_JSON) y lo renueva con 72 h de margen
+      SOLO el CronJob chatgpt-token-keeper: OpenAI rota el refresh token y el
+      provider no tiene cerrojo. Pinned by
+      tests/test_chatgpt_oauth_contract.py.
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que
