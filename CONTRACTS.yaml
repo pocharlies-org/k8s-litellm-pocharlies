@@ -1042,7 +1042,10 @@ contracts:
       de ahi el `model_group_retry_policy` del manifest
       (`alibaba-q38-flash: BadRequestErrorRetries: 2`), que da tres
       generaciones nuevas por turno SOLO en ese grupo; lo fija
-      tests/test_alibaba_400_retry_policy_contract.py.
+      tests/test_alibaba_400_retry_policy_contract.py. 2026-10-18 (DGX-1075):
+      el mismo mapa lleva `qwen38-flash-next: TimeoutErrorRetries: 0` (un
+      Timeout de 240 s del residente va directo a su fallback a Alibaba); el
+      fichero de test fija los dos grupos y nada mas.
   - id: dgx.litellm.priority-field.v1
     kind: schema
     value: priority
