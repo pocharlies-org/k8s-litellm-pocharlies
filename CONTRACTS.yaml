@@ -758,6 +758,11 @@ contracts:
       SOLO el CronJob chatgpt-token-keeper: OpenAI rota el refresh token y el
       provider no tiene cerrojo. Pinned by
       tests/test_chatgpt_oauth_contract.py.
+      MIGRATE (DGX-1053, 2026-10-18): CHATGPT_DEVICE_LOGIN=never en el
+      Deployment (imagen del fork con el fix 160cffc0). Sin token valido el
+      alias responde 401 AuthenticationError sin device login, el despliegue
+      del alias se conserva en el arranque y el pod se recupera solo cuando el
+      keeper deja el token (antes el pod se quedaba sin Ready).
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que
