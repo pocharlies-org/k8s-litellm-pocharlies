@@ -6969,7 +6969,8 @@ data:
             RESIDENT_FAMILY), asi que el que no aplica pasa la lista intacta y
             el orden no cambia nada."""
             if session_router is None:
-                return healthy_deployments
+                # Sin el modulo no hay politica de cuentas: claude-* no abre ninguna.
+                return [] if str(model or "").startswith("claude-") else healthy_deployments
             deps = healthy_deployments
             # DGX-1099: la cuenta de Claude de la key. SIN fail-open: si el filtro
             # revienta no se elige cuenta (lista vacia), nunca una de otra key.
@@ -12901,7 +12902,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1c30651241fa
+        config.k8s.e-dani.com/revision: config-d710e4ffc05a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13823,7 +13824,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1c30651241fa
+        config.k8s.e-dani.com/revision: config-d710e4ffc05a
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
