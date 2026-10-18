@@ -1992,6 +1992,8 @@ data:
       # Cuenta Grok (xAI): hook de imagen + registro del config de video (ver el
       # modulo xai_account_provider.py mas abajo y los alias `grok-*`).
       - xai_account_provider.proxy_handler_instance
+      # DGX-1078: ultima lectura de cuota de la cuenta ChatGPT (cabeceras x-codex-*) a Valkey.
+      - chatgpt_quota.proxy_handler_instance
       - langfuse_otel
       # 07-09-2026: WebSearch de Claude Code contra residentes locales. Claude Code
       # manda la server tool nativa (type web_search_20250305); LiteLLM la traduce a
@@ -2187,6 +2189,12 @@ data:
       model_group_retry_policy:
         alibaba-q38-flash:
           BadRequestErrorRetries: 2
+        # 18-10-2026 (DGX-1075, Dani: «si la cola se atasca a los 240 s, que tire a Alibaba»): un
+        # Timeout del residente NO se reintenta en local (el `num_retries: 1` global pagaba otros
+        # 240 s, 480 s + Alibaba por encima de los 600 s de Claude CLI): va directo a la arista
+        # `qwen38-flash-next -> alibaba-q38-flash`. Los demás errores siguen con el global.
+        qwen38-flash-next:
+          TimeoutErrorRetries: 0
       # ── Afinidad de sesion por CUENTA de Alibaba ─────────────────────────
       #
       # 28-09-2026: el `session_affinity` nativo (model_group_affinity_config)
@@ -4605,6 +4613,50 @@ data:
                     quitado = quitado or hit
         return quitado
 
+    # ── Ruta de memoria de Claude Code (18-10-2026, DGX-1076) ────────────────────
+    # Lo único del system de Claude Code que cambia entre directorios es la ruta de la
+    # memoria del proyecto (`~/.claude/projects/<slug>/memory/`, sección `# Memory`, a ~3,4k
+    # caracteres; medido con capturas -p e interactivas desde 4 directorios: system y tools
+    # idénticos byte a byte salvo eso). La plantilla de Qwen pinta system -> tools ->
+    # mensajes, así que cortaba el prefijo compartido antes de las tools. Se sustituye por
+    # MEMORY_DIR_TOKEN y el valor va al primer mensaje del usuario, que ya es por proyecto.
+    # Determinista: cada turno sale igual y la caché de la propia sesión no cambia.
+    MEMORY_DIR_RE = re.compile(r"/[^\s`'\"]*/\.claude/projects/[^/\s`'\"]+/memory/")
+    MEMORY_DIR_TOKEN = "$CLAUDE_MEMORY_DIR"
+
+    def _system_texts(data):
+        """(contenedor, clave) de cada texto del system, en formato Anthropic y OpenAI."""
+        out = []
+        partes = [(data, "system")] + [
+            (m, "content") for m in data.get("messages") or ()
+            if isinstance(m, dict) and m.get("role") == "system"
+        ]
+        for obj, key in partes:
+            value = obj.get(key)
+            if isinstance(value, str):
+                out.append((obj, key))
+            elif isinstance(value, list):
+                out += [(b, "text") for b in value if isinstance(b, dict) and isinstance(b.get("text"), str)]
+        return out
+
+    def _move_memory_dir(data):
+        """Mueve la ruta de memoria del system al primer mensaje del usuario. Solo con UNA
+        ruta distinta y un primer mensaje de usuario de texto; si no, no toca nada."""
+        textos = _system_texts(data)
+        rutas = {r for obj, key in textos for r in MEMORY_DIR_RE.findall(obj[key])}
+        user = next((m for m in data.get("messages") or ()
+                     if isinstance(m, dict) and m.get("role") == "user"), None)
+        if len(rutas) != 1 or user is None or not isinstance(user.get("content"), (str, list)):
+            return False
+        ruta = rutas.pop()
+        for obj, key in textos:
+            obj[key] = obj[key].replace(ruta, MEMORY_DIR_TOKEN)
+        nota = f"<system-reminder>\n{MEMORY_DIR_TOKEN} = {ruta}\n</system-reminder>"
+        content = user["content"]
+        user["content"] = (f"{nota}\n\n{content}" if isinstance(content, str)
+                           else [{"type": "text", "text": nota}] + content)
+        return True
+
     def _key_tooling_fallbacks(user_api_key_dict):
         """Destinos extra de `tooling` que tiene ESTA key (vacío para casi todas)."""
         return tuple(KEY_TOOLING_FALLBACKS.get(_resolve_key_label(user_api_key_dict), ()))
@@ -6814,6 +6866,8 @@ data:
             # La línea de facturación de Claude Code rompe el prefijo compartido entre
             # conversaciones en vLLM y en Alibaba (ver BILLING_HEADER_PREFIX).
             _strip_billing_header(data)
+            # Y la ruta de memoria del proyecto, la otra pieza del system que cambia (DGX-1076).
+            _move_memory_dir(data)
 
             requested_model = data.get("model", "")
 
@@ -11876,6 +11930,124 @@ data:
 
 
     proxy_handler_instance = XAIAccountProvider()
+
+  chatgpt_quota.py: |
+    # DGX-1078 · Cuota de la cuenta ChatGPT Plus (alias `gpt-*`, DGX-1053) para /cuentas.
+    #
+    # El backend de Codex (chatgpt.com/backend-api/codex) devuelve en CADA respuesta su
+    # estado de cuota en cabeceras `x-codex-*`: la ventana corta (`primary`, 300 min) y la
+    # semanal (`secondary`, 10080 min), cada una con % usado, minutos y reset en epoch
+    # (medido el 18-10-2026 en una respuesta de gpt-6-luna). Este callback guarda la ultima
+    # lectura en el Valkey del router (CHATGPT_QUOTA_KEY) y el dashboard la lee de ahi: sin
+    # polling, sin salir a Internet y sin tocar el token (su unico renovador es el CronJob
+    # chatgpt-token-keeper).
+    #
+    # Solo se guardan los campos de cuota: `x-codex-turn-state` es estado opaco de la
+    # conversacion y no sale de la respuesta. Corre en el logging, fuera del camino de la
+    # peticion; un fallo de Valkey deja un warning y nada mas.
+    import asyncio
+    import json
+    import logging
+    import time
+
+    from litellm.integrations.custom_logger import CustomLogger
+
+    import session_router
+
+    log = logging.getLogger("chatgpt_quota")
+
+    # CONTRACT: dgx.litellm.chatgpt-quota.v1
+    CHATGPT_QUOTA_KEY = "chatgpt:quota"
+    # Pasada la ventana semanal, la mas larga, nada de la lectura sigue vigente.
+    CHATGPT_QUOTA_TTL_SECONDS = 8 * 86400
+    WRITE_TIMEOUT_SECONDS = 2.0
+
+
+    def codex_headers(*sources):
+        """Las `x-codex-*` de la primera fuente que las traiga, sin ese prefijo ni el
+        `llm_provider-` que les pone litellm en additional_headers."""
+        for src in sources:
+            try:
+                items = dict(src or {}).items()
+            except (TypeError, ValueError):
+                continue
+            out = {}
+            for k, v in items:
+                k = str(k).lower().removeprefix("llm_provider-")
+                if k.startswith("x-codex-"):
+                    out[k[len("x-codex-"):]] = str(v)
+            if out:
+                return out
+        return {}
+
+
+    def quota_from_headers(h, now=None):
+        """La lectura que se guarda, o None si la respuesta no trae ninguna ventana."""
+        def window(name):
+            try:
+                return {"used_percent": float(h[name + "-used-percent"]),
+                        "window_minutes": int(h[name + "-window-minutes"]),
+                        "reset_at": int(h[name + "-reset-at"])}
+            except (KeyError, ValueError):
+                return None
+
+        primary, secondary = window("primary"), window("secondary")
+        if primary is None and secondary is None:
+            return None
+        try:
+            balance = float(h["credits-balance"])
+        except (KeyError, ValueError):
+            balance = None
+        return {
+            "observed_at": round(time.time() if now is None else now, 3),
+            "plan_type": h.get("plan-type"),
+            "active_limit": h.get("active-limit"),
+            "primary": primary,
+            "secondary": secondary,
+            "credits_unlimited": h.get("credits-unlimited", "").lower() == "true",
+            "credits_balance": balance,
+        }
+
+
+    def _headers_of(kwargs, response_obj):
+        hidden = getattr(response_obj, "_hidden_params", None)
+        hidden = hidden if isinstance(hidden, dict) else {}
+        exc = kwargs.get("exception")
+        # Exito: litellm las deja en model_call_details y en _hidden_params. Un 429 (cuota
+        # agotada) solo las trae en la excepcion, y es justo la lectura que mas importa.
+        return codex_headers(
+            kwargs.get("response_headers"),
+            hidden.get("additional_headers"),
+            hidden.get("headers"),
+            getattr(exc, "litellm_response_headers", None),
+            getattr(getattr(exc, "response", None), "headers", None),
+        )
+
+
+    class ChatGPTQuota(CustomLogger):
+        async def _capture(self, kwargs, response_obj):
+            try:
+                reading = quota_from_headers(_headers_of(kwargs, response_obj))
+                if reading is None:
+                    return
+                client = await session_router._redis()
+                if client is None:
+                    return
+                await asyncio.wait_for(
+                    client.set(CHATGPT_QUOTA_KEY, json.dumps(reading), ex=CHATGPT_QUOTA_TTL_SECONDS),
+                    timeout=WRITE_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:  # noqa: BLE001 - fail-open: es un adorno del panel
+                log.warning("chatgpt_quota: no se guardo la lectura (%s)", exc.__class__.__name__)
+
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            await self._capture(kwargs, response_obj)
+
+        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+            await self._capture(kwargs, response_obj)
+
+
+    proxy_handler_instance = ChatGPTQuota()
 ---
 # Secrets via ExternalSecret (1Password item: litellm)
 # op item edit litellm \
@@ -12190,7 +12362,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a4913022983d
+        config.k8s.e-dani.com/revision: config-2c700e1c619b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12261,7 +12433,7 @@ spec:
         - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: litellm
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-f5fcab9ad4@sha256:97de7c52386013d18240d6c8ff0b0dee023ce998d174d698d8e4653781f12b4f
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-160cffc07b@sha256:bd8e0146302b8c6d78b22f824fa29c305564a2084012bb548d326ad7f2235f84
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -12423,6 +12595,10 @@ spec:
             # entran por `claude-local` (claude-local-router); Hermes por `hermes`.
             - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
+            # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
+            # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
+            # keeper deja el token. `never` explicito aunque `auto` ya lo es sin TTY.
+            - { name: CHATGPT_DEVICE_LOGIN, value: never }
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS
@@ -12435,6 +12611,7 @@ spec:
             - { name: config, mountPath: /app/session_router.py, subPath: session_router.py, readOnly: true }
             - { name: config, mountPath: /app/active_request_tracking.py, subPath: active_request_tracking.py, readOnly: true }
             - { name: config, mountPath: /app/xai_account_provider.py, subPath: xai_account_provider.py, readOnly: true }
+            - { name: config, mountPath: /app/chatgpt_quota.py, subPath: chatgpt_quota.py, readOnly: true }
             - { name: xai-oauth, mountPath: /var/run/xai-oauth }
             # DGX-1053: token de la cuenta ChatGPT. Solo lectura a proposito: lo
             # renueva UNICAMENTE el CronJob chatgpt-token-keeper (ver alli por que).
@@ -13088,7 +13265,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a4913022983d
+        config.k8s.e-dani.com/revision: config-2c700e1c619b
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
@@ -13121,7 +13298,7 @@ spec:
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-f5fcab9ad4@sha256:97de7c52386013d18240d6c8ff0b0dee023ce998d174d698d8e4653781f12b4f
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-160cffc07b@sha256:bd8e0146302b8c6d78b22f824fa29c305564a2084012bb548d326ad7f2235f84
           command:
             - python
             - -m
