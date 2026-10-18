@@ -757,7 +757,11 @@ contracts:
       ni desvio de vision llega a ellos (la causa de los baneos de agosto de
       la cuenta anterior). Gate fail-closed por prefijo `gpt-` en el
       pre_call_hook: LITELLM_CHATGPT_ALLOWED_KEYS = claude-local (Claude CLI
-      y Paseo por claude-local-router) y hermes; vacia = nadie, ni la master.
+      y Paseo por claude-local-router), hermes y studio-chatgpt; vacia =
+      nadie, ni la master. DGX-1077 (2026-10-18), aditivo: tres alias de
+      imagen `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` y `gpt-image-2`
+      (mode image_generation, coste 0) para los motores `chatgpt-*` del DGX
+      Studio, que entran con la key `studio-chatgpt`.
       Token: el pod de litellm lee CHATGPT_TOKEN_DIR=/var/run/chatgpt-oauth,
       el Secret litellm-chatgpt-token montado en solo lectura. Lo crea desde
       la semilla de 1Password (ExternalSecret litellm-chatgpt-oauth, item
