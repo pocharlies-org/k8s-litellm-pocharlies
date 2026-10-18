@@ -662,6 +662,17 @@ contracts:
       the engine served it at 1.0. A non-finite salt (inf, nan) is not a seal:
       `refusal_lambda` is always a finite number or absent. Pinned by
       tests/test_refusal_dial.py and tests/test_uncensored_alias_contract.py.
+      Since 2026-10-18 (SC-2675), additive: every row carries
+      `completion_tokens_estimate` (int|null) — output tokens ESTIMATED from
+      the characters streamed in chunks that carry no `usage`, for providers
+      that report usage only on the final chunk (Alibaba/DashScope: 1 usage
+      chunk in 10586, measured 2026-10-18). The estimate divides by the same
+      learned chars-per-token ratio as `prompt_tokens_estimate`. The first
+      content chunk also seals `ttft_ms` and feeds the same 2 s speed window
+      as real usage, so a live Alibaba request shows its speed; once real
+      `completion_tokens` arrives it wins and the window resets (the scales
+      differ). It never replaces `completion_tokens`. Pinned by
+      tests/test_active_request_metrics_contract.py.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema

@@ -3519,7 +3519,25 @@ data:
             request_tracker.update_backend(
                 tracking_id, model=None, api_base=api_base)
 
-    def _track_live_chunk(stream, usage):
+    def _chunk_delta_chars(chunk):
+        """Caracteres emitidos en este chunk (contenido + razonamiento).
+
+        SC-2675: para el stream cuyo proveedor no manda usage hasta el final,
+        los caracteres son la medida de salida; se dividen por la misma
+        proporcion caracteres/token que aprende el tracker.
+        """
+        total = 0
+        for choice in getattr(chunk, "choices", None) or []:
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            for attr in ("content", "reasoning_content"):
+                value = getattr(delta, attr, None)
+                if isinstance(value, str):
+                    total += len(value)
+        return total
+
+    def _track_live_chunk(stream, usage, chunk=None):
         """Uso acumulado del chunk -> tracker, desde el CustomStreamWrapper.
 
         El hook de iterador del proxy NO basta: en /v1/messages lo que itera son
@@ -3554,6 +3572,11 @@ data:
                     completion_tokens=completion_tokens,
                     cached_tokens=cached_from_response(snapshot),
                 )
+            else:
+                # SC-2675: chunk sin usage (Alibaba no lo manda hasta el
+                # final): el tracker estima la salida por caracteres.
+                request_tracker.tick_chunk(
+                    tracking_id, _chunk_delta_chars(chunk))
         except Exception as e:
             log.debug("track_live_chunk error: %s", e)
 
@@ -3571,8 +3594,8 @@ data:
             hidden_params = getattr(chunk, "_hidden_params", None)
             if usage is not None and isinstance(hidden_params, dict):
                 hidden_params["live_usage"] = _usage_snapshot(usage)
-            if usage is not None:
-                _track_live_chunk(self, usage)
+            # SC-2675: también con usage None — el tracker estima el chunk.
+            _track_live_chunk(self, usage, chunk)
             return chunk
 
         wrapped._active_request_usage_patch = True
@@ -10660,6 +10683,8 @@ data:
             # tokens reales con el primer token. 3.5 es solo el punto de partida.
             self.chars_per_token = 3.5
             self._prompt_chars: Dict[str, int] = {}
+            # SC-2675: caracteres de stream vistos sin usage, por peticion.
+            self._out_chars: Dict[str, int] = {}
             self._last_flush_at: Optional[float] = None
             self._lock = threading.RLock()
 
@@ -10745,6 +10770,11 @@ data:
                     # prefijo del motor. None hasta que el uso lo trae.
                     "cached_tokens": None,
                     "completion_tokens": None,
+                    # SC-2675: salida ESTIMADA contando chunks del stream, para
+                    # proveedores que no reportan usage hasta el final (Alibaba/
+                    # DashScope: 0 chunks de usage en 4046, medido 18-10). El
+                    # real (completion_tokens) manda en cuanto llega.
+                    "completion_tokens_estimate": None,
                     "output_speed_tps": None,
                     "ttft_ms": None,
                 }
@@ -10807,32 +10837,89 @@ data:
                             int(round((now - record["ts"]) * 1000)),
                         )
 
-                    samples = self._samples.setdefault(request_id, deque())
-                    samples.append((now, completion_tokens))
-                    while (
-                        len(samples) > 1
-                        and now - samples[0][0] > self.speed_window_s
-                    ):
-                        samples.popleft()
-                    if len(samples) >= 2:
-                        oldest_ts, oldest_tokens = samples[0]
-                        newest_ts, newest_tokens = samples[-1]
-                        duration = newest_ts - oldest_ts
-                        if duration > 0:
-                            record["output_speed_tps"] = round(
-                                max(
-                                    0,
-                                    newest_tokens - oldest_tokens,
-                                )
-                                / duration,
-                                2,
-                            )
+                    self._sample_locked(
+                        request_id,
+                        record,
+                        now,
+                        completion_tokens,
+                        # Primer usage real tras estimaciones por chunk: la
+                        # ventana arranca de cero, mezclar escalas falsearía
+                        # el delta.
+                        reset=previous_completion is None,
+                    )
 
                 self._flush_locked(
                     now,
                     force=force_flush or first_usage,
                 )
                 return copy.deepcopy(record)
+
+        def tick_chunk(self, request_id: str, chars: int) -> Optional[Dict[str, Any]]:
+            """Un chunk de stream SIN `usage`: sus caracteres valen por salida.
+
+            SC-2675: Alibaba/DashScope no manda usage hasta el ultimo chunk
+            (medido 18-10: 1 usage en 10586 chunks), así que sin esto la fila
+            en vuelo no tiene ni ttft ni velocidad. La estimación divide por
+            la misma proporcion caracteres/token que aprende de los
+            prompt_tokens reales. Con usage real ya fluyendo no hace nada:
+            completion_tokens manda.
+            """
+            if chars <= 0:
+                return None
+            now = self.clock()
+            with self._lock:
+                record = self._records.get(request_id)
+                if record is None or record["completion_tokens"] is not None:
+                    return None
+                est_chars = self._out_chars.get(request_id, 0) + chars
+                self._out_chars[request_id] = est_chars
+                estimate = max(1, int(round(est_chars / self.chars_per_token)))
+                record["completion_tokens_estimate"] = estimate
+                record["last_sample_ts"] = now
+                first = record["first_token_ts"] is None
+                if first:
+                    record["first_token_ts"] = now
+                    record["ttft_ms"] = max(
+                        0,
+                        int(round((now - record["ts"]) * 1000)),
+                    )
+                self._sample_locked(request_id, record, now, estimate)
+                self._flush_locked(now, force=first)
+                return copy.deepcopy(record)
+
+        def _sample_locked(
+            self,
+            request_id: str,
+            record: Dict[str, Any],
+            now: float,
+            tokens: int,
+            *,
+            reset: bool = False,
+        ) -> None:
+            """Muestra (ahora, tokens acumulados) y velocidad en la ventana."""
+            if reset:
+                self._samples[request_id] = deque([(now, tokens)])
+                return
+            samples = self._samples.setdefault(request_id, deque())
+            samples.append((now, tokens))
+            while (
+                len(samples) > 1
+                and now - samples[0][0] > self.speed_window_s
+            ):
+                samples.popleft()
+            if len(samples) >= 2:
+                oldest_ts, oldest_tokens = samples[0]
+                newest_ts, newest_tokens = samples[-1]
+                duration = newest_ts - oldest_ts
+                if duration > 0:
+                    record["output_speed_tps"] = round(
+                        max(
+                            0,
+                            newest_tokens - oldest_tokens,
+                        )
+                        / duration,
+                        2,
+                    )
 
         def update_backend(
             self,
@@ -10876,6 +10963,7 @@ data:
                 removed = self._records.pop(request_id, None)
                 self._samples.pop(request_id, None)
                 self._prompt_chars.pop(request_id, None)
+                self._out_chars.pop(request_id, None)
                 if removed is not None:
                     self._recently_ended[request_id] = (now, removed)
                     self._flush_locked(now, force=True)
@@ -10928,10 +11016,13 @@ data:
                 record["refusal_runtime"] = None
                 for key in (
                     "first_token_ts", "last_sample_ts", "prompt_tokens",
-                    "cached_tokens", "completion_tokens", "output_speed_tps", "ttft_ms",
+                    "cached_tokens", "completion_tokens",
+                    "completion_tokens_estimate", "output_speed_tps", "ttft_ms",
                 ):
                     record[key] = None
                 self._samples[request_id] = deque()
+                # La estimacion del intento primario no pinta en el fallback.
+                self._out_chars.pop(request_id, None)
                 self._flush_locked(now, force=True)
                 return copy.deepcopy(record)
 
@@ -10956,6 +11047,7 @@ data:
                 self._records.pop(request_id, None)
                 self._samples.pop(request_id, None)
                 self._prompt_chars.pop(request_id, None)
+                self._out_chars.pop(request_id, None)
             for request_id in [
                 rid for rid, (ended_at, _rec) in self._recently_ended.items()
                 if now - ended_at > self.revive_window_s
@@ -11314,6 +11406,7 @@ data:
                     "prompt_tokens_estimate": raw.get("prompt_tokens_estimate"),
                     "cached_tokens": raw.get("cached_tokens"),
                     "completion_tokens": raw.get("completion_tokens"),
+                    "completion_tokens_estimate": raw.get("completion_tokens_estimate"),
                     "output_speed_tps": raw.get("output_speed_tps"),
                     "ttft_ms": raw.get("ttft_ms"),
                     "started_at": started_iso,
@@ -12305,7 +12398,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1d060115ac2a
+        config.k8s.e-dani.com/revision: config-60246ae23fd2
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13209,7 +13302,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1d060115ac2a
+        config.k8s.e-dani.com/revision: config-60246ae23fd2
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
