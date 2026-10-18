@@ -366,7 +366,7 @@ def test_los_gemelos_del_residente_solo_difieren_en_el_motor():
         # entre las dos replicas del proxy (TP=2 16, TP=1 8).
         topes = {a["model_info"]["id"][-3:]: pa.pop("max_parallel_requests"),
                  b["model_info"]["id"][-3:]: pb.pop("max_parallel_requests")}
-        assert topes == {"tp2": 8, "tp1": 4}, f"{alias}: topes por pod {topes}"
+        assert topes == {"tp2": 4, "tp1": 3}, f"{alias}: topes por pod {topes}"
         assert pa == pb, f"{alias}: litellm_params divergen entre gemelos"
         assert ia == ib, f"{alias}: model_info diverge entre gemelos"
 
@@ -433,23 +433,24 @@ def _reparto(pod, n=400):
 
 
 def test_la_nueva_va_al_motor_con_mas_plazas_libres():
-    """El caso del 16-10, 07:53Z: el TP=2 con 16 en marcha y 2 en cola, el TP=1 vacio."""
+    """El caso del 16-10, 07:53Z: el TP=2 lleno y con cola, el TP=1 vacio (DGX-955h:
+    8 plazas el TP=2, 5 el TP=1)."""
     valkey = FakeValkey()
     pod = _pod(valkey)
-    _carga(pod, tp2=(16, 2), tp1=(0, 0))
+    _carga(pod, tp2=(8, 2), tp1=(0, 0))
     assert _elige(pod, "ses-nueva") == "tp1"
     assert valkey.data[pod.backend_pin_key(KEY_A, "ses-nueva")] == "tp1"
     assert pod.BACKEND_AFFINITY_STATS["by_load"] == 1
-    _carga(pod, tp2=(4, 0), tp1=(1, 0))      # 12 libres frente a 7: el grande
+    _carga(pod, tp2=(2, 0), tp1=(3, 0))      # 6 libres frente a 2: el grande
     assert _elige(pod, "ses-otra") == "tp2"
 
 
 def test_con_empate_o_sin_lectura_fresca_decide_el_peso_de_siempre():
     pod = _pod(FakeValkey())
-    _carga(pod, tp2=(8, 0), tp1=(0, 0))      # 8 libres en los dos
+    _carga(pod, tp2=(4, 0), tp1=(1, 0))      # 4 libres en los dos
     assert 0.64 < _reparto(pod) < 0.86
     pod = _pod(FakeValkey())
-    _carga(pod, tp2=(16, 2), tp1=(0, 0), edad=pod.VLLM_STALE_SECONDS + 1)
+    _carga(pod, tp2=(8, 2), tp1=(0, 0), edad=pod.VLLM_STALE_SECONDS + 1)
     assert 0.64 < _reparto(pod) < 0.86, "una lectura vieja no decide"
     assert pod.BACKEND_AFFINITY_STATS["by_load"] == 0
 
@@ -458,21 +459,21 @@ def test_sin_valkey_decide_el_sorteo_que_coincide_entre_pods():
     """Sin SET NX que arbitre, dos replicas con lecturas distintas no deben ligar
     la misma conversacion a motores distintos: decide el sorteo determinista."""
     a, b = _pod(None), _pod(None)
-    _carga(a, tp2=(16, 2), tp1=(0, 0))
-    _carga(b, tp2=(0, 0), tp1=(8, 0))
+    _carga(a, tp2=(8, 2), tp1=(0, 0))
+    _carga(b, tp2=(0, 0), tp1=(5, 0))
     for i in range(50):
         assert _elige(a, f"ses-{i}") == _elige(b, f"ses-{i}")
 
 
 def test_una_rafaga_entre_dos_lecturas_no_cae_entera_en_el_mismo_motor():
     pod = _pod(FakeValkey())
-    _carga(pod, tp2=(14, 0), tp1=(4, 0))     # 2 libres frente a 4
+    _carga(pod, tp2=(6, 0), tp1=(1, 0))      # 2 libres frente a 4
     assert [_elige(pod, f"r-{i}") for i in range(2)] == ["tp1", "tp1"]
     assert pod._claims_since_read[URL_TP1] == 2
     # Con las dos plazas de ventaja ya dadas empatan y vuelve a decidir el peso.
     assert pod.least_loaded_backend({"tp2": _con_motor(_deps(FAMILIA[0], ("tp2",))),
                                      "tp1": _con_motor(_deps(FAMILIA[0], ("tp1",)))}) is None
-    _carga(pod, tp2=(14, 0), tp1=(4, 0))     # la lectura siguiente pone el contador a 0
+    _carga(pod, tp2=(6, 0), tp1=(1, 0))      # la lectura siguiente pone el contador a 0
     assert pod._claims_since_read == {}
 
 
