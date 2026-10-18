@@ -5,17 +5,16 @@ contra una Valkey de pega, con el modulo tal cual lo embebe el ConfigMap.
 """
 import asyncio
 import json
-import sys
 import time
-import types
 from pathlib import Path
 
 import yaml
 
+from test_alibaba_account_affinity import _pod as _base_pod  # harness compartido a proposito
+
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 DOCS = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
 CM = next(d for d in DOCS if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
-ROUTER_SRC = CM["data"]["session_router.py"]
 POLICY = {
     "claude-local": [{"id": "info", "salto_7d": 90, "salto_5h": 90},
                      {"id": "correo", "salto_7d": 90, "salto_5h": 90}],
@@ -53,24 +52,11 @@ class FakeValkey:
 
 
 def _pod(valkey, policy=POLICY):
-    saved = sys.modules.get("httpx")
-    sys.modules["httpx"] = types.ModuleType("httpx")
-    try:
-        mod = types.ModuleType("session_router_pod")
-        exec(compile(ROUTER_SRC, "session_router.py", "exec"), mod.__dict__)
-    finally:
-        if saved is not None:
-            sys.modules["httpx"] = saved
-        else:
-            sys.modules.pop("httpx", None)
-
-    async def fake_redis():
-        return valkey
+    mod = _base_pod(valkey)
 
     async def fake_refresh():
         return None
 
-    mod._redis = fake_redis
     mod._refresh_config = fake_refresh
     mod._config_cache["config"] = mod._sanitize({"claude_accounts": policy})
     mod._config_cache["expires"] = time.monotonic() + 3600
