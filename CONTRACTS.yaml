@@ -498,7 +498,7 @@ contracts:
       `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
       NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue,
-      skirmbooks-ui) keep failing closed via
+      skirmbooks-ui, hindsight) keep failing closed via
       disable_fallbacks, and the abliterated aliases have no chain. ADDITIVE
       (DGX-841, 2026-10-12, Dani): `synapse` naming the resident directly
       (`qwen38-flash-next`) was left unsealed (KEY_DIRECT_FALLBACK_MODELS) so the
@@ -531,6 +531,10 @@ contracts:
       workflow parks the invoice as `cancelled` with reason "OCR cancelado" and
       the scheduled redrive recovers it. Guarded by
       tests/test_skirmbooks_ui_no_fallback_contract.py.
+      ADDITIVE (INFRA-940, 2026-10-18): `hindsight` (Hindsight, the agent memory
+      that replaces the brain) joins the sealed set like `brain`: with no resident
+      Ready its retain/reflect calls fail closed instead of reaching the cloud twin.
+      Guarded by tests/test_hindsight_no_fallback_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
       from the /inferencia panel (ALIBABA · TOKEN PLAN, field
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
@@ -1005,7 +1009,7 @@ contracts:
       del proxy litellm 1.100.0 que una clave top-level desconocida en
       config.yaml se ignora sin error, por eso el mapa es top-level. ADITIVO (INFRA-364, 2026-10-01): alias `brain: 20`, la prioridad mas
       baja de todas (detras de hermes-batch: 10); `brain` entra tambien en
-      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`. ADITIVO (DGX-601, 2026-10-06): el valor del mapa puede ser ENTERO (como siempre) o MAPA por clase de sesion (`{default: int, "<x-claude-class>": int}`), y el config gana una clave top-level `priority_uncensored` que manda sobre el mapa cuando el destino resuelto es uncensored (`_is_uncensored`). El campo que sale hacia vLLM es el mismo `priority` (int) y el gate del residente no cambia; `claude-local` pasa a `{default: -5, company: 5}` y lo uncensored a -20. Forma rara en un valor => ese alias no inyecta (fail-open de siempre).
+      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`. ADITIVO (DGX-601, 2026-10-06): el valor del mapa puede ser ENTERO (como siempre) o MAPA por clase de sesion (`{default: int, "<x-claude-class>": int}`), y el config gana una clave top-level `priority_uncensored` que manda sobre el mapa cuando el destino resuelto es uncensored (`_is_uncensored`). El campo que sale hacia vLLM es el mismo `priority` (int) y el gate del residente no cambia; `claude-local` pasa a `{default: -5, company: 5}` y lo uncensored a -20. Forma rara en un valor => ese alias no inyecta (fail-open de siempre). ADITIVO (INFRA-940, 2026-10-18): alias `hindsight: 20` (Hindsight, que sustituye al brain), la misma prioridad que `brain`; el campo y el gate no cambian.
   - id: dgx.litellm.stream-options-guard.v1
     kind: schema
     value: stream_options

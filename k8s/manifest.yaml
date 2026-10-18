@@ -2294,6 +2294,7 @@ data:
         company: 5        # sesion de la compania: por delante del lote, detras del resto
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
+      hindsight: 20       # Hindsight (retain/reflect, INFRA-940): sustituye al brain, misma prioridad
     # DGX-601: lo UNCENSORED (`_is_uncensored`: sufijo `-uncensored` o
     # UNCENSORED_ALIASES) NO tiene proveedor de alternativa -- el sello abliterado
     # solo existe en el residente y a proposito no lleva `fallbacks` (ver el aviso
@@ -4405,7 +4406,7 @@ data:
     # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
     # Alibaba sin que nadie lo pida.
     NO_FALLBACK_KEY_ALIASES = frozenset(
-        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui"}
+        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight"}
     )
 
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
@@ -11973,7 +11974,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-bb309f2dedd0
+        config.k8s.e-dani.com/revision: config-b8881818ebb1
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12840,7 +12841,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-bb309f2dedd0
+        config.k8s.e-dani.com/revision: config-b8881818ebb1
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
