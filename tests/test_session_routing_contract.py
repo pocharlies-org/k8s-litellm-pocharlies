@@ -540,12 +540,25 @@ def test_plan_explicito_local_nunca_se_rechaza(router_mod):
     assert env.writes == []  # sticky no se escribe para planes explícitos
 
 
-def test_plan_explicito_claude_es_noop_en_el_hook(router_mod):
+def test_plan_explicito_claude_sin_cuentas_en_la_key_se_queda_en_el_residente(router_mod):
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0,
                                 session_plans={SID: "claude"}), inflight=99)
     data = _data()
     assert env.run(data) is False
     assert data["model"] == RESIDENT
+
+
+def test_plan_explicito_claude_reescribe_a_claude_con_su_beta_y_tope(router_mod):
+    """DGX-1099: la puerta plan=claude vive aqui (antes, en el claude-router del x86)."""
+    env = _Env(router_mod, _cfg(session_plans={SID: "claude"},
+                                claude_accounts={"claude-local": [{"id": "info"}]}))
+    data = _data(max_tokens=128000, metadata={"user_api_key_alias": "claude-local"},
+                 extra_headers={"anthropic-beta": "otra-beta"})
+    assert env.run(data) is True
+    assert data["model"] == router_mod.CLAUDE_PLAN_MODEL
+    assert data["max_tokens"] == router_mod.CLAUDE_PLAN_MAX_TOKENS
+    assert data["extra_headers"]["anthropic-beta"] == "otra-beta," + router_mod.CLAUDE_PLAN_BETA
+    assert data["metadata"]["_session_routing_rerouted"] is True
 
 
 def test_plan_explicito_alibaba_reescribe_y_marca(router_mod):

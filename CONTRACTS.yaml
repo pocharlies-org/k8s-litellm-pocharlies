@@ -433,6 +433,12 @@ contracts:
       ninguna key puede usar claude-* (el filtro no abre nunca). Lo lee
       session_router.claude_account_filter. Sin .vN+1: aditivo. Productor:
       dgx-infra (panel «Sesiones de Dani · Cuentas de»).
+      Con DGX-1099 tambien cambia lo que hace session_plans[sid]=claude (y
+      default_plan/sticky=claude): si la key de la peticion tiene cuentas en
+      claude_accounts, el residente se reescribe a SESSION_ROUTER_CLAUDE_PLAN_MODEL
+      (claude-opus-5) con la beta context-1m y max_tokens topado a 64000, lo
+      que antes hacia el claude-router del x86; sin cuentas, sigue en el
+      residente como antes. Mismo campo y mismos valores: sin .vN+1.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>

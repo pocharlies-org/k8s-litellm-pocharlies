@@ -7877,8 +7877,8 @@ data:
     #   2. admisión compute-mode -> vive en strip_params (marcador, mandato 3).
     #   3. plan EXPLÍCITO del panel (session_plans[sid]): local -> residente y
     #      ENCOLA si está lleno, NUNCA rechazo instantáneo (es decisión del
-    #      usuario); alibaba -> alibaba; claude -> no-op aquí (las peticiones
-    #      Anthropic ni pasan por LiteLLM; la puerta vive en el claude-router x86).
+    #      usuario); alibaba -> alibaba; claude -> claude-* con su beta y su tope
+    #      (DGX-1099) si la key tiene cuentas en claude_accounts; si no, residente.
     #   3b. BURST Alibaba (SC-2082 P6c): company.bots_alibaba + key de los bots (BOT_BURST_KEYS) + clase
     #      company + residente -> alibaba, por petición y sin ligadura (ver _apply).
     #   4. sticky (solo sesiones de plan default): binding en Valkey; destino solo
@@ -9193,6 +9193,40 @@ data:
         return any(isinstance(m, dict) and m.get("role") == "assistant" for m in data.get("messages") or ())
 
 
+    # Plan «claude» de una sesion (DGX-1099): antes lo aplicaba el claude-router del x86
+    # (CLAUDE_ROUTER_CLAUDE_PLAN_*), ahora que Claude se sirve aqui (entradas claude-acct-*,
+    # cuenta elegida por claude_account_filter). El destino trae SU ventana y SU tope.
+    CLAUDE_PLAN_MODEL = os.environ.get("SESSION_ROUTER_CLAUDE_PLAN_MODEL", "claude-opus-5")
+    CLAUDE_PLAN_BETA = os.environ.get("SESSION_ROUTER_CLAUDE_PLAN_BETA", "context-1m-2025-08-07")
+    CLAUDE_PLAN_MAX_TOKENS = int(os.environ.get("SESSION_ROUTER_CLAUDE_PLAN_MAX_TOKENS", "64000"))
+
+
+    def _rewrite_to_claude(data, sid, reason):
+        """Residente -> Claude con el modelo, la beta de ventana larga y el tope del plan."""
+        original = data.get("model")
+        data["model"] = CLAUDE_PLAN_MODEL
+        data.pop("api_base", None)
+        data.pop("api_key", None)
+        if CLAUDE_PLAN_MAX_TOKENS and isinstance(data.get("max_tokens"), int) \
+                and data["max_tokens"] > CLAUDE_PLAN_MAX_TOKENS:
+            data["max_tokens"] = CLAUDE_PLAN_MAX_TOKENS
+        if CLAUDE_PLAN_BETA:
+            headers = data.get("extra_headers") if isinstance(data.get("extra_headers"), dict) else {}
+            betas = [b for b in str(headers.get("anthropic-beta") or "").split(",") if b.strip()]
+            if CLAUDE_PLAN_BETA not in betas:
+                betas.append(CLAUDE_PLAN_BETA)
+            data["extra_headers"] = {**headers, "anthropic-beta": ",".join(betas)}
+        metadata = data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            data["metadata"] = metadata
+        metadata["_session_routing_rerouted"] = True
+        metadata["_session_routing_reason"] = reason
+        metadata["_router_original_model"] = original
+        metadata["_router_resolved_model"] = CLAUDE_PLAN_MODEL
+        log.warning("session_router: %r -> %r (razon=%s, sid=%s)", original, CLAUDE_PLAN_MODEL, reason, sid or "-")
+
+
     def _rewrite(data, sid, reason):
         """Residente -> Alibaba. Espejo del desvío de visión: se limpian api_base/
         api_key (el grupo de Alibaba lleva los suyos en el model_list) y se marcan
@@ -10450,11 +10484,15 @@ data:
                 _sessions_write(sid, est)
             return False
         if explicit == "claude":
-            # No aplica en este hook: Anthropic ni pasa por LiteLLM. La puerta vive
-            # en el claude-router del x86 (PR-C4).
             info["plan"] = "claude(explicito)"
-            info["decision"] = "plan_explicito_claude_puerta_en_router"
-            return False
+            # Sin cuentas de Claude para esta key en el panel se queda en el residente,
+            # como antes de DGX-1099 (un error seria peor que no desviar).
+            if not (config.get("claude_accounts") or {}).get(key_alias):
+                info["decision"] = "plan_explicito_claude_sin_cuentas"
+                return False
+            info["decision"] = "plan_explicito_claude"
+            _rewrite_to_claude(data, sid, "plan_claude")
+            return True
         if explicit == "alibaba":
             info["plan"] = "alibaba(explicito)"
             if model == RESIDENT_MODEL and _overflow_ok_info(info):
@@ -10508,8 +10546,12 @@ data:
         info["fresh"] = fresh
         info["plan"] = plan
         if plan == "claude":
-            info["decision"] = "plan_claude_puerta_en_router"
-            return False
+            if not (config.get("claude_accounts") or {}).get(key_alias):
+                info["decision"] = "plan_claude_sin_cuentas"
+                return False
+            info["decision"] = "plan_claude"
+            _rewrite_to_claude(data, sid, "plan_claude")
+            return True
 
         if plan == "alibaba":
             if not _overflow_ok_info(info):
@@ -12858,7 +12900,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-dd3672d2871a
+        config.k8s.e-dani.com/revision: config-2d9663fe147d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13779,7 +13821,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-dd3672d2871a
+        config.k8s.e-dani.com/revision: config-2d9663fe147d
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
