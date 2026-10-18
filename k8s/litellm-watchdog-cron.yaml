@@ -146,9 +146,10 @@ spec:
         metadata:
           labels: { app: litellm-watchdog }
         spec:
-          # 29-09-2026: sigue a litellm (manifest.yaml): prefiere `ubuntu` y cae en
-          # `sauvage` si el x86 no esta. Anclado solo a `ubuntu`, el watchdog se
-          # apagaba justo cuando mas falta hacia: con el x86 caido.
+          # Prefiere `ubuntu` y cae en `sauvage` si el x86 no esta, a proposito:
+          # anclado solo a `ubuntu`, el watchdog se apagaria justo cuando mas
+          # falta hace, con el x86 caido. Ya no sigue a litellm, que desde
+          # DGX-1090 vive solo en `ubuntu`.
           tolerations:
             - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
             - { key: role, operator: Equal, value: edge, effect: NoSchedule }
