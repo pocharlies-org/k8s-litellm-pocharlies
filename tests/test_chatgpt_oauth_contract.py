@@ -11,7 +11,6 @@ Y el token tiene un unico renovador, el CronJob chatgpt-token-keeper: OpenAI rot
 refresh token y el provider no tiene cerrojo, asi que dos replicas renovando a la vez
 revocan la sesion. Los pods lo montan en solo lectura.
 """
-import ast
 import base64
 import json
 import time
@@ -21,6 +20,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+from manifest_docs import hook_gate
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,18 +51,7 @@ def _litellm_pod():
 
 
 def _gate(env):
-    cm, _ = _config()
-    tree = ast.parse(cm["data"]["litellm_strip_params.py"])
-    keep = [
-        n for n in tree.body
-        if (isinstance(n, ast.FunctionDef) and n.name in WANT_FN)
-        or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in WANT_CONST for t in n.targets))
-    ]
-    assert WANT_FN <= {n.name for n in keep if isinstance(n, ast.FunctionDef)}, "el hook ya no define el gate"
-    mod = types.ModuleType("chatgptgate")
-    mod.os = types.SimpleNamespace(environ=dict(env))
-    exec(compile(ast.Module(body=keep, type_ignores=[]), "<hook>", "exec"), mod.__dict__)  # noqa: S102
-    return mod
+    return hook_gate(WANT_FN, WANT_CONST, env, "chatgptgate")
 
 
 # ── alias ────────────────────────────────────────────────────────────────────
@@ -102,6 +92,32 @@ def test_no_automatic_path_reaches_a_gpt_alias():
             if f"model: chatgpt/{alias}" in line:
                 continue
             assert f" {alias}" not in line and f"'{alias}'" not in line and f'"{alias}"' not in line, line
+
+
+def test_the_vision_divert_never_reaches_a_gpt_alias():
+    """El camino de los baneos de agosto fue el desvio de VISION del hook, no el
+    config.yaml: CAPABILITY_CHAINS decide que se desvia (VISION_DIVERTIBLE), a donde
+    (VISION_FALLBACK_MODEL) y con que red (TOOLING_FALLBACKS). Ningun gpt-* ahi."""
+    import ast as _ast
+
+    tree = _ast.parse(_config()[0]["data"]["litellm_strip_params.py"])
+    wanted = {"CAPABILITY_CHAINS", "VISION_DIVERTIBLE", "VISION_FALLBACK_MODEL", "TOOLING_FALLBACKS"}
+    found = {}
+    for node in tree.body:
+        if isinstance(node, _ast.Assign):
+            for target in node.targets:
+                if getattr(target, "id", None) in wanted:
+                    found[target.id] = {
+                        c.value for c in _ast.walk(node.value)
+                        if isinstance(c, _ast.Constant) and isinstance(c.value, str)
+                    }
+    assert wanted <= set(found), f"el hook ya no define: {sorted(wanted - set(found))}"
+    for name, strings in found.items():
+        assert not {v for v in strings if v.startswith("gpt-")}, f"{name} llega a un gpt-*"
+    # VISION_DIVERTIBLE se deriva de CAPABILITY_CHAINS; si pasara a literal, lo cubre el bucle de arriba.
+    _, c = _litellm_pod()
+    env = {e["name"]: e.get("value") for e in c["env"]}
+    assert not str(env.get("LITELLM_VISION_FALLBACK_MODEL", "")).startswith("gpt-")
 
 
 # ── gate ─────────────────────────────────────────────────────────────────────

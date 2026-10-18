@@ -825,8 +825,9 @@ data:
     # Que modelos: los que la cuenta Plus acepta por Codex, medidos el 18-10-2026 con
     # el token real (los `-pro` y gpt-5.5/5.4/5.3 los rechaza: «not supported when
     # using Codex with a ChatGPT account»). Coste 0: es suscripcion, la cuota la cuenta
-    # OpenAI. El token y su renovacion: ver el ExternalSecret litellm-chatgpt-oauth, el
-    # PVC del mismo nombre y el CronJob chatgpt-token-keeper, mas abajo.
+    # OpenAI. El token: el Secret litellm-chatgpt-token, montado en solo lectura en el
+    # pod y escrito SOLO por el CronJob chatgpt-token-keeper (k8s/chatgpt-token-keeper.yaml,
+    # que tambien trae la semilla, el ExternalSecret litellm-chatgpt-oauth).
     #
     # tests/test_retired_gpt5_bridge_contract.py sigue sosteniendo la lapida de los
     # nombres de enrutado automatico (router/auto/...), que no vuelven.
@@ -12086,7 +12087,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-031830cc7d08
+        config.k8s.e-dani.com/revision: config-3314af2b610f
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12984,7 +12985,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-031830cc7d08
+        config.k8s.e-dani.com/revision: config-3314af2b610f
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
