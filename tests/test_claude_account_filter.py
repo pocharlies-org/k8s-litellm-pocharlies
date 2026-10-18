@@ -178,6 +178,42 @@ def test_lectura_de_cabeceras_de_anthropic():
     assert mod.claude_quota_from_headers({"content-type": "x"}) is None
 
 
+def test_el_callback_guarda_la_cuota_de_un_stream_de_messages():
+    """Claude Code pide /v1/messages en streaming: ahi litellm no rellena _hidden_params
+    y las cabeceras solo viajan en kwargs["httpx_response"] (medido en v1.105.1)."""
+    import sys
+    import types
+
+    valkey = FakeValkey()
+    router = _pod(valkey)
+    custom_logger = types.ModuleType("litellm.integrations.custom_logger")
+    custom_logger.CustomLogger = object
+    stubs = {"litellm": types.ModuleType("litellm"),
+             "litellm.integrations": types.ModuleType("litellm.integrations"),
+             "litellm.integrations.custom_logger": custom_logger,
+             "session_router": router}
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        cq = types.ModuleType("claude_quota")
+        exec(compile(CM["data"]["claude_quota.py"], "<claude_quota>", "exec"), cq.__dict__)  # noqa: S102
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    httpx_response = types.SimpleNamespace(headers={
+        "anthropic-ratelimit-unified-5h-utilization": "0.4",
+        "anthropic-ratelimit-unified-7d-utilization": "0.2"})
+    kwargs = {"litellm_params": {"model_info": {"id": "claude-acct-info"}},
+              "standard_logging_object": {"hidden_params": {"additional_headers": None}},
+              "httpx_response": httpx_response}
+    asyncio.run(cq.proxy_handler_instance.async_log_success_event(kwargs, object(), 0, 0))
+    reading = json.loads(valkey.data["claude:quota:info"])
+    assert reading["five_hour"]["utilization"] == 0.4
+
+
 def test_politica_basura_se_descarta():
     mod = _pod(FakeValkey())
     clean = mod._sanitize_claude_accounts({
