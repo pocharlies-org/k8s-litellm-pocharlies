@@ -12214,7 +12214,7 @@ spec:
         - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: litellm
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-f5fcab9ad4@sha256:97de7c52386013d18240d6c8ff0b0dee023ce998d174d698d8e4653781f12b4f
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-160cffc07b@sha256:bd8e0146302b8c6d78b22f824fa29c305564a2084012bb548d326ad7f2235f84
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -12376,6 +12376,10 @@ spec:
             # entran por `claude-local` (claude-local-router); Hermes por `hermes`.
             - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
+            # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
+            # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
+            # keeper deja el token. `never` explicito aunque `auto` ya lo es sin TTY.
+            - { name: CHATGPT_DEVICE_LOGIN, value: never }
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
             - name: _DBPASS
@@ -13074,7 +13078,7 @@ spec:
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-f5fcab9ad4@sha256:97de7c52386013d18240d6c8ff0b0dee023ce998d174d698d8e4653781f12b4f
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-160cffc07b@sha256:bd8e0146302b8c6d78b22f824fa29c305564a2084012bb548d326ad7f2235f84
           command:
             - python
             - -m
