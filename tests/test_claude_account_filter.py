@@ -247,3 +247,70 @@ def test_historial_mixto_sin_campos_que_anthropic_rechaza():
     otro = {"model": "qwen38-flash-next", "messages": [{"provider_specific_fields": 1}]}
     mod.stamp_claude_request(otro)
     assert otro["messages"] == [{"provider_specific_fields": 1}]
+
+
+# ── Reglas de Claude de la compañía (DGX-1099 opción B: antes en el claude-router del x86) ──
+
+GATE = {"mode": "rewrite", "allow": ["claude-opus-5-5"], "target": "qwen38-flash-next", "max_tokens": 32000}
+
+
+def _company_pod(claude=True, gate=GATE, policy=None):
+    mod = _pod(FakeValkey())
+    raw = {"company": {"claude": claude, "claude_gate": gate},
+           "claude_accounts": policy if policy is not None else {"compania": [{"id": "edani"}]}}
+    mod._config_cache["config"] = mod._sanitize(raw)
+    return mod
+
+
+def _company_data(model, max_tokens=64000):
+    return {"model": model, "max_tokens": max_tokens,
+            "litellm_metadata": {"headers": {"X-Claude-Class": "company"},
+                                 "user_api_key_alias": "claude-local"}}
+
+
+def test_compania_con_claude_apagado_recibe_403():
+    mod = _company_pod(claude=False)
+    data = _company_data("claude-opus-5-5")
+    denied, detail = asyncio.run(mod.apply_company_policy(data, "claude-opus-5-5"))
+    assert denied and detail["error"] == "company_claude_disabled"
+
+
+def test_gate_rewrite_lleva_al_target_con_tope_y_deja_pasar_lo_permitido():
+    mod = _company_pod()
+    data = _company_data("claude-sonnet-5-5")
+    assert asyncio.run(mod.apply_company_policy(data, "claude-sonnet-5-5")) == (False, None)
+    assert data["model"] == "qwen38-flash-next" and data["max_tokens"] == 32000
+    ok = _company_data("claude-opus-5-5")
+    asyncio.run(mod.apply_company_policy(ok, "claude-opus-5-5"))
+    assert ok["model"] == "claude-opus-5-5" and ok["max_tokens"] == 64000
+
+
+def test_gate_block_es_403_y_sin_clase_no_se_toca():
+    mod = _company_pod(gate={**GATE, "mode": "block"})
+    denied, detail = asyncio.run(mod.apply_company_policy(_company_data("claude-haiku-5-5"), "claude-haiku-5-5"))
+    assert denied and detail["error"] == "company_claude_gate"
+    dani = {"model": "claude-haiku-5-5", "litellm_metadata": {"user_api_key_alias": "claude-local"}}
+    assert asyncio.run(mod.apply_company_policy(dani, "claude-haiku-5-5")) == (False, None)
+    assert dani["model"] == "claude-haiku-5-5"
+
+
+def test_gate_con_target_claude_o_basura_queda_apagado():
+    mod = _pod(FakeValkey())
+    assert mod._sanitize_claude_gate({**GATE, "target": "claude-opus-5"})["mode"] == "off"
+    assert mod._sanitize_claude_gate({"mode": "raro"})["mode"] == "off"
+    assert mod._sanitize_claude_gate(None)["mode"] == "off"
+
+
+def test_la_compania_elige_cuenta_de_su_lista_y_no_de_la_key():
+    mod = _company_pod(policy={"compania": [{"id": "edani"}], "claude-local": [{"id": "info"}]})
+    kw = _company_data("claude-opus-5-5")
+    kw["litellm_metadata"]["session_id"] = "s-comp"
+    out = asyncio.run(mod.claude_account_filter("claude-opus-5-5", _deps(), kw))
+    assert [d["model_info"]["id"] for d in out] == ["claude-acct-edani"]
+
+
+def test_plan_claude_de_la_compania_respeta_el_interruptor():
+    on, off = _company_pod(), _company_pod(claude=False)
+    data = _company_data("qwen38-flash-next")
+    assert on._claude_plan_allowed(on._config_cache["config"], data)
+    assert not off._claude_plan_allowed(off._config_cache["config"], data)

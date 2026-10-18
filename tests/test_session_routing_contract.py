@@ -1134,15 +1134,22 @@ def _policy(mod, cfg, data, requested="tooling"):
     return asyncio.run(mod.apply_company_policy(data, requested))
 
 
+def _sin_gate(mod, raw):
+    """company saneado sin claude_gate (DGX-1099), que se prueba en test_claude_account_filter."""
+    out = dict(mod._sanitize(raw)["company"])
+    assert out.pop("claude_gate") == mod.CLAUDE_GATE_OFF
+    return out
+
+
 def test_company_sanitize_solo_un_false_bool_apaga(router_mod):
     # `bots_alibaba` (SC-2082 P6c) tiene la polaridad contraria y vale False por defecto.
-    assert router_mod._sanitize({})["company"] == {
+    assert _sin_gate(router_mod, {}) == {
         "claude": True, "alibaba": True, "bots_alibaba": False}
-    assert router_mod._sanitize({"company": {"alibaba": "false", "claude": 0}})["company"] == {
+    assert _sin_gate(router_mod, {"company": {"alibaba": "false", "claude": 0}}) == {
         "claude": True, "alibaba": True, "bots_alibaba": False}
-    assert router_mod._sanitize({"company": {"alibaba": False}})["company"] == {
+    assert _sin_gate(router_mod, {"company": {"alibaba": False}}) == {
         "claude": True, "alibaba": False, "bots_alibaba": False}
-    assert router_mod._sanitize({"company": ["basura"]})["company"] == {
+    assert _sin_gate(router_mod, {"company": ["basura"]}) == {
         "claude": True, "alibaba": True, "bots_alibaba": False}
     assert router_mod.DEFAULT_CONFIG["company"] == {
         "claude": True, "alibaba": True, "bots_alibaba": False}
@@ -2003,7 +2010,7 @@ def test_burst_solo_un_true_bool_enciende(router_mod, raw):
 
 
 def test_burst_sanitize_conserva_company_claude_y_alibaba(router_mod):
-    out = router_mod._sanitize({"company": {"bots_alibaba": True, "alibaba": False, "claude": False}})["company"]
+    out = _sin_gate(router_mod, {"company": {"bots_alibaba": True, "alibaba": False, "claude": False}})
     assert out == {"claude": False, "alibaba": False, "bots_alibaba": True}
 
 
