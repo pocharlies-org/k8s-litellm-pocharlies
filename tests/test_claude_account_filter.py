@@ -198,3 +198,16 @@ def test_las_entradas_claude_son_una_por_cuenta_sin_fallbacks():
                and d["metadata"]["name"] == "litellm-claude-cuentas")
     secret_keys = {x["secretKey"] for x in eso["spec"]["data"]}
     assert {m["litellm_params"]["api_key"].removeprefix("os.environ/") for m in entries} == secret_keys
+
+
+def test_historial_mixto_sin_campos_que_anthropic_rechaza():
+    mod = _pod(FakeValkey())
+    data = {"model": "claude-opus-5-5", "messages": [
+        {"role": "assistant", "provider_specific_fields": {"y": 2},
+         "content": [{"type": "text", "text": "hola", "provider_specific_fields": {"x": 1}}]}]}
+    mod.stamp_claude_request(data)
+    assert "provider_specific_fields" not in json.dumps(data["messages"])
+    assert data["turn_off_message_logging"] is True
+    otro = {"model": "qwen38-flash-next", "messages": [{"provider_specific_fields": 1}]}
+    mod.stamp_claude_request(otro)
+    assert otro["messages"] == [{"provider_specific_fields": 1}]

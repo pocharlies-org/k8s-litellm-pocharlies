@@ -9869,6 +9869,24 @@ data:
         return m.group(1) if m else None
 
 
+    # Una conversacion que paso por el residente arrastra en su historial campos que
+    # pone litellm en sus respuestas (`provider_specific_fields`); Anthropic los rechaza
+    # con 400 «Extra inputs are not permitted» (medido el 18-10 con litellm v1.105.1). El
+    # claude-router del x86 los borraba (CLAUDE_ROUTER_MIXED=strip); ahora, aqui.
+    CLAUDE_BAD_KEYS = ("provider_specific_fields",)
+
+
+    def _strip_claude_bad_keys(obj):
+        if isinstance(obj, dict):
+            for k in CLAUDE_BAD_KEYS:
+                obj.pop(k, None)
+            for v in obj.values():
+                _strip_claude_bad_keys(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                _strip_claude_bad_keys(v)
+
+
     def stamp_claude_request(data):
         """Para peticiones `claude-*`: el sid en metadata (lo lee el filtro de cuenta) y
         sin mensajes en los callbacks de logging (Langfuse): estos prompts, CloudBlue
@@ -9876,6 +9894,7 @@ data:
         if not str(data.get("model") or "").startswith(CLAUDE_PREFIX):
             return None
         data["turn_off_message_logging"] = True
+        _strip_claude_bad_keys(data.get("messages"))
         sid = _session_id(data)
         if not sid:
             return None
@@ -12839,7 +12858,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-4f6adc98e27c
+        config.k8s.e-dani.com/revision: config-dd3672d2871a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13760,7 +13779,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-4f6adc98e27c
+        config.k8s.e-dani.com/revision: config-dd3672d2871a
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

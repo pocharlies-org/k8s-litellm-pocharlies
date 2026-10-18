@@ -2038,6 +2038,24 @@ def _claude_deployment_account(dep):
     return m.group(1) if m else None
 
 
+# Una conversacion que paso por el residente arrastra en su historial campos que
+# pone litellm en sus respuestas (`provider_specific_fields`); Anthropic los rechaza
+# con 400 «Extra inputs are not permitted» (medido el 18-10 con litellm v1.105.1). El
+# claude-router del x86 los borraba (CLAUDE_ROUTER_MIXED=strip); ahora, aqui.
+CLAUDE_BAD_KEYS = ("provider_specific_fields",)
+
+
+def _strip_claude_bad_keys(obj):
+    if isinstance(obj, dict):
+        for k in CLAUDE_BAD_KEYS:
+            obj.pop(k, None)
+        for v in obj.values():
+            _strip_claude_bad_keys(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            _strip_claude_bad_keys(v)
+
+
 def stamp_claude_request(data):
     """Para peticiones `claude-*`: el sid en metadata (lo lee el filtro de cuenta) y
     sin mensajes en los callbacks de logging (Langfuse): estos prompts, CloudBlue
@@ -2045,6 +2063,7 @@ def stamp_claude_request(data):
     if not str(data.get("model") or "").startswith(CLAUDE_PREFIX):
         return None
     data["turn_off_message_logging"] = True
+    _strip_claude_bad_keys(data.get("messages"))
     sid = _session_id(data)
     if not sid:
         return None
