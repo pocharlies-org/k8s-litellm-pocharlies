@@ -76,6 +76,29 @@ def test_tooling_admission_follows_the_ready_resident_during_transitions():
     assert gate(qwen_ready, "ornith-1.0") == (False, "compute_mode_transition")
 
 
+def test_llm_tp_sirve_con_cualquiera_de_sus_dos_motores():
+    """DGX-955h (corte del 18-10): con el TP=2 caido y el TP=1 de dgx3 Ready el
+    residente sirve; sin ninguno de los dos, no."""
+    gate = _pure_gate()
+
+    def comp(name, ready):
+        return {"name": name, "ready": ready, "desired_replicas": 1,
+                "ready_replicas": int(ready)}
+
+    state = {
+        "phase": "ready", "desired_mode": "llm-tp", "effective_mode": "llm-tp",
+        "components": {
+            "dgx1": [comp("deepseek-worker", True)],
+            "dgx2": [comp("deepseek-head", False)],
+            "dgx3": [comp("qwen38-worker-dgx3", True)],
+        },
+    }
+    assert gate(state, "qwen38-flash-next") == (True, None)
+    assert gate(state, "tooling") == (True, None)
+    state["components"]["dgx3"] = [comp("qwen38-worker-dgx3", False)]
+    assert gate(state, "qwen38-flash-next") == (False, "tooling_resident_not_ready")
+
+
 def test_hook_checks_mode_before_tracking_a_new_local_request():
     source = _hook_source()
     gate = source.index("await _enforce_compute_mode_admission")

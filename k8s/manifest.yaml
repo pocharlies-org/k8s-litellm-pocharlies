@@ -2550,9 +2550,16 @@ data:
     # OJO: las keys "deepseek-head"/"deepseek-worker" son HISTORICAS a proposito
     # — son el contrato de componentes de compute_mode.COMPONENTS del dashboard,
     # que hoy apunta con esas keys a los deploys qwen38-flash-next-*.
+    # Cada perfil es una tupla de ALTERNATIVAS; basta una con todos sus
+    # componentes Ready. DGX-955h (18-10-2026): llm-tp son dos motores, el TP=2
+    # (dgx1+dgx2) y el TP=1 de dgx3; tras el corte de luz del 18-10 el TP=2 quedo
+    # sin enlace y el TP=1 sano no recibia nada porque aqui solo contaba el par.
     TOOLING_MODE_COMPONENTS = {
-        "llm-tp": (("dgx1", "deepseek-worker"), ("dgx2", "deepseek-head")),
-        "creative": (("dgx1", "dense-uncensored"),),
+        "llm-tp": (
+            (("dgx1", "deepseek-worker"), ("dgx2", "deepseek-head")),
+            (("dgx3", "qwen38-worker-dgx3"),),
+        ),
+        "creative": ((("dgx1", "dense-uncensored"),),),
     }
     # 24-09-2026 (Dani, DGX-366): la capacidad cae a su gemelo cloud cuando NINGUN
     # residente esta Ready, para TODAS las keys salvo NO_FALLBACK_KEY_ALIASES
@@ -2647,8 +2654,9 @@ data:
             return ()
         return tuple(
             mode
-            for mode, required in TOOLING_MODE_COMPONENTS.items()
-            if all(_component_is_ready(state, node, name) for node, name in required)
+            for mode, alternatives in TOOLING_MODE_COMPONENTS.items()
+            if any(all(_component_is_ready(state, node, name) for node, name in required)
+                   for required in alternatives)
         )
 
     def _select_ready_tooling_mode(state):
@@ -9718,6 +9726,21 @@ data:
         return (base[:-3] if base.endswith("/v1") else base) + "/metrics"
 
 
+    # DGX-955h (18-10-2026, corte de luz): el TP=2 sin endpoints seguia en el sorteo.
+    def live_backends(by_backend, now=None):
+        """Los backends cuyo /metrics contesto hace menos de VLLM_STALE_SECONDS.
+        Un motor que no contesta mientras otro si sale del reparto igual que ya
+        sale de la suma de la valvula. Si no contesta ninguno, todos: sin dato no
+        se poda nada."""
+        now = time.monotonic() if now is None else now
+        vivos = {}
+        for backend, deps in by_backend.items():
+            sample = _vllm_by_url.get(_metrics_url(deps[0]))
+            if sample is not None and now - sample[2] <= VLLM_STALE_SECONDS:
+                vivos[backend] = deps
+        return vivos or by_backend
+
+
     def least_loaded_backend(by_backend, now=None):
         """DGX-974: el backend con MAS plazas libres ahora: su tope (`VLLM_SLOTS`, el
         `--max-num-seqs` de cada vLLM) menos lo que tiene en marcha y en cola en la
@@ -9783,6 +9806,10 @@ data:
             if backend is None:
                 return healthy_deployments
             by_backend.setdefault(backend, []).append(dep)
+        vivos = live_backends(by_backend)
+        if len(vivos) < len(by_backend):
+            by_backend = vivos
+            healthy_deployments = [d for deps in vivos.values() for d in deps]
         request_kwargs = request_kwargs or {}
         sid = _affinity_session_id(request_kwargs)
         weights = _resident_backend_weights()
@@ -12398,7 +12425,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-60246ae23fd2
+        config.k8s.e-dani.com/revision: config-2508c251e1fa
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13279,7 +13306,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-60246ae23fd2
+        config.k8s.e-dani.com/revision: config-2508c251e1fa
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

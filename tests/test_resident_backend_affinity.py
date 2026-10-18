@@ -491,3 +491,19 @@ def test_la_peticion_sin_sesion_tambien_va_al_motor_con_hueco():
     _carga(pod, tp2=(16, 2), tp1=(0, 0))
     assert _elige(pod, None) == "tp1"
     assert not valkey.data, "sin sid no hay conversacion que clavar"
+
+
+def test_motor_que_no_contesta_su_metrics_sale_del_reparto():
+    """DGX-955h, corte de luz del 18-10: el TP=2 sin endpoints no contesta su
+    /metrics y el TP=1 si. Sin esto el sorteo 3:1 mandaba 3 de cada 4 nuevas al
+    motor muerto. Las nuevas nacen en el TP=1 sin pin (no hubo eleccion) y la
+    ligada al TP=2 muda entera."""
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+    pod._vllm_by_url[URL_TP1] = (0.0, 0.0, pod.time.monotonic())
+    assert {_elige(pod, f"nueva-{i}") for i in range(40)} == {"tp1"}
+    assert pod.backend_pin_key(KEY_A, "nueva-0") not in valkey.data
+    assert _elige(pod, None) == "tp1"
+    valkey.data[pod.backend_pin_key(KEY_A, "ses-vieja")] = "tp2"
+    assert _elige(pod, "ses-vieja") == "tp1"
+    assert valkey.data[pod.backend_pin_key(KEY_A, "ses-vieja")] == "tp1"
