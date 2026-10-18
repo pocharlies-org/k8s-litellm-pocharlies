@@ -36,7 +36,7 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
   sesión), OpenRouter y otros proveedores de pago, Postgres compartido, `gpu-arbiter-state` (admisión por compute mode),
   Langfuse (callbacks), 1Password/ExternalSecrets.
 - **Dependen de él** — todo el estate: sesiones de la compañía (router local de Claude), Hermes, document-intake, auto-reply,
-  dashboards. **`CONTRACTS.yaml`** publica ~22 contratos (`dgx.claude.class-header.v1`, `dgx.session-router.*`,
+  dashboards. **`CONTRACTS.yaml`** publica ~23 contratos (`dgx.claude.class-header.v1`, `dgx.session-router.*`,
   `dgx.model-routing.config.v1/v2`, `dgx.litellm.active-requests.v1`, `dgx.hermes.profile-header.v1`, `dgx.litellm.virtual-key.*`,
   `litellm.reasoning-effort.v1`…): nunca renombrar, solo `.vN+1` con `Contract-Change:`.
 - **ArgoCD** `litellm`: repo `pocharlies-org/k8s-litellm-pocharlies`, path `k8s`, tronco **`main`**.
@@ -60,6 +60,7 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
 | **Selector de cuenta Alibaba** (UNA fórmula; la época de ventana = TTL del pin entra en el hash, DGX-639) | `session_router.preferred_account` + el seam `draw_account(accounts)`/`warm_config()` | `dev/session_router.py` = embed de `litellm-config` (`tests/test_session_router_dev_copy_contract.py` los iguala; manda el manifiesto) | chat sin sid (`alibaba_account_filter`) y `plan-gateway`: nadie define otra fórmula (`tests/test_plan_gateway_contract.py`, test AST) |
 | Gateway de media del plan | `plan_gateway.py` | `k8s/manifest.yaml`, ConfigMap `plan-gateway-config` (inline, sin copia en `dev/`) | Studio, omnivoice |
 | Compatibilidad Anthropic | `doc/anthropic-compat.md` | ídem | Claude CLI |
+| Cuota de la cuenta ChatGPT (última lectura de las cabeceras `x-codex-*`, DGX-1078) | `chatgpt_quota.py` (callback CustomLogger) + clave Valkey `chatgpt:quota` en `litellm-valkey`, TTL 8 d (`dgx.litellm.chatgpt-quota.v1`) | `k8s/manifest.yaml`, ConfigMap `litellm-config` (inline, sin copia en `dev/`) | dashboard de dgx-infra (`/api/chatgpt/quota`, `codex_quota` de `/api/activity`, /cuentas) |
 | Puertas al proxy por lane (alias del Service `litellm`, mismo selector y puerto; Hermes pinta una fila por host) | Services `litellm-openrouter`, `litellm-alibaba` y `litellm-chatgpt` (DGX-1053, `dgx.litellm.service-alias.chatgpt.v1`) | `k8s/manifest.yaml` | Hermes (`extraProviders`) |
 
 **BURST Alibaba (SC-2082 P6c).** `session_router._apply` lee `company.bots_alibaba` de `/api/model-routing/config` (campo aditivo

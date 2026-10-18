@@ -171,3 +171,59 @@ def test_compute_mode_ultimo_bueno_caduca():
 def test_compute_mode_sin_lectura_buena_previa_es_none():
     m, clock = _compute_mode([RuntimeError("caido")])
     assert asyncio.run(m._compute_mode_state()) is None
+
+
+# ── DGX-1076: la ruta de memoria de Claude Code va después de las tools ──────
+MEMORY = {"_move_memory_dir", "_system_texts", "MEMORY_DIR_RE", "MEMORY_DIR_TOKEN"}
+
+
+def _claude_request(slug, user_content):
+    texto = ("# Memory\n\nYou have a persistent file-based memory at "
+             f"`/home/dibanez/.claude/projects/{slug}/memory/`. This directory already exists.")
+    return {
+        "system": [{"type": "text", "text": "You are a Claude agent"},
+                   {"type": "text", "text": texto, "cache_control": {"type": "ephemeral"}}],
+        "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+        "messages": [{"role": "user", "content": user_content}],
+    }
+
+
+def test_dos_directorios_quedan_con_el_mismo_system_y_la_ruta_en_el_usuario():
+    import json
+    import re as re_mod
+    m = _load(MEMORY, {"re": re_mod})
+    a = _claude_request("-home-dibanez-k8s", [{"type": "text", "text": "hola"}])
+    b = _claude_request("-home-dibanez-src-company-roles", "hola")
+    assert m._move_memory_dir(a) is True and m._move_memory_dir(b) is True
+    assert json.dumps([a["system"], a["tools"]]) == json.dumps([b["system"], b["tools"]])
+    assert "$CLAUDE_MEMORY_DIR" in a["system"][1]["text"]
+    assert a["messages"][0]["content"][0]["text"] == (
+        "<system-reminder>\n$CLAUDE_MEMORY_DIR = /home/dibanez/.claude/projects/-home-dibanez-k8s/memory/\n</system-reminder>")
+    assert a["messages"][0]["content"][1] == {"type": "text", "text": "hola"}
+    assert b["messages"][0]["content"].startswith("<system-reminder>\n$CLAUDE_MEMORY_DIR = /home/dibanez/.claude/projects/-home-dibanez-src-company-roles/memory/")
+    assert b["messages"][0]["content"].endswith("\n\nhola")
+
+
+def test_formato_openai_y_casos_que_no_se_tocan():
+    import copy
+    import re as re_mod
+    m = _load(MEMORY, {"re": re_mod})
+    ruta = "/home/x/.claude/projects/-home-x-a/memory/"
+    data = {"messages": [{"role": "system", "content": f"mem at `{ruta}`"}, {"role": "user", "content": "hola"}]}
+    assert m._move_memory_dir(data) is True
+    assert data["messages"][0]["content"] == "mem at `$CLAUDE_MEMORY_DIR`"
+    assert data["messages"][1]["content"].endswith("\n\nhola") and ruta in data["messages"][1]["content"]
+    for intacta in (
+        {"system": "sin ruta", "messages": [{"role": "user", "content": "hola"}]},
+        {"system": f"{ruta} y /h/.claude/projects/otra/memory/", "messages": [{"role": "user", "content": "hola"}]},
+        {"system": f"`{ruta}`", "messages": []},
+    ):
+        antes = copy.deepcopy(intacta)
+        assert m._move_memory_dir(intacta) is False and intacta == antes
+
+
+def test_el_hook_mueve_la_ruta_tras_quitar_la_facturacion():
+    src = _hook_source()
+    i = src.index("    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):")
+    cuerpo = src[i:i + 800]
+    assert cuerpo.index("_strip_billing_header(data)") < cuerpo.index("_move_memory_dir(data)")
