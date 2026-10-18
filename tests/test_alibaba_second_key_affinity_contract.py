@@ -353,20 +353,18 @@ def test_tier_afinidad_anclado_al_mismo_nodo_que_litellm(docs):
     """El claim de afinidad se paga por peticion: con la Valkey en otro
     nodo el RTT del overlay (Tailscale) salio medido p50 27 ms — un
     impuesto sobre cada peticion alibaba. La prueba exige que el Deployment
-    litellm-valkey lleve la misma afinidad que el proxy (29-09: preferencia por
-    ubuntu con failover a sauvage), para que ambos vivan y salten juntos."""
+    litellm-valkey lleve la misma afinidad y tolerancias que el proxy (solo
+    ubuntu, DGX-1090), para que vivan juntos."""
     vk = next(d for d in docs
               if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm-valkey")
     lite = next(d for d in docs
                 if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm")
     vsp, lsp = vk["spec"]["template"]["spec"], lite["spec"]["template"]["spec"]
     assert vsp.get("affinity") == lsp["affinity"], (
-        "Valkey con otra afinidad que el proxy: en reposo o en failover acabarian "
-        "en nodos distintos y cada peticion alibaba pagaria el RTT del overlay")
+        "Valkey con otra afinidad que el proxy: acabarian en nodos distintos y "
+        "cada peticion alibaba pagaria el RTT del overlay")
     assert vsp.get("tolerations") == lsp["tolerations"], (
-        "sin las mismas tolerancias el Valkey no puede seguir al proxy a sauvage")
-    assert (vk["spec"]["template"]["metadata"]["labels"].get("e-dani.com/vuelve-a-x86")
-            == "true"), "sin la etiqueta el descheduler no lo devuelve al x86"
+        "sin las mismas tolerancias el Valkey puede acabar en otro nodo que el proxy")
 
 
 def test_stamp_activa_antes_de_cualquier_cosa(router_src):
