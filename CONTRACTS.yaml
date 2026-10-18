@@ -333,9 +333,9 @@ contracts:
       carga, el order: 2 del YAML es la inercia.
       La Valkey (litellm-valkey) lleva la MISMA afinidad que el proxy: el
       claim se paga en cada peticion y el RTT del overlay entre nodos es
-      ~27 ms p50 (medido 26-09). Desde 2026-09-29 esa afinidad es preferred
-      ubuntu con failover a sauvage (y vuelta por descheduler): valor, Service
-      y puerto no cambian; en failover ambos saltan juntos. El minimo de
+      ~27 ms p50 (medido 26-09). Desde 2026-10-18 (DGX-1090) esa afinidad es
+      solo ubuntu, sin failover a sauvage: valor, Service y puerto no
+      cambian. El minimo de
       orders se calcula solo entre declarados, por eso el -k1 declara 1.
   - id: dgx.model-routing.config.v1
     kind: http-route

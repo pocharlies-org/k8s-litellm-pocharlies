@@ -12390,7 +12390,7 @@ spec:
   selector: { matchLabels: { app: litellm } }
   template:
     metadata:
-      labels: { app: litellm, e-dani.com/vuelve-a-x86: "true" }
+      labels: { app: litellm }
       annotations:
         # The request-policy hook lives in the mounted ConfigMap and is imported at
         # process start, so every material hook change must roll this pod.
@@ -12403,48 +12403,25 @@ spec:
     spec:
       enableServiceLinks: false
       terminationGracePeriodSeconds: 720
-      # 29-09-2026, decision del owner tras el corte de luz del x86: litellm
-      # PREFIERE `ubuntu` (latencia a la LAN y a los Sparks) pero ya no depende
-      # de el. Si el x86 cae, las replicas saltan a `sauvage`; cuando vuelve,
-      # el descheduler (k8s-gitops-pocharlies, infra/descheduler) las devuelve
-      # una a una respetando el PDB. Antes (21-08 / SC-404, doc/node-affinity-ubuntu.md)
-      # el pin era `required` a `ubuntu`: con el x86 apagado no habia proxy de
-      # NINGUN trafico LLM aunque los Sparks siguieran sirviendo.
+      # 18-10-2026, Dani (DGX-1090): litellm vive SOLO en `ubuntu`. El failover a
+      # `sauvage` del 29-09 fallo en su primer uso real: el x86 se reinicio, las
+      # replicas saltaron a OVH, alli el disco (md3) estaba al 100 % y el proceso
+      # se quedo en estado D sin abrir :4000; el descheduler no podia devolverlas
+      # (PDB con 0 disrupciones al no haber ninguna Ready). Detalle y nodos
+      # descartados en doc/node-affinity-ubuntu.md.
       #
-      # Medido el 29-09 desde un pod en `sauvage`: qwen38-flash-next, tooling y
-      # stt responden (200, ~0,15-0,30 s de conexion+peticion, la WAN por
-      # Tailscale); postgres-shared y shared-valkey viven en los ks5. Los
-      # clientes de LAN entran por traefik-lan, que sigue en el x86: el failover
-      # cubre a los consumidores dentro del cluster (Hermes, en ks5).
-      #
-      # - required ubuntu|sauvage: nunca los Sparks (dedicated=llm, memoria
-      #   unificada, SystemOOM del 19-08) ni el plano de control ks5.
-      # - preferred ubuntu weight 100: en reposo las 2 replicas viven en el x86.
-      # - Sin topologySpreadConstraints: con `sauvage` elegible, un reparto por
-      #   hostname (aunque fuera ScheduleAnyway) mandaria la segunda replica a
-      #   OVH en cada rollout y el descheduler la devolveria: ida y vuelta.
-      # - unreachable/not-ready con tolerationSeconds 30 (defecto 300): el
-      #   failover tarda ~grace del nodo (40-50 s) + 30 s + arranque del pod,
-      #   en vez de 5 min.
-      # - Etiqueta e-dani.com/vuelve-a-x86 (en labels del template): opt-in
-      #   del descheduler.
+      # - required ubuntu: nunca los Sparks (dedicated=llm, memoria unificada,
+      #   SystemOOM del 19-08), ni el plano de control ks5, ni sauvage.
+      # - Sin topologySpreadConstraints: con un solo nodo elegible no reparten.
+      # - Tolerancias unreachable/not-ready por defecto (300 s): con un solo nodo
+      #   no hay adonde ir, y un corte corto del kubelet no reinicia el proxy.
       tolerations:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
-        - { key: role, operator: Equal, value: edge, effect: NoSchedule }
-        - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
-        - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
               - matchExpressions:
-                  - key: kubernetes.io/hostname
-                    operator: In
-                    values: [ubuntu, sauvage]
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
                   - key: kubernetes.io/hostname
                     operator: In
                     values: [ubuntu]
@@ -13293,7 +13270,7 @@ spec:
   selector: { matchLabels: { app: plan-gateway } }
   template:
     metadata:
-      # `e-dani.com/vuelve-a-x86`: opt-in del descheduler, igual que litellm.
+      # `e-dani.com/vuelve-a-x86`: opt-in del descheduler.
       labels: { app: plan-gateway, e-dani.com/vuelve-a-x86: "true" }
       annotations:
         # Dos ConfigMaps gobiernan este pod y ninguno se relee en caliente: el
@@ -13313,8 +13290,8 @@ spec:
         - { key: role, operator: Equal, value: edge, effect: NoSchedule }
         - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
         - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
-      # Mismo nodeAffinity que litellm: required ubuntu|sauvage (nunca los Sparks
-      # ni los ks5), preferred ubuntu.
+      # required ubuntu|sauvage (nunca los Sparks ni los ks5), preferred ubuntu.
+      # Ya no es la de litellm, que desde DGX-1090 vive solo en ubuntu.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -13500,32 +13477,22 @@ spec:
   selector: { matchLabels: { app: litellm-valkey } }
   template:
     metadata:
-      labels: { app: litellm-valkey, e-dani.com/vuelve-a-x86: "true" }
+      labels: { app: litellm-valkey }
     spec:
       # 26-09-2026, medido: este tier se lee UNA vez por peticion alibaba
       # (el claim del DeploymentAffinityCheck). En otro nodo que el proxy el
       # RTT por el overlay de Tailscale salio p50 27.2 ms / p99 257 ms. Por
-      # eso sigue al proxy: MISMA afinidad que el Deployment litellm (prefiere
-      # `ubuntu`, salta a `sauvage` si el x86 cae, el descheduler lo devuelve).
+      # eso sigue al proxy: MISMA afinidad y tolerancias que el Deployment
+      # litellm (solo `ubuntu`, DGX-1090).
       # Los pins son efimeros (TTL 1 h, allkeys-lru) y el hook es fail-open:
       # el salto solo re-vincula sesiones.
       tolerations:
         - { key: pool, operator: Equal, value: dev, effect: PreferNoSchedule }
-        - { key: role, operator: Equal, value: edge, effect: NoSchedule }
-        - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
-        - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30 }
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
               - matchExpressions:
-                  - key: kubernetes.io/hostname
-                    operator: In
-                    values: [ubuntu, sauvage]
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
                   - key: kubernetes.io/hostname
                     operator: In
                     values: [ubuntu]

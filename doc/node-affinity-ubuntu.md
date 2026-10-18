@@ -1,35 +1,25 @@
-# Afinidad de litellm: prefiere `ubuntu`, failover a `sauvage` (29-09-2026)
+# Afinidad de litellm: solo `ubuntu` (18-10-2026, DGX-1090)
 
-**Vigente desde el 29-09-2026.** Tras el corte de luz en casa del 29-09 (el x86 se
-apago limpio por el SAI a las 09:23; los dos Sparks cayeron EN SECO a las ~09:18,
-sin registro de apagado, y todo volvio a las 10:49) el proxy de todo el trafico
-LLM quedo atado a un nodo apagado. Decision del owner: `ubuntu` sigue siendo el
-sitio (latencia a la LAN y a los Sparks), pero ya no es el unico.
+**Vigente desde el 18-10-2026, decision de Dani.** El Deployment `litellm` y su
+`litellm-valkey` (misma afinidad y tolerancias, para que el claim de afinidad no
+pague el RTT del overlay) fijan `kubernetes.io/hostname In [ubuntu]`, sin
+`preferred`, sin toleracion `role=edge` y con las tolerancias
+`unreachable`/`not-ready` por defecto (300 s).
 
-Que cubre el failover, sin exagerar: si cae SOLO el x86, `sauvage` sigue
-enrutando al residente de los Sparks y a la nube; si cae la casa entera (como el
-29-09), `sauvage` solo puede servir los modelos en la nube (Alibaba, xAI,
-OpenRouter), de pago.
+Por que se quito el failover a `sauvage` del 29-09: fallo en su primer uso real.
+El 18-10 el x86 se reinicio (~15:35); las dos replicas saltaron a `sauvage`, cuyo
+RAID `md3` estaba al 100 % de utilizacion. El proceso quedo en estado D
+(`jbd2_log_wait_commit`), nunca abrio `:4000` y el startup probe lo mato en
+bucle. El descheduler no podia devolverlas: sin ninguna replica Ready el PDB
+tenia 0 disrupciones permitidas. Hubo que borrar los pods a mano cuando el x86
+volvio.
 
-- `required`: `kubernetes.io/hostname In [ubuntu, sauvage]` + toleracion
-  `role=edge:NoSchedule`. Los Sparks y los ks5 siguen fuera por los motivos de
-  abajo.
-- `preferred` weight 100 a `ubuntu`: en reposo las 2 replicas y el Valkey viven
-  en el x86.
-- `unreachable`/`not-ready` con `tolerationSeconds: 30`: el failover tarda la
-  gracia del nodo + 30 s + el arranque, no 5 min.
-- Vuelta: el descheduler de `k8s-gitops-pocharlies` (`infra/descheduler`),
-  opt-in por la etiqueta `e-dani.com/vuelve-a-x86: "true"`, desaloja cada 2 min
-  lo que podria estar en `ubuntu`, respetando el PDB (una replica por pasada).
-- Sin `topologySpreadConstraints`: con `sauvage` elegible mandaria una replica
-  a OVH en cada rollout.
-- Medido desde un pod en `sauvage`: qwen38-flash-next, tooling y stt responden
-  (200, ~0,15-0,30 s por peticion); postgres-shared y shared-valkey estan en ks5.
-- Limite: los clientes de LAN entran por `traefik-lan` (en el x86); el failover
-  cubre a los consumidores dentro del cluster (Hermes vive en ks5).
+Lo que se acepta a cambio: con el x86 apagado no hay proxy de ningun trafico LLM
+(como antes del 29-09). Lo que sigue en `[ubuntu, sauvage]` no es litellm:
+`plan-gateway`, `chatgpt-token-keeper` y el CronJob `litellm-watchdog`.
 
-Lo que sigue es el razonamiento de SC-404 (09-09), historico: por que ni los
-Sparks ni los ks5.
+Lo que sigue es el razonamiento de SC-404 (09-09): por que ni los Sparks ni los
+ks5. Vuelve a ser la regla.
 
 ---
 
