@@ -21,7 +21,7 @@ Los clientes del router (Claude CLI del x86, Hermes, OpenClaw, document-intake, 
 `litellm-chatgpt-oauth`, item `litellm` campo `CHATGPT_OAUTH_AUTH_JSON`) y lo renueva con 72 h de margen sobre 240 h. Los pods
 de `litellm` lo montan en solo lectura en `CHATGPT_TOKEN_DIR`: el provider `chatgpt/` no tiene cerrojo y OpenAI rota el
 refresh token, así que dos réplicas renovando revocarían la sesión. Sin RWX/NFS (SC-381). Re-login: cabecera del fichero.
-Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, gate `claude-local,hermes`, solo selección manual).
+Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-local,hermes,studio-chatgpt`; solo selección manual).
 
 **`plan-gateway`** (`plan-gateway.litellm.svc:4002`, solo dentro del cluster, sin IngressRoute) es el sitio único por el que
 pasa la **media** (imagen, vídeo, voz) del Token Plan de Alibaba. Consumidores, uno por token
