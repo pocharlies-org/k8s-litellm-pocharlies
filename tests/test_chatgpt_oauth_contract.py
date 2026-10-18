@@ -1,10 +1,12 @@
-"""La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): siete alias, un gate y un renovador.
+"""La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): siete alias de chat, tres de imagen
+(DGX-1077), un gate y un renovador.
 
 POR QUE EXISTE ESTE FICHERO (18-10-2026). Los alias `gpt-*` vuelven al model_list tras
 su lapida del 03-09: aquella cuenta cayo baneada dos veces porque el catalogo de
 airsoft le mandaba imagenes por el desvio de vision. Ahora van contra la cuenta
 personal de Dani y lo que impide repetirlo es esto: ningun camino automatico apunta a
-ellos y un gate fail-closed por prefijo solo deja pasar a `claude-local` y `hermes`
+ellos y un gate fail-closed por prefijo solo deja pasar a `claude-local`, `hermes` y
+`studio-chatgpt` (los motores de imagen del DGX Studio)
 (la key `sauvage-shield` lleva `gpt-5.6-luna` en su allowlist desde agosto).
 
 Y el token tiene un unico renovador, el CronJob chatgpt-token-keeper: OpenAI rota el
@@ -30,7 +32,8 @@ KEEPER = ROOT / "k8s" / "chatgpt-token-keeper.yaml"
 
 ALIASES = {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
-ALLOWED_KEYS = ("claude-local", "hermes")
+IMAGE_ALIASES = {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
+ALLOWED_KEYS = ("claude-local", "hermes", "studio-chatgpt")
 WANT_FN = {"_chatgpt_access_denied"}
 WANT_CONST = {"CHATGPT_ALIAS_PREFIX", "CHATGPT_ALLOWED_KEY_ALIASES"}
 
@@ -70,6 +73,18 @@ def test_the_seven_aliases_go_to_the_chatgpt_provider_for_free():
         assert entry["model_info"]["disable_background_health_check"] is True
 
 
+
+def test_the_image_aliases_go_to_the_chatgpt_provider_for_free_and_unprobed():
+    _, cfg = _config()
+    by_name = {m["model_name"]: m for m in cfg["model_list"]}
+    for name in IMAGE_ALIASES:
+        entry = by_name[name]
+        assert entry["litellm_params"] == {"model": f"chatgpt/{name}"}, name
+        assert entry["model_info"]["mode"] == "image_generation"
+        assert entry["model_info"]["input_cost_per_image"] == 0
+        # un health check de imagen generaria una imagen por ronda contra la cuota de la cuenta
+        assert entry["model_info"]["disable_background_health_check"] is True
+
 def test_no_automatic_path_reaches_a_gpt_alias():
     _, cfg = _config()
     rs = cfg.get("router_settings", {}) or {}
@@ -88,7 +103,7 @@ def test_no_automatic_path_reaches_a_gpt_alias():
     for line in raw.splitlines():
         if "model_name:" in line or line.strip().startswith("#"):
             continue
-        for alias in ALIASES:
+        for alias in ALIASES | IMAGE_ALIASES:
             if f"model: chatgpt/{alias}" in line:
                 continue
             assert f" {alias}" not in line and f"'{alias}'" not in line and f'"{alias}"' not in line, line
@@ -134,8 +149,8 @@ def test_a_deployment_without_the_variable_denies_everyone():
         assert denied and detail["allowed"] == []
 
 
-def test_only_claude_local_and_hermes_get_through(open_gate):
-    for alias in ALIASES:
+def test_only_the_allowed_keys_get_through(open_gate):
+    for alias in ALIASES | IMAGE_ALIASES:
         for key in ALLOWED_KEYS:
             assert open_gate._chatgpt_access_denied(alias, key) == (False, None)
         for key in ("sauvage-shield", "master", "synapse", "document-intake", "hermes-batch", None):

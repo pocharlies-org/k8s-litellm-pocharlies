@@ -97,6 +97,11 @@ contracts:
       is computed AFTER the hook strips Claude Code's x-anthropic-billing-header
       system block (2026-09-23), so it no longer carries that per-conversation
       suffix.
+      Since 2026-10-18 (DGX-1076) it is also computed after the hook moves
+      Claude Code's project memory path out of the system into the first
+      user message: the hash input still holds it, so conversations of
+      different directories keep distinct keys; a client without session id
+      that sends that path gets a new key once, on deploy.
   - id: dgx.session-router.sessions-hash.v1
     kind: schema
     value: session-router:sessions
@@ -746,7 +751,11 @@ contracts:
       ni desvio de vision llega a ellos (la causa de los baneos de agosto de
       la cuenta anterior). Gate fail-closed por prefijo `gpt-` en el
       pre_call_hook: LITELLM_CHATGPT_ALLOWED_KEYS = claude-local (Claude CLI
-      y Paseo por claude-local-router) y hermes; vacia = nadie, ni la master.
+      y Paseo por claude-local-router), hermes y studio-chatgpt; vacia =
+      nadie, ni la master. DGX-1077 (2026-10-18), aditivo: tres alias de
+      imagen `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` y `gpt-image-2`
+      (mode image_generation, coste 0) para los motores `chatgpt-*` del DGX
+      Studio, que entran con la key `studio-chatgpt`.
       Token: el pod de litellm lee CHATGPT_TOKEN_DIR=/var/run/chatgpt-oauth,
       el Secret litellm-chatgpt-token montado en solo lectura. Lo crea desde
       la semilla de 1Password (ExternalSecret litellm-chatgpt-oauth, item
@@ -754,6 +763,29 @@ contracts:
       SOLO el CronJob chatgpt-token-keeper: OpenAI rota el refresh token y el
       provider no tiene cerrojo. Pinned by
       tests/test_chatgpt_oauth_contract.py.
+      MIGRATE (DGX-1053, 2026-10-18): CHATGPT_DEVICE_LOGIN=never en el
+      Deployment (imagen del fork con el fix 160cffc0). Sin token valido el
+      alias responde 401 AuthenticationError sin device login, el despliegue
+      del alias se conserva en el arranque y el pod se recupera solo cuando el
+      keeper deja el token (antes el pod se quedaba sin Ready).
+  - id: dgx.litellm.chatgpt-quota.v1
+    kind: schema
+    value: chatgpt:quota
+    anchor: 'CHATGPT_QUOTA_KEY = "chatgpt:quota"'
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1078 (2026-10-18). El callback chatgpt_quota.py guarda en
+      litellm-valkey db 0 la ultima lectura de cuota de la cuenta ChatGPT
+      Plus, sacada de las cabeceras x-codex-* de cada respuesta (tambien los
+      429): JSON {observed_at, plan_type, active_limit, primary, secondary,
+      credits_unlimited, credits_balance}, cada ventana {used_percent,
+      window_minutes, reset_at (epoch s)}; primary = 300 min, secondary =
+      10080 min. TTL 8 dias. Consumidor: dgx-infra services/dashboard
+      (/api/chatgpt/quota y /api/activity codex_quota), solo GET. Pinned by
+      tests/test_chatgpt_quota_contract.py.
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que
@@ -1033,7 +1065,10 @@ contracts:
       de ahi el `model_group_retry_policy` del manifest
       (`alibaba-q38-flash: BadRequestErrorRetries: 2`), que da tres
       generaciones nuevas por turno SOLO en ese grupo; lo fija
-      tests/test_alibaba_400_retry_policy_contract.py.
+      tests/test_alibaba_400_retry_policy_contract.py. 2026-10-18 (DGX-1075):
+      el mismo mapa lleva `qwen38-flash-next: TimeoutErrorRetries: 0` (un
+      Timeout de 240 s del residente va directo a su fallback a Alibaba); el
+      fichero de test fija los dos grupos y nada mas.
   - id: dgx.litellm.priority-field.v1
     kind: schema
     value: priority

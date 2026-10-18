@@ -363,7 +363,7 @@ def test_los_gemelos_del_residente_solo_difieren_en_el_motor():
         assert ia.pop("id") != ib.pop("id"), f"{alias}: los dos gemelos con el mismo id"
         assert ia.pop("backend") != ib.pop("backend"), f"{alias}: los dos en el mismo nodo"
         # DGX-897: el tope por pod es lo otro que cambia, el `--max-num-seqs` de cada motor
-        # entre las dos replicas del proxy (TP=2 16, TP=1 8).
+        # entre las dos replicas del proxy (TP=2 8, TP=1 5 — DGX-955h).
         topes = {a["model_info"]["id"][-3:]: pa.pop("max_parallel_requests"),
                  b["model_info"]["id"][-3:]: pb.pop("max_parallel_requests")}
         assert topes == {"tp2": 4, "tp1": 3}, f"{alias}: topes por pod {topes}"

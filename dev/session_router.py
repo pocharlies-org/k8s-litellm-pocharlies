@@ -1216,7 +1216,7 @@ async def _inflight_resident(tracker):
     sidecar :4001 (agregado menos /local, ver _poll_sidecar_forever), deduplicando
     por request_id. None => contador
     desconocido => la válvula NO actúa (fail-open hacia admitir local, con el
-    semaphore duro de 8 del Router detrás protegiendo igual)."""
+    semaphore duro de 4 por pod del Router (8 en el TP=2) detrás protegiendo igual)."""
     local_ids = set()
     local_n = 0
     try:
