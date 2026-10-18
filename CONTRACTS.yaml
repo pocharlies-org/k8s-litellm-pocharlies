@@ -759,6 +759,24 @@ contracts:
       alias responde 401 AuthenticationError sin device login, el despliegue
       del alias se conserva en el arranque y el pod se recupera solo cuando el
       keeper deja el token (antes el pod se quedaba sin Ready).
+  - id: dgx.litellm.chatgpt-quota.v1
+    kind: schema
+    value: chatgpt:quota
+    anchor: 'CHATGPT_QUOTA_KEY = "chatgpt:quota"'
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1078 (2026-10-18). El callback chatgpt_quota.py guarda en
+      litellm-valkey db 0 la ultima lectura de cuota de la cuenta ChatGPT
+      Plus, sacada de las cabeceras x-codex-* de cada respuesta (tambien los
+      429): JSON {observed_at, plan_type, active_limit, primary, secondary,
+      credits_unlimited, credits_balance}, cada ventana {used_percent,
+      window_minutes, reset_at (epoch s)}; primary = 300 min, secondary =
+      10080 min. TTL 8 dias. Consumidor: dgx-infra services/dashboard
+      (/api/chatgpt/quota y /api/activity codex_quota), solo GET. Pinned by
+      tests/test_chatgpt_quota_contract.py.
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que
