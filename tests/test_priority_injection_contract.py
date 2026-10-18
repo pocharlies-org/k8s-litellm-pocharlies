@@ -320,6 +320,7 @@ def test_el_mapa_vive_en_config_yaml():
         # DGX-601 (Dani): `claude-local` es la misma key para la compania y para el
         # uso personal, asi que su nivel va MAPA por clase, no entero.
         "claude-local": {"default": -5, "company": 5},
+        "claude-casa": -5,  # DGX-1099: el MacBook de casa con su propia key
     }
     # DGX-601: lo uncensored no tiene alternativa -> nivel propio, por delante.
     assert CONFIG_YAML["priority_uncensored"] == -20
