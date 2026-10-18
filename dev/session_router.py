@@ -1928,6 +1928,7 @@ CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"
 # conversacion ya esta fria en todas las cuentas y re-elegir sale gratis.
 CLAUDE_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("CLAUDE_ACCOUNT_PIN_TTL_SECONDS", "3600"))
 CLAUDE_ACCOUNT_STATS = {"hits": 0, "claims": 0, "moves": 0, "empty": 0, "redis_errors": 0}
+_claude_refresh_at = [float("-inf")]
 _U = "anthropic-ratelimit-unified-"
 
 
@@ -2091,9 +2092,11 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
     request_kwargs = request_kwargs or {}
     alias = _key_alias(request_kwargs)
     policies = (await _config()).get("claude_accounts") or {}
-    if alias not in policies:
+    if alias not in policies and time.monotonic() - _claude_refresh_at[0] >= 1.0:
         # Config fria (pod recien arrancado) o key nueva en el panel: un refresco
-        # en el momento antes de negar. Solo lo paga una key `claude-*` sin politica.
+        # en el momento antes de negar, como mucho uno por segundo (una key sin
+        # politica que insiste no debe martillear al dashboard).
+        _claude_refresh_at[0] = time.monotonic()
         await _refresh_config()
         policies = _config_cache["config"].get("claude_accounts") or {}
     order = [e for e in policies.get(alias) or () if e["id"] in by_account]
