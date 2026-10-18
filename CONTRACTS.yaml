@@ -439,6 +439,15 @@ contracts:
       (claude-opus-5) con la beta context-1m y max_tokens topado a 64000, lo
       que antes hacia el claude-router del x86; sin cuentas, sigue en el
       residente como antes. Mismo campo y mismos valores: sin .vN+1.
+      2026-10-19 (DGX-1099, opcion B): este hook pasa a CONSUMIR company.claude
+      y company.claude_gate ({mode off|rewrite|block, allow, target,
+      max_tokens}, mismo esquema que ya leia el claude-router del x86) sobre
+      peticiones claude-* con x-claude-class: company: claude=false -> 403
+      (y un plan claude no la saca del residente); gate fuera de allow ->
+      rewrite a target con tope, o 403; gate ausente, basura o con target
+      claude-* = off. Ademas la clave reservada claude_accounts["compania"] es
+      la lista de cuentas de esa clase, sea cual sea su key. Campos ya
+      publicados: sin .vN+1.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>

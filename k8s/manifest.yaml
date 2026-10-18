@@ -7882,7 +7882,8 @@ data:
     #   3. plan EXPLÍCITO del panel (session_plans[sid]): local -> residente y
     #      ENCOLA si está lleno, NUNCA rechazo instantáneo (es decisión del
     #      usuario); alibaba -> alibaba; claude -> claude-* con su beta y su tope
-    #      (DGX-1099) si la key tiene cuentas en claude_accounts; si no, residente.
+    #      (DGX-1099) si quien pide tiene cuentas en claude_accounts (la compañía, además,
+    #      con company.claude encendido); si no, residente.
     #   3b. BURST Alibaba (SC-2082 P6c): company.bots_alibaba + key de los bots (BOT_BURST_KEYS) + clase
     #      company + residente -> alibaba, por petición y sin ligadura (ver _apply).
     #   4. sticky (solo sesiones de plan default): binding en Valkey; destino solo
@@ -8106,10 +8107,20 @@ data:
     # company (a) se SELLA con disable_fallbacks — el Router no cae a alibaba-q38-flash y
     # este mismo módulo la ve "sellada" y no la reescribe por sticky, plan ni re-bind — y
     # (b) si pide un `alibaba-*` explícito se rechaza con 403. Solo la compañía: el resto de
-    # consumidores conserva su fallback. `company.claude` no se usa aquí (Anthropic ni pasa
-    # por LiteLLM): lo aplica el claude-router del x86.
+    # consumidores conserva su fallback.
     ALIBABA_PREFIX = "alibaba-"
     DEFAULT_COMPANY = {"claude": True, "alibaba": True}
+    # DGX-1099 (opción B, 19-10): las reglas de Claude de la compañía que aplicaba el
+    # claude-router del x86 viven aquí, en apply_company_policy, sobre peticiones `claude-*`
+    # de clase company:
+    #   company.claude = false -> 403 (y un plan claude no la saca del residente);
+    #   company.claude_gate    -> fuera de `allow`: rewrite a `target` con tope de max_tokens,
+    #                             o block (403); ausente o basura = off;
+    #   cuentas                -> la lista claude_accounts["compania"] del panel, sea cual
+    #                             sea la key (sustituye al reparto CLAUDE_CONFIG_DIR del x86).
+    CLAUDE_GATE_MODES = ("off", "rewrite", "block")
+    CLAUDE_GATE_OFF = {"mode": "off", "allow": [], "target": "", "max_tokens": 0}
+    COMPANY_CLAUDE_ALIAS = "compania"
     # SC-2082 P6c (BURST Alibaba): `company.bots_alibaba` manda las peticiones de la key
     # de los bots de la compañía (BOT_BURST_KEYS, clase company) a su gemelo de Alibaba mientras dure
     # el BURST de Alibaba del panel. Campo ADITIVO de dgx.model-routing.config.v2 y de
@@ -8235,6 +8246,25 @@ data:
         return out
 
 
+    def _sanitize_claude_gate(raw):
+        """company.claude_gate del panel -> {mode, allow, target, max_tokens}. Un target que
+        sea Claude o vacío no es destino: off (el router del x86 tampoco inventaba ruta)."""
+        if not isinstance(raw, dict) or raw.get("mode") not in CLAUDE_GATE_MODES:
+            return dict(CLAUDE_GATE_OFF)
+        target = raw.get("target") if isinstance(raw.get("target"), str) else ""
+        target = target.strip()
+        if raw["mode"] == "rewrite" and (not target or target.startswith(CLAUDE_PREFIX)):
+            return dict(CLAUDE_GATE_OFF)
+        allow = raw.get("allow") if isinstance(raw.get("allow"), list) else []
+        cap = raw.get("max_tokens")
+        return {
+            "mode": raw["mode"],
+            "allow": [str(x).strip() for x in allow if isinstance(x, str) and x.strip()],
+            "target": target,
+            "max_tokens": cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else 0,
+        }
+
+
     def _key_alias(data):
         """Alias de la virtual key que hizo la petición (metadata o litellm_metadata,
         según la ruta — mismo criterio que _claude_class). None si no hay."""
@@ -8242,6 +8272,20 @@ data:
             if isinstance(meta, dict) and meta.get("user_api_key_alias"):
                 return str(meta["user_api_key_alias"]).strip().lower() or None
         return None
+
+
+    def _claude_policy_alias(data):
+        """De qué lista de claude_accounts sale la cuenta: la de la compañía para su clase,
+        la de la key para el resto."""
+        return COMPANY_CLAUDE_ALIAS if _claude_class(data) == COMPANY_CLASS else _key_alias(data)
+
+
+    def _claude_plan_allowed(config, data):
+        """Un plan claude desvía si quien pide tiene cuentas y, siendo la compañía, su
+        interruptor «Claude» está encendido."""
+        if _claude_class(data) == COMPANY_CLASS and not (config.get("company") or {}).get("claude", True):
+            return False
+        return bool((config.get("claude_accounts") or {}).get(_claude_policy_alias(data)))
 
 
     def _overflow_exempt(config, claude_class, key_alias):
@@ -8489,6 +8533,7 @@ data:
         # SC-2082 P6c: polaridad contraria — solo un `true` bool enciende; ausente, null,
         # "true" o 1 = apagado. Sin ligadura sticky: lo dicta la config por petición.
         config["company"]["bots_alibaba"] = company.get("bots_alibaba") is True
+        config["company"]["claude_gate"] = _sanitize_claude_gate(company.get("claude_gate"))
         alibaba = raw.get("alibaba") if isinstance(raw.get("alibaba"), dict) else {}
         config["alibaba"] = {k: alibaba.get(k) is not False for k in DEFAULT_ALIBABA}
         config["overflow_exempt"] = _sanitize_exempt(raw.get("overflow_exempt"))
@@ -9978,7 +10023,7 @@ data:
                 return healthy_deployments
             by_account.setdefault(acct, dep)
         request_kwargs = request_kwargs or {}
-        alias = _key_alias(request_kwargs)
+        alias = _claude_policy_alias(request_kwargs)
         policies = (await _config()).get("claude_accounts") or {}
         if alias not in policies and time.monotonic() - _claude_refresh_at[0] >= 1.0:
             # Config fria (pod recien arrancado) o key nueva en el panel: un refresco
@@ -10321,23 +10366,54 @@ data:
             return dict(DEFAULT_ALIBABA)
 
 
-    async def apply_company_policy(data, requested_model):
-        """Interruptor «Fallback Alibaba» de la compañía. Lo llama litellm_strip_params en su
-        async_pre_call_hook justo después de la política de fallbacks por key, ANTES de
-        resolver alias y de apply_session_routing.
+    def _company_claude(config, data, requested_model):
+        """Interruptor «Claude» y claude_gate de la compañía sobre un `claude-*`. Devuelve el
+        detalle de un 403 o None (con rewrite, data ya apunta al target)."""
+        model = str(requested_model or data.get("model") or "")
+        if not model.startswith(CLAUDE_PREFIX):
+            return None
+        company = config.get("company") or {}
+        if company.get("claude", True) is False:
+            log.warning("session_router: company pidio %r con Claude desactivado -> 403", model)
+            return {"error": "company_claude_disabled", "model": model,
+                    "hint": ("La compañía tiene Claude desactivado en dgx.e-dani.com/"
+                             "claude-sessions#settings: usa el LLM local.")}
+        gate = company.get("claude_gate") or CLAUDE_GATE_OFF
+        if gate["mode"] == "off" or model in gate["allow"]:
+            return None
+        if gate["mode"] == "block":
+            log.warning("session_router: claude_gate=block, company pidio %r -> 403", model)
+            return {"error": "company_claude_gate", "model": model, "allow": gate["allow"],
+                    "hint": "Cámbiala en dgx.e-dani.com/claude-sessions#settings."}
+        data["model"] = gate["target"]
+        if gate["max_tokens"] and isinstance(data.get("max_tokens"), int) \
+                and data["max_tokens"] > gate["max_tokens"]:
+            data["max_tokens"] = gate["max_tokens"]
+        log.warning("session_router: claude_gate %r -> %r (company)", model, gate["target"])
+        return None
 
-        Devuelve (denegada, detalle). Sin clase company o con Alibaba permitido: (False, None)
-        sin tocar nada. Con Alibaba desactivado: un `alibaba-*` pedido o resuelto -> (True,
-        detalle para un 403); cualquier otro -> sella `disable_fallbacks` y (False, None).
+
+    async def apply_company_policy(data, requested_model):
+        """Reglas de la compañía. Lo llama litellm_strip_params en su async_pre_call_hook justo
+        después de la política de fallbacks por key, ANTES de resolver alias y de
+        apply_session_routing.
+
+        Devuelve (denegada, detalle). Sin clase company: (False, None) sin tocar nada. Primero
+        Claude (_company_claude: 403, o rewrite del gate). Después el interruptor «Fallback
+        Alibaba»: con Alibaba desactivado, un `alibaba-*` pedido o resuelto -> (True, detalle
+        para un 403); cualquier otro -> sella `disable_fallbacks` y (False, None).
         Fail-open: cualquier fallo o config fría = (False, None) = comportamiento anterior."""
         try:
             if _claude_class(data) != COMPANY_CLASS:
                 return False, None
+            config = await _config()
+            denied = _company_claude(config, data, requested_model)
+            if denied is not None:
+                return True, denied
             # SC-2504 (Dani, 16-10): el interruptor es para el trabajo de la compañía (historias, épicas, Requests); el
             # supervisor —el CTO de Hermes— conserva siempre su respaldo de Alibaba.
             if _hermes_profile(data) in ALIBABA_SIEMPRE:
                 return False, None
-            config = await _config()
             if (config.get("company") or {}).get("alibaba", True) is not False:
                 return False, None
             for name in (requested_model, data.get("model")):
@@ -10491,7 +10567,7 @@ data:
             info["plan"] = "claude(explicito)"
             # Sin cuentas de Claude para esta key en el panel se queda en el residente,
             # como antes de DGX-1099 (un error seria peor que no desviar).
-            if not (config.get("claude_accounts") or {}).get(key_alias):
+            if not _claude_plan_allowed(config, data):
                 info["decision"] = "plan_explicito_claude_sin_cuentas"
                 return False
             info["decision"] = "plan_explicito_claude"
@@ -10550,7 +10626,7 @@ data:
         info["fresh"] = fresh
         info["plan"] = plan
         if plan == "claude":
-            if not (config.get("claude_accounts") or {}).get(key_alias):
+            if not _claude_plan_allowed(config, data):
                 info["decision"] = "plan_claude_sin_cuentas"
                 return False
             info["decision"] = "plan_claude"
@@ -12906,7 +12982,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-181ff75e8297
+        config.k8s.e-dani.com/revision: config-f9610d55a65b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13828,7 +13904,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-181ff75e8297
+        config.k8s.e-dani.com/revision: config-f9610d55a65b
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
