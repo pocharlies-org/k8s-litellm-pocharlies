@@ -339,10 +339,13 @@ VLLM_STALE_SECONDS = 5.0
 _vllm_queue = {"waiting": None, "running": None, "since": None, "read_at": None}
 # DGX-897 (14-10-2026, Dani): el desborde a Alibaba salta a la SUMA del tope de los
 # servidores que contestan su /metrics, en el MISMO orden que
-# SESSION_ROUTER_VLLM_METRICS_URL (TP=2, TP=1): 24 con los dos, 16 solo el TP=2 y 8
-# solo el TP=1. Cada tope es el `--max-num-seqs` de su vLLM. El `local_slots` del
-# panel queda como techo global (manda el menor) y, sin ninguna lectura fresca
-# (sondeo caido), manda solo el panel, como antes.
+# SESSION_ROUTER_VLLM_METRICS_URL (TP=2, TP=1). Cada tope es el `--max-num-seqs` de
+# su vLLM. El `local_slots` del panel queda como techo global (manda el menor) y,
+# sin ninguna lectura fresca (sondeo caido), manda solo el panel, como antes.
+# DGX-955h (18-10-2026, Dani): 16,8 -> 8,5 con los `--max-num-seqs` nuevos
+# (k8s-ai-pocharlies#197): el desborde salta a 13, la capacidad REAL del residente;
+# con el 24 viejo se admitían 11 peticiones más de las que cabían y encolaban dentro
+# del motor (lento sin desbordar).
 
 
 def _parse_slots(raw):
@@ -352,7 +355,7 @@ def _parse_slots(raw):
         return ()
 
 
-VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "16,8"))
+VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "8,5"))
 _vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
 # DGX-974: la ultima lectura de CADA motor, url -> (waiting, running, read_at), y
 # cuantas peticiones nuevas le ha dado ESTE pod desde esa lectura: el reparto de
