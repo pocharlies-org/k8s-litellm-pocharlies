@@ -13729,10 +13729,11 @@ data:
         elif scope["type"] == "http":
             await _handle(scope, receive, send)
 ---
-# DGX-1099: un setup-token de Claude (1 año, scope user:inference) por cuenta, de los
-# items `claude-cuenta-<id>` del vault llavero (campo `token`), forma Connect. Los
-# escribe security (skill alta-cuenta-claude); aqui solo se leen. Una cuenta nueva =
-# una linea aqui + su entrada claude-acct-<id> en el model_list.
+# DGX-1099: un setup-token de Claude (1 año, scope user:inference) por cuenta: items
+# `claude-cuenta-<id>` del vault k8s-pocharlies (campo `token`), por id, forma Connect.
+# Son credenciales de maquina con un solo consumidor en el cluster; security los movio
+# de llavero aqui (SC-2745) y es quien los escribe. Una cuenta nueva = su item en
+# k8s-pocharlies + una linea aqui + su entrada claude-acct-<id> en el model_list.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -13748,21 +13749,21 @@ spec:
     deletionPolicy: Retain
   data:
     - secretKey: CLAUDE_OAT_INFO
-      remoteRef: { key: claude-cuenta-info, property: token }
+      remoteRef: { key: j3ptb3nrf63j73n5mc4ffzxbwu, property: token }  # claude-cuenta-info
     - secretKey: CLAUDE_OAT_CORREO
-      remoteRef: { key: claude-cuenta-correo, property: token }
+      remoteRef: { key: nffams536xdgzykcsluhpz6bq4, property: token }  # claude-cuenta-correo
     - secretKey: CLAUDE_OAT_EDANI
-      remoteRef: { key: claude-cuenta-edani, property: token }
+      remoteRef: { key: m5lhm5zk6afxaxr5m3hsugygna, property: token }  # claude-cuenta-edani
     - secretKey: CLAUDE_OAT_TERCERA
-      remoteRef: { key: claude-cuenta-tercera, property: token }
+      remoteRef: { key: 4zunsicb4usmzco4apt7kubcmm, property: token }  # claude-cuenta-tercera
     - secretKey: CLAUDE_OAT_WORKS_SHARED
-      remoteRef: { key: claude-cuenta-works-shared, property: token }
+      remoteRef: { key: kwmqy7ahe6avilv2vki5nmjipe, property: token }  # claude-cuenta-works-shared
     - secretKey: CLAUDE_OAT_FLASH
-      remoteRef: { key: claude-cuenta-flash, property: token }
+      remoteRef: { key: tk3bu5u64a6ay5hutfoad2kvdy, property: token }  # claude-cuenta-flash
     - secretKey: CLAUDE_OAT_MAX
-      remoteRef: { key: claude-cuenta-max, property: token }
+      remoteRef: { key: 7uuxs7x5ub7fjtr3iiwst6br54, property: token }  # claude-cuenta-max
     - secretKey: CLAUDE_OAT_SERGIO
-      remoteRef: { key: claude-cuenta-sergio, property: token }
+      remoteRef: { key: ljmxrtej6z67hwgn25ob63sobq, property: token }  # claude-cuenta-sergio
 ---
 # Un token por consumidor del gateway (items 1Password `plan-gateway-studio` y
 # `plan-gateway-omnivoice`), forma Connect (INFRA-511): `key: <item>` +
