@@ -815,8 +815,8 @@ data:
     #     model_group_alias, ningun desvio de vision o catalogo apunta aqui. Lo vigila
     #     tests/test_chatgpt_oauth_contract.py.
     #   - Cerrados por el gate fail-closed `_chatgpt_access_denied` (prefijo `gpt-`,
-    #     LITELLM_CHATGPT_ALLOWED_KEYS): solo `claude-local` (Claude CLI y Paseo) y
-    #     `hermes`. La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
+    #     LITELLM_CHATGPT_ALLOWED_KEYS): solo `claude-local` (Claude CLI y Paseo),
+    #     `hermes` y `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077). La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
     #     desde antes de la purga del 21-08 y lo heredaria sola al volver el alias: el
     #     gate la para. Cualquier key nueva, igual.
     #   - El riesgo de baneo NO desaparece: si alguien elige a mano un `gpt-*` para una
@@ -893,6 +893,35 @@ data:
         description: GPT-5.6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        disable_background_health_check: true
+    # DGX-1077: imagen por la misma cuenta, para los motores `chatgpt-*` del DGX Studio
+    # (key `studio-chatgpt`). Mismo gate `gpt-` y misma regla: solo seleccion manual.
+    - model_name: gpt-image-2.5-flare
+      litellm_params:
+        model: chatgpt/gpt-image-2.5-flare
+      model_info:
+        name: GPT Image 2.5 Flare · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT Image 2.5 Flare - texto-a-imagen rapido via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
+        mode: image_generation
+        input_cost_per_image: 0
+        disable_background_health_check: true
+    - model_name: gpt-image-2.5-sunburst
+      litellm_params:
+        model: chatgpt/gpt-image-2.5-sunburst
+      model_info:
+        name: GPT Image 2.5 Sunburst · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT Image 2.5 Sunburst - texto-a-imagen de precision via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
+        mode: image_generation
+        input_cost_per_image: 0
+        disable_background_health_check: true
+    - model_name: gpt-image-2
+      litellm_params:
+        model: chatgpt/gpt-image-2
+      model_info:
+        name: GPT Image 2 · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT Image 2 - texto-a-imagen via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
+        mode: image_generation
+        input_cost_per_image: 0
         disable_background_health_check: true
     # >>> openrouter-free — BLOQUE DE ALIAS `or-*` DEL CATALOGO `:free` DE OPENROUTER
     # ESTE BLOQUE SE MANTIENE A MANO, en este fichero, en este commit. No hay panel ni
@@ -12097,7 +12126,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-df03daa5d702
+        config.k8s.e-dani.com/revision: config-5cd60d9781f2
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -12327,8 +12356,9 @@ spec:
             # `grok-account` lleva el saldo (max_budget) y `grok-probe` solo la sonda.
             - { name: LITELLM_GROK_ALLOWED_KEYS, value: "grok-account,grok-probe" }
             # DGX-1053: los alias `gpt-*` (cuenta ChatGPT Plus de Dani). Claude CLI y Paseo
-            # entran por `claude-local` (claude-local-router); Hermes por `hermes`.
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes" }
+            # entran por `claude-local` (claude-local-router); Hermes por `hermes`; los
+            # motores de imagen del DGX Studio por `studio-chatgpt` (DGX-1077).
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes,studio-chatgpt" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             - name: _DBUSER
               valueFrom: { secretKeyRef: { name: litellm-postgres-creds, key: username } }
@@ -12995,7 +13025,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-df03daa5d702
+        config.k8s.e-dani.com/revision: config-5cd60d9781f2
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
