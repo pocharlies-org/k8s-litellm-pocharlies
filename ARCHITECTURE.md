@@ -23,6 +23,15 @@ de `litellm` lo montan en solo lectura en `CHATGPT_TOKEN_DIR`: el provider `chat
 refresh token, así que dos réplicas renovando revocarían la sesión. Sin RWX/NFS (SC-381). Re-login: cabecera del fichero.
 Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-local,hermes,studio-chatgpt`; solo selección manual).
 
+**Claude por suscripción** (DGX-1099): ocho entradas `claude-*` (`model_info.id` `claude-acct-<id>`), una por cuenta, con
+su setup-token de `litellm-claude-cuentas` (ExternalSecret de los items `claude-cuenta-<id>` de `llavero`). Las virtual keys
+de máquina (`claude-local` en el x86, `claude-casa` en el MacBook de casa, `claude-cloudblue` en el de CloudBlue) piden el
+nombre de Anthropic y `session_router.claude_account_filter` elige la cuenta con la política por key que publica el panel
+(`claude_accounts` de `/api/model-routing/config`): la primera de su lista por debajo de su salto; una conversación empezada
+se queda en su cuenta salvo 429 o créditos; sin política, ninguna. `claude_quota.py` guarda la cuota de cada respuesta en
+`claude:quota:<id>`. Contratos `dgx.litellm.claude-quota.v1` y `dgx.session-router.claude-account-pin.v1`. Sin fallbacks y
+sin mensajes en Langfuse (`turn_off_message_logging`).
+
 **`plan-gateway`** (`plan-gateway.litellm.svc:4002`, solo dentro del cluster, sin IngressRoute) es el sitio único por el que
 pasa la **media** (imagen, vídeo, voz) del Token Plan de Alibaba. Consumidores, uno por token
 (`PLAN_GATEWAY_TOKEN_<NOMBRE>`): **Studio** (dgx-infra, `control-nexus`) y **omnivoice** (k8s-ai, ns `llm`); galan no lo

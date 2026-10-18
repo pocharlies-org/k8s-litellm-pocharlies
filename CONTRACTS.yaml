@@ -425,6 +425,49 @@ contracts:
       default 16,8 = TP=2 y TP=1): 24 con los dos, 16 solo el TP=2, 8 solo el
       TP=1. Sin ninguna lectura fresca manda solo local_slots, como antes. Mismo
       campo y mismo rango: sin .vN+1.
+      2026-10-18 (DGX-1099): campo ADITIVO claude_accounts =
+      {"<alias de virtual key>": [{id, salto_7d, salto_5h}, ...]} — por key, la
+      lista ORDENADA de cuentas de Claude (ids de las entradas claude-acct-<id>)
+      y su salto en % de la ventana de 7 d y de 5 h (0-100, 90 si falta). Alias
+      en minusculas; ids [a-z0-9-] sin repetir; basura = fuera. Ausente = {} =
+      ninguna key puede usar claude-* (el filtro no abre nunca). Lo lee
+      session_router.claude_account_filter. Sin .vN+1: aditivo. Productor:
+      dgx-infra (panel «Sesiones de Dani · Cuentas de»).
+  - id: dgx.litellm.claude-quota.v1
+    kind: schema
+    value: claude:quota:<account-id>
+    anchor: 'CLAUDE_QUOTA_PREFIX = "claude:quota"'
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-18). El callback claude_quota.py guarda en
+      litellm-valkey db 0 la ultima lectura de cuota de cada cuenta de Claude
+      (entrada claude-acct-<id>), sacada de las cabeceras
+      anthropic-ratelimit-unified-* de cada respuesta (tambien los 429): JSON
+      {observed_at, status, reset, representative_claim, five_hour,
+      seven_day, overage_in_use}, cada ventana {utilization (0-1), resets_at
+      (epoch s)}. TTL 8 dias. Lectores: session_router.claude_account_filter
+      (salto) y dgx-infra services/dashboard (barras de cuota), solo GET.
+      Pinned by tests/test_claude_account_filter.py.
+  - id: dgx.session-router.claude-account-pin.v1
+    kind: schema
+    value: claude_account_pin:v1:<key-alias>:<sid>
+    anchor: 'CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"'
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-18). Una conversacion de Claude vive en UNA cuenta
+      (la cache de prompts no se comparte entre cuentas). Valor = id de la
+      cuenta; TTL de inactividad CLAUDE_ACCOUNT_PIN_TTL_SECONDS (3600, la vida
+      de la cache de Anthropic), renovado en cada acierto. Solo se reescribe
+      si la cuenta queda rechazada (429 de suscripcion o creditos) o fuera
+      del Router. Publisher y lector: session_router.claude_account_filter.
   - id: dgx.litellm.service-alias.chatgpt.v1
     kind: http-route
     value: litellm-chatgpt

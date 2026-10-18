@@ -1,0 +1,214 @@
+"""DGX-1099: la cuenta de Claude la elige LiteLLM con la politica por key del panel.
+
+Unitarios de `session_router.claude_account_filter` y `claude_quota_from_headers`
+contra una Valkey de pega, con el modulo tal cual lo embebe el ConfigMap.
+"""
+import asyncio
+import json
+import sys
+import time
+import types
+from pathlib import Path
+
+import yaml
+
+MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
+DOCS = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
+CM = next(d for d in DOCS if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
+ROUTER_SRC = CM["data"]["session_router.py"]
+POLICY = {
+    "claude-local": [{"id": "info", "salto_7d": 90, "salto_5h": 90},
+                     {"id": "correo", "salto_7d": 90, "salto_5h": 90}],
+    "claude-cloudblue": [{"id": "flash", "salto_7d": 90, "salto_5h": 90}],
+}
+
+
+class FakeValkey:
+    def __init__(self):
+        self.data = {}
+        self.down = False
+
+    def _check(self):
+        if self.down:
+            raise ConnectionError("valkey caida")
+
+    async def get(self, key):
+        self._check()
+        return self.data.get(key)
+
+    async def mget(self, keys):
+        self._check()
+        return [self.data.get(k) for k in keys]
+
+    async def set(self, key, value, nx=False, ex=None):
+        self._check()
+        if nx and key in self.data:
+            return None
+        self.data[key] = value
+        return True
+
+    async def expire(self, key, seconds):
+        self._check()
+        return key in self.data
+
+
+def _pod(valkey, policy=POLICY):
+    saved = sys.modules.get("httpx")
+    sys.modules["httpx"] = types.ModuleType("httpx")
+    try:
+        mod = types.ModuleType("session_router_pod")
+        exec(compile(ROUTER_SRC, "session_router.py", "exec"), mod.__dict__)
+    finally:
+        if saved is not None:
+            sys.modules["httpx"] = saved
+        else:
+            sys.modules.pop("httpx", None)
+
+    async def fake_redis():
+        return valkey
+
+    async def fake_refresh():
+        return None
+
+    mod._redis = fake_redis
+    mod._refresh_config = fake_refresh
+    mod._config_cache["config"] = mod._sanitize({"claude_accounts": policy})
+    mod._config_cache["expires"] = time.monotonic() + 3600
+    return mod
+
+
+ACCOUNTS = ("info", "correo", "edani", "flash")
+
+
+def _deps(accounts=ACCOUNTS):
+    return [{"model_name": "claude-*", "model_info": {"id": f"claude-acct-{a}"},
+             "litellm_params": {"model": "anthropic/claude-*"}} for a in accounts]
+
+
+def _kw(alias="claude-local", sid="s1"):
+    md = {"user_api_key_alias": alias}
+    if sid:
+        md["session_id"] = sid
+    return {"metadata": md}
+
+
+def _pick(mod, deps=None, **kw):
+    out = asyncio.run(mod.claude_account_filter("claude-opus-5-5", deps or _deps(), _kw(**kw)))
+    return [d["model_info"]["id"].removeprefix("claude-acct-") for d in out]
+
+
+def _quota(v, acct, u5=0.1, u7=0.1, status="allowed", reset_in=3600, overage=False):
+    now = time.time()
+    v.data[f"claude:quota:{acct}"] = json.dumps({
+        "observed_at": now, "status": status, "reset": int(now + reset_in),
+        "five_hour": {"utilization": u5, "resets_at": int(now + reset_in)},
+        "seven_day": {"utilization": u7, "resets_at": int(now + 86400)},
+        "overage_in_use": overage})
+
+
+def test_conversacion_nueva_va_a_la_primera_de_su_key():
+    assert _pick(_pod(FakeValkey())) == ["info"]
+
+
+def test_salta_a_la_siguiente_cuando_la_primera_pasa_su_salto():
+    v = FakeValkey()
+    _quota(v, "info", u5=0.95)
+    assert _pick(_pod(v), sid="nueva") == ["correo"]
+
+
+def test_conversacion_empezada_se_queda_aunque_pase_el_salto():
+    v = FakeValkey()
+    mod = _pod(v)
+    assert _pick(mod, sid="s1") == ["info"]
+    _quota(v, "info", u5=0.95)
+    assert _pick(mod, sid="s1") == ["info"]
+    assert _pick(mod, sid="s2") == ["correo"]
+
+
+def test_conversacion_empezada_muda_si_su_cuenta_esta_rechazada():
+    v = FakeValkey()
+    mod = _pod(v)
+    assert _pick(mod, sid="s1") == ["info"]
+    _quota(v, "info", u5=1.0, status="rejected")
+    assert _pick(mod, sid="s1") == ["correo"]
+    assert v.data["claude_account_pin:v1:claude-local:s1"] == "correo"
+
+
+def test_creditos_cuentan_como_agotada():
+    v = FakeValkey()
+    _quota(v, "info", overage=True)
+    assert _pick(_pod(v)) == ["correo"]
+
+
+def test_ventana_reiniciada_ya_no_cuenta():
+    v = FakeValkey()
+    _quota(v, "info", u5=1.0, status="rejected", reset_in=-10)
+    assert _pick(_pod(v)) == ["info"]
+
+
+def test_cuenta_en_cooldown_no_se_elige():
+    assert _pick(_pod(FakeValkey()), deps=_deps(("correo", "edani"))) == ["correo"]
+
+
+def test_nunca_sale_de_la_lista_de_su_key():
+    v = FakeValkey()
+    _quota(v, "flash", u7=0.99)
+    assert _pick(_pod(v), alias="claude-cloudblue") == []
+    assert _pick(_pod(v), alias="sin-politica") == []
+
+
+def test_todas_pasadas_de_salto_es_lista_vacia():
+    v = FakeValkey()
+    _quota(v, "info", u5=0.95)
+    _quota(v, "correo", u7=0.95)
+    assert _pick(_pod(v)) == []
+
+
+def test_valkey_caida_usa_la_primera():
+    v = FakeValkey()
+    v.down = True
+    assert _pick(_pod(v)) == ["info"]
+
+
+def test_otros_grupos_pasan_intactos():
+    mod = _pod(FakeValkey())
+    deps = [{"model_info": {"id": "alibaba-q38-max-k1"}}]
+    assert asyncio.run(mod.claude_account_filter("alibaba-q38-max", deps, _kw())) == deps
+
+
+def test_lectura_de_cabeceras_de_anthropic():
+    mod = _pod(FakeValkey())
+    h = {"llm_provider-anthropic-ratelimit-unified-5h-utilization": "0.91",
+         "llm_provider-anthropic-ratelimit-unified-5h-reset": "1792362000",
+         "llm_provider-anthropic-ratelimit-unified-7d-utilization": "0.29",
+         "llm_provider-anthropic-ratelimit-unified-7d-reset": "1792908000",
+         "llm_provider-anthropic-ratelimit-unified-status": "allowed_warning",
+         "llm_provider-anthropic-ratelimit-unified-overage-status": "rejected",
+         "content-type": "application/json"}
+    r = mod.claude_quota_from_headers(h, now=1.0)
+    assert r["five_hour"] == {"utilization": 0.91, "resets_at": 1792362000}
+    assert r["seven_day"]["utilization"] == 0.29
+    assert r["status"] == "allowed_warning" and r["overage_in_use"] is False
+    assert mod.claude_quota_from_headers({"content-type": "x"}) is None
+
+
+def test_politica_basura_se_descarta():
+    mod = _pod(FakeValkey())
+    clean = mod._sanitize_claude_accounts({
+        "Claude-Local": [{"id": "info", "salto_7d": 150}, {"id": "info"}, {"id": "../x"}, "x"],
+        "otra": "no-lista"})
+    assert clean == {"claude-local": [{"id": "info", "salto_7d": 90.0, "salto_5h": 90.0}]}
+
+
+def test_las_entradas_claude_son_una_por_cuenta_sin_fallbacks():
+    cfg = yaml.safe_load(CM["data"]["config.yaml"])
+    entries = [m for m in cfg["model_list"] if m["model_name"] == "claude-*"]
+    ids = [m["model_info"]["id"] for m in entries]
+    assert len(ids) == len(set(ids)) >= 1 and all(i.startswith("claude-acct-") for i in ids)
+    assert all(m["litellm_params"]["api_key"].startswith("os.environ/CLAUDE_OAT_") for m in entries)
+    for fb in cfg["router_settings"].get("fallbacks") or ():
+        assert not any(str(k).startswith("claude-") for k in fb), fb
+    eso = next(d for d in DOCS if d.get("kind") == "ExternalSecret"
+               and d["metadata"]["name"] == "litellm-claude-cuentas")
+    secret_keys = {x["secretKey"] for x in eso["spec"]["data"]}
+    assert {m["litellm_params"]["api_key"].removeprefix("os.environ/") for m in entries} == secret_keys
