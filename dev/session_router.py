@@ -1989,6 +1989,21 @@ def _metrics_url(deployment):
     return (base[:-3] if base.endswith("/v1") else base) + "/metrics"
 
 
+# DGX-955h (18-10-2026, corte de luz): el TP=2 sin endpoints seguia en el sorteo.
+def live_backends(by_backend, now=None):
+    """Los backends cuyo /metrics contesto hace menos de VLLM_STALE_SECONDS.
+    Un motor que no contesta mientras otro si sale del reparto igual que ya
+    sale de la suma de la valvula. Si no contesta ninguno, todos: sin dato no
+    se poda nada."""
+    now = time.monotonic() if now is None else now
+    vivos = {}
+    for backend, deps in by_backend.items():
+        sample = _vllm_by_url.get(_metrics_url(deps[0]))
+        if sample is not None and now - sample[2] <= VLLM_STALE_SECONDS:
+            vivos[backend] = deps
+    return vivos or by_backend
+
+
 def least_loaded_backend(by_backend, now=None):
     """DGX-974: el backend con MAS plazas libres ahora: su tope (`VLLM_SLOTS`, el
     `--max-num-seqs` de cada vLLM) menos lo que tiene en marcha y en cola en la
@@ -2054,6 +2069,10 @@ async def resident_backend_filter(model, healthy_deployments, request_kwargs):
         if backend is None:
             return healthy_deployments
         by_backend.setdefault(backend, []).append(dep)
+    vivos = live_backends(by_backend)
+    if len(vivos) < len(by_backend):
+        by_backend = vivos
+        healthy_deployments = [d for deps in vivos.values() for d in deps]
     request_kwargs = request_kwargs or {}
     sid = _affinity_session_id(request_kwargs)
     weights = _resident_backend_weights()

@@ -240,6 +240,10 @@ contracts:
       secuencias (prefill x2,8 mas lento de 8 a 16 en vuelo, 16.100->5.700 tok/s) y
       TP=1 8->5. Afecta a `least_loaded_backend` (plazas = slots - en marcha/cola) y a
       la valvula de desborde (SESSION_ROUTER_VLLM_SLOTS default 16,8 -> 8,5).
+      Tras el corte de luz del mismo dia: un backend cuyo /metrics no contesta
+      mientras otro si sale del reparto (`live_backends`) y su sesion ligada muda;
+      la admision llm-tp acepta el TP=1 de dgx3 (`qwen38-worker-dgx3`) como
+      alternativa al par TP=2. Clave y valor del pin sin cambios.
 
       Publisher y lector: session_router.resident_backend_filter, llamado por el
       Router en cada eleccion de deployment a traves de
