@@ -12437,8 +12437,10 @@ data:
         hidden = hidden if isinstance(hidden, dict) else {}
         slo = kwargs.get("standard_logging_object") or {}
         exc = kwargs.get("exception")
+        # /v1/messages en streaming (Claude Code) solo deja las cabeceras en httpx_response.
         for src in (hidden.get("additional_headers"),
                     (slo.get("hidden_params") or {}).get("additional_headers"),
+                    getattr(kwargs.get("httpx_response"), "headers", None),
                     kwargs.get("response_headers"),
                     getattr(exc, "litellm_response_headers", None),
                     getattr(getattr(exc, "response", None), "headers", None)):
@@ -12904,7 +12906,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c76bb5105ffc
+        config.k8s.e-dani.com/revision: config-181ff75e8297
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13826,7 +13828,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c76bb5105ffc
+        config.k8s.e-dani.com/revision: config-181ff75e8297
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

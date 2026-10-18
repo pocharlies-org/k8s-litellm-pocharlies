@@ -452,7 +452,8 @@ contracts:
       DGX-1099 (2026-10-18). El callback claude_quota.py guarda en
       litellm-valkey db 0 la ultima lectura de cuota de cada cuenta de Claude
       (entrada claude-acct-<id>), sacada de las cabeceras
-      anthropic-ratelimit-unified-* de cada respuesta (tambien los 429): JSON
+      anthropic-ratelimit-unified-* de cada respuesta (tambien los 429 y los
+      streams de /v1/messages, que solo las traen en httpx_response): JSON
       {observed_at, status, reset, representative_claim, five_hour,
       seven_day, overage_in_use}, cada ventana {utilization (0-1), resets_at
       (epoch s)}. TTL 8 dias. Lectores: session_router.claude_account_filter
