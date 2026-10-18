@@ -120,6 +120,7 @@ def test_sidecar_preserves_exact_metrics(monkeypatch):
                 "server_id": "vllm-ornith-35b-nvfp4-mtp-dgx1",
                 "prompt_tokens": 3490,
                 "completion_tokens": 34,
+                "completion_tokens_estimate": 30,
                 "output_speed_tps": 33.0,
                 "ttft_ms": 1000,
                 "ts": 100.0,
@@ -131,6 +132,8 @@ def test_sidecar_preserves_exact_metrics(monkeypatch):
     assert normalized[0]["server_id"] == "vllm-ornith-35b-nvfp4-mtp-dgx1"
     assert normalized[0]["prompt_tokens"] == 3490
     assert normalized[0]["completion_tokens"] == 34
+    # SC-2675: la estimacion por chunks viaja junto al real.
+    assert normalized[0]["completion_tokens_estimate"] == 30
     assert normalized[0]["output_speed_tps"] == 33.0
     assert normalized[0]["ttft_ms"] == 1000
 
@@ -213,8 +216,9 @@ def test_continuous_usage_rides_extra_body_for_messages():
 def test_hook_feeds_tracker_from_the_openai_chunk_and_restores_the_seal():
     hook = _config_data()["litellm_strip_params.py"]
     # El parche de chunk_creator alimenta el tracker: en /v1/messages el hook del
-    # proxy itera bytes SSE sin usage.
-    assert "_track_live_chunk(self, usage)" in hook
+    # proxy itera bytes SSE sin usage. SC-2675: pasa tambien el chunk, para
+    # estimar la salida cuando el proveedor no manda usage hasta el final.
+    assert "_track_live_chunk(self, usage, chunk)" in hook
     assert "tracking_id, model=None, api_base=api_base)" in hook
     # El residente por nombre directo pide el uso continuo SIN la admision de
     # compute-mode (que le quitaria el fallback a Alibaba).
@@ -259,3 +263,61 @@ def test_server_is_stamped_when_the_router_dispatches():
     namespace["_stamp_backend"]({"litellm_params": {"api_base": tp1}}, "r1")
     namespace["_stamp_backend"]({"litellm_params": {}, "api_base": None}, "r2")
     assert calls == [("r1", None, tp1)]
+
+
+def test_tracker_estimates_live_output_from_chunks_without_usage():
+    # SC-2675: Alibaba/DashScope no manda usage hasta el ultimo chunk (medido
+    # 18-10: 1 usage en 10586). Sin esto, la fila en vuelo no tenia ni ttft ni
+    # velocidad: los caracteres del stream lo dan.
+    tracker_module = _exec_module(
+        _config_data()["active_request_tracking.py"],
+        "active_request_tracking_chunk_contract",
+    )
+
+    class Clock:
+        value = 100.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        active_file = Path(temp_dir) / "active.json"
+        tracker = tracker_module["ActiveRequestTracker"](
+            str(active_file),
+            clock=clock,
+        )
+        tracker.start(
+            "request-1",
+            trace_id="trace-1",
+            key_alias="claude-local",
+            model="alibaba-q38-flash",
+            call_type="acompletion",
+            api_base=None,
+        )
+        # Un chunk sin caracteres (solo delta vacio) no mueve nada.
+        clock.value += 0.5
+        assert tracker.tick_chunk("request-1", 0) is None
+        # chars_per_token arranca en 3.5: 7 caracteres son 2 tokens.
+        tracker.tick_chunk("request-1", 7)
+        clock.value += 1.0
+        tracker.tick_chunk("request-1", 7)
+
+        request = json.loads(active_file.read_text())["request-1"]
+        assert request["ttft_ms"] == 500
+        assert request["completion_tokens"] is None
+        assert request["completion_tokens_estimate"] == 4
+        assert request["output_speed_tps"] == 2.0
+
+        # El usage real manda: la ventana arranca de cero con su escala y el
+        # estimado no se pisa sobre el real.
+        clock.value += 1.0
+        tracker.update_usage("request-1", prompt_tokens=100, completion_tokens=10)
+        clock.value += 1.0
+        tracker.update_usage(
+            "request-1", prompt_tokens=100, completion_tokens=16, force_flush=True
+        )
+        request = json.loads(active_file.read_text())["request-1"]
+        assert request["completion_tokens"] == 16
+        assert request["completion_tokens_estimate"] == 4
+        assert request["output_speed_tps"] == 6.0
