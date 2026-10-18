@@ -1352,6 +1352,11 @@ def _overflow_ok():
     return _group_in_cooldown(OVERFLOW_MODEL) is False
 
 
+def _has_context(data):
+    """True si la conversación ya trae un turno del asistente: no es su primera petición."""
+    return any(isinstance(m, dict) and m.get("role") == "assistant" for m in data.get("messages") or ())
+
+
 def _rewrite(data, sid, reason):
     """Residente -> Alibaba. Espejo del desvío de visión: se limpian api_base/
     api_key (el grupo de Alibaba lleva los suyos en el model_list) y se marcan
@@ -2462,7 +2467,12 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     # 22 % de acierto de caché, 198 M tokens en 4 h). Con la sesión quieta la caché
     # funciona en los dos lados — medido el mismo día: Alibaba 19.712/20.553 y
     # 20.480/20.803 tokens cacheados en turnos seguidos; vLLM 22.400/28.046.
-    valvula = not exempt and (
+    #
+    # 18-10-2026 (DGX-1066, Dani: «rechaza solo las sesiones con 0 contexto»): una
+    # conversación con un turno previo del asistente ENCOLA en el residente. Mudarla paga
+    # su contexto entero en frío en Alibaba y otra vez al volver (medido el 18-10: 150-200k
+    # a caché 2 %, ttft 320-440 s). La válvula queda para las conversaciones nuevas.
+    valvula = not exempt and not _has_context(data) and (
         (company and company_overflow) or (not company and config["instant_reject"]))
     if valvula and model == RESIDENT_MODEL:
         _ensure_vllm_poller()
