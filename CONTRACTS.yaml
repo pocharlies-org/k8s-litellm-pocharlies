@@ -250,6 +250,11 @@ contracts:
       cuatro `-tpN`), asi que la mudanza de sesiones queda para el motor caido (500 o
       /metrics mudo), no para el saturado. Clave y valor del pin sin cambios.
 
+      DGX-1146 (2026-10-20, Dani): `model_info.cooldown_time` de los gemelos del residente
+      de 900 a 360 s. El OOM del 20-10 tumbo el TP=2, que volvio solo en ~220 s, y el pin
+      lo dejo aparcado 15 min con Alibaba en 429. Cuanto dura la expulsion, no cuando se
+      dispara ni a donde se muda. Clave y valor del pin sin cambios.
+
       Publisher y lector: session_router.resident_backend_filter, llamado por el
       Router en cada eleccion de deployment a traves de
       StripUnsupportedParams.async_filter_deployments, DESPUES del filtro de cuenta
