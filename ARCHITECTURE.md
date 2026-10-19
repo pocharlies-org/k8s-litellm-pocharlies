@@ -21,7 +21,20 @@ Los clientes del router (Claude CLI del x86, Hermes, OpenClaw, document-intake, 
 `litellm-chatgpt-oauth`, item `litellm` campo `CHATGPT_OAUTH_AUTH_JSON`) y lo renueva con 72 h de margen sobre 240 h. Los pods
 de `litellm` lo montan en solo lectura en `CHATGPT_TOKEN_DIR`: el provider `chatgpt/` no tiene cerrojo y OpenAI rota el
 refresh token, así que dos réplicas renovando revocarían la sesión. Sin RWX/NFS (SC-381). Re-login: cabecera del fichero.
-Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-local,hermes,studio-chatgpt`; solo selección manual).
+Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-local,hermes,studio-chatgpt,claude-casa,hindsight`; solo selección manual).
+
+**Claude por suscripción** (DGX-1099): ocho entradas `claude-*` (`model_info.id` `claude-acct-<id>`), una por cuenta, con
+su setup-token de `litellm-claude-cuentas` (ExternalSecret de los items `claude-cuenta-<id>` de `k8s-pocharlies`, por id; SC-2745). Las virtual keys
+de máquina (`claude-local` en el x86, `claude-casa` en el MacBook de casa, `claude-cloudblue` en el de CloudBlue) piden el
+nombre de Anthropic y `session_router.claude_account_filter` elige la cuenta con la política por key que publica el panel
+(`claude_accounts` de `/api/model-routing/config`): la primera de su lista por debajo de su salto; una conversación empezada
+se queda en su cuenta hasta que esa cuenta pasa su salto (o da 429 o créditos), y entonces salta; sin política, ninguna. `claude_quota.py` guarda la cuota de cada respuesta en
+`claude:quota:<id>`. Contratos `dgx.litellm.claude-quota.v1` y `dgx.session-router.claude-account-pin.v1`. Sin fallbacks y
+sin mensajes en Langfuse (`turn_off_message_logging`). Las sesiones de la compañía (`x-claude-class: company`) usan la lista
+`claude_accounts["compania"]` sea cual sea su key, y `apply_company_policy` les aplica el interruptor «Claude» y
+`company.claude_gate` (rewrite al residente con tope, o 403), lo que antes hacía el claude-router del x86. Con «Claude»
+apagado y el gate en rewrite, todo `claude-*` va al target; con el gate en off o block, 403 (SC-2667: un rol del plugin
+despachado por `Agent` pide el `model:` de git).
 
 **`plan-gateway`** (`plan-gateway.litellm.svc:4002`, solo dentro del cluster, sin IngressRoute) es el sitio único por el que
 pasa la **media** (imagen, vídeo, voz) del Token Plan de Alibaba. Consumidores, uno por token

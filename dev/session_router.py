@@ -46,8 +46,9 @@
 #   2. admisión compute-mode -> vive en strip_params (marcador, mandato 3).
 #   3. plan EXPLÍCITO del panel (session_plans[sid]): local -> residente y
 #      ENCOLA si está lleno, NUNCA rechazo instantáneo (es decisión del
-#      usuario); alibaba -> alibaba; claude -> no-op aquí (las peticiones
-#      Anthropic ni pasan por LiteLLM; la puerta vive en el claude-router x86).
+#      usuario); alibaba -> alibaba; claude -> claude-* con su beta y su tope
+#      (DGX-1099) si quien pide tiene cuentas en claude_accounts (la compañía, además,
+#      con company.claude encendido); si no, residente.
 #   3b. BURST Alibaba (SC-2082 P6c): company.bots_alibaba + key de los bots (BOT_BURST_KEYS) + clase
 #      company + residente -> alibaba, por petición y sin ligadura (ver _apply).
 #   4. sticky (solo sesiones de plan default): binding en Valkey; destino solo
@@ -105,6 +106,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import time
 import uuid
@@ -135,6 +137,15 @@ SIDECAR_URL = os.environ.get(
 )
 
 CONFIG_TTL_SECONDS = 5.0
+# DGX-1099 (19-10-2026): la config llega EMPUJADA por el stream SSE del dashboard
+# (`event: config` con el cuerpo de /config al conectar y en cada cambio; latido cada
+# 15 s). Con el stream vivo no hay GET; caído, el GET con TTL de arriba hasta que
+# reconecta. MODEL_ROUTING_CONFIG_STREAM=off vuelve al sondeo (vuelta atrás).
+# CONTRACT: dgx.model-routing.config.stream.v1 — GET /api/model-routing/config/stream
+# Junto a CONFIG_URL: quien la redirige (tests de integración) redirige también el stream.
+CONFIG_STREAM_URL = os.environ.get("MODEL_ROUTING_CONFIG_STREAM_URL", CONFIG_URL.rstrip("/") + "/stream")
+CONFIG_STREAM_ON = os.environ.get("MODEL_ROUTING_CONFIG_STREAM", "on") != "off"
+CONFIG_STREAM_READ_SECONDS = 45.0  # tres latidos sin nada = conexión muerta
 # ≤100 ms por operación en el camino de la petición (mandato 10). La config ya
 # NO está en el camino de la petición (stale-while-revalidate, ver _config);
 # el tope sigue aquí como contrato y para cualquier uso síncrono futuro.
@@ -271,10 +282,20 @@ COMPANY_CLASS = "company"
 # company (a) se SELLA con disable_fallbacks — el Router no cae a alibaba-q38-flash y
 # este mismo módulo la ve "sellada" y no la reescribe por sticky, plan ni re-bind — y
 # (b) si pide un `alibaba-*` explícito se rechaza con 403. Solo la compañía: el resto de
-# consumidores conserva su fallback. `company.claude` no se usa aquí (Anthropic ni pasa
-# por LiteLLM): lo aplica el claude-router del x86.
+# consumidores conserva su fallback.
 ALIBABA_PREFIX = "alibaba-"
 DEFAULT_COMPANY = {"claude": True, "alibaba": True}
+# DGX-1099 (opción B, 19-10): las reglas de Claude de la compañía que aplicaba el
+# claude-router del x86 viven aquí, en apply_company_policy, sobre peticiones `claude-*`
+# de clase company:
+#   company.claude = false -> 403 (y un plan claude no la saca del residente);
+#   company.claude_gate    -> fuera de `allow`: rewrite a `target` con tope de max_tokens,
+#                             o block (403); ausente o basura = off;
+#   cuentas                -> la lista claude_accounts["compania"] del panel, sea cual
+#                             sea la key (sustituye al reparto CLAUDE_CONFIG_DIR del x86).
+CLAUDE_GATE_MODES = ("off", "rewrite", "block")
+CLAUDE_GATE_OFF = {"mode": "off", "allow": [], "target": "", "max_tokens": 0}
+COMPANY_CLAUDE_ALIAS = "compania"
 # SC-2082 P6c (BURST Alibaba): `company.bots_alibaba` manda las peticiones de la key
 # de los bots de la compañía (BOT_BURST_KEYS, clase company) a su gemelo de Alibaba mientras dure
 # el BURST de Alibaba del panel. Campo ADITIVO de dgx.model-routing.config.v2 y de
@@ -400,6 +421,25 @@ def _sanitize_exempt(raw):
     return out
 
 
+def _sanitize_claude_gate(raw):
+    """company.claude_gate del panel -> {mode, allow, target, max_tokens}. Un target que
+    sea Claude o vacío no es destino: off (el router del x86 tampoco inventaba ruta)."""
+    if not isinstance(raw, dict) or raw.get("mode") not in CLAUDE_GATE_MODES:
+        return dict(CLAUDE_GATE_OFF)
+    target = raw.get("target") if isinstance(raw.get("target"), str) else ""
+    target = target.strip()
+    if raw["mode"] == "rewrite" and (not target or target.startswith(CLAUDE_PREFIX)):
+        return dict(CLAUDE_GATE_OFF)
+    allow = raw.get("allow") if isinstance(raw.get("allow"), list) else []
+    cap = raw.get("max_tokens")
+    return {
+        "mode": raw["mode"],
+        "allow": [str(x).strip() for x in allow if isinstance(x, str) and x.strip()],
+        "target": target,
+        "max_tokens": cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else 0,
+    }
+
+
 def _key_alias(data):
     """Alias de la virtual key que hizo la petición (metadata o litellm_metadata,
     según la ruta — mismo criterio que _claude_class). None si no hay."""
@@ -407,6 +447,20 @@ def _key_alias(data):
         if isinstance(meta, dict) and meta.get("user_api_key_alias"):
             return str(meta["user_api_key_alias"]).strip().lower() or None
     return None
+
+
+def _claude_policy_alias(data):
+    """De qué lista de claude_accounts sale la cuenta: la de la compañía para su clase,
+    la de la key para el resto."""
+    return COMPANY_CLAUDE_ALIAS if _claude_class(data) == COMPANY_CLASS else _key_alias(data)
+
+
+def _claude_plan_allowed(config, data):
+    """Un plan claude desvía si quien pide tiene cuentas y, siendo la compañía, su
+    interruptor «Claude» está encendido."""
+    if _claude_class(data) == COMPANY_CLASS and not (config.get("company") or {}).get("claude", True):
+        return False
+    return bool((config.get("claude_accounts") or {}).get(_claude_policy_alias(data)))
 
 
 def _overflow_exempt(config, claude_class, key_alias):
@@ -442,11 +496,14 @@ DEFAULT_CONFIG = {
     "return_max_tokens": DEFAULT_RETURN_MAX_TOKENS,
     "alibaba_return_after_s": DEFAULT_ALIBABA_RETURN_AFTER_S,
     "bot_keys": list(DEFAULT_BOT_KEYS),
+    "claude_accounts": {},
 }
 
 _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
 _config_refresh_task = None
 _config_client = None
+_config_stream_task = None
+_config_stream_live = [False]
 _redis_client = None
 _redis_lock = asyncio.Lock()
 _bg_tasks = set()
@@ -653,6 +710,7 @@ def _sanitize(raw):
     # SC-2082 P6c: polaridad contraria — solo un `true` bool enciende; ausente, null,
     # "true" o 1 = apagado. Sin ligadura sticky: lo dicta la config por petición.
     config["company"]["bots_alibaba"] = company.get("bots_alibaba") is True
+    config["company"]["claude_gate"] = _sanitize_claude_gate(company.get("claude_gate"))
     alibaba = raw.get("alibaba") if isinstance(raw.get("alibaba"), dict) else {}
     config["alibaba"] = {k: alibaba.get(k) is not False for k in DEFAULT_ALIBABA}
     config["overflow_exempt"] = _sanitize_exempt(raw.get("overflow_exempt"))
@@ -679,6 +737,7 @@ def _sanitize(raw):
         sorted({str(x).strip().lower() for x in bots if isinstance(x, str) and x.strip()})
         if isinstance(bots, list) else list(DEFAULT_BOT_KEYS)
     )
+    config["claude_accounts"] = _sanitize_claude_accounts(raw.get("claude_accounts"))
     return config
 
 
@@ -686,16 +745,27 @@ async def _config():
     """Stale-while-revalidate: el camino de la petición NO hace NINGUNA I/O de
     config — devuelve la caché al instante (defaults seguros en frío) y, si está
     vencida, lanza el refresco en background single-flight. Propagación de un
-    cambio del panel: TTL 5 s + ~0.3 s del refresco (C8 ≤10 s sigue holgado).
+    cambio del panel: al instante por el stream de config; sin stream, TTL 5 s
+    + ~0.3 s del refresco (C8 ≤10 s sigue holgado).
     El patrón anterior (fetch síncrono con tope de 100 ms) era correcto en
     presupuesto pero ciego en la práctica: el backend tarda 130-300 ms por el
     subprocess kubectl y TODO fetch moría en ReadTimeout — el fail-open tapaba
     el panel entero."""
-    global _config_refresh_task
-    if time.monotonic() >= _config_cache["expires"]:
+    global _config_refresh_task, _config_stream_task
+    if CONFIG_STREAM_ON and (_config_stream_task is None or _config_stream_task.done()):
+        _config_stream_task = asyncio.create_task(_config_stream())
+    if not _config_stream_live[0] and time.monotonic() >= _config_cache["expires"]:
         if _config_refresh_task is None or _config_refresh_task.done():
             _config_refresh_task = asyncio.create_task(_refresh_config())
     return _config_cache["config"]
+
+
+def _config_http():
+    """El cliente persistente (keep-alive) del GET y del stream de config, uno por proceso."""
+    global _config_client
+    if _config_client is None or _config_client.is_closed:
+        _config_client = httpx.AsyncClient(timeout=httpx.Timeout(CONFIG_REFRESH_TIMEOUT_SECONDS))
+    return _config_client
 
 
 async def _refresh_config():
@@ -703,12 +773,8 @@ async def _refresh_config():
     cliente persistente con keep-alive, NUNCA lanza (un task muerto no debe
     arrastrar el hook). Renueva el TTL incluso en fallo: sin eso, cada petición
     relanzaría el intento y habría una tormenta de tasks contra el backend."""
-    global _config_client
     try:
-        if _config_client is None or _config_client.is_closed:
-            _config_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(CONFIG_REFRESH_TIMEOUT_SECONDS))
-        response = await _config_client.get(CONFIG_URL)
+        response = await _config_http().get(CONFIG_URL, timeout=CONFIG_REFRESH_TIMEOUT_SECONDS)
         response.raise_for_status()
         candidate = response.json()
         if isinstance(candidate, dict):
@@ -720,6 +786,47 @@ async def _refresh_config():
             exc,
         )
     _config_cache["expires"] = time.monotonic() + CONFIG_TTL_SECONDS
+
+
+async def _sse_configs(lines):
+    """Los `data` de los eventos `config` de un stream SSE (los latidos `:` se ignoran)."""
+    event, data = "message", []
+    async for line in lines:
+        if not line:
+            if event == "config" and data:
+                yield "\n".join(data)
+            event, data = "message", []
+        elif line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].removeprefix(" "))
+
+
+async def _config_stream():
+    """Suscripción al stream de config; nunca lanza y reconecta con backoff (1-30 s). Mientras está vivo,
+    _config() no hace GET; al caer, el GET con TTL toma el relevo hasta la siguiente config del stream."""
+    espera = 1.0
+    while True:
+        try:
+            # El cliente del GET, no uno propio: crear otro monta su contexto TLS y bloquea
+            # el loop decenas de ms, lo bastante para que caduquen ops de Valkey (100 ms).
+            async with _config_http().stream("GET", CONFIG_STREAM_URL, timeout=httpx.Timeout(
+                    CONFIG_REFRESH_TIMEOUT_SECONDS, read=CONFIG_STREAM_READ_SECONDS)) as response:
+                response.raise_for_status()
+                async for data in _sse_configs(response.aiter_lines()):
+                    candidate = json.loads(data)
+                    if isinstance(candidate, dict):
+                        _config_cache["config"] = _sanitize(candidate)
+                        _config_stream_live[0] = True
+                        espera = 1.0
+        except asyncio.CancelledError:
+            _config_stream_live[0] = False
+            raise
+        except Exception as exc:
+            _warn_throttled("config-stream", f"session_router: stream de config caído ({exc!r}); GET hasta reconectar")
+        _config_stream_live[0] = False
+        await asyncio.sleep(espera + random.random())
+        espera = min(espera * 2, 30.0)
 
 
 def _redis_url():
@@ -1360,6 +1467,40 @@ def _has_context(data):
     return any(isinstance(m, dict) and m.get("role") == "assistant" for m in data.get("messages") or ())
 
 
+# Plan «claude» de una sesion (DGX-1099): antes lo aplicaba el claude-router del x86
+# (CLAUDE_ROUTER_CLAUDE_PLAN_*), ahora que Claude se sirve aqui (entradas claude-acct-*,
+# cuenta elegida por claude_account_filter). El destino trae SU ventana y SU tope.
+CLAUDE_PLAN_MODEL = os.environ.get("SESSION_ROUTER_CLAUDE_PLAN_MODEL", "claude-opus-5")
+CLAUDE_PLAN_BETA = os.environ.get("SESSION_ROUTER_CLAUDE_PLAN_BETA", "context-1m-2025-08-07")
+CLAUDE_PLAN_MAX_TOKENS = int(os.environ.get("SESSION_ROUTER_CLAUDE_PLAN_MAX_TOKENS", "64000"))
+
+
+def _rewrite_to_claude(data, sid, reason):
+    """Residente -> Claude con el modelo, la beta de ventana larga y el tope del plan."""
+    original = data.get("model")
+    data["model"] = CLAUDE_PLAN_MODEL
+    data.pop("api_base", None)
+    data.pop("api_key", None)
+    if CLAUDE_PLAN_MAX_TOKENS and isinstance(data.get("max_tokens"), int) \
+            and data["max_tokens"] > CLAUDE_PLAN_MAX_TOKENS:
+        data["max_tokens"] = CLAUDE_PLAN_MAX_TOKENS
+    if CLAUDE_PLAN_BETA:
+        headers = data.get("extra_headers") if isinstance(data.get("extra_headers"), dict) else {}
+        betas = [b for b in str(headers.get("anthropic-beta") or "").split(",") if b.strip()]
+        if CLAUDE_PLAN_BETA not in betas:
+            betas.append(CLAUDE_PLAN_BETA)
+        data["extra_headers"] = {**headers, "anthropic-beta": ",".join(betas)}
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        data["metadata"] = metadata
+    metadata["_session_routing_rerouted"] = True
+    metadata["_session_routing_reason"] = reason
+    metadata["_router_original_model"] = original
+    metadata["_router_resolved_model"] = CLAUDE_PLAN_MODEL
+    log.warning("session_router: %r -> %r (razon=%s, sid=%s)", original, CLAUDE_PLAN_MODEL, reason, sid or "-")
+
+
 def _rewrite(data, sid, reason):
     """Residente -> Alibaba. Espejo del desvío de visión: se limpian api_base/
     api_key (el grupo de Alibaba lleva los suyos en el model_list) y se marcan
@@ -1893,6 +2034,277 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
     return by_account[choice]
 
 
+# ── Cuentas de Claude por virtual key (DGX-1099, 18-10-2026) ─────────────────
+#
+# Claude Code y Paseo llaman a LiteLLM con la key de su MAQUINA (claude-local en
+# el x86, claude-casa, claude-cloudblue) y LiteLLM pone el setup-token de la
+# cuenta. Hay UNA entrada `claude-*` por cuenta (model_info.id `claude-acct-<id>`,
+# api_key = su setup-token sk-ant-oat, que litellm manda como Bearer + beta oauth).
+# Que cuentas puede usar cada key, en que orden y con que salto lo decide Dani en
+# el panel («Sesiones de Dani · Cuentas de») y llega en `claude_accounts` de
+# /api/model-routing/config:  {"<alias>": [{"id", "salto_7d", "salto_5h"}, ...]}.
+#
+# Reglas (las del panel, que ya regian accountsd):
+#   - Conversacion NUEVA -> la primera cuenta de la lista por debajo de sus dos
+#     saltos (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py).
+#   - Conversacion EMPEZADA -> se queda en su cuenta (pin) mientras esa cuenta
+#     este por debajo de SU salto (90 %, 50 %… el de la lista). Al pasarlo, o si
+#     queda rechazada (429 de suscripcion o creditos) o el Router la aparto, se
+#     muda a la siguiente por debajo del suyo (Dani, 19-10: el salto vale tambien
+#     para las abiertas, aunque cambiar a mitad tire la cache de prompts).
+#   - Key sin politica, o todas sus cuentas pasadas de salto -> lista vacia: el
+#     Router contesta «no deployments» y no se usa NINGUNA cuenta fuera de la
+#     lista de la key. Nunca fail-open aqui: abrir seria saltar de empresa.
+#   - Valkey caido -> sin lecturas ni pin: la primera de la lista (determinista,
+#     la misma en las dos replicas).
+CLAUDE_PREFIX = "claude-"
+_CLAUDE_ACCOUNT_ID_RE = re.compile(r"^claude-acct-([a-z0-9][a-z0-9-]*)$")
+# CONTRACT: dgx.litellm.claude-quota.v1
+# (ancla: claude:quota:) JSON de claude_quota_from_headers por cuenta, Valkey del router.
+CLAUDE_QUOTA_PREFIX = "claude:quota"
+# CONTRACT: dgx.session-router.claude-account-pin.v1
+# (ancla: claude_account_pin:v1:) valor = id de cuenta, Valkey del session router.
+CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"
+# La cache de prompts de Anthropic que usa Claude Code vive 1 h: pasada la hora la
+# conversacion ya esta fria en todas las cuentas y re-elegir sale gratis.
+CLAUDE_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("CLAUDE_ACCOUNT_PIN_TTL_SECONDS", "3600"))
+CLAUDE_ACCOUNT_STATS = {"hits": 0, "claims": 0, "moves": 0, "empty": 0, "redis_errors": 0}
+_claude_refresh_at = [float("-inf")]
+_U = "anthropic-ratelimit-unified-"
+
+
+def _sanitize_claude_accounts(raw):
+    """{"<alias>": [{"id", "salto_7d", "salto_5h"}]} con alias en minusculas, ids
+    `[a-z0-9-]` sin repetir y saltos en [0, 100] (90 si faltan). Basura => fuera."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for alias, entries in raw.items():
+        if not isinstance(alias, str) or not alias.strip() or not isinstance(entries, list):
+            continue
+        clean, seen = [], set()
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            acct = e.get("id")
+            if not (isinstance(acct, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]*", acct)) or acct in seen:
+                continue
+            saltos = {}
+            for k in ("salto_7d", "salto_5h"):
+                v = e.get(k, 90)
+                ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and 0 <= v <= 100
+                saltos[k] = float(v) if ok else 90.0
+            seen.add(acct)
+            clean.append({"id": acct, **saltos})
+        out[alias.strip().lower()] = clean
+    return out
+
+
+def claude_quota_from_headers(headers, now=None):
+    """Lectura de cuota de una respuesta de Anthropic (cabeceras unificadas de la
+    suscripcion, con o sin el `llm_provider-` de litellm), o None si no trae ninguna
+    ventana. utilization en [0, 1]; resets_at en epoch."""
+    h = {}
+    for k, v in dict(headers or {}).items():
+        k = str(k).lower().removeprefix("llm_provider-")
+        if k.startswith(_U):
+            h[k[len(_U):]] = str(v)
+
+    def window(w):
+        try:
+            u = float(h[w + "-utilization"])
+        except (KeyError, ValueError):
+            return None
+        try:
+            r = int(float(h[w + "-reset"]))
+        except (KeyError, ValueError):
+            r = None
+        return {"utilization": u, "resets_at": r}
+
+    five, seven = window("5h"), window("7d")
+    if five is None and seven is None:
+        return None
+    try:
+        reset = int(float(h.get("reset", "")))
+    except ValueError:
+        reset = None
+    status = h.get("status")
+    return {
+        "observed_at": round(time.time() if now is None else now, 3),
+        "status": status,
+        "reset": reset,
+        "representative_claim": h.get("representative-claim"),
+        "five_hour": five,
+        "seven_day": seven,
+        # Lo que el CLI llama overageInUse: la respuesta se ha servido con creditos
+        # de pago. Es dinero: la cuenta cuenta como agotada hasta su reset.
+        "overage_in_use": h.get("overage-in-use") == "true"
+        or (status == "rejected" and h.get("overage-status") in ("allowed", "allowed_warning")),
+    }
+
+
+def _claude_rejected(reading, now):
+    """Rechazada (429 de suscripcion) o tirando de creditos, y su reset aun no llego."""
+    if not reading:
+        return False
+    if not (reading.get("status") == "rejected" or reading.get("overage_in_use")):
+        return False
+    # `reset` es el de la ventana que manda (representative-claim). Sin el: 10 min,
+    # como el router del x86.
+    reset = reading.get("reset")
+    if isinstance(reset, (int, float)):
+        return reset > now
+    return now - float(reading.get("observed_at") or 0) < 600
+
+
+def _claude_over_salto(reading, entry, now):
+    """La cuenta pasa de alguno de sus saltos (ventanas aun vigentes) o esta rechazada."""
+    if _claude_rejected(reading, now):
+        return True
+    if not reading:
+        return False
+    for w, k in (("five_hour", "salto_5h"), ("seven_day", "salto_7d")):
+        win = reading.get(w) or {}
+        r = win.get("resets_at")
+        if isinstance(r, (int, float)) and r <= now:
+            continue  # ventana ya reiniciada: la lectura vieja no vale
+        if float(win.get("utilization") or 0) * 100 >= entry[k]:
+            return True
+    return False
+
+
+def _claude_deployment_account(dep):
+    info = dep.get("model_info") if isinstance(dep, dict) else None
+    m = _CLAUDE_ACCOUNT_ID_RE.match(str((info or {}).get("id") or ""))
+    return m.group(1) if m else None
+
+
+# Una conversacion que paso por el residente arrastra en su historial campos que
+# pone litellm en sus respuestas (`provider_specific_fields`); Anthropic los rechaza
+# con 400 «Extra inputs are not permitted» (medido el 18-10 con litellm v1.105.1). El
+# claude-router del x86 los borraba (CLAUDE_ROUTER_MIXED=strip); ahora, aqui.
+CLAUDE_BAD_KEYS = ("provider_specific_fields",)
+
+
+def _strip_claude_bad_keys(obj):
+    if isinstance(obj, dict):
+        for k in CLAUDE_BAD_KEYS:
+            obj.pop(k, None)
+        for v in obj.values():
+            _strip_claude_bad_keys(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            _strip_claude_bad_keys(v)
+
+
+def stamp_claude_request(data):
+    """Para peticiones `claude-*`: el sid en metadata (lo lee el filtro de cuenta) y
+    sin mensajes en los callbacks de logging (Langfuse): estos prompts, CloudBlue
+    incluido, no salian del x86 antes de las cuentas por key y no van a empezar a salir."""
+    if not str(data.get("model") or "").startswith(CLAUDE_PREFIX):
+        return None
+    data["turn_off_message_logging"] = True
+    _strip_claude_bad_keys(data.get("messages"))
+    sid = _session_id(data)
+    if not sid:
+        return None
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        data["metadata"] = metadata
+    metadata["session_id"] = str(sid)
+    return metadata["session_id"]
+
+
+async def _claude_readings(client, ids):
+    if client is None or not ids:
+        return {}
+    try:
+        raw = await asyncio.wait_for(
+            client.mget([f"{CLAUDE_QUOTA_PREFIX}:{i}" for i in ids]),
+            timeout=REDIS_OP_TIMEOUT_SECONDS)
+    except Exception:
+        CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
+        return {}
+    out = {}
+    for i, v in zip(ids, raw or ()):
+        try:
+            out[i] = json.loads(v) if v else None
+        except ValueError:
+            out[i] = None
+    return out
+
+
+async def claude_account_filter(model, healthy_deployments, request_kwargs):
+    """Deja la cuenta de Claude que toca a esta key y esta conversacion (o ninguna).
+
+    Lo llama el Router en cada eleccion, reintentos incluidos (un 429 aparta la
+    cuenta por cooldown y el reintento cae aqui con la siguiente). Grupos que no
+    son `claude-*`, o sin ids `claude-acct-*`, pasan intactos."""
+    if not str(model or "").startswith(CLAUDE_PREFIX) or not healthy_deployments:
+        return healthy_deployments
+    by_account = {}
+    for dep in healthy_deployments:
+        acct = _claude_deployment_account(dep)
+        if acct is None:
+            return healthy_deployments
+        by_account.setdefault(acct, dep)
+    request_kwargs = request_kwargs or {}
+    alias = _claude_policy_alias(request_kwargs)
+    policies = (await _config()).get("claude_accounts") or {}
+    if alias not in policies and time.monotonic() - _claude_refresh_at[0] >= 1.0:
+        # Config fria (pod recien arrancado) o key nueva en el panel: un refresco
+        # en el momento antes de negar, como mucho uno por segundo (una key sin
+        # politica que insiste no debe martillear al dashboard).
+        _claude_refresh_at[0] = time.monotonic()
+        await _refresh_config()
+        policies = _config_cache["config"].get("claude_accounts") or {}
+    order = [e for e in policies.get(alias) or () if e["id"] in by_account]
+    if not order:
+        CLAUDE_ACCOUNT_STATS["empty"] += 1
+        _warn_throttled(f"claude-sin-politica:{alias}",
+                        f"claude: la key {alias!r} no tiene cuentas disponibles para {model}")
+        return []
+    client = None
+    try:
+        client = await _redis()
+    except Exception:
+        CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
+    now = time.time()
+    readings = await _claude_readings(client, [e["id"] for e in order])
+    sid = _affinity_session_id(request_kwargs)
+    key = f"{CLAUDE_ACCOUNT_PIN_PREFIX}:{alias}:{sid}" if sid else None
+    pinned = None
+    if key and client is not None:
+        try:
+            pinned = await _pin_get(client, key)
+        except Exception:
+            CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
+    entry = next((e for e in order if e["id"] == pinned), None)
+    if pinned in by_account and entry and not _claude_over_salto(readings.get(pinned), entry, now):
+        CLAUDE_ACCOUNT_STATS["hits"] += 1
+        _schedule(_pin_keepalive(client, key, CLAUDE_ACCOUNT_PIN_TTL_SECONDS, CLAUDE_ACCOUNT_STATS))
+        return [by_account[pinned]]
+    choice = next((e["id"] for e in order if not _claude_over_salto(readings.get(e["id"]), e, now)), None)
+    if choice is None:
+        CLAUDE_ACCOUNT_STATS["empty"] += 1
+        _warn_throttled(f"claude-sin-cupo:{alias}",
+                        f"claude: todas las cuentas de {alias!r} han pasado su salto")
+        return []
+    if pinned is not None:
+        CLAUDE_ACCOUNT_STATS["moves"] += 1
+        log.warning("claude: sesion %s de %s muda de cuenta %s -> %s", str(sid)[:24], alias, pinned, choice)
+    else:
+        CLAUDE_ACCOUNT_STATS["claims"] += 1
+    if key and client is not None:
+        try:
+            await asyncio.wait_for(client.set(key, choice, ex=CLAUDE_ACCOUNT_PIN_TTL_SECONDS),
+                                   timeout=REDIS_OP_TIMEOUT_SECONDS)
+        except Exception:
+            CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
+    return [by_account[choice]]
+
+
 # ── Afinidad por BACKEND del residente (14-10-2026, DGX-852) ─────────────────
 #
 # Desde el 2+1 el residente son DOS vLLM que sirven el MISMO modelo: TP=2
@@ -2181,23 +2593,57 @@ async def alibaba_switches():
         return dict(DEFAULT_ALIBABA)
 
 
-async def apply_company_policy(data, requested_model):
-    """Interruptor «Fallback Alibaba» de la compañía. Lo llama litellm_strip_params en su
-    async_pre_call_hook justo después de la política de fallbacks por key, ANTES de
-    resolver alias y de apply_session_routing.
+def _company_claude(config, data, requested_model):
+    """Interruptor «Claude» y claude_gate de la compañía sobre un `claude-*`. Devuelve el
+    detalle de un 403 o None (con rewrite, data ya apunta al target).
+    Con Claude apagado y el gate en rewrite, también al target (SC-2667, decisión de Dani): un rol despachado
+    por `Agent` pide el `model:` de git del plugin y no hay lanzamiento que lo cambie."""
+    model = str(requested_model or data.get("model") or "")
+    if not model.startswith(CLAUDE_PREFIX):
+        return None
+    company = config.get("company") or {}
+    gate = company.get("claude_gate") or CLAUDE_GATE_OFF
+    apagado = company.get("claude", True) is False
+    if apagado and gate["mode"] != "rewrite":
+        log.warning("session_router: company pidio %r con Claude desactivado -> 403", model)
+        return {"error": "company_claude_disabled", "model": model,
+                "hint": ("La compañía tiene Claude desactivado en dgx.e-dani.com/"
+                         "claude-sessions#settings: usa el LLM local.")}
+    if not apagado and (gate["mode"] == "off" or model in gate["allow"]):
+        return None
+    if gate["mode"] == "block":
+        log.warning("session_router: claude_gate=block, company pidio %r -> 403", model)
+        return {"error": "company_claude_gate", "model": model, "allow": gate["allow"],
+                "hint": "Cámbiala en dgx.e-dani.com/claude-sessions#settings."}
+    data["model"] = gate["target"]
+    if gate["max_tokens"] and isinstance(data.get("max_tokens"), int) \
+            and data["max_tokens"] > gate["max_tokens"]:
+        data["max_tokens"] = gate["max_tokens"]
+    log.warning("session_router: claude_gate %r -> %r (company)", model, gate["target"])
+    return None
 
-    Devuelve (denegada, detalle). Sin clase company o con Alibaba permitido: (False, None)
-    sin tocar nada. Con Alibaba desactivado: un `alibaba-*` pedido o resuelto -> (True,
-    detalle para un 403); cualquier otro -> sella `disable_fallbacks` y (False, None).
+
+async def apply_company_policy(data, requested_model):
+    """Reglas de la compañía. Lo llama litellm_strip_params en su async_pre_call_hook justo
+    después de la política de fallbacks por key, ANTES de resolver alias y de
+    apply_session_routing.
+
+    Devuelve (denegada, detalle). Sin clase company: (False, None) sin tocar nada. Primero
+    Claude (_company_claude: 403, o rewrite del gate). Después el interruptor «Fallback
+    Alibaba»: con Alibaba desactivado, un `alibaba-*` pedido o resuelto -> (True, detalle
+    para un 403); cualquier otro -> sella `disable_fallbacks` y (False, None).
     Fail-open: cualquier fallo o config fría = (False, None) = comportamiento anterior."""
     try:
         if _claude_class(data) != COMPANY_CLASS:
             return False, None
+        config = await _config()
+        denied = _company_claude(config, data, requested_model)
+        if denied is not None:
+            return True, denied
         # SC-2504 (Dani, 16-10): el interruptor es para el trabajo de la compañía (historias, épicas, Requests); el
         # supervisor —el CTO de Hermes— conserva siempre su respaldo de Alibaba.
         if _hermes_profile(data) in ALIBABA_SIEMPRE:
             return False, None
-        config = await _config()
         if (config.get("company") or {}).get("alibaba", True) is not False:
             return False, None
         for name in (requested_model, data.get("model")):
@@ -2348,11 +2794,15 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
             _sessions_write(sid, est)
         return False
     if explicit == "claude":
-        # No aplica en este hook: Anthropic ni pasa por LiteLLM. La puerta vive
-        # en el claude-router del x86 (PR-C4).
         info["plan"] = "claude(explicito)"
-        info["decision"] = "plan_explicito_claude_puerta_en_router"
-        return False
+        # Sin cuentas de Claude para esta key en el panel se queda en el residente,
+        # como antes de DGX-1099 (un error seria peor que no desviar).
+        if not _claude_plan_allowed(config, data):
+            info["decision"] = "plan_explicito_claude_sin_cuentas"
+            return False
+        info["decision"] = "plan_explicito_claude"
+        _rewrite_to_claude(data, sid, "plan_claude")
+        return True
     if explicit == "alibaba":
         info["plan"] = "alibaba(explicito)"
         if model == RESIDENT_MODEL and _overflow_ok_info(info):
@@ -2406,8 +2856,12 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
     info["fresh"] = fresh
     info["plan"] = plan
     if plan == "claude":
-        info["decision"] = "plan_claude_puerta_en_router"
-        return False
+        if not _claude_plan_allowed(config, data):
+            info["decision"] = "plan_claude_sin_cuentas"
+            return False
+        info["decision"] = "plan_claude"
+        _rewrite_to_claude(data, sid, "plan_claude")
+        return True
 
     if plan == "alibaba":
         if not _overflow_ok_info(info):
