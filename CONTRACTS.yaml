@@ -245,10 +245,12 @@ contracts:
       la admision llm-tp acepta el TP=1 de dgx3 (`qwen38-worker-dgx3`) como
       alternativa al par TP=2. Clave y valor del pin sin cambios.
 
-      DGX-1103 (2026-10-18, Dani): un timeout ya no aparca a un gemelo en el Router
-      (`model_info.allowed_fails_policy.TimeoutErrorAllowedFails` sin techo en los
-      cuatro `-tpN`), asi que la mudanza de sesiones queda para el motor caido (500 o
-      /metrics mudo), no para el saturado. Clave y valor del pin sin cambios.
+      19-10-2026 (Dani): la familia residente NUNCA aparca en el Router
+      (`cooldown_time: 0` y `allowed_fails_policy` a 1e9 en cada tipo de excepcion, ancla
+      `&resident_never_cools`: cuatro `-tpN`, `correo-clasificador` y los perfiles
+      `tooling*`, `qwen38-off`, `qwen38-u-off`). Un motor caido sale de la rotacion solo por
+      `live_backends` (/metrics mudo) y sus sesiones mudan por este filtro. Clave y valor
+      del pin sin cambios; cambia cuando una sesion muda (ya no por cooldown del Router).
 
       Publisher y lector: session_router.resident_backend_filter, llamado por el
       Router en cada eleccion de deployment a traves de
