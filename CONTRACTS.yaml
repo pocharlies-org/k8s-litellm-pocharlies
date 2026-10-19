@@ -830,6 +830,9 @@ contracts:
       imagen `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` y `gpt-image-2`
       (mode image_generation, coste 0) para los motores `chatgpt-*` del DGX
       Studio, que entran con la key `studio-chatgpt`.
+      INFRA-942 (2026-10-19), aditivo: la key `hindsight` (memoria de agentes,
+      ns hindsight, solo texto) entra en LITELLM_CHATGPT_ALLOWED_KEYS por decision
+      de Dani, para ingerir con `gpt-6-luna`.
       Token: el pod de litellm lee CHATGPT_TOKEN_DIR=/var/run/chatgpt-oauth,
       el Secret litellm-chatgpt-token montado en solo lectura. Lo crea desde
       la semilla de 1Password (ExternalSecret litellm-chatgpt-oauth, item

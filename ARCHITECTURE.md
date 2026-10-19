@@ -21,7 +21,7 @@ Los clientes del router (Claude CLI del x86, Hermes, OpenClaw, document-intake, 
 `litellm-chatgpt-oauth`, item `litellm` campo `CHATGPT_OAUTH_AUTH_JSON`) y lo renueva con 72 h de margen sobre 240 h. Los pods
 de `litellm` lo montan en solo lectura en `CHATGPT_TOKEN_DIR`: el provider `chatgpt/` no tiene cerrojo y OpenAI rota el
 refresh token, así que dos réplicas renovando revocarían la sesión. Sin RWX/NFS (SC-381). Re-login: cabecera del fichero.
-Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-local,hermes,studio-chatgpt`; solo selección manual).
+Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-local,hermes,studio-chatgpt,claude-casa,hindsight`; solo selección manual).
 
 **Claude por suscripción** (DGX-1099): ocho entradas `claude-*` (`model_info.id` `claude-acct-<id>`), una por cuenta, con
 su setup-token de `litellm-claude-cuentas` (ExternalSecret de los items `claude-cuenta-<id>` de `k8s-pocharlies`, por id; SC-2745). Las virtual keys
