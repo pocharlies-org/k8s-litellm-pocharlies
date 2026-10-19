@@ -6944,6 +6944,28 @@ data:
         _slm["hermes_profile"] = str(profile)
         return True
 
+    def _stamp_key_alias(data, key_alias) -> bool:
+        """Sella spend_logs_metadata.key_alias (19-10-2026): la key que autentico la
+        peticion, para el HISTORICO. En las filas del fallback LiteLLM pierde el
+        `user_api_key_alias` de la metadata (medido: 9 filas claude-cli caidas a
+        alibaba-q38-flash sin key en 7 d) y el panel las pinta `(sin key)`. Este sello
+        viaja con `data` por la misma via que claude_class, que si sobrevive al
+        fallback. `unknown` no se sella (no atribuye nada). True si sello."""
+        if not key_alias or key_alias == "unknown" or not isinstance(data, dict):
+            return False
+        _mvar = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+        _meta = data.get(_mvar)
+        if not isinstance(_meta, dict):
+            _meta = {}
+            data[_mvar] = _meta
+        _slm = _meta.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            _meta["spend_logs_metadata"] = _slm
+        # CONTRACT: dgx.litellm.spendlogs-key-alias.v1
+        _slm["key_alias"] = str(key_alias)
+        return True
+
 
     def _stamp_refusal_probe(request_data, obj) -> bool:
         """Sella la sonda si `obj` la trae. Mismas dos vias que _stamp_refusal_text
@@ -7527,6 +7549,10 @@ data:
                 _stamp_hermes_profile(data, _hermes_profile(data))
             except Exception as e:
                 log.warning("profile stamp error: %s", e)
+            try:
+                _stamp_key_alias(data, key_alias)
+            except Exception as e:
+                log.warning("key alias stamp error: %s", e)
             try:
                 _route_meta = data.get("metadata")
                 if not isinstance(_route_meta, dict):

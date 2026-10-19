@@ -934,6 +934,23 @@ contracts:
       trae; sin cabecera no se escribe nada. Consumido por dgx-infra
       services/dashboard (Inferencia: uso por perfil y consumidor en ventanas
       1m..30d). Aditivo. Pinned by tests/test_spendlogs_hermes_profile_contract.py.
+  - id: dgx.litellm.spendlogs-key-alias.v1
+    # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
+    # que lee por SQL el panel de uso por perfil. Mismo kind que claude_class.
+    kind: schema
+    value: key_alias
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-19. El pre-call hook de strip_params sella
+      spend_logs_metadata.key_alias = la key que autentico (key_alias del
+      user_api_key_dict, `master` para la master key); `unknown` no se sella.
+      Existe porque la fila del fallback pierde el user_api_key_alias de la
+      metadata y el panel pinta esas sesiones `(sin key)`. Consumido por
+      dgx-infra services/dashboard/api/uso_perfiles.py (alias de respaldo).
+      Aditivo. Pinned by tests/test_spendlogs_key_alias_contract.py.
   - id: dgx.litellm.key-fallbacks.demos.v1
     # kind 'allowlist': es la lista de keys (por key_alias) que tienen salida
     # externa en `tooling`; el consumidor la usa sabiendo que su key la tiene.
