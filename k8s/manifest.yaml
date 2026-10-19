@@ -2168,6 +2168,15 @@ data:
       # DB down must degrade auth (restricted internal token), not kill inference.
       # Incident 2026-07-20: postgres-shared out for 9h => litellm hard-down.
       allow_requests_on_db_unavailable: true
+      # DGX-1099 (19-10): ese token restringido no lleva el alias de la key, asi que
+      # el filtro de cuentas de Claude no encuentra politica y todo claude-* da «No
+      # deployments» (02:52, reinicio de postgres-shared por INFRA-942: ~50 s sin
+      # Claude). get_key_object lee la cache antes que la DB: con 1 h, una key usada en
+      # la ultima hora sigue autenticando con su alias aunque no haya DB; una
+      # desconocida sigue cayendo al token restringido. Precio: borrar o cambiar una key
+      # tarda hasta 1 h en la otra replica; revocacion urgente = borrarla y reiniciar
+      # los pods de litellm.
+      user_api_key_cache_ttl: 3600
       # 2026-08-14: con 4 replicas, Prisma sin limite son ~98 conexiones por pod
       # = ~400, que es EXACTAMENTE el max_connections de postgres-shared.
       # 25 x 4 = 100 deja 300 al resto de tenants. Se fija aqui y no en el DSN a
@@ -12982,7 +12991,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f9610d55a65b
+        config.k8s.e-dani.com/revision: config-d50e17470263
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13904,7 +13913,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f9610d55a65b
+        config.k8s.e-dani.com/revision: config-d50e17470263
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
