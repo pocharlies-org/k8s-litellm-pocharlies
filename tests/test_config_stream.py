@@ -25,11 +25,7 @@ class _Cliente:
     def __init__(self, lineas, abiertas):
         self.lineas, self.abiertas = lineas, abiertas
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
+    is_closed = False
 
     def stream(self, metodo, url):
         self.abiertas.append(url)
@@ -47,7 +43,8 @@ class _Cliente:
 def _mod(lineas=(), stream="on"):
     abiertas = []
     httpx = types.ModuleType("httpx")
-    httpx.AsyncClient = lambda **kw: _Cliente(list(lineas), abiertas)
+    creados = []
+    httpx.AsyncClient = lambda **kw: creados.append(1) or _Cliente(list(lineas), abiertas)
     httpx.Timeout = lambda *a, **kw: None
     saved = sys.modules.get("httpx")
     sys.modules["httpx"] = httpx
@@ -62,6 +59,7 @@ def _mod(lineas=(), stream="on"):
             sys.modules["httpx"] = saved
         else:
             sys.modules.pop("httpx", None)
+    mod._creados = creados
     return mod, abiertas
 
 
@@ -84,7 +82,8 @@ def test_los_eventos_config_llenan_la_cache_y_los_latidos_no():
         except asyncio.CancelledError:
             pass
     asyncio.run(caso())
-    assert abiertas == [mod.CONFIG_STREAM_URL] and mod.CONFIG_STREAM_URL.endswith("/api/model-routing/config/stream")
+    assert len(mod._creados) == 1, "un cliente para todas las reconexiones"
+    assert abiertas == [mod.CONFIG_URL + "/stream"]
     assert vistos == [{"sticky": True}, {"sticky": False, "local_slots": 3}]
     assert mod._config_cache["config"]["local_slots"] == 3
     assert mod._config_stream_live[0] is False, "al acabarse el stream, vuelve el GET"

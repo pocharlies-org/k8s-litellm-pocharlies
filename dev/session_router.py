@@ -142,10 +142,8 @@ CONFIG_TTL_SECONDS = 5.0
 # 15 s). Con el stream vivo no hay GET; caído, el GET con TTL de arriba hasta que
 # reconecta. MODEL_ROUTING_CONFIG_STREAM=off vuelve al sondeo (vuelta atrás).
 # CONTRACT: dgx.model-routing.config.stream.v1 — GET /api/model-routing/config/stream
-CONFIG_STREAM_URL = os.environ.get(
-    "MODEL_ROUTING_CONFIG_STREAM_URL",
-    "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/model-routing/config/stream",
-)
+# Junto a CONFIG_URL: quien la redirige (tests de integración) redirige también el stream.
+CONFIG_STREAM_URL = os.environ.get("MODEL_ROUTING_CONFIG_STREAM_URL", CONFIG_URL.rstrip("/") + "/stream")
 CONFIG_STREAM_ON = os.environ.get("MODEL_ROUTING_CONFIG_STREAM", "on") != "off"
 CONFIG_STREAM_READ_SECONDS = 45.0  # tres latidos sin nada = conexión muerta
 # ≤100 ms por operación en el camino de la petición (mandato 10). La config ya
@@ -505,6 +503,7 @@ _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
 _config_refresh_task = None
 _config_client = None
 _config_stream_task = None
+_config_stream_client = None
 _config_stream_live = [False]
 _redis_client = None
 _redis_lock = asyncio.Lock()
@@ -803,19 +802,23 @@ async def _sse_configs(lines):
 async def _config_stream():
     """Suscripción al stream de config; nunca lanza y reconecta con backoff (1-30 s). Mientras está vivo,
     _config() no hace GET; al caer, el GET con TTL toma el relevo hasta la siguiente config del stream."""
+    global _config_stream_client
     espera = 1.0
     while True:
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(
-                    CONFIG_REFRESH_TIMEOUT_SECONDS, read=CONFIG_STREAM_READ_SECONDS)) as client:
-                async with client.stream("GET", CONFIG_STREAM_URL) as response:
-                    response.raise_for_status()
-                    async for data in _sse_configs(response.aiter_lines()):
-                        candidate = json.loads(data)
-                        if isinstance(candidate, dict):
-                            _config_cache["config"] = _sanitize(candidate)
-                            _config_stream_live[0] = True
-                            espera = 1.0
+            # Un cliente para todas las reconexiones: crear uno monta su contexto TLS y
+            # bloquea el loop decenas de ms, lo bastante para que caduquen ops de Valkey.
+            if _config_stream_client is None or _config_stream_client.is_closed:
+                _config_stream_client = httpx.AsyncClient(timeout=httpx.Timeout(
+                    CONFIG_REFRESH_TIMEOUT_SECONDS, read=CONFIG_STREAM_READ_SECONDS))
+            async with _config_stream_client.stream("GET", CONFIG_STREAM_URL) as response:
+                response.raise_for_status()
+                async for data in _sse_configs(response.aiter_lines()):
+                    candidate = json.loads(data)
+                    if isinstance(candidate, dict):
+                        _config_cache["config"] = _sanitize(candidate)
+                        _config_stream_live[0] = True
+                        espera = 1.0
         except asyncio.CancelledError:
             _config_stream_live[0] = False
             raise
