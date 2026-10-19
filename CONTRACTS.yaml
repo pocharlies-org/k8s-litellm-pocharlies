@@ -448,6 +448,13 @@ contracts:
       claude-* = off. Ademas la clave reservada claude_accounts["compania"] es
       la lista de cuentas de esa clase, sea cual sea su key. Campos ya
       publicados: sin .vN+1.
+      2026-10-19 (DGX-1099, DB caida): el alias con el que se busca la key en
+      claude_accounts sale de la cache de keys de LiteLLM
+      (general_settings.user_api_key_cache_ttl, 3600 s) aunque postgres no
+      responda; antes caia al token restringido failed-to-connect-to-db, sin
+      politica, y claude-* daba «No deployments». Una key no vista en la ultima
+      hora sigue sin cuentas. Mismos campos: sin .vN+1. Pinned by
+      tests/test_db_down_keeps_key_alias_contract.py.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>
