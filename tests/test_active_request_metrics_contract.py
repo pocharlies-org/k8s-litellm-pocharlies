@@ -286,7 +286,7 @@ def test_tracker_estimates_live_output_from_chunks_without_usage():
         tracker.start(
             "request-1",
             trace_id="trace-1",
-            key_alias="claude-local",
+            key_alias="claude-x86",
             model="alibaba-q38-flash",
             call_type="acompletion",
             api_base=None,

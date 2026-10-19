@@ -154,7 +154,7 @@ def test_el_clasificador_solo_llega_a_alibaba_por_la_arista_del_router(  # noqa:
     assert _router_fallbacks()[ALIAS] == [NUBE]
 
 
-@pytest.mark.parametrize("key", ["hermes", "claude-local"])
+@pytest.mark.parametrize("key", ["hermes", "claude-x86"])
 def test_las_keys_que_nunca_estuvieron_selladas_siguen_igual(hook, router_mod, key):  # noqa: F811
     """El cambio es de `synapse`: el resto de keys, con el residente directo, va sin sello y el
     session router sigue pudiendo moverlas."""

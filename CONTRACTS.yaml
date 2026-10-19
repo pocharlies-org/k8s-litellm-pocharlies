@@ -860,7 +860,7 @@ contracts:
       seleccion manual: ningun fallback, router_settings, model_group_alias
       ni desvio de vision llega a ellos (la causa de los baneos de agosto de
       la cuenta anterior). Gate fail-closed por prefijo `gpt-` en el
-      pre_call_hook: LITELLM_CHATGPT_ALLOWED_KEYS = claude-local (Claude CLI
+      pre_call_hook: LITELLM_CHATGPT_ALLOWED_KEYS = claude-x86 (Claude CLI
       y Paseo por claude-local-router), hermes y studio-chatgpt; vacia =
       nadie, ni la master. DGX-1077 (2026-10-18), aditivo: tres alias de
       imagen `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` y `gpt-image-2`
@@ -990,7 +990,7 @@ contracts:
     # la puerta uncensored del hook (LITELLM_UNCENSORED_ALLOWED_KEYS).
     kind: allowlist
     value: hermes-cloudblue
-    anchor: openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-local,hermes,hermes-batch,synapse,hermes-cloudblue
+    anchor: openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue
     role: provider
     files:
       - k8s/manifest.yaml
@@ -1010,7 +1010,9 @@ contracts:
     role: provider
     files:
       - k8s/manifest.yaml
-    status: active
+    status: removed
+    replaced_by: dgx.litellm.virtual-key.claude-mac.v1
+    approved_by: dani 2026-10-20 (la key nunca llego a crearse; Dani pidio llamarla claude-mac)
     note: >-
       DGX-1099 (2026-10-18). Clave virtual de LiteLLM del Claude Code y Paseo del
       MacBook de casa (antes compartia claude-local con el x86): cada maquina con
@@ -1019,6 +1021,36 @@ contracts:
       LITELLM_UNCENSORED_ALLOWED_KEYS, LITELLM_CHATGPT_ALLOWED_KEYS y
       priority_by_alias (-5, uso personal). Se crea por /key/generate; su valor
       vive en el Mac (~/.config/claude-local/env), nunca en git.
+  - id: dgx.litellm.virtual-key.claude-mac.v1
+    kind: allowlist
+    value: claude-mac
+    anchor: hermes-cloudblue,claude-mac
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-20). Clave virtual de LiteLLM del Claude Code (CLI y
+      pestana Code de Claude Desktop) y Paseo del MacBook de casa (mac-casa);
+      sustituye a claude-casa, que nunca se creo. Mismos models que claude-x86;
+      entra en LITELLM_UNCENSORED_ALLOWED_KEYS, LITELLM_CHATGPT_ALLOWED_KEYS y
+      priority_by_alias (-5). El panel le pone la politica de cuentas de la
+      pestana mac-casa (claude_accounts). Se crea por /key/generate; su valor
+      vive solo en el Mac (~/.claude/settings.json), nunca en git.
+  - id: dgx.litellm.virtual-key.claude-x86.v1
+    kind: allowlist
+    value: claude-x86
+    anchor: opencode-20260630-local,claude-x86
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-20). Clave virtual de LiteLLM del x86 (Claude Code, Paseo
+      y la compania), renombrada desde `claude-local` via /key/update (mismo
+      token, mismos models). El panel le pone la politica de cuentas de la
+      pestana x86 y priority_by_alias la mapea {default: -5, company: 5}. Su
+      valor vive en ~/.config/claude-local/env del x86, nunca en git.
   - id: dgx.litellm.virtual-key.keep-hub.v1
     # kind allowlist: la superficie es la allowlist `models` de la key virtual
     # `keep-hub`, que vive SOLO en la Postgres de LiteLLM (se fija por

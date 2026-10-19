@@ -834,7 +834,7 @@ data:
     #     model_group_alias, ningun desvio de vision o catalogo apunta aqui. Lo vigila
     #     tests/test_chatgpt_oauth_contract.py.
     #   - Cerrados por el gate fail-closed `_chatgpt_access_denied` (prefijo `gpt-`,
-    #     LITELLM_CHATGPT_ALLOWED_KEYS): solo `claude-local` (Claude CLI y Paseo),
+    #     LITELLM_CHATGPT_ALLOWED_KEYS): solo `claude-x86` (Claude CLI y Paseo),
     #     `hermes` y `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077).
     #     La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
     #     desde antes de la purga del 21-08 y lo heredaria sola al volver el alias: el
@@ -2503,15 +2503,15 @@ data:
       hermes: -10         # turnos de los bots: por delante del lote
       # DGX-601 (06-10-2026, Dani): un alias puede valer ENTERO (lo de siempre) o
       # MAPA por clase de sesion (`x-claude-class`, que estampa el lanzador de la
-      # compania). `claude-local` comparte la misma key para el Claude Code de la
+      # compania). `claude-x86` comparte la misma key para el Claude Code de la
       # compania y para el uso personal: hasta ahora los dos salian sin campo, es
       # decir con el default de vLLM (0), compitiendo iguales. El uso personal va
       # por delante (-5) y el de la compania por detras (5), pero aun por delante
       # del lote (10).
-      claude-local:
+      claude-x86:
         default: -5       # sin clase: uso personal de Dani
         company: 5        # sesion de la compania: por delante del lote, detras del resto
-      claude-casa: -5     # DGX-1099: el Claude Code del MacBook de casa, uso personal como claude-local
+      claude-mac: -5     # DGX-1099: el Claude Code del MacBook de casa, uso personal como claude-x86
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
       hindsight: 20       # Hindsight (retain/reflect, INFRA-940): sustituye al brain, misma prioridad
@@ -2586,7 +2586,7 @@ data:
     # real, no: la explicita solo acierta donde hay una marca ya creada, y el CLI
     # mueve las marcas. Los forks del CLI (`agent_summary` de cada subagente en
     # background, cada 30 s, `skipCacheWrite`) ponen la marca un mensaje ANTES y
-    # solo casaban la del system. Medido en SpendLogs, key `claude-local`:
+    # solo casaban la del system. Medido en SpendLogs, key `claude-x86`:
     #   forks        implicita 98,9 % cacheado (2092/2106)  ->  explicita 33,1 %
     #   resto        implicita 90,2 %                       ->  explicita 81,5 %
     #   hermes/opencode (sin marcas) sin cambio.
@@ -2855,7 +2855,7 @@ data:
     # key de opencode, y sin ella opencode se comia "this key may not request the
     # abliterated route" al pedir qwen38-27b-uncensored. Ya estaba en los gates de
     # openrouter (mas abajo), asi que esto solo cierra la simetria.
-    # `claude-local` entra (2026-09-15, pedido explicito del owner): es la key del
+    # `claude-x86` entra (2026-09-15, pedido explicito del owner): es la key del
     # Claude Code CLI del owner (metadata `purpose: Claude Code CLI -> modelos
     # locales`), y su allowlist de la BD ya lista modelos concretos — no es una key
     # con `models: []`, o sea que aqui no se abre una superficie accidental: entra
@@ -2874,7 +2874,7 @@ data:
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
             "openclaw-qwen36-prod,playground,open-webui-v3,"
-            "opencode-20260630-local,claude-local,hermes,hermes-batch,synapse",
+            "opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse",
         ).split(",")
         if alias.strip()
     )
@@ -7421,7 +7421,7 @@ data:
                 and not session_rerouted
                 and _served_by_local_vllm(model)
             ):
-                # El residente por su NOMBRE DIRECTO (claude-local, opencode,
+                # El residente por su NOMBRE DIRECTO (claude-x86, opencode,
                 # hermes piden `qwen38-flash-next`) no esta en LOCAL_VLLM_ALIASES
                 # a proposito: esa lista tambien arma la admision de compute-mode,
                 # que responde 503 en el pre-call y le quitaria su fallback a
@@ -8094,7 +8094,7 @@ data:
     DEFAULT_RETURN_MAX_TOKENS = 30000
     DEFAULT_ALIBABA_RETURN_AFTER_S = 600
     # Bots por alias de virtual key (medido en SpendLogs; los interactivos —
-    # claude-local SIN clase company, opencode-*, open-webui — NO están). La
+    # claude-x86 SIN clase company, opencode-*, open-webui — NO están). La
     # identificación es fiable para los listados: cada bot usa su key. Una key
     # nueva sin listar se trata como interactiva (fail-open hacia local).
     DEFAULT_BOT_KEYS = ("hermes-batch", "aurora-rca", "brain")
@@ -9896,8 +9896,8 @@ data:
 
     # ── Cuentas de Claude por virtual key (DGX-1099, 18-10-2026) ─────────────────
     #
-    # Claude Code y Paseo llaman a LiteLLM con la key de su MAQUINA (claude-local en
-    # el x86, claude-casa, claude-cloudblue) y LiteLLM pone el setup-token de la
+    # Claude Code y Paseo llaman a LiteLLM con la key de su MAQUINA (claude-x86 en
+    # el x86, claude-mac, claude-cloudblue) y LiteLLM pone el setup-token de la
     # cuenta. Hay UNA entrada `claude-*` por cuenta (model_info.id `claude-acct-<id>`,
     # api_key = su setup-token sk-ant-oat, que litellm manda como Bearer + beta oauth).
     # Que cuentas puede usar cada key, en que orden y con que salto lo decide Dani en
@@ -13072,7 +13072,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6f972aad534d
+        config.k8s.e-dani.com/revision: config-659f5f1cc6c2
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13271,7 +13271,7 @@ spec:
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-local,hermes,hermes-batch,synapse,hermes-cloudblue,claude-casa" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -13283,10 +13283,10 @@ spec:
             # `grok-account` lleva el saldo (max_budget) y `grok-probe` solo la sonda.
             - { name: LITELLM_GROK_ALLOWED_KEYS, value: "grok-account,grok-probe" }
             # DGX-1053: los alias `gpt-*` (cuenta ChatGPT Plus de Dani). Claude CLI y Paseo
-            # entran por `claude-local` (claude-local-router); Hermes por `hermes`; los
+            # entran por `claude-x86` (claude-local-router); Hermes por `hermes`; los
             # motores de imagen del DGX Studio por `studio-chatgpt` (DGX-1077); Hindsight
             # (solo texto) por `hindsight` (INFRA-942).
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes,studio-chatgpt,claude-casa,hindsight" }
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-x86,hermes,studio-chatgpt,claude-mac,hindsight" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
             # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
@@ -13995,7 +13995,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6f972aad534d
+        config.k8s.e-dani.com/revision: config-659f5f1cc6c2
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

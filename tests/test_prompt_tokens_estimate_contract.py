@@ -35,7 +35,7 @@ class Clock:
 
 def _start(tracker, rid, chars, media=False):
     return tracker.start(
-        rid, trace_id="t", key_alias="claude-local", model="qwen38-flash-next",
+        rid, trace_id="t", key_alias="claude-x86", model="qwen38-flash-next",
         call_type="anthropic_messages", api_base=None,
         prompt_chars=chars, prompt_has_media=media,
     )
@@ -129,7 +129,7 @@ def test_active_requests_publica_el_estimado():
     sidecar = _module("active_requests_api.py")
     items = sidecar["_normalize"]({
         "r1": {
-            "request_id": "r1", "alias": "claude-local", "model": "qwen38-flash-next",
+            "request_id": "r1", "alias": "claude-x86", "model": "qwen38-flash-next",
             "ts": time.time(), "prompt_tokens": None, "prompt_tokens_estimate": 81_234,
         }
     })
