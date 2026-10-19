@@ -455,6 +455,12 @@ contracts:
       politica, y claude-* daba «No deployments». Una key no vista en la ultima
       hora sigue sin cuentas. Mismos campos: sin .vN+1. Pinned by
       tests/test_db_down_keeps_key_alias_contract.py.
+      2026-10-19 (SC-2667, Dani): con company.claude=false y claude_gate en
+      rewrite, un claude-* de clase company va al target con tope (incluso
+      lo que esta en allow) en vez de 403; con el gate en off o block sigue
+      el 403. Los roles del plugin harness despachados por Agent piden el
+      model: de git y ningun lanzamiento lo cambia. Mismos campos: sin .vN+1.
+      Pinned by tests/test_claude_account_filter.py.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>
