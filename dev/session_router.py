@@ -1987,9 +1987,11 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 # Reglas (las del panel, que ya regian accountsd):
 #   - Conversacion NUEVA -> la primera cuenta de la lista por debajo de sus dos
 #     saltos (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py).
-#   - Conversacion EMPEZADA -> se queda en su cuenta (pin) aunque pase el salto:
-#     cambiar a mitad tira la cache de prompts. Solo se muda si la cuenta esta
-#     rechazada (429 de suscripcion o tirando de creditos) o el Router la aparto.
+#   - Conversacion EMPEZADA -> se queda en su cuenta (pin) mientras esa cuenta
+#     este por debajo de SU salto (90 %, 50 %… el de la lista). Al pasarlo, o si
+#     queda rechazada (429 de suscripcion o creditos) o el Router la aparto, se
+#     muda a la siguiente por debajo del suyo (Dani, 19-10: el salto vale tambien
+#     para las abiertas, aunque cambiar a mitad tire la cache de prompts).
 #   - Key sin politica, o todas sus cuentas pasadas de salto -> lista vacia: el
 #     Router contesta «no deployments» y no se usa NINGUNA cuenta fuera de la
 #     lista de la key. Nunca fail-open aqui: abrir seria saltar de empresa.
@@ -2218,8 +2220,8 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
             pinned = await _pin_get(client, key)
         except Exception:
             CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
-    if pinned in by_account and any(e["id"] == pinned for e in order) \
-            and not _claude_rejected(readings.get(pinned), now):
+    entry = next((e for e in order if e["id"] == pinned), None)
+    if pinned in by_account and entry and not _claude_over_salto(readings.get(pinned), entry, now):
         CLAUDE_ACCOUNT_STATS["hits"] += 1
         _schedule(_pin_keepalive(client, key, CLAUDE_ACCOUNT_PIN_TTL_SECONDS, CLAUDE_ACCOUNT_STATS))
         return [by_account[pinned]]

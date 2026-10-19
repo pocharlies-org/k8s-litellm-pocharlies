@@ -494,9 +494,10 @@ contracts:
       DGX-1099 (2026-10-18). Una conversacion de Claude vive en UNA cuenta
       (la cache de prompts no se comparte entre cuentas). Valor = id de la
       cuenta; TTL de inactividad CLAUDE_ACCOUNT_PIN_TTL_SECONDS (3600, la vida
-      de la cache de Anthropic), renovado en cada acierto. Solo se reescribe
-      si la cuenta queda rechazada (429 de suscripcion o creditos) o fuera
-      del Router. Publisher y lector: session_router.claude_account_filter.
+      de la cache de Anthropic), renovado en cada acierto. Se reescribe
+      cuando la cuenta pasa su salto (desde 2026-10-19), queda rechazada (429
+      de suscripcion o creditos) o sale del Router. Publisher y lector:
+      session_router.claude_account_filter.
   - id: dgx.litellm.service-alias.chatgpt.v1
     kind: http-route
     value: litellm-chatgpt

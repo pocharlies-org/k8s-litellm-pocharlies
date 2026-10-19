@@ -102,13 +102,25 @@ def test_salta_a_la_siguiente_cuando_la_primera_pasa_su_salto():
     assert _pick(_pod(v), sid="nueva") == ["correo"]
 
 
-def test_conversacion_empezada_se_queda_aunque_pase_el_salto():
+def test_conversacion_empezada_se_queda_por_debajo_de_su_salto():
     v = FakeValkey()
     mod = _pod(v)
     assert _pick(mod, sid="s1") == ["info"]
-    _quota(v, "info", u5=0.95)
+    _quota(v, "info", u5=0.89)
     assert _pick(mod, sid="s1") == ["info"]
-    assert _pick(mod, sid="s2") == ["correo"]
+
+
+def test_conversacion_empezada_salta_al_pasar_el_salto_de_su_cuenta():
+    """Dani, 19-10: una abierta salta en el % de SU cuenta (90 o 50), no solo al 429."""
+    v = FakeValkey()
+    mod = _pod(v, policy={"claude-local": [{"id": "info", "salto_7d": 50, "salto_5h": 50},
+                                           {"id": "correo", "salto_7d": 90, "salto_5h": 90}]})
+    assert _pick(mod, sid="s1") == ["info"]
+    _quota(v, "info", u7=0.49)
+    assert _pick(mod, sid="s1") == ["info"]
+    _quota(v, "info", u7=0.5)
+    assert _pick(mod, sid="s1") == ["correo"]
+    assert v.data["claude_account_pin:v1:claude-local:s1"] == "correo"
 
 
 def test_conversacion_empezada_muda_si_su_cuenta_esta_rechazada():
