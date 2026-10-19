@@ -503,7 +503,6 @@ _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
 _config_refresh_task = None
 _config_client = None
 _config_stream_task = None
-_config_stream_client = None
 _config_stream_live = [False]
 _redis_client = None
 _redis_lock = asyncio.Lock()
@@ -761,17 +760,21 @@ async def _config():
     return _config_cache["config"]
 
 
+def _config_http():
+    """El cliente persistente (keep-alive) del GET y del stream de config, uno por proceso."""
+    global _config_client
+    if _config_client is None or _config_client.is_closed:
+        _config_client = httpx.AsyncClient(timeout=httpx.Timeout(CONFIG_REFRESH_TIMEOUT_SECONDS))
+    return _config_client
+
+
 async def _refresh_config():
     """Refresco en background: un task a la vez (single-flight por task.done()),
     cliente persistente con keep-alive, NUNCA lanza (un task muerto no debe
     arrastrar el hook). Renueva el TTL incluso en fallo: sin eso, cada petición
     relanzaría el intento y habría una tormenta de tasks contra el backend."""
-    global _config_client
     try:
-        if _config_client is None or _config_client.is_closed:
-            _config_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(CONFIG_REFRESH_TIMEOUT_SECONDS))
-        response = await _config_client.get(CONFIG_URL)
+        response = await _config_http().get(CONFIG_URL, timeout=CONFIG_REFRESH_TIMEOUT_SECONDS)
         response.raise_for_status()
         candidate = response.json()
         if isinstance(candidate, dict):
@@ -802,16 +805,13 @@ async def _sse_configs(lines):
 async def _config_stream():
     """Suscripción al stream de config; nunca lanza y reconecta con backoff (1-30 s). Mientras está vivo,
     _config() no hace GET; al caer, el GET con TTL toma el relevo hasta la siguiente config del stream."""
-    global _config_stream_client
     espera = 1.0
     while True:
         try:
-            # Un cliente para todas las reconexiones: crear uno monta su contexto TLS y
-            # bloquea el loop decenas de ms, lo bastante para que caduquen ops de Valkey.
-            if _config_stream_client is None or _config_stream_client.is_closed:
-                _config_stream_client = httpx.AsyncClient(timeout=httpx.Timeout(
-                    CONFIG_REFRESH_TIMEOUT_SECONDS, read=CONFIG_STREAM_READ_SECONDS))
-            async with _config_stream_client.stream("GET", CONFIG_STREAM_URL) as response:
+            # El cliente del GET, no uno propio: crear otro monta su contexto TLS y bloquea
+            # el loop decenas de ms, lo bastante para que caduquen ops de Valkey (100 ms).
+            async with _config_http().stream("GET", CONFIG_STREAM_URL, timeout=httpx.Timeout(
+                    CONFIG_REFRESH_TIMEOUT_SECONDS, read=CONFIG_STREAM_READ_SECONDS)) as response:
                 response.raise_for_status()
                 async for data in _sse_configs(response.aiter_lines()):
                     candidate = json.loads(data)

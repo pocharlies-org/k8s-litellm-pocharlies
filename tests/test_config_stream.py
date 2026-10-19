@@ -27,7 +27,7 @@ class _Cliente:
 
     is_closed = False
 
-    def stream(self, metodo, url):
+    def stream(self, metodo, url, **kw):
         self.abiertas.append(url)
         cliente = self
 
