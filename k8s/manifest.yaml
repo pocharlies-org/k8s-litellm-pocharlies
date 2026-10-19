@@ -35,6 +35,34 @@ metadata:
   namespace: litellm
 data:
   config.yaml: |
+    # 19-10-2026 (Dani): la familia RESIDENTE no aparca nunca. Un vLLM que reinicia (head en
+    # CrashLoop, rollout del TP=2) aparcaba 900 s al TP=2 y 900 s al TP=1 muerto: 15 min de
+    # `429 all_deployments_in_cooldown` con /health en 200, y el fallback a Alibaba no es un
+    # respaldo de verdad. Quien saca de la rotacion a un motor caido es la salud, y solo
+    # ella: `session_router.resident_backend_filter` + `live_backends` (/metrics mudo).
+    #
+    # Dos caminos del Router aparcan, y el ancla cierra los dos:
+    #   1. el fallo de la llamada: `router.deployment_callback_on_failure` toma el
+    #      `cooldown_time` de la deployment primero (model_info, no litellm_params, que se
+    #      copia a la llamada al proveedor); con 0, `_should_run_cooldown_logic` sale sin aparcar.
+    #   2. el pre-call (`async_routing_strategy_pre_call_checks`): un `RateLimitError` de un
+    #      callback (el semaforo `max_parallel_requests` lleno) aparca con el `cooldown_time`
+    #      del ROUTER, ignorando el de la deployment. Lo para `allowed_fails_policy` con un
+    #      techo de 1e9 en cada tipo de excepcion: el contador usa ttl 0, asi que en memoria y
+    #      en Redis nunca pasa de 1 por clave y 1e9 no se alcanza.
+    # Lo fija tests/test_resident_never_cools_contract.py.
+    resident_never_cools: &resident_never_cools
+      cooldown_time: 0
+      allowed_fails_policy:
+        ContentPolicyViolationErrorAllowedFails: 1000000000
+        BadRequestErrorAllowedFails: 1000000000
+        AuthenticationErrorAllowedFails: 1000000000
+        TimeoutErrorAllowedFails: 1000000000
+        RateLimitErrorAllowedFails: 1000000000
+        InternalServerErrorAllowedFails: 1000000000
+        ServiceUnavailableErrorAllowedFails: 1000000000
+        BadGatewayErrorAllowedFails: 1000000000
+        NotFoundErrorAllowedFails: 1000000000
     model_list:
     # Los alias locales son ESTATICOS desde el 18-08-2026 (ver la lapida de
     # `litellm-dgx-backend-sync` mas abajo): no se registran ni se retiran en
@@ -247,8 +275,7 @@ data:
     # debajo de la paciencia del CLI (600 s) a proposito. Ojo con el caso
     # pesado: en un turno de prefijo ~81k en frio el rebote a Alibaba TAMBIEN
     # es lento (uno medido: 240 s residente + 600 s Alibaba → error explicito
-    # a los 840 s); el cooldown asimetrico de arriba (360 s/60 s) amortigua
-    # las repeticiones, no abarata el primer rebote.
+    # a los 840 s). El residente no aparca (`&resident_never_cools`): cada peticion prueba el motor.
     # 8 = la zona donde la latencia medida sigue siendo usable; el
     # tope de KV real del motor sigue sin medir, esto es admision, no fisica.
     - model_name: qwen38-flash-next
@@ -319,43 +346,10 @@ data:
         # El resto de la familia (27B, 4B) sigue con [none, high, max]: ahi no
         # hay medicion nueva.
         supported_reasoning_efforts: [none, low, medium, xhigh]
-        # 20-09-2026: cooldown ASIMETRICO. Este aparca LARGO (360 s) y su gemelo
-        # `alibaba-q38-flash` aparca CORTO (60). No es simetria rota por
-        # descuido, son dos riesgos distintos:
-        #
-        #   Este (local, gratis). Cuando cae, el trafico se va a un tercero DE PAGO
-        #   y con la cache fria para esa conversacion — y este proxy arrastra
-        #   ~81.000 tokens por peticion. Lo caro NO es estar en Alibaba, es LLEGAR
-        #   a Alibaba: cada caida NUEVA vuelve a facturar el prompt entero. Con un
-        #   residente que flapea (head en CrashLoop, rollout del TP=2) un cooldown
-        #   corto rebota cada pocos minutos y paga el prefijo en cada rebote. 360 s
-        #   compra el silencio: se cae una vez, se amortiza alli, y se vuelve.
-        #   20-10-2026 (Dani): de 900 a 360. El OOM de las 00:16 tumbo el TP=2 y
-        #   volvio solo en ~220 s, pero quedo aparcado 15 min y Alibaba daba 429:
-        #   12 min sin LLM con el motor sano. 360 s cubre un reinicio del TP=2 y queda por encima de la ventana del router (300), que es el orden que exige test_tooling_profile_contract.
-        #
-        # Va en `model_info` y NO en `litellm_params` A PROPOSITO: el docstring de
-        # `_get_deployment_cooldown_policy` avisa de que `litellm_params` se copia
-        # ENTERO en los kwargs de la llamada al proveedor, asi que un campo puesto
-        # ahi se filtraria a la peticion de salida. `_first_present` mira
-        # `model_info` primero, que es router-internal.
-        #
-        # Ojo al reparto de papeles, que son DOS relojes distintos:
-        #   - este `cooldown_time`      = cuanto dura la EXPULSION del deployment.
-        #   - el del router (300, abajo) = TTL del contador de fallos, o sea la
-        #     ventana en la que tienen que caber los 4 fallos para disparar.
-        # Y por encima de los dos manda un `Retry-After` del upstream, si lo manda.
-        cooldown_time: 360
-        # 18-10-2026 (DGX-1103, Dani): un motor LENTO no es un motor MUERTO. Con dos gemelos, un 408 por cola
-        # aparcaba al saturado 15 min y `resident_backend_filter` mudaba TODAS sus conversaciones al otro con la
-        # cache fria, que se saturaba y caia igual (medido: TP=1 aparcado 18:39Z, TP=2 18:58Z, 38 mudanzas en
-        # 30 min). Un timeout ya no aparca: esa peticion sola cae a Alibaba (DGX-1075) y la sesion sigue en su
-        # motor. Lo que si aparca y muda es el motor caido: 500 (3 dias: 567 cooldowns, todos en ventanas de
-        # caida) o `/metrics` mudo (`live_backends`). Mando por deployment del Router pineado
-        # (`cooldown_handlers._get_deployment_cooldown_policy`); con la politica puesta, el resto de errores
-        # cuenta `allowed_fails` del router dentro de la ventana de este `cooldown_time`, no la tasa por minuto.
-        allowed_fails_policy:
-          TimeoutErrorAllowedFails: 1000000  # nunca: no caben un millon de timeouts de 240 s en la ventana
+        # Cooldown y politica de fallos: el ancla `&resident_never_cools` (top del ConfigMap).
+        # Va en `model_info`, nunca en `litellm_params` (se copia a la llamada al proveedor).
+        # Un motor caido sigue saliendo de la rotacion por `live_backends` (/metrics mudo).
+        <<: *resident_never_cools
         # 02-09-2026 (STA-9): callado el bucle de fondo. Medido: `/health` decia
         # `healthy_count: 0` MIENTRAS una inferencia real respondia 391 en 5 s. La
         # sonda de fondo no es el watchdog: usa `max_tokens` 16 (el default de
@@ -388,16 +382,11 @@ data:
     # partirian la conversacion otra vez, que es justo lo que se retiro del
     # Service de pool el 18-08) y el `id`, la llave del pin y del cooldown.
     #
-    # LO QUE NO PUEDE VOLVER: el «11 de 12 OK y UNA 500» del 18-08 (dos
-    # deployments bajo un alias con uno muerto, que se comia peticiones hasta
-    # acumular 3 fallos y salia cada 2 min a fallar otras tres). No depende del
-    # pin: `allowed_fails: 3` del router + el `cooldown_time: 360` heredado
-    # expulsan al gemelo que falla POR ID (los dos se aparcan por separado), y
-    # desde ahi el filtro no lo ve y MUDA a las sesiones que lo tenian clavado
-    # -- sin vuelta cuando el gemelo vuelve, que es la diferencia con el
-    # session_affinity nativo retirado el 28-09. La sonda de fondo sigue sin
-    # pinta aqui: `disable_background_health_check: true` se hereda con el ancla
-    # (los dos gemelos, o el bucle de LiteLLM sigue gastando inferencias que no
+    # Ninguno de los dos gemelos aparca en el Router (`&resident_never_cools`): un
+    # motor caido sale de la rotacion por `live_backends` (/metrics mudo) y las
+    # sesiones clavadas a el mudan por `resident_backend_filter`. La sonda de fondo
+    # sigue sin pinta aqui: `disable_background_health_check: true` se hereda con el
+    # ancla (los dos gemelos, o el bucle de LiteLLM sigue gastando inferencias que no
     # informan de nada).
     #
     # El semaforo se pisa aqui (DGX-955h, 18-10): `max_parallel_requests: 3`, 6
@@ -462,22 +451,9 @@ data:
         # mentiria. `none` y no la lista vacia, como `qwen38-off`: Hermes lee «sin
         # declaracion» como la escalera completa.
         supported_reasoning_efforts: [none]
-        # 60, no los 360 del residente. Aquel aparca largo porque cada rebote NUEVO a
-        # Alibaba factura un prefijo de ~81.000 tokens; aqui el prompt es corto y Alibaba
-        # es barato, asi que no hay razon para dejar al residente fuera 6 min.
-        # OJO: es lo que dura el cooldown SI el Router aparca el deployment, y con litellm
-        # 1.100.0 un grupo de UN deployment no entra en cooldown por timeouts ni por 5xx: el
-        # `allowed_fails: 3` del router es el defecto de litellm y se lee como «no puesto»
-        # (medido con el Router real, DGX-874: 12 fallos seguidos, 12 golpes al residente,
-        # ningun cooldown). O sea: cada peticion prueba antes al residente y paga su timeout
-        # de 6 s antes de caer al respaldo, que es lo que se quiere (el local primero). El
-        # mando que el Router SI lee por deployment para aparcar es
-        # `model_info.allowed_fails_policy`; no se pone: aparcado, todo el correo del alias
-        # iria a Alibaba mientras durase el cooldown.
-        cooldown_time: 60
-        # DGX-1103: la politica de fallos del ancla es de los GEMELOS; aqui, con un solo deployment, haria
-        # contar los 500 contra `allowed_fails` y aparcaria justo lo que el parrafo de arriba no quiere.
-        allowed_fails_policy: null
+        # Sin cooldown propio: hereda `&resident_never_cools` (cero). Cada peticion prueba
+        # antes al residente y paga su timeout de 6 s antes de caer al respaldo, que es lo
+        # que se quiere (el local primero); aparcado, todo el correo iria a Alibaba.
     # ── `qwen38-flash-next-uncensored`: el residente llm-tp, abliterado ────────
     #
     # MISMO backend, mismo head, misma GPU. Lo unico que cambia es que esta peticion
@@ -563,9 +539,8 @@ data:
         # de razonamiento gasta el presupuesto pensando y devuelve content
         # vacio con HTTP 200, que el bucle apunta como unhealthy.
         disable_background_health_check: true
-        # DGX-1103: un timeout no aparca al gemelo ni muda sus sesiones. Detalle en `qwen38-flash-next`.
-        allowed_fails_policy:
-          TimeoutErrorAllowedFails: 1000000
+        # Cooldown cero y politica de fallos: `&resident_never_cools` (top del ConfigMap).
+        <<: *resident_never_cools
     # DGX-852: gemelo TP=1 del abliterado (dgx3). Mismo sello `refusal:1.0`,
     # mismo `timeout: 600`, otro motor y otra cache: lo que clava la conversacion
     # a un servidor es `session_router.resident_backend_filter`, y `qwen38-flash-
@@ -637,6 +612,9 @@ data:
         # llega a ninguna peticion uncensored.
         extra_body: { cache_salt: "refusal:0" }
       model_info: &tooling_pool_info
+        # Cooldown cero y politica de fallos: `&resident_never_cools`. Lo heredan los
+        # cuatro perfiles de chat (tooling, tooling-uncensored, qwen38-off, qwen38-u-off).
+        <<: *resident_never_cools
         mode: chat
         backend: profile-resident
         max_input_tokens: 262144
@@ -2391,42 +2369,11 @@ data:
       # cubrir esa ventana. Retirado el controlador, el alias no se retira nunca:
       # este cooldown es lo UNICO que aparta a un backend colgado. No bajarlo.
       allowed_fails: 3
-      # 20-09-2026: 120 -> 300. Este valor dejo de ser solo "cuanto tarda en
-      # volver un backend colgado": desde que `qwen38-flash-next` tiene fallback a
-      # Alibaba (abajo), es LA PALANCA DE STICKINESS, y el unico mecanismo de
-      # afinidad que LiteLLM ofrece aqui.
-      #
-      # Verificado leyendo el codigo que corre (v1.96.0, en el pod), no de memoria:
-      # con `allowed_fails` puesto en el router, `_should_cooldown_deployment` se va
-      # por `should_cooldown_based_on_allowed_fails_policy`, que NO consulta la
-      # exencion de "grupo con un solo deployment" (esa solo aplica cuando
-      # `allowed_fails` NO esta puesto). O sea que el residente SI entra en cooldown
-      # al 4o fallo y, mientras dura, TODO el trafico se queda en el fallback sin
-      # volver a probarlo. Sin eso, cada peticion reintentaria el residente muerto y
-      # el salto seria constante.
-      #
-      # Por que subirlo y no bajarlo: cada vez que caemos de NUEVO a Alibaba, su
-      # prefix cache esta frio para esa conversacion y se paga el prompt entero — y
-      # este proxy arrastra ~81.000 tokens por peticion. Menos saltos = menos
-      # prompts facturados. 300 s tapa ademas el reinicio del watchdog de vLLM
-      # (~4 min) que el comentario de arriba describe, que 120 dejaba justo.
-      #
-      # El coste de subirlo: hasta 5 min de trafico de pago despues de que el
-      # residente ya este sano. Es la unica variable del trade-off; si se quiere
-      # volver antes a la GPU local, se baja — pero no de 240, o se reabre la
-      # ventana del watchdog.
-      #
-      # Ojo, el cooldown NO tiene afinidad por conversacion: es del deployment,
-      # asi que todas las sesiones saltan juntas. Para la cache eso es BUENO
-      # (comparten backend y por tanto prefijo); solo significa que el cooldown
-      # por si solo no puede dejar a una sesion en local y a otra en Alibaba.
-      # 21-09-2026 (INFRA-208): la afinidad por conversacion ya existe, pero no
-      # vive aqui: el hook session_router.py vincula sesion -> backend en el
-      # Valkey dedicado (sticky) y reescribe el excedente de local_slots en
-      # vuelo a Alibaba (rechazo instantaneo), configurable en caliente desde
-      # el panel model-routing y apagado por defecto. Este cooldown queda
-      # intacto: sigue siendo lo unico que aparta a nivel de Router un
-      # residente caido, y el hook nunca enruta a un grupo en cooldown.
+      # 20-09-2026: 120 -> 300. Desde 19-10-2026 este valor ya no es del residente: los
+      # `qwen38-flash-next*`, `tooling*` y `correo-clasificador` llevan `cooldown_time: 0` y
+      # `allowed_fails_policy` (ancla `&resident_never_cools`) y nunca aparcan. Lo que queda
+      # a 300 es el default del resto de grupos (Claude, ChatGPT, Alibaba...), que siguen
+      # rotando por cooldown. Un residente caido sale de la rotacion por `live_backends`.
       cooldown_time: 300
       # Compatibilidad del nombre puntuado del 4B: RETIRADA (SC-384). El grupo
       # `qwen35-4b` ya no existe, asi que no hay alias oculto que resolver.
@@ -10396,7 +10343,7 @@ data:
 
         epoch = _pin_epoch(ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS)
         if pinned is not None:
-            # Su backend se quedo sin deployment sano (cooldown): MUDANZA entera.
+            # Su backend salio de `live_backends` (/metrics mudo): MUDANZA entera. El Router no aparca al residente.
             target = preferred_account(user_key, sid, by_backend, weights, epoch=epoch)
             BACKEND_AFFINITY_STATS["moves"] += 1
             log.warning("session_router: sesion %s muda de backend del residente %s -> %s (%s)",
@@ -13075,7 +13022,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2550e7fc5820
+        config.k8s.e-dani.com/revision: config-2f578c4978f9
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13998,7 +13945,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2550e7fc5820
+        config.k8s.e-dani.com/revision: config-2f578c4978f9
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

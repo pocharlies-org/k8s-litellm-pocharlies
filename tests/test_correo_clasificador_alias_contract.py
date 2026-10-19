@@ -79,12 +79,15 @@ def test_el_sello_censurado_no_se_pierde():
     assert _alias()["litellm_params"]["extra_body"]["cache_salt"] == "refusal:0"
 
 
-def test_aparca_corto_y_solo_anuncia_none():
-    """A diferencia del residente (900 s), aqui el prompt es corto y Alibaba es barato: no
-    hay razon para apartarlo 15 min. Y no piensa: el menu publicado es solo `none`."""
-    info = _alias()["model_info"]
+def test_no_aparca_nunca_y_solo_anuncia_none():
+    """19-10-2026: el alias hereda `&resident_never_cools` (cooldown 0 y politica de fallos
+    completa) como toda la familia residente. Y no piensa: el menu publicado es solo `none`."""
+    alias = _alias()
+    info = alias["model_info"]
 
-    assert info["cooldown_time"] == 60
+    assert info["cooldown_time"] == 0
+    assert "cooldown_time" not in alias["litellm_params"]
+    assert info["allowed_fails_policy"]["TimeoutErrorAllowedFails"] == 1000000000
     assert list(info["supported_reasoning_efforts"]) == ["none"]
 
 

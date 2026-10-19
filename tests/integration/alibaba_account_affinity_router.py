@@ -78,6 +78,10 @@ def _router(config):
     import litellm_strip_params
 
     session_router.REDIS_URL = os.environ["REDIS_URL"]
+    # Lo que se prueba es la afinidad, no la latencia del runner: con los 100 ms de produccion
+    # una Valkey recien arrancada en un runner cargado caduca operaciones (`redis_errors`) y el
+    # pin no se lee o no se escribe, que fallaba en un sitio distinto en cada ejecucion.
+    session_router.REDIS_OP_TIMEOUT_SECONDS = float(os.environ.get("REDIS_OP_TIMEOUT_SECONDS", "2"))
     litellm.callbacks = [litellm_strip_params.proxy_handler_instance]
     router = Router(model_list=_alibaba_model_list(config), num_retries=0,
                     allowed_fails=0, cooldown_time=2)

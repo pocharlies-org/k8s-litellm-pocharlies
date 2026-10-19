@@ -2533,7 +2533,7 @@ async def resident_backend_filter(model, healthy_deployments, request_kwargs):
 
     epoch = _pin_epoch(ttl=RESIDENT_BACKEND_PIN_TTL_SECONDS)
     if pinned is not None:
-        # Su backend se quedo sin deployment sano (cooldown): MUDANZA entera.
+        # Su backend salio de `live_backends` (/metrics mudo): MUDANZA entera. El Router no aparca al residente.
         target = preferred_account(user_key, sid, by_backend, weights, epoch=epoch)
         BACKEND_AFFINITY_STATS["moves"] += 1
         log.warning("session_router: sesion %s muda de backend del residente %s -> %s (%s)",
