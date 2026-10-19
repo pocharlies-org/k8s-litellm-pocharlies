@@ -11509,16 +11509,22 @@ data:
                 return
             samples = self._samples.setdefault(request_id, deque())
             samples.append((now, tokens))
+            # DGX-1148: la última muestra anterior a la ventana se queda de
+            # ancla. Sin ella, tras una pausa del stream la ventana se quedaba
+            # con dos muestras a milisegundos y una ráfaga de 15 tokens salía
+            # a 851 t/s.
             while (
                 len(samples) > 1
-                and now - samples[0][0] > self.speed_window_s
+                and now - samples[1][0] >= self.speed_window_s
             ):
                 samples.popleft()
             if len(samples) >= 2:
                 oldest_ts, oldest_tokens = samples[0]
                 newest_ts, newest_tokens = samples[-1]
                 duration = newest_ts - oldest_ts
-                if duration > 0:
+                # Menos de media ventana (p. ej. justo tras el reset del
+                # primer usage real) es una ráfaga, no una velocidad.
+                if duration >= self.speed_window_s / 2:
                     record["output_speed_tps"] = round(
                         max(
                             0,
@@ -13075,7 +13081,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2550e7fc5820
+        config.k8s.e-dani.com/revision: config-e797d48ad1e1
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13998,7 +14004,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2550e7fc5820
+        config.k8s.e-dani.com/revision: config-e797d48ad1e1
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

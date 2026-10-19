@@ -712,6 +712,11 @@ contracts:
       fallback revives the row the primary's failure had closed. Pinned by
       tests/test_active_requests_pod_scoping_contract.py (AC5) and
       tests/test_active_request_route_origin_contract.py.
+      Since 2026-10-20 (DGX-1148) `output_speed_tps` is measured against
+      the last sample before its 2 s window and stays at its previous
+      value (null at first) until at least 1 s is measured, so a burst
+      after a stream pause no longer reads as hundreds of t/s; same field,
+      same unit. Pinned by tests/test_active_request_metrics_contract.py.
       Since 2026-09-24 each row also carries the additive
       prompt_tokens_estimate: input size ESTIMATED at the pre-call (text
       characters / a chars-per-token ratio learned from real prompt_tokens),

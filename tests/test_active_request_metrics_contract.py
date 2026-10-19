@@ -317,3 +317,53 @@ def test_tracker_estimates_live_output_from_chunks_without_usage():
         assert request["completion_tokens"] == 16
         assert request["completion_tokens_estimate"] == 4
         assert request["output_speed_tps"] == 6.0
+
+
+def test_tracker_speed_ignores_bursts_after_a_pause_and_right_after_reset():
+    # DGX-1148: el usage llega a saltos (medido 20-10: 900 → 911 tokens en
+    # 4 s) y una petición de 15 tokens salió a 851 t/s: tras una pausa la
+    # ventana se quedaba con dos muestras a milisegundos.
+    tracker_module = _exec_module(
+        _config_data()["active_request_tracking.py"],
+        "active_request_tracking_burst_contract",
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock, tracker = _tracker_with_clock(tracker_module, temp_dir)
+        active_file = Path(temp_dir) / "active.json"
+        tracker.start(
+            "request-1",
+            trace_id="trace-1",
+            key_alias="claude-local",
+            model="qwen38-flash-next",
+            call_type="anthropic_messages",
+            api_base=None,
+        )
+
+        def speed():
+            return json.loads(active_file.read_text())["request-1"]["output_speed_tps"]
+
+        # Primer usage real y otro a 10 ms: eso no es una velocidad.
+        clock.value += 1
+        tracker.update_usage("request-1", prompt_tokens=50000, completion_tokens=1)
+        clock.value += 0.01
+        tracker.update_usage(
+            "request-1", prompt_tokens=50000, completion_tokens=15, force_flush=True
+        )
+        assert speed() is None
+
+        clock.value += 0.99
+        tracker.update_usage(
+            "request-1", prompt_tokens=50000, completion_tokens=20, force_flush=True
+        )
+        assert speed() == 19.0
+
+        # Pausa de 8 s y ráfaga de 40 tokens en 10 ms: se mide contra la
+        # última muestra antes de la ventana, no contra la de hace 10 ms.
+        clock.value += 8
+        tracker.update_usage("request-1", prompt_tokens=50000, completion_tokens=40)
+        clock.value += 0.01
+        tracker.update_usage(
+            "request-1", prompt_tokens=50000, completion_tokens=60, force_flush=True
+        )
+        assert speed() == round(40 / 8.01, 2)
