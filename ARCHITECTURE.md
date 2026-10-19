@@ -31,8 +31,10 @@ nombre de Anthropic y `session_router.claude_account_filter` elige la cuenta con
 se queda en su cuenta salvo 429 o créditos; sin política, ninguna. `claude_quota.py` guarda la cuota de cada respuesta en
 `claude:quota:<id>`. Contratos `dgx.litellm.claude-quota.v1` y `dgx.session-router.claude-account-pin.v1`. Sin fallbacks y
 sin mensajes en Langfuse (`turn_off_message_logging`). Las sesiones de la compañía (`x-claude-class: company`) usan la lista
-`claude_accounts["compania"]` sea cual sea su key, y `apply_company_policy` les aplica el interruptor «Claude» (403) y
-`company.claude_gate` (rewrite al residente con tope, o 403), lo que antes hacía el claude-router del x86.
+`claude_accounts["compania"]` sea cual sea su key, y `apply_company_policy` les aplica el interruptor «Claude» y
+`company.claude_gate` (rewrite al residente con tope, o 403), lo que antes hacía el claude-router del x86. Con «Claude»
+apagado y el gate en rewrite, todo `claude-*` va al target; con el gate en off o block, 403 (SC-2667: un rol del plugin
+despachado por `Agent` pide el `model:` de git).
 
 **`plan-gateway`** (`plan-gateway.litellm.svc:4002`, solo dentro del cluster, sin IngressRoute) es el sitio único por el que
 pasa la **media** (imagen, vídeo, voz) del Token Plan de Alibaba. Consumidores, uno por token

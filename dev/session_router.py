@@ -2533,18 +2533,21 @@ async def alibaba_switches():
 
 def _company_claude(config, data, requested_model):
     """Interruptor «Claude» y claude_gate de la compañía sobre un `claude-*`. Devuelve el
-    detalle de un 403 o None (con rewrite, data ya apunta al target)."""
+    detalle de un 403 o None (con rewrite, data ya apunta al target).
+    Con Claude apagado y el gate en rewrite, también al target (SC-2667, decisión de Dani): un rol despachado
+    por `Agent` pide el `model:` de git del plugin y no hay lanzamiento que lo cambie."""
     model = str(requested_model or data.get("model") or "")
     if not model.startswith(CLAUDE_PREFIX):
         return None
     company = config.get("company") or {}
-    if company.get("claude", True) is False:
+    gate = company.get("claude_gate") or CLAUDE_GATE_OFF
+    apagado = company.get("claude", True) is False
+    if apagado and gate["mode"] != "rewrite":
         log.warning("session_router: company pidio %r con Claude desactivado -> 403", model)
         return {"error": "company_claude_disabled", "model": model,
                 "hint": ("La compañía tiene Claude desactivado en dgx.e-dani.com/"
                          "claude-sessions#settings: usa el LLM local.")}
-    gate = company.get("claude_gate") or CLAUDE_GATE_OFF
-    if gate["mode"] == "off" or model in gate["allow"]:
+    if not apagado and (gate["mode"] == "off" or model in gate["allow"]):
         return None
     if gate["mode"] == "block":
         log.warning("session_router: claude_gate=block, company pidio %r -> 403", model)

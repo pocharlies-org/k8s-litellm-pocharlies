@@ -268,11 +268,16 @@ def _company_data(model, max_tokens=64000):
                                  "user_api_key_alias": "claude-local"}}
 
 
-def test_compania_con_claude_apagado_recibe_403():
+def test_compania_con_claude_apagado_va_al_target_del_gate_o_recibe_403():
+    # SC-2667: con rewrite, incluso lo permitido va al target (un rol del plugin pide su model: de git).
     mod = _company_pod(claude=False)
     data = _company_data("claude-opus-5-5")
-    denied, detail = asyncio.run(mod.apply_company_policy(data, "claude-opus-5-5"))
-    assert denied and detail["error"] == "company_claude_disabled"
+    assert asyncio.run(mod.apply_company_policy(data, "claude-opus-5-5")) == (False, None)
+    assert data["model"] == "qwen38-flash-next" and data["max_tokens"] == 32000
+    for modo in ("off", "block"):
+        mod = _company_pod(claude=False, gate={**GATE, "mode": modo})
+        denied, detail = asyncio.run(mod.apply_company_policy(_company_data("claude-opus-5-5"), "claude-opus-5-5"))
+        assert denied and detail["error"] == "company_claude_disabled", modo
 
 
 def test_gate_rewrite_lleva_al_target_con_tope_y_deja_pasar_lo_permitido():
