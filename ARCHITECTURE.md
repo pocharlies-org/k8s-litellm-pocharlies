@@ -28,7 +28,7 @@ su setup-token de `litellm-claude-cuentas` (ExternalSecret de los items `claude-
 de máquina (`claude-local` en el x86, `claude-casa` en el MacBook de casa, `claude-cloudblue` en el de CloudBlue) piden el
 nombre de Anthropic y `session_router.claude_account_filter` elige la cuenta con la política por key que publica el panel
 (`claude_accounts` de `/api/model-routing/config`): la primera de su lista por debajo de su salto; una conversación empezada
-se queda en su cuenta salvo 429 o créditos; sin política, ninguna. `claude_quota.py` guarda la cuota de cada respuesta en
+se queda en su cuenta hasta que esa cuenta pasa su salto (o da 429 o créditos), y entonces salta; sin política, ninguna. `claude_quota.py` guarda la cuota de cada respuesta en
 `claude:quota:<id>`. Contratos `dgx.litellm.claude-quota.v1` y `dgx.session-router.claude-account-pin.v1`. Sin fallbacks y
 sin mensajes en Langfuse (`turn_off_message_logging`). Las sesiones de la compañía (`x-claude-class: company`) usan la lista
 `claude_accounts["compania"]` sea cual sea su key, y `apply_company_policy` les aplica el interruptor «Claude» y
