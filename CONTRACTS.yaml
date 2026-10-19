@@ -1234,8 +1234,9 @@ contracts:
     note: >-
       DGX-621 (plan DGX-619, 2026-10-06). Sitio UNICO por el que pasa la media
       (imagen, video, voz) del Token Plan de Alibaba: Service `plan-gateway`
-      :4002 en ns `litellm`, ClusterIP y SIN IngressRoute (solo consumidores
-      dentro del cluster: Studio, omnivoice). Deployment propio, etiqueta
+      :4002 en ns `litellm`, ClusterIP y SIN IngressRoute (consumidores: Studio,
+      omnivoice, y openmontage desde el nodo x86 por el ClusterIP — mismo patrón
+      que el MinIO de `upload_render.py`). Deployment propio, etiqueta
       `app: plan-gateway` (nunca `app: litellm`), codigo inline en el ConfigMap
       `plan-gateway-config` (`plan_gateway.py`). URL para los consumidores (espejo
       en dgx-infra y k8s-ai, DGX-619 P2/P4):
@@ -1249,9 +1250,10 @@ contracts:
       el del token-plan). No hay ruta de salud: las sondas son tcpSocket.
 
       AUTH: `Authorization: Bearer <token>`, UN token por consumidor
-      (PLAN_GATEWAY_TOKEN_STUDIO, PLAN_GATEWAY_TOKEN_OMNIVOICE; ExternalSecret
-      `plan-gateway-tokens`, items 1Password `plan-gateway-studio` y
-      `plan-gateway-omnivoice`), comparado con hmac.compare_digest; sin token o
+      (PLAN_GATEWAY_TOKEN_STUDIO, PLAN_GATEWAY_TOKEN_OMNIVOICE,
+      PLAN_GATEWAY_TOKEN_OPENMONTAGE (SC-2498, x86 OpenMontage por ClusterIP);
+      ExternalSecret `plan-gateway-tokens`, items 1Password `plan-gateway-studio`,
+      `plan-gateway-omnivoice` y `plan-gateway-openmontage`), comparado con hmac.compare_digest; sin token o
       con uno malo, 401. El nombre del consumidor es el `caller` del ledger. El
       Authorization y el X-Plan-Account que entran se descartan y el gateway pone
       la key de la cuenta elegida; hop-by-hop fuera; X-DashScope-Async y

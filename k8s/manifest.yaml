@@ -13877,6 +13877,8 @@ spec:
       remoteRef: { key: plan-gateway-studio, property: password }
     - secretKey: PLAN_GATEWAY_TOKEN_OMNIVOICE
       remoteRef: { key: plan-gateway-omnivoice, property: password }
+    - secretKey: PLAN_GATEWAY_TOKEN_OPENMONTAGE
+      remoteRef: { key: plan-gateway-openmontage, property: password }
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -13988,6 +13990,9 @@ spec:
             - name: PLAN_GATEWAY_TOKEN_OMNIVOICE
               valueFrom:
                 secretKeyRef: { name: plan-gateway-tokens, key: PLAN_GATEWAY_TOKEN_OMNIVOICE }
+            - name: PLAN_GATEWAY_TOKEN_OPENMONTAGE
+              valueFrom:
+                secretKeyRef: { name: plan-gateway-tokens, key: PLAN_GATEWAY_TOKEN_OPENMONTAGE }
           volumeMounts:
             - { name: gateway-code, mountPath: /gw/plan_gateway.py, subPath: plan_gateway.py, readOnly: true }
             - { name: litellm-config, mountPath: /gw/session_router.py, subPath: session_router.py, readOnly: true }
