@@ -106,6 +106,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import time
 import uuid
@@ -136,6 +137,15 @@ SIDECAR_URL = os.environ.get(
 )
 
 CONFIG_TTL_SECONDS = 5.0
+# DGX-1099 (19-10-2026): la config llega EMPUJADA por el stream SSE del dashboard
+# (`event: config` con el cuerpo de /config al conectar y en cada cambio; latido cada
+# 15 s). Con el stream vivo no hay GET; caído, el GET con TTL de arriba hasta que
+# reconecta. MODEL_ROUTING_CONFIG_STREAM=off vuelve al sondeo (vuelta atrás).
+# CONTRACT: dgx.model-routing.config.stream.v1 — GET /api/model-routing/config/stream
+# Junto a CONFIG_URL: quien la redirige (tests de integración) redirige también el stream.
+CONFIG_STREAM_URL = os.environ.get("MODEL_ROUTING_CONFIG_STREAM_URL", CONFIG_URL.rstrip("/") + "/stream")
+CONFIG_STREAM_ON = os.environ.get("MODEL_ROUTING_CONFIG_STREAM", "on") != "off"
+CONFIG_STREAM_READ_SECONDS = 45.0  # tres latidos sin nada = conexión muerta
 # ≤100 ms por operación en el camino de la petición (mandato 10). La config ya
 # NO está en el camino de la petición (stale-while-revalidate, ver _config);
 # el tope sigue aquí como contrato y para cualquier uso síncrono futuro.
@@ -492,6 +502,8 @@ DEFAULT_CONFIG = {
 _config_cache = {"config": dict(DEFAULT_CONFIG), "expires": 0.0}
 _config_refresh_task = None
 _config_client = None
+_config_stream_task = None
+_config_stream_live = [False]
 _redis_client = None
 _redis_lock = asyncio.Lock()
 _bg_tasks = set()
@@ -733,16 +745,27 @@ async def _config():
     """Stale-while-revalidate: el camino de la petición NO hace NINGUNA I/O de
     config — devuelve la caché al instante (defaults seguros en frío) y, si está
     vencida, lanza el refresco en background single-flight. Propagación de un
-    cambio del panel: TTL 5 s + ~0.3 s del refresco (C8 ≤10 s sigue holgado).
+    cambio del panel: al instante por el stream de config; sin stream, TTL 5 s
+    + ~0.3 s del refresco (C8 ≤10 s sigue holgado).
     El patrón anterior (fetch síncrono con tope de 100 ms) era correcto en
     presupuesto pero ciego en la práctica: el backend tarda 130-300 ms por el
     subprocess kubectl y TODO fetch moría en ReadTimeout — el fail-open tapaba
     el panel entero."""
-    global _config_refresh_task
-    if time.monotonic() >= _config_cache["expires"]:
+    global _config_refresh_task, _config_stream_task
+    if CONFIG_STREAM_ON and (_config_stream_task is None or _config_stream_task.done()):
+        _config_stream_task = asyncio.create_task(_config_stream())
+    if not _config_stream_live[0] and time.monotonic() >= _config_cache["expires"]:
         if _config_refresh_task is None or _config_refresh_task.done():
             _config_refresh_task = asyncio.create_task(_refresh_config())
     return _config_cache["config"]
+
+
+def _config_http():
+    """El cliente persistente (keep-alive) del GET y del stream de config, uno por proceso."""
+    global _config_client
+    if _config_client is None or _config_client.is_closed:
+        _config_client = httpx.AsyncClient(timeout=httpx.Timeout(CONFIG_REFRESH_TIMEOUT_SECONDS))
+    return _config_client
 
 
 async def _refresh_config():
@@ -750,12 +773,8 @@ async def _refresh_config():
     cliente persistente con keep-alive, NUNCA lanza (un task muerto no debe
     arrastrar el hook). Renueva el TTL incluso en fallo: sin eso, cada petición
     relanzaría el intento y habría una tormenta de tasks contra el backend."""
-    global _config_client
     try:
-        if _config_client is None or _config_client.is_closed:
-            _config_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(CONFIG_REFRESH_TIMEOUT_SECONDS))
-        response = await _config_client.get(CONFIG_URL)
+        response = await _config_http().get(CONFIG_URL, timeout=CONFIG_REFRESH_TIMEOUT_SECONDS)
         response.raise_for_status()
         candidate = response.json()
         if isinstance(candidate, dict):
@@ -767,6 +786,47 @@ async def _refresh_config():
             exc,
         )
     _config_cache["expires"] = time.monotonic() + CONFIG_TTL_SECONDS
+
+
+async def _sse_configs(lines):
+    """Los `data` de los eventos `config` de un stream SSE (los latidos `:` se ignoran)."""
+    event, data = "message", []
+    async for line in lines:
+        if not line:
+            if event == "config" and data:
+                yield "\n".join(data)
+            event, data = "message", []
+        elif line.startswith("event:"):
+            event = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].removeprefix(" "))
+
+
+async def _config_stream():
+    """Suscripción al stream de config; nunca lanza y reconecta con backoff (1-30 s). Mientras está vivo,
+    _config() no hace GET; al caer, el GET con TTL toma el relevo hasta la siguiente config del stream."""
+    espera = 1.0
+    while True:
+        try:
+            # El cliente del GET, no uno propio: crear otro monta su contexto TLS y bloquea
+            # el loop decenas de ms, lo bastante para que caduquen ops de Valkey (100 ms).
+            async with _config_http().stream("GET", CONFIG_STREAM_URL, timeout=httpx.Timeout(
+                    CONFIG_REFRESH_TIMEOUT_SECONDS, read=CONFIG_STREAM_READ_SECONDS)) as response:
+                response.raise_for_status()
+                async for data in _sse_configs(response.aiter_lines()):
+                    candidate = json.loads(data)
+                    if isinstance(candidate, dict):
+                        _config_cache["config"] = _sanitize(candidate)
+                        _config_stream_live[0] = True
+                        espera = 1.0
+        except asyncio.CancelledError:
+            _config_stream_live[0] = False
+            raise
+        except Exception as exc:
+            _warn_throttled("config-stream", f"session_router: stream de config caído ({exc!r}); GET hasta reconectar")
+        _config_stream_live[0] = False
+        await asyncio.sleep(espera + random.random())
+        espera = min(espera * 2, 30.0)
 
 
 def _redis_url():
