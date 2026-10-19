@@ -343,6 +343,16 @@ data:
         #     ventana en la que tienen que caber los 4 fallos para disparar.
         # Y por encima de los dos manda un `Retry-After` del upstream, si lo manda.
         cooldown_time: 900
+        # 18-10-2026 (DGX-1103, Dani): un motor LENTO no es un motor MUERTO. Con dos gemelos, un 408 por cola
+        # aparcaba al saturado 15 min y `resident_backend_filter` mudaba TODAS sus conversaciones al otro con la
+        # cache fria, que se saturaba y caia igual (medido: TP=1 aparcado 18:39Z, TP=2 18:58Z, 38 mudanzas en
+        # 30 min). Un timeout ya no aparca: esa peticion sola cae a Alibaba (DGX-1075) y la sesion sigue en su
+        # motor. Lo que si aparca y muda es el motor caido: 500 (3 dias: 567 cooldowns, todos en ventanas de
+        # caida) o `/metrics` mudo (`live_backends`). Mando por deployment del Router pineado
+        # (`cooldown_handlers._get_deployment_cooldown_policy`); con la politica puesta, el resto de errores
+        # cuenta `allowed_fails` del router dentro de la ventana de este `cooldown_time`, no la tasa por minuto.
+        allowed_fails_policy:
+          TimeoutErrorAllowedFails: 1000000  # nunca: no caben un millon de timeouts de 240 s en la ventana
         # 02-09-2026 (STA-9): callado el bucle de fondo. Medido: `/health` decia
         # `healthy_count: 0` MIENTRAS una inferencia real respondia 391 en 5 s. La
         # sonda de fondo no es el watchdog: usa `max_tokens` 16 (el default de
@@ -462,6 +472,9 @@ data:
         # `model_info.allowed_fails_policy`; no se pone: aparcado, todo el correo del alias
         # iria a Alibaba mientras durase el cooldown.
         cooldown_time: 60
+        # DGX-1103: la politica de fallos del ancla es de los GEMELOS; aqui, con un solo deployment, haria
+        # contar los 500 contra `allowed_fails` y aparcaria justo lo que el parrafo de arriba no quiere.
+        allowed_fails_policy: null
     # ── `qwen38-flash-next-uncensored`: el residente llm-tp, abliterado ────────
     #
     # MISMO backend, mismo head, misma GPU. Lo unico que cambia es que esta peticion
@@ -547,6 +560,9 @@ data:
         # de razonamiento gasta el presupuesto pensando y devuelve content
         # vacio con HTTP 200, que el bucle apunta como unhealthy.
         disable_background_health_check: true
+        # DGX-1103: un timeout no aparca al gemelo ni muda sus sesiones. Detalle en `qwen38-flash-next`.
+        allowed_fails_policy:
+          TimeoutErrorAllowedFails: 1000000
     # DGX-852: gemelo TP=1 del abliterado (dgx3). Mismo sello `refusal:1.0`,
     # mismo `timeout: 600`, otro motor y otra cache: lo que clava la conversacion
     # a un servidor es `session_router.resident_backend_filter`, y `qwen38-flash-
@@ -13056,7 +13072,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-427ed32fdd90
+        config.k8s.e-dani.com/revision: config-6f972aad534d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13979,7 +13995,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-427ed32fdd90
+        config.k8s.e-dani.com/revision: config-6f972aad534d
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

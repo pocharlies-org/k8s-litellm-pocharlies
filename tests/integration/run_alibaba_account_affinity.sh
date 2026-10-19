@@ -28,6 +28,9 @@ echo "imagen: $IMAGE"
 docker run --rm --entrypoint python "$IMAGE" -c "import httpx, uvicorn, fastapi"
 docker run --rm -v "$REPO:/repo:ro" -e REPO=/repo -e LITELLM_LOG=ERROR --entrypoint python "$IMAGE" \
   /repo/tests/integration/plan_gateway_import.py
+# DGX-1103: con el Router de esta imagen, un timeout no aparca a un gemelo del residente y un 500 si.
+docker run --rm -v "$REPO:/repo:ro" -e REPO=/repo -e LITELLM_LOG=ERROR --entrypoint python "$IMAGE" \
+  /repo/tests/integration/resident_twin_cooldown.py
 OUTDIR=$(mktemp -d -p "${RUNNER_TEMP:-/tmp}")
 chmod 777 "$OUTDIR"
 
