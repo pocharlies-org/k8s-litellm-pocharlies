@@ -13203,8 +13203,9 @@ spec:
             - { name: LITELLM_GROK_ALLOWED_KEYS, value: "grok-account,grok-probe" }
             # DGX-1053: los alias `gpt-*` (cuenta ChatGPT Plus de Dani). Claude CLI y Paseo
             # entran por `claude-local` (claude-local-router); Hermes por `hermes`; los
-            # motores de imagen del DGX Studio por `studio-chatgpt` (DGX-1077).
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes,studio-chatgpt,claude-casa" }
+            # motores de imagen del DGX Studio por `studio-chatgpt` (DGX-1077); Hindsight
+            # (solo texto) por `hindsight` (INFRA-942).
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-local,hermes,studio-chatgpt,claude-casa,hindsight" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
             # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
