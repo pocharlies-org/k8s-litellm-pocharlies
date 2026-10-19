@@ -9,20 +9,10 @@ El codigo probado VIVE en el ConfigMap.
 """
 import ast
 import types
-from pathlib import Path
 
 import pytest
-import yaml
 
-MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
-
-
-def _hook_source():
-    return next(
-        d["data"]["litellm_strip_params.py"]
-        for d in (x for x in yaml.safe_load_all(MANIFEST.read_text()) if x)
-        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
-    )
+from hook_configmap import hook_source as _hook_source
 
 
 @pytest.fixture(scope="module")
