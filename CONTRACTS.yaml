@@ -390,6 +390,23 @@ contracts:
       or malformed field = module default; the valve additionally stays off
       until KV capacity is discovered and the sessions hash has a fresh read
       (fail-open).
+  - id: dgx.model-routing.config.stream.v1
+    kind: http-route
+    value: /api/model-routing/config/stream
+    role: consumer
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-19). Espejo del publisher de dgx-infra. La config de
+      routing llega empujada por SSE: `event: config` con el cuerpo de
+      dgx.model-routing.config.v2 al conectar y en cada cambio, con latido cada
+      15 s. session_router._config_stream se suscribe (read timeout 45 s,
+      reconexion con backoff de 1 a 30 s). Con el stream vivo, _config() no
+      hace GET; caido, vuelve el GET con TTL 5 s hasta la siguiente config.
+      MODEL_ROUTING_CONFIG_STREAM=off vuelve al sondeo.
+
   - id: dgx.model-routing.config.v2
     kind: http-route
     value: /api/model-routing/config
