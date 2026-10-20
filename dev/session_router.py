@@ -1053,18 +1053,18 @@ def _ensure_vllm_poller():
 # ── Presupuesto KV: HASH de sesiones (27-09-2026) ───────────────────────────
 
 
-def _estimate_prompt_tokens(data, tracker=None):
+def _estimate_prompt_tokens(data, tracker=None, alias=None):
     """Tokens del prompt, ESTIMADOS: caracteres / chars_per_token. El número
     real lo manda vLLM al acabar el prefill — tarde para decidir dónde se
     sirve. Mismo criterio que prompt_chars() del tracker
     (active_request_tracking.py, duplicado a propósito para no acoplar el
     import): recorre el body sin serializarlo, no cuenta el base64 de los
     adjuntos (sus tokens no salen de sus caracteres) e ignora cache_control.
-    chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales
-    (arranca en 3,5); sin tracker o con dato roto, 3,5. Un turno de Claude
-    Code son ~300 KB: la misma vuelta que el tracker ya da por petición,
-    sub-milisegundos, dentro del presupuesto (mandato 10). Cualquier forma
-    rara => None => la válvula no bloquea (fail-open)."""
+    chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales,
+    POR ALIAS (SC-2804); sin tracker o alias sin muestra, 3,5. Un turno de
+    Claude Code son ~300 KB: la misma vuelta que el tracker ya da por
+    petición, sub-milisegundos, dentro del presupuesto (mandato 10).
+    Cualquier forma rara => None => la válvula no bloquea (fail-open)."""
     try:
         if not isinstance(data, dict):
             return None
@@ -1096,7 +1096,8 @@ def _estimate_prompt_tokens(data, tracker=None):
                 stack.extend(node)
         if total <= 0:
             return None
-        cpc = getattr(tracker, "chars_per_token", None) or FALLBACK_CHARS_PER_TOKEN
+        cpc_fn = getattr(tracker, "cpc_for", None)
+        cpc = cpc_fn(alias) if cpc_fn is not None else FALLBACK_CHARS_PER_TOKEN
         return int(total / float(cpc)) + 1
     except Exception:
         return None
@@ -2763,7 +2764,7 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         _ensure_sessions_poller()
     est = None
     if config["sticky"] and sid and model == RESIDENT_MODEL:
-        est = _estimate_prompt_tokens(data, tracker)
+        est = _estimate_prompt_tokens(data, tracker, key_alias)
         info["est"] = est
     is_bot = _is_bot_session(config, claude_class, key_alias)
     # Interruptor global «Desborde del session-router» (25-09-2026): apagado, ninguna

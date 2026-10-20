@@ -250,6 +250,11 @@ contracts:
       cuatro `-tpN`), asi que la mudanza de sesiones queda para el motor caido (500 o
       /metrics mudo), no para el saturado. Clave y valor del pin sin cambios.
 
+      DGX-1146 (2026-10-20, Dani): `model_info.cooldown_time` de los gemelos del residente
+      de 900 a 360 s. El OOM del 20-10 tumbo el TP=2, que volvio solo en ~220 s, y el pin
+      lo dejo aparcado 15 min con Alibaba en 429. Cuanto dura la expulsion, no cuando se
+      dispara ni a donde se muda. Clave y valor del pin sin cambios.
+
       Publisher y lector: session_router.resident_backend_filter, llamado por el
       Router en cada eleccion de deployment a traves de
       StripUnsupportedParams.async_filter_deployments, DESPUES del filtro de cuenta
@@ -483,6 +488,10 @@ contracts:
       el 403. Los roles del plugin harness despachados por Agent piden el
       model: de git y ningun lanzamiento lo cambia. Mismos campos: sin .vN+1.
       Pinned by tests/test_claude_account_filter.py.
+      2026-10-20 (SC-2804): la estimacion de prompt de la valvula
+      (_estimate_prompt_tokens) divide ya por la proporcion aprendida DEL
+      ALIAS (tracker.cpc_for) en vez del EMA global; sin tracker o alias sin
+      muestra, 3,5 como antes. Ningun campo ni umbral cambia: sin .vN+1.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>
@@ -707,12 +716,22 @@ contracts:
       fallback revives the row the primary's failure had closed. Pinned by
       tests/test_active_requests_pod_scoping_contract.py (AC5) and
       tests/test_active_request_route_origin_contract.py.
+      Since 2026-10-20 (DGX-1148) `output_speed_tps` is measured against
+      the last sample before its 2 s window and stays at its previous
+      value (null at first) until at least 1 s is measured, so a burst
+      after a stream pause no longer reads as hundreds of t/s; same field,
+      same unit. Pinned by tests/test_active_request_metrics_contract.py.
       Since 2026-09-24 each row also carries the additive
       prompt_tokens_estimate: input size ESTIMATED at the pre-call (text
       characters / a chars-per-token ratio learned from real prompt_tokens),
       so a request still in queue/prefill shows its size before the first
       token. It never replaces prompt_tokens, which stays backend-only.
       Pinned by tests/test_prompt_tokens_estimate_contract.py.
+      Since 2026-10-20 (SC-2804) the learned ratio is PER ALIAS: a dict of
+      EMAs in ActiveRequestTracker (cpc_for(alias); unknown alias = 3.5).
+      One global EMA over heterogeneous traffic overestimated long Claude
+      Code turns by up to +50 % (est 330628 vs real 220728, measured
+      2026-10-20). Same field, same unit: no .vN+1.
       Since 2026-09-25 session_router.py (same pod, other process) reads this
       route and /internal/active-requests/local from a background poll every
       0.5 s instead of synchronously per request (remote = aggregate minus
@@ -881,6 +900,11 @@ contracts:
       alias responde 401 AuthenticationError sin device login, el despliegue
       del alias se conserva en el arranque y el pod se recupera solo cuando el
       keeper deja el token (antes el pod se quedaba sin Ready).
+      MIGRATE (DGX-1137, 2026-10-19): repin a la imagen del fork e1cfa8cbd5. Un
+      system a mitad de turno (Claude CLI por /v1/messages) llega a Codex como
+      item role=developer en vez de role=system, que el backend rechazaba con
+      400 "System messages are not allowed". Sin cambio de forma: mismos
+      alias, mismas claves del gate. Fix enviado a upstream (BerriAI/litellm#47444).
   - id: dgx.litellm.chatgpt-quota.v1
     kind: schema
     value: chatgpt:quota

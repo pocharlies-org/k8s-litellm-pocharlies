@@ -1847,9 +1847,10 @@ def test_estimacion_prompt_tokens(fresh_mod):
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 5000}},
     ]}]}
     assert m._estimate_prompt_tokens(con_media) < 50
-    # chars_per_token aprendido del tracker: 7 chars/token => la mitad
+    # chars_per_token aprendido del tracker (por alias): 7 chars/token => la mitad
     class Tracker:
-        chars_per_token = 7.0
+        def cpc_for(self, alias):
+            return 7.0
     assert abs(m._estimate_prompt_tokens(data, Tracker()) - 500) <= 15
 
 

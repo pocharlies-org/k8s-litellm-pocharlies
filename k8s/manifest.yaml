@@ -247,7 +247,7 @@ data:
     # debajo de la paciencia del CLI (600 s) a proposito. Ojo con el caso
     # pesado: en un turno de prefijo ~81k en frio el rebote a Alibaba TAMBIEN
     # es lento (uno medido: 240 s residente + 600 s Alibaba → error explicito
-    # a los 840 s); el cooldown asimetrico de arriba (900 s/60 s) amortigua
+    # a los 840 s); el cooldown asimetrico de arriba (360 s/60 s) amortigua
     # las repeticiones, no abarata el primer rebote.
     # 8 = la zona donde la latencia medida sigue siendo usable; el
     # tope de KV real del motor sigue sin medir, esto es admision, no fisica.
@@ -319,7 +319,7 @@ data:
         # El resto de la familia (27B, 4B) sigue con [none, high, max]: ahi no
         # hay medicion nueva.
         supported_reasoning_efforts: [none, low, medium, xhigh]
-        # 20-09-2026: cooldown ASIMETRICO. Este aparca LARGO (900 s) y su gemelo
+        # 20-09-2026: cooldown ASIMETRICO. Este aparca LARGO (360 s) y su gemelo
         # `alibaba-q38-flash` aparca CORTO (60). No es simetria rota por
         # descuido, son dos riesgos distintos:
         #
@@ -328,8 +328,11 @@ data:
         #   ~81.000 tokens por peticion. Lo caro NO es estar en Alibaba, es LLEGAR
         #   a Alibaba: cada caida NUEVA vuelve a facturar el prompt entero. Con un
         #   residente que flapea (head en CrashLoop, rollout del TP=2) un cooldown
-        #   corto rebota cada pocos minutos y paga el prefijo en cada rebote. 900 s
+        #   corto rebota cada pocos minutos y paga el prefijo en cada rebote. 360 s
         #   compra el silencio: se cae una vez, se amortiza alli, y se vuelve.
+        #   20-10-2026 (Dani): de 900 a 360. El OOM de las 00:16 tumbo el TP=2 y
+        #   volvio solo en ~220 s, pero quedo aparcado 15 min y Alibaba daba 429:
+        #   12 min sin LLM con el motor sano. 360 s cubre un reinicio del TP=2 y queda por encima de la ventana del router (300), que es el orden que exige test_tooling_profile_contract.
         #
         # Va en `model_info` y NO en `litellm_params` A PROPOSITO: el docstring de
         # `_get_deployment_cooldown_policy` avisa de que `litellm_params` se copia
@@ -342,7 +345,7 @@ data:
         #   - el del router (300, abajo) = TTL del contador de fallos, o sea la
         #     ventana en la que tienen que caber los 4 fallos para disparar.
         # Y por encima de los dos manda un `Retry-After` del upstream, si lo manda.
-        cooldown_time: 900
+        cooldown_time: 360
         # 18-10-2026 (DGX-1103, Dani): un motor LENTO no es un motor MUERTO. Con dos gemelos, un 408 por cola
         # aparcaba al saturado 15 min y `resident_backend_filter` mudaba TODAS sus conversaciones al otro con la
         # cache fria, que se saturaba y caia igual (medido: TP=1 aparcado 18:39Z, TP=2 18:58Z, 38 mudanzas en
@@ -388,7 +391,7 @@ data:
     # LO QUE NO PUEDE VOLVER: el «11 de 12 OK y UNA 500» del 18-08 (dos
     # deployments bajo un alias con uno muerto, que se comia peticiones hasta
     # acumular 3 fallos y salia cada 2 min a fallar otras tres). No depende del
-    # pin: `allowed_fails: 3` del router + el `cooldown_time: 900` heredado
+    # pin: `allowed_fails: 3` del router + el `cooldown_time: 360` heredado
     # expulsan al gemelo que falla POR ID (los dos se aparcan por separado), y
     # desde ahi el filtro no lo ve y MUDA a las sesiones que lo tenian clavado
     # -- sin vuelta cuando el gemelo vuelve, que es la diferencia con el
@@ -459,9 +462,9 @@ data:
         # mentiria. `none` y no la lista vacia, como `qwen38-off`: Hermes lee «sin
         # declaracion» como la escalera completa.
         supported_reasoning_efforts: [none]
-        # 60, no los 900 del residente. Aquel aparca largo porque cada rebote NUEVO a
+        # 60, no los 360 del residente. Aquel aparca largo porque cada rebote NUEVO a
         # Alibaba factura un prefijo de ~81.000 tokens; aqui el prompt es corto y Alibaba
-        # es barato, asi que no hay razon para dejar al residente fuera 15 min.
+        # es barato, asi que no hay razon para dejar al residente fuera 6 min.
         # OJO: es lo que dura el cooldown SI el Router aparca el deployment, y con litellm
         # 1.100.0 un grupo de UN deployment no entra en cooldown por timeouts ni por 5xx: el
         # `allowed_fails: 3` del router es el defecto de litellm y se lee como «no puesto»
@@ -8913,18 +8916,18 @@ data:
     # ── Presupuesto KV: HASH de sesiones (27-09-2026) ───────────────────────────
 
 
-    def _estimate_prompt_tokens(data, tracker=None):
+    def _estimate_prompt_tokens(data, tracker=None, alias=None):
         """Tokens del prompt, ESTIMADOS: caracteres / chars_per_token. El número
         real lo manda vLLM al acabar el prefill — tarde para decidir dónde se
         sirve. Mismo criterio que prompt_chars() del tracker
         (active_request_tracking.py, duplicado a propósito para no acoplar el
         import): recorre el body sin serializarlo, no cuenta el base64 de los
         adjuntos (sus tokens no salen de sus caracteres) e ignora cache_control.
-        chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales
-        (arranca en 3,5); sin tracker o con dato roto, 3,5. Un turno de Claude
-        Code son ~300 KB: la misma vuelta que el tracker ya da por petición,
-        sub-milisegundos, dentro del presupuesto (mandato 10). Cualquier forma
-        rara => None => la válvula no bloquea (fail-open)."""
+        chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales,
+        POR ALIAS (SC-2804); sin tracker o alias sin muestra, 3,5. Un turno de
+        Claude Code son ~300 KB: la misma vuelta que el tracker ya da por
+        petición, sub-milisegundos, dentro del presupuesto (mandato 10).
+        Cualquier forma rara => None => la válvula no bloquea (fail-open)."""
         try:
             if not isinstance(data, dict):
                 return None
@@ -8956,7 +8959,8 @@ data:
                     stack.extend(node)
             if total <= 0:
                 return None
-            cpc = getattr(tracker, "chars_per_token", None) or FALLBACK_CHARS_PER_TOKEN
+            cpc_fn = getattr(tracker, "cpc_for", None)
+            cpc = cpc_fn(alias) if cpc_fn is not None else FALLBACK_CHARS_PER_TOKEN
             return int(total / float(cpc)) + 1
         except Exception:
             return None
@@ -10623,7 +10627,7 @@ data:
             _ensure_sessions_poller()
         est = None
         if config["sticky"] and sid and model == RESIDENT_MODEL:
-            est = _estimate_prompt_tokens(data, tracker)
+            est = _estimate_prompt_tokens(data, tracker, key_alias)
             info["est"] = est
         is_bot = _is_bot_session(config, claude_class, key_alias)
         # Interruptor global «Desborde del session-router» (25-09-2026): apagado, ninguna
@@ -11284,13 +11288,20 @@ data:
             self.revive_window_s = 120.0
             # Caracteres de prompt por token, APRENDIDO de las propias peticiones:
             # cada una trae sus caracteres al empezar y el backend manda sus
-            # tokens reales con el primer token. 3.5 es solo el punto de partida.
-            self.chars_per_token = 3.5
+            # tokens reales con el primer token. SC-2804: un EMA POR ALIAS — la
+            # proporcion real varia con el trafico (medido 3,3-4,5) y un global
+            # sobreestimaba hasta +50 % en los turnos largos de Claude Code.
+            # Alias sin muestra: 3,5 (punto de partida).
+            self._cpc: Dict[str, float] = {}
             self._prompt_chars: Dict[str, int] = {}
             # SC-2675: caracteres de stream vistos sin usage, por peticion.
             self._out_chars: Dict[str, int] = {}
             self._last_flush_at: Optional[float] = None
             self._lock = threading.RLock()
+
+        def cpc_for(self, alias: Any) -> float:
+            """Proporcion caracteres/token aprendida del alias; 3,5 sin muestra."""
+            return self._cpc.get(str(alias or "unknown"), 3.5)
 
         def start(
             self,
@@ -11318,7 +11329,7 @@ data:
                 prompt_estimate = None
                 self._prompt_chars.pop(request_id, None)
                 if prompt_chars:
-                    prompt_estimate = int(round(prompt_chars / self.chars_per_token))
+                    prompt_estimate = int(round(prompt_chars / self.cpc_for(key_alias)))
                     # Con adjuntos los caracteres no dicen los tokens: esa
                     # peticion no ensena nada sobre la proporcion.
                     if not prompt_has_media:
@@ -11416,8 +11427,9 @@ data:
                     if chars and prompt_tokens > 0:
                         sample = chars / prompt_tokens
                         if 1.0 <= sample <= 10.0:
-                            self.chars_per_token = round(
-                                0.8 * self.chars_per_token + 0.2 * sample, 3
+                            alias = str(record.get("alias") or "unknown")
+                            self._cpc[alias] = round(
+                                0.8 * self._cpc.get(alias, 3.5) + 0.2 * sample, 3
                             )
 
                 if completion_tokens is not None:
@@ -11477,7 +11489,7 @@ data:
                     return None
                 est_chars = self._out_chars.get(request_id, 0) + chars
                 self._out_chars[request_id] = est_chars
-                estimate = max(1, int(round(est_chars / self.chars_per_token)))
+                estimate = max(1, int(round(est_chars / self.cpc_for(record.get("alias")))))
                 record["completion_tokens_estimate"] = estimate
                 record["last_sample_ts"] = now
                 first = record["first_token_ts"] is None
@@ -11506,16 +11518,22 @@ data:
                 return
             samples = self._samples.setdefault(request_id, deque())
             samples.append((now, tokens))
+            # DGX-1148: la última muestra anterior a la ventana se queda de
+            # ancla. Sin ella, tras una pausa del stream la ventana se quedaba
+            # con dos muestras a milisegundos y una ráfaga de 15 tokens salía
+            # a 851 t/s.
             while (
                 len(samples) > 1
-                and now - samples[0][0] > self.speed_window_s
+                and now - samples[1][0] >= self.speed_window_s
             ):
                 samples.popleft()
             if len(samples) >= 2:
                 oldest_ts, oldest_tokens = samples[0]
                 newest_ts, newest_tokens = samples[-1]
                 duration = newest_ts - oldest_ts
-                if duration > 0:
+                # Menos de media ventana (p. ej. justo tras el reset del
+                # primer usage real) es una ráfaga, no una velocidad.
+                if duration >= self.speed_window_s / 2:
                     record["output_speed_tps"] = round(
                         max(
                             0,
@@ -13072,7 +13090,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-659f5f1cc6c2
+        config.k8s.e-dani.com/revision: config-f6ae77083ae9
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13120,7 +13138,7 @@ spec:
         - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: litellm
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-160cffc07b@sha256:bd8e0146302b8c6d78b22f824fa29c305564a2084012bb548d326ad7f2235f84
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-e1cfa8cbd5@sha256:95c0120031f582c6eb2dc0650c91dafa7cd85ac69ce780ac79d3de24227cb387
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -13995,7 +14013,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-659f5f1cc6c2
+        config.k8s.e-dani.com/revision: config-f6ae77083ae9
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
@@ -14028,7 +14046,7 @@ spec:
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-160cffc07b@sha256:bd8e0146302b8c6d78b22f824fa29c305564a2084012bb548d326ad7f2235f84
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-e1cfa8cbd5@sha256:95c0120031f582c6eb2dc0650c91dafa7cd85ac69ce780ac79d3de24227cb387
           command:
             - python
             - -m
