@@ -1382,3 +1382,21 @@ contracts:
       pocharlies-org/litellm, rama pocharlies-codex), que se descarga con
       imagePullSecrets harbor-pull; el job de integración del CI importa
       `plan_gateway.py` dentro de esa imagen antes del merge.
+  - id: dgx.litellm.model-alias.omnivoice-tts-trained.v1
+    kind: schema
+    value: omnivoice-tts-trained
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-20 (DGX-1173). Alias TTS (mode audio_speech) del backend
+      entrenado por LoRA (Deployment llm/omnivoice-tts-trained, dgx3), para
+      que el playground y cualquier cliente OpenAI-compatible lo enruten como
+      modelo aparte del residente. El pod solo es residente en la ventana
+      creative (fuera esta a replicas 0: sintetizar da error de backend no
+      residente, que es la verdad del cluster). Convive con `omnivoice-tts` y
+      `tts-1` (residente nvfp4: sirve los clones y reenvia las voces
+      kind:model a este backend). Consumidor: playground de control-nexus
+      (#tts), que ofrece las voces kind:model solo con este alias
+      seleccionado.
