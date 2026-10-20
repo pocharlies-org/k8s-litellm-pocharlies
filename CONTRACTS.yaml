@@ -1388,15 +1388,12 @@ contracts:
     role: provider
     files:
       - k8s/manifest.yaml
-    status: active
+    status: deprecated
+    replaced_by: omnivoice-tts
+    remove_after: "2026-10-27"
     note: >-
-      2026-10-20 (DGX-1173). Alias TTS (mode audio_speech) del backend
-      entrenado por LoRA (Deployment llm/omnivoice-tts-trained, dgx3), para
-      que el playground y cualquier cliente OpenAI-compatible lo enruten como
-      modelo aparte del residente. El pod solo es residente en la ventana
-      creative (fuera esta a replicas 0: sintetizar da error de backend no
-      residente, que es la verdad del cluster). Convive con `omnivoice-tts` y
-      `tts-1` (residente nvfp4: sirve los clones y reenvia las voces
-      kind:model a este backend). Consumidor: playground de control-nexus
-      (#tts), que ofrece las voces kind:model solo con este alias
-      seleccionado.
+      DEPRECATED 2026-10-20 (DGX-1186): SC-2812 deja un unico OmniVoice bf16 que
+      sirve clones, voice-design y voces kind:model cambiando los pesos; no hay
+      ya un segundo backend que enrutar. Sustituido por `omnivoice-tts` (el
+      unico). Vivio un dia: anadido en DGX-1173 para el chip trained del
+      playground, retirado por decision de Dani al quedar un solo motor.
