@@ -116,6 +116,47 @@ import httpx
 
 log = logging.getLogger("session_router")
 
+# DGX-1189: el proxy filtra `anthropic-beta` contra la lista de litellm
+# (anthropic_beta_headers_manager) justo antes de enviar a Anthropic: lo que no
+# está en la lista se descarta (medido 20-10: `claude-code-20250219` no llegaba).
+# Son las betas que manda Claude Code y litellm aún no conoce; sin ellas, las
+# funciones que activan (modo Claude Code, thinking por tokens, herramientas
+# inline) no llegan a Anthropic. Se amplía la config cargada IN PROCESO; el hook
+# de reload es porque el endpoint /reload/anthropic_beta_headers (y el repaso
+# periódico del proxy) vacía la caché y volvería a dejarlas fuera.
+# CONTRACT: dgx.litellm.claude-official-headers.v1
+CLAUDE_OFFICIAL_BETAS = (
+    "claude-code-20250219",
+    "thinking-token-count-2026-05-13",
+    "inline-tools-2026-09-15",
+)
+
+
+def _extend_anthropic_beta_allowlist():
+    try:
+        from litellm import anthropic_beta_headers_manager as _m
+
+        mapping = _m._load_beta_headers_config().setdefault("anthropic", {})
+        mapping.update({beta: beta for beta in CLAUDE_OFFICIAL_BETAS})
+    except Exception as exc:  # fail-open: sin extensión no llegan las betas, nada más
+        log.warning("session_router: no se pudo ampliar la lista de betas (%s)", exc)
+
+
+try:
+    from litellm import anthropic_beta_headers_manager as _beta_manager
+
+    _orig_reload_beta_headers = _beta_manager.reload_beta_headers_config
+
+    def _reload_beta_headers_and_extend():
+        result = _orig_reload_beta_headers()
+        _extend_anthropic_beta_allowlist()
+        return result
+
+    _beta_manager.reload_beta_headers_config = _reload_beta_headers_and_extend
+except Exception as _exc:
+    log.warning("session_router: no se pudo enganchar el reload de betas (%s)", _exc)
+_extend_anthropic_beta_allowlist()
+
 RESIDENT_MODEL = os.environ.get("SESSION_ROUTER_RESIDENT_MODEL", "qwen38-flash-next")
 OVERFLOW_MODEL = os.environ.get("SESSION_ROUTER_OVERFLOW_MODEL", "alibaba-q38-flash")
 # Los únicos dos nombres sobre los que este módulo decide. Todo lo demás

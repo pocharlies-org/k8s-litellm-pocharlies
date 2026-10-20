@@ -512,6 +512,25 @@ contracts:
       (epoch s)}. TTL 8 dias. Lectores: session_router.claude_account_filter
       (salto) y dgx-infra services/dashboard (barras de cuota), solo GET.
       Pinned by tests/test_claude_account_filter.py.
+  - id: dgx.litellm.claude-official-headers.v1
+    kind: schema
+    value: 'claude-code-20250219,thinking-token-count-2026-05-13,inline-tools-2026-09-15'
+    anchor: 'CLAUDE_OFFICIAL_BETAS = ('
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+      - dev/session_router.py
+    status: active
+    note: >-
+      DGX-1189 (2026-10-20). Las peticiones de los 8 deployments claude-acct-*
+      salen hacia Anthropic con las cabeceras del cliente oficial: user-agent y
+      familia x-stainless-* medidos a Claude Code 2.1.304 (fijos en el
+      manifiesto; si sube la version del CLI, actualizar ahi), y las betas del
+      cliente pasan porque session_router amplia la lista del manager de
+      litellm con claude-code-20250219, thinking-token-count-2026-05-13 e
+      inline-tools-2026-09-15 (y re-amplia tras reload). Lector: la auditoria
+      de deteccion de Anthropic (que el trafico del pool parezca del CLI).
+      Pinned by tests/test_claude_official_headers_contract.py.
   - id: dgx.session-router.claude-account-pin.v1
     kind: schema
     value: claude_account_pin:v1:<key-alias>:<sid>
