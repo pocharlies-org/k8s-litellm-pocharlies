@@ -438,7 +438,7 @@ _sidecar_poller = None
 # en segundo plano puede esperar en la cola del Spark; quien no debe esperar es el
 # operador interactivo. Campo ADITIVO `overflow_exempt` de /api/model-routing/config:
 #   classes — valores de x-claude-class (hoy solo `company`)
-#   keys    — alias de virtual key de LiteLLM (opencode-20260630-local, hermes, ...)
+#   keys    — alias de virtual key de LiteLLM (claude-x86, hermes, ...)
 # Una petición exenta (a) no pasa por la válvula (ni instant_reject ni la de la
 # compañía): encola en el residente; y (b) si trae un binding sticky a Alibaba que no
 # es una orden del operador (plan explícito o default_plan=alibaba), se re-vincula al
