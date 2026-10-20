@@ -8916,18 +8916,18 @@ data:
     # ── Presupuesto KV: HASH de sesiones (27-09-2026) ───────────────────────────
 
 
-    def _estimate_prompt_tokens(data, tracker=None):
+    def _estimate_prompt_tokens(data, tracker=None, alias=None):
         """Tokens del prompt, ESTIMADOS: caracteres / chars_per_token. El número
         real lo manda vLLM al acabar el prefill — tarde para decidir dónde se
         sirve. Mismo criterio que prompt_chars() del tracker
         (active_request_tracking.py, duplicado a propósito para no acoplar el
         import): recorre el body sin serializarlo, no cuenta el base64 de los
         adjuntos (sus tokens no salen de sus caracteres) e ignora cache_control.
-        chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales
-        (arranca en 3,5); sin tracker o con dato roto, 3,5. Un turno de Claude
-        Code son ~300 KB: la misma vuelta que el tracker ya da por petición,
-        sub-milisegundos, dentro del presupuesto (mandato 10). Cualquier forma
-        rara => None => la válvula no bloquea (fail-open)."""
+        chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales,
+        POR ALIAS (SC-2804); sin tracker o alias sin muestra, 3,5. Un turno de
+        Claude Code son ~300 KB: la misma vuelta que el tracker ya da por
+        petición, sub-milisegundos, dentro del presupuesto (mandato 10).
+        Cualquier forma rara => None => la válvula no bloquea (fail-open)."""
         try:
             if not isinstance(data, dict):
                 return None
@@ -8959,7 +8959,8 @@ data:
                     stack.extend(node)
             if total <= 0:
                 return None
-            cpc = getattr(tracker, "chars_per_token", None) or FALLBACK_CHARS_PER_TOKEN
+            cpc_fn = getattr(tracker, "cpc_for", None)
+            cpc = cpc_fn(alias) if cpc_fn is not None else FALLBACK_CHARS_PER_TOKEN
             return int(total / float(cpc)) + 1
         except Exception:
             return None
@@ -10626,7 +10627,7 @@ data:
             _ensure_sessions_poller()
         est = None
         if config["sticky"] and sid and model == RESIDENT_MODEL:
-            est = _estimate_prompt_tokens(data, tracker)
+            est = _estimate_prompt_tokens(data, tracker, key_alias)
             info["est"] = est
         is_bot = _is_bot_session(config, claude_class, key_alias)
         # Interruptor global «Desborde del session-router» (25-09-2026): apagado, ninguna
@@ -11287,13 +11288,20 @@ data:
             self.revive_window_s = 120.0
             # Caracteres de prompt por token, APRENDIDO de las propias peticiones:
             # cada una trae sus caracteres al empezar y el backend manda sus
-            # tokens reales con el primer token. 3.5 es solo el punto de partida.
-            self.chars_per_token = 3.5
+            # tokens reales con el primer token. SC-2804: un EMA POR ALIAS — la
+            # proporcion real varia con el trafico (medido 3,3-4,5) y un global
+            # sobreestimaba hasta +50 % en los turnos largos de Claude Code.
+            # Alias sin muestra: 3,5 (punto de partida).
+            self._cpc: Dict[str, float] = {}
             self._prompt_chars: Dict[str, int] = {}
             # SC-2675: caracteres de stream vistos sin usage, por peticion.
             self._out_chars: Dict[str, int] = {}
             self._last_flush_at: Optional[float] = None
             self._lock = threading.RLock()
+
+        def cpc_for(self, alias: Any) -> float:
+            """Proporcion caracteres/token aprendida del alias; 3,5 sin muestra."""
+            return self._cpc.get(str(alias or "unknown"), 3.5)
 
         def start(
             self,
@@ -11321,7 +11329,7 @@ data:
                 prompt_estimate = None
                 self._prompt_chars.pop(request_id, None)
                 if prompt_chars:
-                    prompt_estimate = int(round(prompt_chars / self.chars_per_token))
+                    prompt_estimate = int(round(prompt_chars / self.cpc_for(key_alias)))
                     # Con adjuntos los caracteres no dicen los tokens: esa
                     # peticion no ensena nada sobre la proporcion.
                     if not prompt_has_media:
@@ -11419,8 +11427,9 @@ data:
                     if chars and prompt_tokens > 0:
                         sample = chars / prompt_tokens
                         if 1.0 <= sample <= 10.0:
-                            self.chars_per_token = round(
-                                0.8 * self.chars_per_token + 0.2 * sample, 3
+                            alias = str(record.get("alias") or "unknown")
+                            self._cpc[alias] = round(
+                                0.8 * self._cpc.get(alias, 3.5) + 0.2 * sample, 3
                             )
 
                 if completion_tokens is not None:
@@ -11480,7 +11489,7 @@ data:
                     return None
                 est_chars = self._out_chars.get(request_id, 0) + chars
                 self._out_chars[request_id] = est_chars
-                estimate = max(1, int(round(est_chars / self.chars_per_token)))
+                estimate = max(1, int(round(est_chars / self.cpc_for(record.get("alias")))))
                 record["completion_tokens_estimate"] = estimate
                 record["last_sample_ts"] = now
                 first = record["first_token_ts"] is None
@@ -13081,7 +13090,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e797d48ad1e1
+        config.k8s.e-dani.com/revision: config-86f6b91cc424
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14004,7 +14013,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e797d48ad1e1
+        config.k8s.e-dani.com/revision: config-86f6b91cc424
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

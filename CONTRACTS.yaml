@@ -488,6 +488,10 @@ contracts:
       el 403. Los roles del plugin harness despachados por Agent piden el
       model: de git y ningun lanzamiento lo cambia. Mismos campos: sin .vN+1.
       Pinned by tests/test_claude_account_filter.py.
+      2026-10-20 (SC-2804): la estimacion de prompt de la valvula
+      (_estimate_prompt_tokens) divide ya por la proporcion aprendida DEL
+      ALIAS (tracker.cpc_for) en vez del EMA global; sin tracker o alias sin
+      muestra, 3,5 como antes. Ningun campo ni umbral cambia: sin .vN+1.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>
@@ -723,6 +727,11 @@ contracts:
       so a request still in queue/prefill shows its size before the first
       token. It never replaces prompt_tokens, which stays backend-only.
       Pinned by tests/test_prompt_tokens_estimate_contract.py.
+      Since 2026-10-20 (SC-2804) the learned ratio is PER ALIAS: a dict of
+      EMAs in ActiveRequestTracker (cpc_for(alias); unknown alias = 3.5).
+      One global EMA over heterogeneous traffic overestimated long Claude
+      Code turns by up to +50 % (est 330628 vs real 220728, measured
+      2026-10-20). Same field, same unit: no .vN+1.
       Since 2026-09-25 session_router.py (same pod, other process) reads this
       route and /internal/active-requests/local from a background poll every
       0.5 s instead of synchronously per request (remote = aggregate minus
