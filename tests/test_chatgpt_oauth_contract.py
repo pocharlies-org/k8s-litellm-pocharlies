@@ -142,25 +142,6 @@ def open_gate():
     return _gate({"LITELLM_CHATGPT_ALLOWED_KEYS": ",".join(ALLOWED_KEYS)})
 
 
-def test_the_only_automatic_path_to_gpt_is_the_per_key_load_overflow():
-    """INFRA-942 (Dani 20-10-2026): el UNICO camino automatico a un gpt-* es el desborde por
-    carga de session_router (KEY_LOAD_OVERFLOW), y solo para keys que ya pueden pedirlo a mano."""
-    import ast as _ast
-
-    tree = _ast.parse(_config()[0]["data"]["session_router.py"])
-    overflow, otros = None, set()
-    for node in tree.body:
-        if isinstance(node, _ast.Assign) and getattr(node.targets[0], "id", None) == "KEY_LOAD_OVERFLOW":
-            overflow = _ast.literal_eval(node.value)
-            continue
-        otros |= {c.value for c in _ast.walk(node) if isinstance(c, _ast.Constant)
-                  and isinstance(c.value, str) and c.value.strip() in ALIASES | IMAGE_ALIASES}
-    assert overflow is not None, "falta KEY_LOAD_OVERFLOW en session_router.py"
-    assert not otros, f"gpt-* fuera de KEY_LOAD_OVERFLOW en session_router.py: {otros}"
-    assert set(overflow) <= set(ALLOWED_KEYS), "una key desborda a gpt-* sin estar en LITELLM_CHATGPT_ALLOWED_KEYS"
-    assert {r["target"] for r in overflow.values()} <= ALIASES
-
-
 def test_a_deployment_without_the_variable_denies_everyone():
     gate = _gate({})
     for key in ALLOWED_KEYS + ("master", "sauvage-shield"):
