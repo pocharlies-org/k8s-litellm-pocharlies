@@ -1156,7 +1156,7 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
-      2026-09-25 (Dani: "prorrateo del pack"). Los 10 alias alibaba-* llevan
+      2026-09-25 (Dani: "prorrateo del pack"). Los 11 alias alibaba-* llevan
       input_cost_per_token / cache_read_input_token_cost /
       output_cost_per_token = precio de lista internacional x k, con k
       calibrado contra la ventana real del plan: pack Individual Pro $65/mes
@@ -1167,6 +1167,10 @@ contracts:
       (implicito), 10 % en deepseek-v4.1-flash. k = 30,875/350,07 = 0,0882;
       la ventana recalculada da $30,875 exactos. Consumidor: el spend que
       publican SpendLogs y /v2/model/info (paneles del dashboard, Grafana).
+      2026-10-20 (DGX-1190): publicado el alias `alibaba-ds41f1017` (upstream
+      `deepseek-v4.1-flash-1017`) con los tres precios de su familia
+      `alibaba-dsv41-fl`; la k del pack no cambia y ningun literal de la
+      superficie se renombra: sin .vN+1.
       El supuesto creditos~lista es inspeccionable en la cabecera de la
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
       cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
@@ -1179,7 +1183,7 @@ contracts:
     # `DASHSCOPE_API_KEY_2` es el literal que comparten las dos mitades de la
     # superficie: el ExternalSecret que materializa el
     # Secret `litellm-alibaba-2` y el env `optional: true` del Deployment que
-    # alimenta `os.environ/DASHSCOPE_API_KEY_2` de los diez `-k2`.
+    # alimenta `os.environ/DASHSCOPE_API_KEY_2` de los once `-k2`.
     value: DASHSCOPE_API_KEY_2
     role: publisher
     files:
@@ -1189,7 +1193,7 @@ contracts:
       2026-09-26 (DGX-444). Superficie de la segunda cuenta del plan Team de
       Alibaba Model Studio: ExternalSecret `litellm-alibaba-2` -> Secret del
       mismo nombre -> env `DASHSCOPE_API_KEY_2` (optional: true) -> el hook
-      ensure_alibaba_key2_active sube los diez `-k2` de order 2 a order 1 en
+      ensure_alibaba_key2_active sube los once `-k2` de order 2 a order 1 en
       memoria cuando la key existe (afinidad por sesion:
       dgx.session-router.deployment-affinity-key.v1). GATE DGX-444: el
       ExternalSecret queda COMENTADO FUERA del despliegue porque el item
