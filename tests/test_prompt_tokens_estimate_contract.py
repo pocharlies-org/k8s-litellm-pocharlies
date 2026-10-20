@@ -33,7 +33,7 @@ class Clock:
         return self.value
 
 
-def _start(tracker, rid, chars, media=False, alias="claude-local"):
+def _start(tracker, rid, chars, media=False, alias="claude-x86"):
     return tracker.start(
         rid, trace_id="t", key_alias=alias, model="qwen38-flash-next",
         call_type="anthropic_messages", api_base=None,
@@ -89,12 +89,12 @@ def test_estimado_al_entrar_y_proporcion_aprendida_del_real():
         # El backend dice 125k: 2.8 caracteres/token. La proporcion del alias se mueve.
         tracker.update_usage("r1", prompt_tokens=125_000, completion_tokens=0)
         assert tracker.snapshot()["r1"]["prompt_tokens"] == 125_000
-        assert tracker.cpc_for("claude-local") < 3.5
-        learned = tracker.cpc_for("claude-local")
+        assert tracker.cpc_for("claude-x86") < 3.5
+        learned = tracker.cpc_for("claude-x86")
 
         # Chunks posteriores con el mismo prompt no vuelven a calibrar.
         tracker.update_usage("r1", prompt_tokens=125_000, completion_tokens=5)
-        assert tracker.cpc_for("claude-local") == learned
+        assert tracker.cpc_for("claude-x86") == learned
 
         row = _start(tracker, "r2", 350_000)
         assert row["prompt_tokens_estimate"] == round(350_000 / learned)
@@ -108,11 +108,11 @@ def test_una_peticion_con_adjuntos_no_ensucia_la_proporcion():
         )
         _start(tracker, "img", 1_000, media=True)
         tracker.update_usage("img", prompt_tokens=3_000, completion_tokens=0)
-        assert tracker.cpc_for("claude-local") == 3.5
+        assert tracker.cpc_for("claude-x86") == 3.5
 
 
 def test_cada_alias_aprende_la_suya_sin_mover_la_del_otro():
-    # SC-2804: con un EMA global el trafico heterogeneo (claude-local ~4,5 vs
+    # SC-2804: con un EMA global el trafico heterogeneo (claude-x86 ~4,5 vs
     # brain ~2,5) sobreestimaba los turnos largos hasta +50 %.
     tracking = _tracking()
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -124,7 +124,7 @@ def test_cada_alias_aprende_la_suya_sin_mover_la_del_otro():
             tracker.update_usage(f"cc{i}", prompt_tokens=100_000, completion_tokens=0)
             _start(tracker, f"br{i}", 25_000, alias="brain")
             tracker.update_usage(f"br{i}", prompt_tokens=10_000, completion_tokens=0)
-        assert tracker.cpc_for("claude-local") > 4.0
+        assert tracker.cpc_for("claude-x86") > 4.0
         assert tracker.cpc_for("brain") < 3.0
         # Alias sin muestra: el punto de partida, no el aprendido por otro.
         assert tracker.cpc_for("hermes") == 3.5
@@ -148,7 +148,7 @@ def test_active_requests_publica_el_estimado():
     sidecar = _module("active_requests_api.py")
     items = sidecar["_normalize"]({
         "r1": {
-            "request_id": "r1", "alias": "claude-local", "model": "qwen38-flash-next",
+            "request_id": "r1", "alias": "claude-x86", "model": "qwen38-flash-next",
             "ts": time.time(), "prompt_tokens": None, "prompt_tokens_estimate": 81_234,
         }
     })

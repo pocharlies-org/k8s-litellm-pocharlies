@@ -234,7 +234,7 @@ DEFAULT_SESSION_IDLE_S = 600
 DEFAULT_RETURN_MAX_TOKENS = 30000
 DEFAULT_ALIBABA_RETURN_AFTER_S = 600
 # Bots por alias de virtual key (medido en SpendLogs; los interactivos —
-# claude-local SIN clase company, opencode-*, open-webui — NO están). La
+# claude-x86 SIN clase company, opencode-*, open-webui — NO están). La
 # identificación es fiable para los listados: cada bot usa su key. Una key
 # nueva sin listar se trata como interactiva (fail-open hacia local).
 DEFAULT_BOT_KEYS = ("hermes-batch", "aurora-rca", "brain")
@@ -2037,8 +2037,8 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 
 # ── Cuentas de Claude por virtual key (DGX-1099, 18-10-2026) ─────────────────
 #
-# Claude Code y Paseo llaman a LiteLLM con la key de su MAQUINA (claude-local en
-# el x86, claude-casa, claude-cloudblue) y LiteLLM pone el setup-token de la
+# Claude Code y Paseo llaman a LiteLLM con la key de su MAQUINA (claude-x86 en
+# el x86, claude-mac, claude-cloudblue) y LiteLLM pone el setup-token de la
 # cuenta. Hay UNA entrada `claude-*` por cuenta (model_info.id `claude-acct-<id>`,
 # api_key = su setup-token sk-ant-oat, que litellm manda como Bearer + beta oauth).
 # Que cuentas puede usar cada key, en que orden y con que salto lo decide Dani en

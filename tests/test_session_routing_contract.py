@@ -551,8 +551,8 @@ def test_plan_explicito_claude_sin_cuentas_en_la_key_se_queda_en_el_residente(ro
 def test_plan_explicito_claude_reescribe_a_claude_con_su_beta_y_tope(router_mod):
     """DGX-1099: la puerta plan=claude vive aqui (antes, en el claude-router del x86)."""
     env = _Env(router_mod, _cfg(session_plans={SID: "claude"},
-                                claude_accounts={"claude-local": [{"id": "info"}]}))
-    data = _data(max_tokens=128000, metadata={"user_api_key_alias": "claude-local"},
+                                claude_accounts={"claude-x86": [{"id": "info"}]}))
+    data = _data(max_tokens=128000, metadata={"user_api_key_alias": "claude-x86"},
                  extra_headers={"anthropic-beta": "otra-beta"})
     assert env.run(data) is True
     assert data["model"] == router_mod.CLAUDE_PLAN_MODEL
@@ -1000,7 +1000,7 @@ def test_ex_key_no_listada_sigue_desbordando(router_mod):
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2,
                                 overflow_exempt={"classes": ["company"], "keys": ["hermes"]}),
                inflight=99)
-    data = _data(metadata={"user_api_key_alias": "claude-local"})
+    data = _data(metadata={"user_api_key_alias": "claude-x86"})
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
 
@@ -1614,7 +1614,7 @@ def test_kv_bot_umbral_bajo_interactivo_alto(router_mod):
 
 def test_kv_company_es_bot_por_clase(router_mod):
     """Sin exención, la clase company cuenta como bot (umbral bajo) aunque su
-    key alias sea claude-local (la key la comparten CLI interactivo y compañía)."""
+    key alias sea claude-x86 (la key la comparten CLI interactivo y compañía)."""
     env = _Env(router_mod, _cfg(sticky=True, overflow_exempt=NADIE_EXENTO),
                kv_cap=1_000_000, kv_total=700_000)
     data = _company_data(messages=_big_msg(50_000))
@@ -2015,7 +2015,7 @@ def test_burst_sanitize_conserva_company_claude_y_alibaba(router_mod):
     assert out == {"claude": False, "alibaba": False, "bots_alibaba": True}
 
 
-@pytest.mark.parametrize("alias", ["hermes", "claude-local", "aurora-rca", "brain", None])
+@pytest.mark.parametrize("alias", ["hermes", "claude-x86", "aurora-rca", "brain", None])
 def test_burst_solo_la_key_hermes_batch(router_mod, alias):
     env = _Env(router_mod, _burst_cfg())
     data = _burst_data(alias=alias)

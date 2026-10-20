@@ -5,7 +5,7 @@ POR QUE EXISTE ESTE FICHERO (18-10-2026). Los alias `gpt-*` vuelven al model_lis
 su lapida del 03-09: aquella cuenta cayo baneada dos veces porque el catalogo de
 airsoft le mandaba imagenes por el desvio de vision. Ahora van contra la cuenta
 personal de Dani y lo que impide repetirlo es esto: ningun camino automatico apunta a
-ellos y un gate fail-closed por prefijo solo deja pasar a `claude-local`, `hermes` y
+ellos y un gate fail-closed por prefijo solo deja pasar a `claude-x86`, `hermes` y
 `studio-chatgpt` (los motores de imagen del DGX Studio)
 (la key `sauvage-shield` lleva `gpt-5.6-luna` en su allowlist desde agosto).
 
@@ -33,7 +33,7 @@ KEEPER = ROOT / "k8s" / "chatgpt-token-keeper.yaml"
 ALIASES = {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 IMAGE_ALIASES = {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
-ALLOWED_KEYS = ("claude-local", "hermes", "studio-chatgpt", "claude-casa", "hindsight")  # DGX-1099: claude-casa; INFRA-942: hindsight
+ALLOWED_KEYS = ("claude-x86", "hermes", "studio-chatgpt", "claude-mac", "hindsight")  # DGX-1099: claude-mac; INFRA-942: hindsight
 WANT_FN = {"_chatgpt_access_denied"}
 WANT_CONST = {"CHATGPT_ALIAS_PREFIX", "CHATGPT_ALLOWED_KEY_ALIASES"}
 
