@@ -1298,11 +1298,13 @@ data:
     # funciona, pero NO conviene con la configuracion de este proxy: el detalle,
     # medido, esta en el comentario de `alibaba-q38-flash` mas abajo.
     #
-    # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Son 14 modelos y
-    # la pagina miente por los dos lados: `deepseek-v4-pro-0813`, `qwen-image-3.0-pro`,
-    # `qwen-audio-3.0-asr-flash` y los tres `happyhorse-1.1-*` que anuncia NO estan
-    # servidos, asi que no se publica ninguno (un alias a un modelo inexistente es un
-    # 404 con nuestro nombre encima). De los 14, aqui entran los 10 de chat.
+    # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Medido el 20-10-2026:
+    # 18 servidos (el 20-09 eran 14; han entrado `deepseek-v4.1-flash-1017`,
+    # `deepseek-v4-pro-0813`, `qwen-audio-3.0-realtime-plus`, `qwen-audio-3.0-tts-plus` y
+    # los tres `wan*`, y han salido `qwen-image-3.0-pro`, `qwen-audio-3.0-asr-flash` y los
+    # tres `happyhorse-1.1-*` que anunciaba). Aqui entran los 11 de chat; el resto es
+    # imagen, video, audio o un pin de `deepseek-v4-pro` sin publicar (un alias a un
+    # modelo inexistente es un 404 con nuestro nombre encima).
     #
     # `supports_vision` esta MEDIDO uno a uno el 20-09 (cuadrado de color + "di el
     # color"), no copiado de la pagina — que tambien se equivoca ahi: da
@@ -1313,7 +1315,8 @@ data:
     # que falla en limpio con 400 es `qwen3.7-max`. Marcar vision de mas aqui
     # mandaria imagenes a un modelo que las tira en silencio.
     #
-    # Tools: medido tambien, los 10 devuelven `tool_calls`. `qwen3.8-max` ademas
+    # Tools: medido tambien, los 11 devuelven `tool_calls` (los 10 del 20-09, y el 1017
+    # el 20-10). `qwen3.8-max` ademas
     # RECHAZA `tool_choice: "required"` con 400 (acepta la lista de tools y llama
     # cuando hace falta, pero no se le puede forzar).
     #
@@ -1377,7 +1380,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q38-max
       litellm_params:
         model: openai/qwen3.8-max
@@ -1505,7 +1508,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q38-flash
       litellm_params:
         model: openai/qwen3.8-flash
@@ -1580,7 +1583,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q37-plus
       litellm_params:
         model: openai/qwen3.7-plus
@@ -1640,7 +1643,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q37-max
       litellm_params:
         model: openai/qwen3.7-max
@@ -1700,7 +1703,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q36-flash
       litellm_params:
         model: openai/qwen3.6-flash
@@ -1760,7 +1763,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv41-fl
       litellm_params:
         model: openai/deepseek-v4.1-flash
@@ -1781,6 +1784,58 @@ data:
         id: alibaba-dsv41-fl-k2
         name: DeepSeek V4.1 Flash (Alibaba)
         description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Pin de version de `deepseek-v4.1-flash` (DGX-1190, 20-10-2026). Visión y
+    # tool_calls MEDIDOS contra el upstream el 20-10 (cuadrado rojo -> "Rojo" con
+    # `image_tokens` en el usage; `tool_calls` devueltos), no copiados de la pagina
+    # del plan. Precios: los de su familia `alibaba-dsv41-fl` (mismo prorrateo).
+    - model_name: alibaba-ds41f1017
+      litellm_params:
+        model: openai/deepseek-v4.1-flash-1017
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order 1 explicito: el minimo del Router se calcula solo entre orders
+        # declarados (la razon entera, en `alibaba-q38-flash`).
+        order: 1
+      model_info:
+        id: alibaba-ds41f1017-k1
+        name: DeepSeek V4.1 Flash 1017 (Alibaba)
+        description: DeepSeek-V4.1-Flash snapshot 1017 - pin de version.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Espejo en la segunda cuenta: failover puro (order 2); para activarlo, order 1
+    # y su regla en `alibaba-q38-flash`.
+    - model_name: alibaba-ds41f1017
+      litellm_params:
+        model: openai/deepseek-v4.1-flash-1017
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        order: 2
+      model_info:
+        id: alibaba-ds41f1017-k2
+        name: DeepSeek V4.1 Flash 1017 (Alibaba)
+        description: DeepSeek-V4.1-Flash snapshot 1017 - pin de version.
         mode: chat
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
@@ -1820,7 +1875,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv4-pro
       litellm_params:
         model: openai/deepseek-v4-pro
@@ -1880,7 +1935,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv4f0731
       litellm_params:
         model: openai/deepseek-v4-flash-0731
@@ -1940,7 +1995,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-glm-53
       litellm_params:
         model: openai/glm-5.3
@@ -2000,7 +2055,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-glm-52
       litellm_params:
         model: openai/glm-5.2
@@ -2045,6 +2100,22 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_INFO
+        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
+        # CONTRACT: dgx.litellm.claude-official-headers.v1
+        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
+        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
+        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        headers:
+          user-agent: "claude-cli/2.1.304 (external, cli)"
+          x-app: cli
+          x-stainless-arch: x64
+          x-stainless-lang: js
+          x-stainless-os: Linux
+          x-stainless-package-version: 0.128.0
+          x-stainless-retry-count: "0"
+          x-stainless-runtime: node
+          x-stainless-runtime-version: v26.3.0
+          x-stainless-timeout: "600"
       model_info:
         id: claude-acct-info
         input_cost_per_token: 0
@@ -2054,6 +2125,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_CORREO
+        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
+        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
+        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
+        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        headers:
+          user-agent: "claude-cli/2.1.304 (external, cli)"
+          x-app: cli
+          x-stainless-arch: x64
+          x-stainless-lang: js
+          x-stainless-os: Linux
+          x-stainless-package-version: 0.128.0
+          x-stainless-retry-count: "0"
+          x-stainless-runtime: node
+          x-stainless-runtime-version: v26.3.0
+          x-stainless-timeout: "600"
       model_info:
         id: claude-acct-correo
         input_cost_per_token: 0
@@ -2063,6 +2149,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_EDANI
+        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
+        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
+        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
+        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        headers:
+          user-agent: "claude-cli/2.1.304 (external, cli)"
+          x-app: cli
+          x-stainless-arch: x64
+          x-stainless-lang: js
+          x-stainless-os: Linux
+          x-stainless-package-version: 0.128.0
+          x-stainless-retry-count: "0"
+          x-stainless-runtime: node
+          x-stainless-runtime-version: v26.3.0
+          x-stainless-timeout: "600"
       model_info:
         id: claude-acct-edani
         input_cost_per_token: 0
@@ -2072,6 +2173,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_TERCERA
+        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
+        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
+        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
+        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        headers:
+          user-agent: "claude-cli/2.1.304 (external, cli)"
+          x-app: cli
+          x-stainless-arch: x64
+          x-stainless-lang: js
+          x-stainless-os: Linux
+          x-stainless-package-version: 0.128.0
+          x-stainless-retry-count: "0"
+          x-stainless-runtime: node
+          x-stainless-runtime-version: v26.3.0
+          x-stainless-timeout: "600"
       model_info:
         id: claude-acct-tercera
         input_cost_per_token: 0
@@ -2081,6 +2197,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_WORKS_SHARED
+        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
+        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
+        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
+        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        headers:
+          user-agent: "claude-cli/2.1.304 (external, cli)"
+          x-app: cli
+          x-stainless-arch: x64
+          x-stainless-lang: js
+          x-stainless-os: Linux
+          x-stainless-package-version: 0.128.0
+          x-stainless-retry-count: "0"
+          x-stainless-runtime: node
+          x-stainless-runtime-version: v26.3.0
+          x-stainless-timeout: "600"
       model_info:
         id: claude-acct-works-shared
         input_cost_per_token: 0
@@ -2090,6 +2221,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_FLASH
+        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
+        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
+        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
+        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        headers:
+          user-agent: "claude-cli/2.1.304 (external, cli)"
+          x-app: cli
+          x-stainless-arch: x64
+          x-stainless-lang: js
+          x-stainless-os: Linux
+          x-stainless-package-version: 0.128.0
+          x-stainless-retry-count: "0"
+          x-stainless-runtime: node
+          x-stainless-runtime-version: v26.3.0
+          x-stainless-timeout: "600"
       model_info:
         id: claude-acct-flash
         input_cost_per_token: 0
@@ -2099,6 +2245,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_MAX
+        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
+        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
+        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
+        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        headers:
+          user-agent: "claude-cli/2.1.304 (external, cli)"
+          x-app: cli
+          x-stainless-arch: x64
+          x-stainless-lang: js
+          x-stainless-os: Linux
+          x-stainless-package-version: 0.128.0
+          x-stainless-retry-count: "0"
+          x-stainless-runtime: node
+          x-stainless-runtime-version: v26.3.0
+          x-stainless-timeout: "600"
       model_info:
         id: claude-acct-max
         input_cost_per_token: 0
@@ -2108,6 +2269,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_SERGIO
+        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
+        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
+        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
+        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        headers:
+          user-agent: "claude-cli/2.1.304 (external, cli)"
+          x-app: cli
+          x-stainless-arch: x64
+          x-stainless-lang: js
+          x-stainless-os: Linux
+          x-stainless-package-version: 0.128.0
+          x-stainless-retry-count: "0"
+          x-stainless-runtime: node
+          x-stainless-runtime-version: v26.3.0
+          x-stainless-timeout: "600"
       model_info:
         id: claude-acct-sergio
         input_cost_per_token: 0
@@ -2854,10 +3030,6 @@ data:
     # `open-webui-v3` entra (2026-08-26, pedido explicito del owner) porque es la key
     # de Pocharlies Chat / Open WebUI: el owner quiere que deepseek-v4 y su alias
     # uncensored esten operativos en Open WebUI.
-    # `opencode-20260630-local` entra (2026-08-29, pedido explicito del owner): es la
-    # key de opencode, y sin ella opencode se comia "this key may not request the
-    # abliterated route" al pedir qwen38-27b-uncensored. Ya estaba en los gates de
-    # openrouter (mas abajo), asi que esto solo cierra la simetria.
     # `claude-x86` entra (2026-09-15, pedido explicito del owner): es la key del
     # Claude Code CLI del owner (metadata `purpose: Claude Code CLI -> modelos
     # locales`), y su allowlist de la BD ya lista modelos concretos — no es una key
@@ -2877,7 +3049,7 @@ data:
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
             "openclaw-qwen36-prod,playground,open-webui-v3,"
-            "opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse",
+            "claude-x86,hermes,hermes-batch,synapse",
         ).split(",")
         if alias.strip()
     )
@@ -4696,6 +4868,10 @@ data:
     #               tercero de pago. Sellada: falla a la vista, el workflow la deja en
     #               `cancelled` con motivo «OCR cancelado» y el redrive programado
     #               (SKIRM-183) la recupera. La recuperacion no pasa por la nube.
+    #   hindsight   memoria de agentes (INFRA-940/942): nunca a Alibaba (Dani 18-10). Su
+    #               unica salida automatica del residente es el desborde por carga a
+    #               `gpt-6-luna` de session_router (KEY_LOAD_OVERFLOW). Lo de CloudBlue
+    #               no pasa por esta key: Hindsight lo manda a Haiku directo a Anthropic.
     #
     # Ojo: esto NO es lo mismo que recortar el allowlist `models` de la key. El
     # allowlist gobierna lo que la key puede PEDIR; esto gobierna a donde puede
@@ -7989,6 +8165,47 @@ data:
 
     log = logging.getLogger("session_router")
 
+    # DGX-1189: el proxy filtra `anthropic-beta` contra la lista de litellm
+    # (anthropic_beta_headers_manager) justo antes de enviar a Anthropic: lo que no
+    # está en la lista se descarta (medido 20-10: `claude-code-20250219` no llegaba).
+    # Son las betas que manda Claude Code y litellm aún no conoce; sin ellas, las
+    # funciones que activan (modo Claude Code, thinking por tokens, herramientas
+    # inline) no llegan a Anthropic. Se amplía la config cargada IN PROCESO; el hook
+    # de reload es porque el endpoint /reload/anthropic_beta_headers (y el repaso
+    # periódico del proxy) vacía la caché y volvería a dejarlas fuera.
+    # CONTRACT: dgx.litellm.claude-official-headers.v1
+    CLAUDE_OFFICIAL_BETAS = (
+        "claude-code-20250219",
+        "thinking-token-count-2026-05-13",
+        "inline-tools-2026-09-15",
+    )
+
+
+    def _extend_anthropic_beta_allowlist():
+        try:
+            from litellm import anthropic_beta_headers_manager as _m
+
+            mapping = _m._load_beta_headers_config().setdefault("anthropic", {})
+            mapping.update({beta: beta for beta in CLAUDE_OFFICIAL_BETAS})
+        except Exception as exc:  # fail-open: sin extensión no llegan las betas, nada más
+            log.warning("session_router: no se pudo ampliar la lista de betas (%s)", exc)
+
+
+    try:
+        from litellm import anthropic_beta_headers_manager as _beta_manager
+
+        _orig_reload_beta_headers = _beta_manager.reload_beta_headers_config
+
+        def _reload_beta_headers_and_extend():
+            result = _orig_reload_beta_headers()
+            _extend_anthropic_beta_allowlist()
+            return result
+
+        _beta_manager.reload_beta_headers_config = _reload_beta_headers_and_extend
+    except Exception as _exc:
+        log.warning("session_router: no se pudo enganchar el reload de betas (%s)", _exc)
+    _extend_anthropic_beta_allowlist()
+
     RESIDENT_MODEL = os.environ.get("SESSION_ROUTER_RESIDENT_MODEL", "qwen38-flash-next")
     OVERFLOW_MODEL = os.environ.get("SESSION_ROUTER_OVERFLOW_MODEL", "alibaba-q38-flash")
     # Los únicos dos nombres sobre los que este módulo decide. Todo lo demás
@@ -8177,6 +8394,16 @@ data:
     # que incluye aurora-rca y brain): solo la key de los bots de Hermes de la compañía.
     BOT_BURST_KEYS = ("hermes-batch",)
 
+    # INFRA-942 (Dani 20-10-2026): desborde POR KEY decidido por carga. Una key de este mapa que pide el
+    # residente va al residente mientras tenga menos de `slots` peticiones en vuelo (de todas las keys,
+    # _inflight_resident) y, si no, a `target`. Por petición: sin sticky ni sesiones, así que en cuanto el
+    # residente se vacía vuelve sola. Corre ANTES del sello: la key sigue sellada (ni fallbacks del Router
+    # ni válvula a Alibaba) y este es su único camino automático fuera del residente. Un destino `gpt-*`
+    # exige la key en LITELLM_CHATGPT_ALLOWED_KEYS: el gate del hook mira el nombre PEDIDO, no este.
+    KEY_LOAD_OVERFLOW = {"hindsight": {"target": "gpt-6-luna", "slots": 4}}
+    CHATGPT_ALLOWED_KEYS = frozenset(
+        a.strip() for a in os.environ.get("LITELLM_CHATGPT_ALLOWED_KEYS", "").split(",") if a.strip())
+
     # Interruptores «Fallbacks a Alibaba» (25-09-2026, Dani: poder dejar de usar Alibaba sin
     # PR). Los guarda el panel /inferencia (tarjeta ALIBABA · TOKEN PLAN) en el campo ADITIVO
     # `alibaba` de /api/model-routing/config. Uno por cada camino por el que el tráfico acaba
@@ -8270,7 +8497,7 @@ data:
     # en segundo plano puede esperar en la cola del Spark; quien no debe esperar es el
     # operador interactivo. Campo ADITIVO `overflow_exempt` de /api/model-routing/config:
     #   classes — valores de x-claude-class (hoy solo `company`)
-    #   keys    — alias de virtual key de LiteLLM (opencode-20260630-local, hermes, ...)
+    #   keys    — alias de virtual key de LiteLLM (claude-x86, hermes, ...)
     # Una petición exenta (a) no pasa por la válvula (ni instant_reject ni la de la
     # compañía): encola en el residente; y (b) si trae un binding sticky a Alibaba que no
     # es una orden del operador (plan explícito o default_plan=alibaba), se re-vincula al
@@ -9375,12 +9602,13 @@ data:
         log.warning("session_router: %r -> %r (razon=%s, sid=%s)", original, CLAUDE_PLAN_MODEL, reason, sid or "-")
 
 
-    def _rewrite(data, sid, reason):
-        """Residente -> Alibaba. Espejo del desvío de visión: se limpian api_base/
-        api_key (el grupo de Alibaba lleva los suyos en el model_list) y se marcan
+    def _rewrite(data, sid, reason, target=None):
+        """Residente -> Alibaba (o `target`, el desborde por key). Espejo del desvío de visión: se
+        limpian api_base/api_key (el grupo destino lleva los suyos en el model_list) y se marcan
         el modelo original/resuelto + el marcador de reroute (mandato 3)."""
+        target = target or OVERFLOW_MODEL
         original = data.get("model")
-        data["model"] = OVERFLOW_MODEL
+        data["model"] = target
         data.pop("api_base", None)
         data.pop("api_key", None)
         metadata = data.get("metadata")
@@ -9390,12 +9618,12 @@ data:
         metadata["_session_routing_rerouted"] = True
         metadata["_session_routing_reason"] = reason
         metadata["_router_original_model"] = original
-        metadata["_router_resolved_model"] = OVERFLOW_MODEL
+        metadata["_router_resolved_model"] = target
         # WARNING: el proceso proxy filtra los INFO de este logger (medido 21-09);
         # una reescritura es siempre notable y tiene que verse en el log vivo.
         log.warning(
             "session_router: %r -> %r (razon=%s, sid=%s)",
-            original, OVERFLOW_MODEL, reason, sid or "-",
+            original, target, reason, sid or "-",
         )
 
 
@@ -9434,7 +9662,7 @@ data:
     def ensure_alibaba_key2_active():
         """Una vez por proceso, dos estados:
 
-        - Con DASHSCOPE_API_KEY_2: sube los diez -k2 de order 2 a order 1 EN
+        - Con DASHSCOPE_API_KEY_2: sube los once -k2 de order 2 a order 1 EN
           MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
           por sesion decide cual).
         - Sin ella: RETIRA los -k2 del Router (delete_deployment). Motivo,
@@ -10590,11 +10818,41 @@ data:
         return cool is False
 
 
+    async def _key_load_overflow(data, model, tracker, resident_ready, info):
+        """Desborde por carga de KEY_LOAD_OVERFLOW. None = la key no está en el mapa: decide el resto
+        de _apply. Residente si está Ready y con menos de `slots` en vuelo; si no, `target`, salvo que
+        el destino esté en cooldown o sea desconocido (entonces se queda en el residente)."""
+        key_alias = _key_alias(data)
+        regla = KEY_LOAD_OVERFLOW.get(key_alias)
+        if regla is None or model != RESIDENT_MODEL:
+            return None
+        info["active"] = True
+        target = regla["target"]
+        if target.startswith("gpt-") and key_alias not in CHATGPT_ALLOWED_KEYS:
+            info["decision"] = "desborde_key_sin_permiso"
+            return False
+        inflight = await _inflight_resident(tracker) if resident_ready else None
+        info["inflight"] = inflight
+        if inflight is not None and inflight < regla["slots"]:
+            info["decision"] = "desborde_key_local"
+            return False
+        info["cool"] = _group_in_cooldown(target)
+        if info["cool"] is not False:
+            info["decision"] = "desborde_key_degradado"
+            return False
+        info["decision"] = "desborde_key"
+        _rewrite(data, None, "desborde_key", target)
+        return True
+
+
     async def _apply(data, requested_model, tracker, resident_ready, info):
         model = str(data.get("model") or "")
         if model not in ROUTED_MODELS:
             info["decision"] = "no-routed"
             return False
+        desbordada = await _key_load_overflow(data, model, tracker, resident_ready, info)
+        if desbordada is not None:
+            return desbordada
         # Mandato 4a: petición sellada (disable_fallbacks, estampado aguas arriba
         # por strip_params) nunca abandona el backend que pidió.
         if data.get("disable_fallbacks") is True:
@@ -12937,7 +13195,7 @@ spec:
 ##
 ## PRECIOS: los `-k2` heredan por espejo el prorrateo del pack de la cuenta 1
 ## (dgx.litellm.alibaba-pack-pricing.v1). Si el plan de la cuenta 2 se paga
-## distinto, revisar los tres campos de los diez `-k2` al activar.
+## distinto, revisar los tres campos de los once `-k2` al activar.
 ##
 ## RECURSO PROPIO, no una entrada mas en `litellm-alibaba`: mismo criterio
 ## documentado alli — un campo que falte en 1Password solo rompe ESTE
@@ -12959,7 +13217,7 @@ spec:
 ##
 ## ACTIVACION: sin paso manual ni PR. Cuando este Secret exista, el env
 ## DASHSCOPE_API_KEY_2 del pod tendra valor y el hook, al arrancar
-## (session_router.ensure_alibaba_key2_active), sube los diez `-k2` de
+## (session_router.ensure_alibaba_key2_active), sube los once `-k2` de
 ## order 2 a order 1 EN MEMORIA: entran al reparto con afinidad por sesion.
 ## O sea: sembrar + `kubectl -n litellm rollout restart deploy/litellm` =
 ## activado. Las sesiones nuevas se clavan desde su primera peticion; las
@@ -13100,7 +13358,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-da1dc923221e
+        config.k8s.e-dani.com/revision: config-da85b852f4b4
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13293,13 +13551,13 @@ spec:
             # CONTRACT: dgx.litellm.virtual-key.copilot-jake-chat.v1 — el alias
             # `copilot-jake-chat` de esta allowlist es la clave del copiloto del
             # side panel (INFRA-458); retirarla aqui le deja los or-* denegados.
-            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes,hermes-batch,copilot-jake-chat" }
+            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "hermes,hermes-batch,copilot-jake-chat" }
             # DO-31477: allowlist de la ruta abliterada (hook litellm_strip_params.py,
             # UNCENSORED_ALLOWED_KEY_ALIASES). Sin esta env el hook usa su default; se
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -14023,7 +14281,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-da1dc923221e
+        config.k8s.e-dani.com/revision: config-da85b852f4b4
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

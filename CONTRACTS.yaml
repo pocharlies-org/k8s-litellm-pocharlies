@@ -512,6 +512,25 @@ contracts:
       (epoch s)}. TTL 8 dias. Lectores: session_router.claude_account_filter
       (salto) y dgx-infra services/dashboard (barras de cuota), solo GET.
       Pinned by tests/test_claude_account_filter.py.
+  - id: dgx.litellm.claude-official-headers.v1
+    kind: schema
+    value: 'claude-code-20250219,thinking-token-count-2026-05-13,inline-tools-2026-09-15'
+    anchor: 'CLAUDE_OFFICIAL_BETAS = ('
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+      - dev/session_router.py
+    status: active
+    note: >-
+      DGX-1189 (2026-10-20). Las peticiones de los 8 deployments claude-acct-*
+      salen hacia Anthropic con las cabeceras del cliente oficial: user-agent y
+      familia x-stainless-* medidos a Claude Code 2.1.304 (fijos en el
+      manifiesto; si sube la version del CLI, actualizar ahi), y las betas del
+      cliente pasan porque session_router amplia la lista del manager de
+      litellm con claude-code-20250219, thinking-token-count-2026-05-13 e
+      inline-tools-2026-09-15 (y re-amplia tras reload). Lector: la auditoria
+      de deteccion de Anthropic (que el trafico del pool parezca del CLI).
+      Pinned by tests/test_claude_official_headers_contract.py.
   - id: dgx.session-router.claude-account-pin.v1
     kind: schema
     value: claude_account_pin:v1:<key-alias>:<sid>
@@ -888,6 +907,12 @@ contracts:
       INFRA-942 (2026-10-19), aditivo: la key `hindsight` (memoria de agentes,
       ns hindsight, solo texto) entra en LITELLM_CHATGPT_ALLOWED_KEYS por decision
       de Dani, para ingerir con `gpt-6-luna`.
+      INFRA-942 (2026-10-20), aditivo: unica excepcion a «solo seleccion
+      manual», por decision de Dani. El desborde por carga KEY_LOAD_OVERFLOW de
+      session_router manda a `gpt-6-luna` las peticiones de la key `hindsight`
+      que piden el residente cuando este tiene 4 o mas en vuelo o no esta Ready
+      (si luna esta en cooldown, se quedan en el residente). La key sigue sellada
+      (sin fallbacks a Alibaba). Fijado en test_chatgpt_oauth_contract.py.
       Token: el pod de litellm lee CHATGPT_TOKEN_DIR=/var/run/chatgpt-oauth,
       el Secret litellm-chatgpt-token montado en solo lectura. Lo crea desde
       la semilla de 1Password (ExternalSecret litellm-chatgpt-oauth, item
@@ -989,7 +1014,7 @@ contracts:
     # puertas del hook que la listan igual que a su gemela de chat.
     kind: allowlist
     value: hermes-batch
-    anchor: opencode-20260630-local,hermes,hermes-batch
+    anchor: hermes,hermes-batch
     role: provider
     files:
       - k8s/manifest.yaml
@@ -1014,7 +1039,7 @@ contracts:
     # la puerta uncensored del hook (LITELLM_UNCENSORED_ALLOWED_KEYS).
     kind: allowlist
     value: hermes-cloudblue
-    anchor: openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue
+    anchor: openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue
     role: provider
     files:
       - k8s/manifest.yaml
@@ -1064,7 +1089,7 @@ contracts:
   - id: dgx.litellm.virtual-key.claude-x86.v1
     kind: allowlist
     value: claude-x86
-    anchor: opencode-20260630-local,claude-x86
+    anchor: claude-x86
     role: provider
     files:
       - k8s/manifest.yaml
@@ -1156,7 +1181,7 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
-      2026-09-25 (Dani: "prorrateo del pack"). Los 10 alias alibaba-* llevan
+      2026-09-25 (Dani: "prorrateo del pack"). Los 11 alias alibaba-* llevan
       input_cost_per_token / cache_read_input_token_cost /
       output_cost_per_token = precio de lista internacional x k, con k
       calibrado contra la ventana real del plan: pack Individual Pro $65/mes
@@ -1167,6 +1192,10 @@ contracts:
       (implicito), 10 % en deepseek-v4.1-flash. k = 30,875/350,07 = 0,0882;
       la ventana recalculada da $30,875 exactos. Consumidor: el spend que
       publican SpendLogs y /v2/model/info (paneles del dashboard, Grafana).
+      2026-10-20 (DGX-1190): publicado el alias `alibaba-ds41f1017` (upstream
+      `deepseek-v4.1-flash-1017`) con los tres precios de su familia
+      `alibaba-dsv41-fl`; la k del pack no cambia y ningun literal de la
+      superficie se renombra: sin .vN+1.
       El supuesto creditos~lista es inspeccionable en la cabecera de la
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
       cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
@@ -1179,7 +1208,7 @@ contracts:
     # `DASHSCOPE_API_KEY_2` es el literal que comparten las dos mitades de la
     # superficie: el ExternalSecret que materializa el
     # Secret `litellm-alibaba-2` y el env `optional: true` del Deployment que
-    # alimenta `os.environ/DASHSCOPE_API_KEY_2` de los diez `-k2`.
+    # alimenta `os.environ/DASHSCOPE_API_KEY_2` de los once `-k2`.
     value: DASHSCOPE_API_KEY_2
     role: publisher
     files:
@@ -1189,7 +1218,7 @@ contracts:
       2026-09-26 (DGX-444). Superficie de la segunda cuenta del plan Team de
       Alibaba Model Studio: ExternalSecret `litellm-alibaba-2` -> Secret del
       mismo nombre -> env `DASHSCOPE_API_KEY_2` (optional: true) -> el hook
-      ensure_alibaba_key2_active sube los diez `-k2` de order 2 a order 1 en
+      ensure_alibaba_key2_active sube los once `-k2` de order 2 a order 1 en
       memoria cuando la key existe (afinidad por sesion:
       dgx.session-router.deployment-affinity-key.v1). GATE DGX-444: el
       ExternalSecret queda COMENTADO FUERA del despliegue porque el item

@@ -116,6 +116,47 @@ import httpx
 
 log = logging.getLogger("session_router")
 
+# DGX-1189: el proxy filtra `anthropic-beta` contra la lista de litellm
+# (anthropic_beta_headers_manager) justo antes de enviar a Anthropic: lo que no
+# está en la lista se descarta (medido 20-10: `claude-code-20250219` no llegaba).
+# Son las betas que manda Claude Code y litellm aún no conoce; sin ellas, las
+# funciones que activan (modo Claude Code, thinking por tokens, herramientas
+# inline) no llegan a Anthropic. Se amplía la config cargada IN PROCESO; el hook
+# de reload es porque el endpoint /reload/anthropic_beta_headers (y el repaso
+# periódico del proxy) vacía la caché y volvería a dejarlas fuera.
+# CONTRACT: dgx.litellm.claude-official-headers.v1
+CLAUDE_OFFICIAL_BETAS = (
+    "claude-code-20250219",
+    "thinking-token-count-2026-05-13",
+    "inline-tools-2026-09-15",
+)
+
+
+def _extend_anthropic_beta_allowlist():
+    try:
+        from litellm import anthropic_beta_headers_manager as _m
+
+        mapping = _m._load_beta_headers_config().setdefault("anthropic", {})
+        mapping.update({beta: beta for beta in CLAUDE_OFFICIAL_BETAS})
+    except Exception as exc:  # fail-open: sin extensión no llegan las betas, nada más
+        log.warning("session_router: no se pudo ampliar la lista de betas (%s)", exc)
+
+
+try:
+    from litellm import anthropic_beta_headers_manager as _beta_manager
+
+    _orig_reload_beta_headers = _beta_manager.reload_beta_headers_config
+
+    def _reload_beta_headers_and_extend():
+        result = _orig_reload_beta_headers()
+        _extend_anthropic_beta_allowlist()
+        return result
+
+    _beta_manager.reload_beta_headers_config = _reload_beta_headers_and_extend
+except Exception as _exc:
+    log.warning("session_router: no se pudo enganchar el reload de betas (%s)", _exc)
+_extend_anthropic_beta_allowlist()
+
 RESIDENT_MODEL = os.environ.get("SESSION_ROUTER_RESIDENT_MODEL", "qwen38-flash-next")
 OVERFLOW_MODEL = os.environ.get("SESSION_ROUTER_OVERFLOW_MODEL", "alibaba-q38-flash")
 # Los únicos dos nombres sobre los que este módulo decide. Todo lo demás
@@ -304,6 +345,16 @@ COMPANY_CLAUDE_ALIAS = "compania"
 # que incluye aurora-rca y brain): solo la key de los bots de Hermes de la compañía.
 BOT_BURST_KEYS = ("hermes-batch",)
 
+# INFRA-942 (Dani 20-10-2026): desborde POR KEY decidido por carga. Una key de este mapa que pide el
+# residente va al residente mientras tenga menos de `slots` peticiones en vuelo (de todas las keys,
+# _inflight_resident) y, si no, a `target`. Por petición: sin sticky ni sesiones, así que en cuanto el
+# residente se vacía vuelve sola. Corre ANTES del sello: la key sigue sellada (ni fallbacks del Router
+# ni válvula a Alibaba) y este es su único camino automático fuera del residente. Un destino `gpt-*`
+# exige la key en LITELLM_CHATGPT_ALLOWED_KEYS: el gate del hook mira el nombre PEDIDO, no este.
+KEY_LOAD_OVERFLOW = {"hindsight": {"target": "gpt-6-luna", "slots": 4}}
+CHATGPT_ALLOWED_KEYS = frozenset(
+    a.strip() for a in os.environ.get("LITELLM_CHATGPT_ALLOWED_KEYS", "").split(",") if a.strip())
+
 # Interruptores «Fallbacks a Alibaba» (25-09-2026, Dani: poder dejar de usar Alibaba sin
 # PR). Los guarda el panel /inferencia (tarjeta ALIBABA · TOKEN PLAN) en el campo ADITIVO
 # `alibaba` de /api/model-routing/config. Uno por cada camino por el que el tráfico acaba
@@ -397,7 +448,7 @@ _sidecar_poller = None
 # en segundo plano puede esperar en la cola del Spark; quien no debe esperar es el
 # operador interactivo. Campo ADITIVO `overflow_exempt` de /api/model-routing/config:
 #   classes — valores de x-claude-class (hoy solo `company`)
-#   keys    — alias de virtual key de LiteLLM (opencode-20260630-local, hermes, ...)
+#   keys    — alias de virtual key de LiteLLM (claude-x86, hermes, ...)
 # Una petición exenta (a) no pasa por la válvula (ni instant_reject ni la de la
 # compañía): encola en el residente; y (b) si trae un binding sticky a Alibaba que no
 # es una orden del operador (plan explícito o default_plan=alibaba), se re-vincula al
@@ -1502,12 +1553,13 @@ def _rewrite_to_claude(data, sid, reason):
     log.warning("session_router: %r -> %r (razon=%s, sid=%s)", original, CLAUDE_PLAN_MODEL, reason, sid or "-")
 
 
-def _rewrite(data, sid, reason):
-    """Residente -> Alibaba. Espejo del desvío de visión: se limpian api_base/
-    api_key (el grupo de Alibaba lleva los suyos en el model_list) y se marcan
+def _rewrite(data, sid, reason, target=None):
+    """Residente -> Alibaba (o `target`, el desborde por key). Espejo del desvío de visión: se
+    limpian api_base/api_key (el grupo destino lleva los suyos en el model_list) y se marcan
     el modelo original/resuelto + el marcador de reroute (mandato 3)."""
+    target = target or OVERFLOW_MODEL
     original = data.get("model")
-    data["model"] = OVERFLOW_MODEL
+    data["model"] = target
     data.pop("api_base", None)
     data.pop("api_key", None)
     metadata = data.get("metadata")
@@ -1517,12 +1569,12 @@ def _rewrite(data, sid, reason):
     metadata["_session_routing_rerouted"] = True
     metadata["_session_routing_reason"] = reason
     metadata["_router_original_model"] = original
-    metadata["_router_resolved_model"] = OVERFLOW_MODEL
+    metadata["_router_resolved_model"] = target
     # WARNING: el proceso proxy filtra los INFO de este logger (medido 21-09);
     # una reescritura es siempre notable y tiene que verse en el log vivo.
     log.warning(
         "session_router: %r -> %r (razon=%s, sid=%s)",
-        original, OVERFLOW_MODEL, reason, sid or "-",
+        original, target, reason, sid or "-",
     )
 
 
@@ -1561,7 +1613,7 @@ _affinity_redis_tried = False
 def ensure_alibaba_key2_active():
     """Una vez por proceso, dos estados:
 
-    - Con DASHSCOPE_API_KEY_2: sube los diez -k2 de order 2 a order 1 EN
+    - Con DASHSCOPE_API_KEY_2: sube los once -k2 de order 2 a order 1 EN
       MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
       por sesion decide cual).
     - Sin ella: RETIRA los -k2 del Router (delete_deployment). Motivo,
@@ -2717,11 +2769,41 @@ def _overflow_ok_info(info):
     return cool is False
 
 
+async def _key_load_overflow(data, model, tracker, resident_ready, info):
+    """Desborde por carga de KEY_LOAD_OVERFLOW. None = la key no está en el mapa: decide el resto
+    de _apply. Residente si está Ready y con menos de `slots` en vuelo; si no, `target`, salvo que
+    el destino esté en cooldown o sea desconocido (entonces se queda en el residente)."""
+    key_alias = _key_alias(data)
+    regla = KEY_LOAD_OVERFLOW.get(key_alias)
+    if regla is None or model != RESIDENT_MODEL:
+        return None
+    info["active"] = True
+    target = regla["target"]
+    if target.startswith("gpt-") and key_alias not in CHATGPT_ALLOWED_KEYS:
+        info["decision"] = "desborde_key_sin_permiso"
+        return False
+    inflight = await _inflight_resident(tracker) if resident_ready else None
+    info["inflight"] = inflight
+    if inflight is not None and inflight < regla["slots"]:
+        info["decision"] = "desborde_key_local"
+        return False
+    info["cool"] = _group_in_cooldown(target)
+    if info["cool"] is not False:
+        info["decision"] = "desborde_key_degradado"
+        return False
+    info["decision"] = "desborde_key"
+    _rewrite(data, None, "desborde_key", target)
+    return True
+
+
 async def _apply(data, requested_model, tracker, resident_ready, info):
     model = str(data.get("model") or "")
     if model not in ROUTED_MODELS:
         info["decision"] = "no-routed"
         return False
+    desbordada = await _key_load_overflow(data, model, tracker, resident_ready, info)
+    if desbordada is not None:
+        return desbordada
     # Mandato 4a: petición sellada (disable_fallbacks, estampado aguas arriba
     # por strip_params) nunca abandona el backend que pidió.
     if data.get("disable_fallbacks") is True:

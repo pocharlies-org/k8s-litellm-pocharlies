@@ -2130,3 +2130,59 @@ def test_burst_sanitize_esta_cableado_en_el_hook_real(router_src):
     """Fallo clásico: verde en unidad y sin efecto en producción si _sanitize descarta el campo."""
     assert 'BOT_BURST_KEYS = ("hermes-batch",)' in router_src
     assert 'company.get("bots_alibaba") is True' in router_src
+
+
+# ── INFRA-942: desborde por key y por carga (hindsight: residente con <4 en vuelo, si no gpt-6-luna) ──
+
+
+def _hs_data(**extra):
+    # sellada como llega de verdad: la key hindsight está en NO_FALLBACK_KEY_ALIASES
+    return _data(metadata={"user_api_key_alias": "hindsight"}, disable_fallbacks=True, **extra)
+
+
+@pytest.fixture
+def hs_permitida(router_mod, monkeypatch):
+    monkeypatch.setattr(router_mod, "CHATGPT_ALLOWED_KEYS", frozenset({"hindsight"}))
+
+
+@pytest.mark.parametrize("inflight,destino", [(0, RESIDENT), (3, RESIDENT), (4, "gpt-6-luna"), (9, "gpt-6-luna")])
+def test_desborde_key_hindsight_por_carga(router_mod, hs_permitida, inflight, destino):
+    env = _Env(router_mod, _cfg(), inflight=inflight)
+    data = _hs_data()
+    assert env.run(data, requested=RESIDENT) is (destino != RESIDENT)
+    assert data["model"] == destino and env.writes == []
+    if destino != RESIDENT:
+        assert data["metadata"]["_session_routing_rerouted"] is True
+        assert data["metadata"]["_router_resolved_model"] == "gpt-6-luna"
+
+
+def test_desborde_key_residente_no_ready_va_al_destino(router_mod, hs_permitida):
+    env = _Env(router_mod, _cfg(), inflight=0)
+    data = _hs_data()
+    assert env.run(data, requested=RESIDENT, resident_ready=False) is True
+    assert data["model"] == "gpt-6-luna"
+
+
+@pytest.mark.parametrize("cool", [True, None])
+def test_desborde_key_destino_en_cooldown_o_desconocido_se_queda_en_el_residente(router_mod, hs_permitida, cool):
+    env = _Env(router_mod, _cfg(), inflight=9, cooldown=cool)
+    data = _hs_data()
+    assert env.run(data, requested=RESIDENT) is False
+    assert data["model"] == RESIDENT
+
+
+def test_desborde_key_sin_permiso_chatgpt_no_sale(router_mod, monkeypatch):
+    monkeypatch.setattr(router_mod, "CHATGPT_ALLOWED_KEYS", frozenset())
+    env = _Env(router_mod, _cfg(), inflight=9)
+    data = _hs_data()
+    assert env.run(data, requested=RESIDENT) is False
+    assert data["model"] == RESIDENT
+
+
+def test_desborde_key_no_toca_otras_keys_ni_otros_modelos(router_mod, hs_permitida):
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0, default_plan="alibaba"), inflight=9)
+    otra = _data(metadata={"user_api_key_alias": "brain"}, disable_fallbacks=True)
+    assert env.run(otra, requested=RESIDENT) is False and otra["model"] == RESIDENT  # sellada, como siempre
+    alibaba = _hs_data(model=router_mod.OVERFLOW_MODEL)
+    assert env.run(alibaba, requested=router_mod.OVERFLOW_MODEL) is False
+    assert alibaba["model"] == router_mod.OVERFLOW_MODEL
