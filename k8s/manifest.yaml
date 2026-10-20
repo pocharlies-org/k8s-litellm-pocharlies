@@ -3139,7 +3139,12 @@ data:
     # devuelve 200 con status:"unreachable". Un 500 aqui no es que no haya dato, es
     # que la tarjeta del panel se cae a trozos en cada refresco. Y el dato viejo es
     # peor que decir "sin medir": por eso el `fetched_at`/`age_seconds` van siempre.
-    OPENROUTER_ACCOUNT_PATH = "/openrouter/account"
+    # Ruta bajo `/admin/`, NO bajo `/openrouter/`: LiteLLM registra por dentro un
+    # pass-through `/openrouter/{path}` para el proveedor, que eclipseaba esta ruta y
+    # su guardrail vetaba la master key (403 «la master es solo de administracion»).
+    # Mismo sitio y misma autenticacion que `/admin/refusal-*`.
+    # CONTRACT: dgx.litellm.openrouter-account-upstream.v1
+    OPENROUTER_ACCOUNT_PATH = "/admin/openrouter-account"
     OPENROUTER_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
     OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
     OPENROUTER_ACCOUNT_TIMEOUT_S = float(
@@ -3342,7 +3347,9 @@ data:
             return out
 
     def _register_openrouter_account_route():
+        from fastapi import Depends
         from litellm.proxy.proxy_server import app
+        from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 
         # Mismo doble-registro que el middleware de capacidades: el modulo puede
         # reimportarse al recargar la configuracion y Starlette NO deduplica rutas.
@@ -3353,8 +3360,11 @@ data:
 
         # `async def`: el fetch es `await` (httpx.AsyncClient), igual que las rutas
         # del dial que tambien hacen httpx. Un handler sincrono tendria que montar su
-        # propio event loop dentro del del proxy.
-        @app.get(OPENROUTER_ACCOUNT_PATH, tags=["admin"])
+        # propio event loop dentro del del proxy. `Depends(user_api_key_auth)` como en
+        # `/admin/refusal-*`: autentica sin correr el guardrail de inferencia, asi que
+        # la master key del panel la lee (bajo `/openrouter/` la comia el pass-through).
+        @app.get(OPENROUTER_ACCOUNT_PATH, tags=["admin"],
+                 dependencies=[Depends(user_api_key_auth)])
         async def _openrouter_account():
             # Sine qua non: solo lectura. No hay POST aqui, no hay forma de escribir
             # el saldo, y la key no se devuelve en ningun camino.
@@ -13090,7 +13100,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f6ae77083ae9
+        config.k8s.e-dani.com/revision: config-da1dc923221e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14013,7 +14023,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f6ae77083ae9
+        config.k8s.e-dani.com/revision: config-da1dc923221e
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

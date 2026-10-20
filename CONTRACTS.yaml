@@ -1397,3 +1397,20 @@ contracts:
       ya un segundo backend que enrutar. Sustituido por `omnivoice-tts` (el
       unico). Vivio un dia: anadido en DGX-1173 para el chip trained del
       playground, retirado por decision de Dani al quedar un solo motor.
+  - id: dgx.litellm.openrouter-account-upstream.v1
+    kind: http-route
+    value: /admin/openrouter-account
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Ruta del saldo/cupo de OpenRouter que publica el hook de litellm-config y
+      llama el panel (dgx-infra, services/dashboard/api/routes_openrouter.py,
+      ACCOUNT_PATH; contrato gemelo dgx.litellm.openrouter-account.v1). Nace bajo
+      `/admin/` y NO bajo `/openrouter/`: LiteLLM registra por dentro un
+      pass-through `/openrouter/{path}` del proveedor que eclipseaba la ruta y cuyo
+      guardrail corría el veto de inferencia y devolvía 403 a la master key del panel
+      («saldo sin medir»). Con `Depends(user_api_key_auth)` — como `/admin/refusal-*`
+      — autentica sin correr el veto. Cambiar este path exige mover ACCOUNT_PATH en
+      el consumidor en el mismo push.
