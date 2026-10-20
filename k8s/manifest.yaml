@@ -1298,11 +1298,13 @@ data:
     # funciona, pero NO conviene con la configuracion de este proxy: el detalle,
     # medido, esta en el comentario de `alibaba-q38-flash` mas abajo.
     #
-    # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Son 14 modelos y
-    # la pagina miente por los dos lados: `deepseek-v4-pro-0813`, `qwen-image-3.0-pro`,
-    # `qwen-audio-3.0-asr-flash` y los tres `happyhorse-1.1-*` que anuncia NO estan
-    # servidos, asi que no se publica ninguno (un alias a un modelo inexistente es un
-    # 404 con nuestro nombre encima). De los 14, aqui entran los 10 de chat.
+    # EL CATALOGO REAL LO DA `GET /models`, NO LA PAGINA DEL PLAN. Medido el 20-10-2026:
+    # 18 servidos (el 20-09 eran 14; han entrado `deepseek-v4.1-flash-1017`,
+    # `deepseek-v4-pro-0813`, `qwen-audio-3.0-realtime-plus`, `qwen-audio-3.0-tts-plus` y
+    # los tres `wan*`, y han salido `qwen-image-3.0-pro`, `qwen-audio-3.0-asr-flash` y los
+    # tres `happyhorse-1.1-*` que anunciaba). Aqui entran los 11 de chat; el resto es
+    # imagen, video, audio o un pin de `deepseek-v4-pro` sin publicar (un alias a un
+    # modelo inexistente es un 404 con nuestro nombre encima).
     #
     # `supports_vision` esta MEDIDO uno a uno el 20-09 (cuadrado de color + "di el
     # color"), no copiado de la pagina — que tambien se equivoca ahi: da
@@ -1313,7 +1315,8 @@ data:
     # que falla en limpio con 400 es `qwen3.7-max`. Marcar vision de mas aqui
     # mandaria imagenes a un modelo que las tira en silencio.
     #
-    # Tools: medido tambien, los 10 devuelven `tool_calls`. `qwen3.8-max` ademas
+    # Tools: medido tambien, los 11 devuelven `tool_calls` (los 10 del 20-09, y el 1017
+    # el 20-10). `qwen3.8-max` ademas
     # RECHAZA `tool_choice: "required"` con 400 (acepta la lista de tools y llama
     # cuando hace falta, pero no se le puede forzar).
     #
@@ -1377,7 +1380,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q38-max
       litellm_params:
         model: openai/qwen3.8-max
@@ -1505,7 +1508,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q38-flash
       litellm_params:
         model: openai/qwen3.8-flash
@@ -1580,7 +1583,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q37-plus
       litellm_params:
         model: openai/qwen3.7-plus
@@ -1640,7 +1643,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q37-max
       litellm_params:
         model: openai/qwen3.7-max
@@ -1700,7 +1703,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q36-flash
       litellm_params:
         model: openai/qwen3.6-flash
@@ -1760,7 +1763,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv41-fl
       litellm_params:
         model: openai/deepseek-v4.1-flash
@@ -1781,6 +1784,58 @@ data:
         id: alibaba-dsv41-fl-k2
         name: DeepSeek V4.1 Flash (Alibaba)
         description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Pin de version de `deepseek-v4.1-flash` (DGX-1190, 20-10-2026). Visión y
+    # tool_calls MEDIDOS contra el upstream el 20-10 (cuadrado rojo -> "Rojo" con
+    # `image_tokens` en el usage; `tool_calls` devueltos), no copiados de la pagina
+    # del plan. Precios: los de su familia `alibaba-dsv41-fl` (mismo prorrateo).
+    - model_name: alibaba-ds41f1017
+      litellm_params:
+        model: openai/deepseek-v4.1-flash-1017
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY
+        timeout: 600
+        num_retries: 0
+        # order 1 explicito: el minimo del Router se calcula solo entre orders
+        # declarados (la razon entera, en `alibaba-q38-flash`).
+        order: 1
+      model_info:
+        id: alibaba-ds41f1017-k1
+        name: DeepSeek V4.1 Flash 1017 (Alibaba)
+        description: DeepSeek-V4.1-Flash snapshot 1017 - pin de version.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Espejo en la segunda cuenta: failover puro (order 2); para activarlo, order 1
+    # y su regla en `alibaba-q38-flash`.
+    - model_name: alibaba-ds41f1017
+      litellm_params:
+        model: openai/deepseek-v4.1-flash-1017
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_2
+        timeout: 600
+        num_retries: 0
+        order: 2
+      model_info:
+        id: alibaba-ds41f1017-k2
+        name: DeepSeek V4.1 Flash 1017 (Alibaba)
+        description: DeepSeek-V4.1-Flash snapshot 1017 - pin de version.
         mode: chat
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
@@ -1820,7 +1875,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv4-pro
       litellm_params:
         model: openai/deepseek-v4-pro
@@ -1880,7 +1935,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-dsv4f0731
       litellm_params:
         model: openai/deepseek-v4-flash-0731
@@ -1940,7 +1995,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-glm-53
       litellm_params:
         model: openai/glm-5.3
@@ -2000,7 +2055,7 @@ data:
     # Segunda cuenta del plan Team (DASHSCOPE_API_KEY_2). ESPEJO del de arriba.
     # `order: 2` = failover puro: NO entra en el reparto, solo hereda trafico
     # cuando la cuenta 1 entra en cooldown. Sembrar y activar (cambiar
-    # `order: 2` por `order: 1` en los diez `-k2`): ver litellm-alibaba-2.
+    # `order: 2` por `order: 1` en los once `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-glm-52
       litellm_params:
         model: openai/glm-5.2
@@ -9586,7 +9641,7 @@ data:
     def ensure_alibaba_key2_active():
         """Una vez por proceso, dos estados:
 
-        - Con DASHSCOPE_API_KEY_2: sube los diez -k2 de order 2 a order 1 EN
+        - Con DASHSCOPE_API_KEY_2: sube los once -k2 de order 2 a order 1 EN
           MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
           por sesion decide cual).
         - Sin ella: RETIRA los -k2 del Router (delete_deployment). Motivo,
@@ -13089,7 +13144,7 @@ spec:
 ##
 ## PRECIOS: los `-k2` heredan por espejo el prorrateo del pack de la cuenta 1
 ## (dgx.litellm.alibaba-pack-pricing.v1). Si el plan de la cuenta 2 se paga
-## distinto, revisar los tres campos de los diez `-k2` al activar.
+## distinto, revisar los tres campos de los once `-k2` al activar.
 ##
 ## RECURSO PROPIO, no una entrada mas en `litellm-alibaba`: mismo criterio
 ## documentado alli — un campo que falte en 1Password solo rompe ESTE
@@ -13111,7 +13166,7 @@ spec:
 ##
 ## ACTIVACION: sin paso manual ni PR. Cuando este Secret exista, el env
 ## DASHSCOPE_API_KEY_2 del pod tendra valor y el hook, al arrancar
-## (session_router.ensure_alibaba_key2_active), sube los diez `-k2` de
+## (session_router.ensure_alibaba_key2_active), sube los once `-k2` de
 ## order 2 a order 1 EN MEMORIA: entran al reparto con afinidad por sesion.
 ## O sea: sembrar + `kubectl -n litellm rollout restart deploy/litellm` =
 ## activado. Las sesiones nuevas se clavan desde su primera peticion; las
@@ -13252,7 +13307,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-4ef41e4f2e95
+        config.k8s.e-dani.com/revision: config-2078cb13ac3a
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14175,7 +14230,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-4ef41e4f2e95
+        config.k8s.e-dani.com/revision: config-2078cb13ac3a
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

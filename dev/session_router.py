@@ -1602,7 +1602,7 @@ _affinity_redis_tried = False
 def ensure_alibaba_key2_active():
     """Una vez por proceso, dos estados:
 
-    - Con DASHSCOPE_API_KEY_2: sube los diez -k2 de order 2 a order 1 EN
+    - Con DASHSCOPE_API_KEY_2: sube los once -k2 de order 2 a order 1 EN
       MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
       por sesion decide cual).
     - Sin ella: RETIRA los -k2 del Router (delete_deployment). Motivo,
