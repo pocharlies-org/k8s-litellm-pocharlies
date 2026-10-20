@@ -3030,10 +3030,6 @@ data:
     # `open-webui-v3` entra (2026-08-26, pedido explicito del owner) porque es la key
     # de Pocharlies Chat / Open WebUI: el owner quiere que deepseek-v4 y su alias
     # uncensored esten operativos en Open WebUI.
-    # `opencode-20260630-local` entra (2026-08-29, pedido explicito del owner): es la
-    # key de opencode, y sin ella opencode se comia "this key may not request the
-    # abliterated route" al pedir qwen38-27b-uncensored. Ya estaba en los gates de
-    # openrouter (mas abajo), asi que esto solo cierra la simetria.
     # `claude-x86` entra (2026-09-15, pedido explicito del owner): es la key del
     # Claude Code CLI del owner (metadata `purpose: Claude Code CLI -> modelos
     # locales`), y su allowlist de la BD ya lista modelos concretos — no es una key
@@ -3053,7 +3049,7 @@ data:
         for alias in os.environ.get(
             "LITELLM_UNCENSORED_ALLOWED_KEYS",
             "openclaw-qwen36-prod,playground,open-webui-v3,"
-            "opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse",
+            "claude-x86,hermes,hermes-batch,synapse",
         ).split(",")
         if alias.strip()
     )
@@ -8477,7 +8473,7 @@ data:
     # en segundo plano puede esperar en la cola del Spark; quien no debe esperar es el
     # operador interactivo. Campo ADITIVO `overflow_exempt` de /api/model-routing/config:
     #   classes — valores de x-claude-class (hoy solo `company`)
-    #   keys    — alias de virtual key de LiteLLM (opencode-20260630-local, hermes, ...)
+    #   keys    — alias de virtual key de LiteLLM (claude-x86, hermes, ...)
     # Una petición exenta (a) no pasa por la válvula (ni instant_reject ni la de la
     # compañía): encola en el residente; y (b) si trae un binding sticky a Alibaba que no
     # es una orden del operador (plan explícito o default_plan=alibaba), se re-vincula al
@@ -13307,7 +13303,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2078cb13ac3a
+        config.k8s.e-dani.com/revision: config-f62e611f8908
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13500,13 +13496,13 @@ spec:
             # CONTRACT: dgx.litellm.virtual-key.copilot-jake-chat.v1 — el alias
             # `copilot-jake-chat` de esta allowlist es la clave del copiloto del
             # side panel (INFRA-458); retirarla aqui le deja los or-* denegados.
-            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "opencode-20260630-local,hermes,hermes-batch,copilot-jake-chat" }
+            - { name: LITELLM_OPENROUTER_ALLOWED_KEYS, value: "hermes,hermes-batch,copilot-jake-chat" }
             # DO-31477: allowlist de la ruta abliterada (hook litellm_strip_params.py,
             # UNCENSORED_ALLOWED_KEY_ALIASES). Sin esta env el hook usa su default; se
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -14230,7 +14226,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2078cb13ac3a
+        config.k8s.e-dani.com/revision: config-f62e611f8908
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

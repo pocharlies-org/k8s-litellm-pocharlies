@@ -1008,7 +1008,7 @@ contracts:
     # puertas del hook que la listan igual que a su gemela de chat.
     kind: allowlist
     value: hermes-batch
-    anchor: opencode-20260630-local,hermes,hermes-batch
+    anchor: hermes,hermes-batch
     role: provider
     files:
       - k8s/manifest.yaml
@@ -1033,7 +1033,7 @@ contracts:
     # la puerta uncensored del hook (LITELLM_UNCENSORED_ALLOWED_KEYS).
     kind: allowlist
     value: hermes-cloudblue
-    anchor: openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue
+    anchor: openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue
     role: provider
     files:
       - k8s/manifest.yaml
@@ -1083,7 +1083,7 @@ contracts:
   - id: dgx.litellm.virtual-key.claude-x86.v1
     kind: allowlist
     value: claude-x86
-    anchor: opencode-20260630-local,claude-x86
+    anchor: claude-x86
     role: provider
     files:
       - k8s/manifest.yaml
