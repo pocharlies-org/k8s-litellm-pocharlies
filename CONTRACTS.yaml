@@ -891,6 +891,11 @@ contracts:
       alias responde 401 AuthenticationError sin device login, el despliegue
       del alias se conserva en el arranque y el pod se recupera solo cuando el
       keeper deja el token (antes el pod se quedaba sin Ready).
+      MIGRATE (DGX-1137, 2026-10-19): repin a la imagen del fork e1cfa8cbd5. Un
+      system a mitad de turno (Claude CLI por /v1/messages) llega a Codex como
+      item role=developer en vez de role=system, que el backend rechazaba con
+      400 "System messages are not allowed". Sin cambio de forma: mismos
+      alias, mismas claves del gate. Fix enviado a upstream (BerriAI/litellm#47444).
   - id: dgx.litellm.chatgpt-quota.v1
     kind: schema
     value: chatgpt:quota
