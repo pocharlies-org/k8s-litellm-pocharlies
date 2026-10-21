@@ -446,7 +446,11 @@ _sidecar_poller = None
 # (residente no Ready -> rebind_alibaba) ni los fallbacks del Router: exento = no
 # desborda por capacidad, no = sin red. Ausente o no-dict = DEFAULT (la compañía
 # exenta); una lista vacía guardada desde el panel = nadie exento (= antes del 26-09).
-DEFAULT_OVERFLOW_EXEMPT = {"classes": ["company"], "keys": []}
+# 21-10-2026 (SKIRM-219, Dani): `brain` también exento por defecto. Su key ya no
+# puede pedir Alibaba (models: tooling y qwen38-flash-next), así que un desborde de
+# la válvula acabaría en 403; exento, encola en el residente con el tope de 4 en
+# vuelo de la propia key (max_parallel_requests).
+DEFAULT_OVERFLOW_EXEMPT = {"classes": ["company"], "keys": ["brain"]}
 
 
 def _sanitize_exempt(raw):

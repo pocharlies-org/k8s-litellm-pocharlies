@@ -1005,11 +1005,19 @@ def test_ex_key_no_listada_sigue_desbordando(router_mod):
     assert data["model"] == OVERFLOW
 
 
+def test_ex_brain_exenta_por_defecto_encola(router_mod):
+    # SKIRM-219: la key brain solo ve modelos locales; desbordarla seria un 403.
+    env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2), inflight=99)
+    data = _data(metadata={"user_api_key_alias": "brain"})
+    assert env.run(data) is False
+    assert data["model"] == RESIDENT
+
+
 @pytest.mark.parametrize("raw,esperado", [
-    (None, {"classes": ["company"], "keys": []}),
-    ("basura", {"classes": ["company"], "keys": []}),
+    (None, {"classes": ["company"], "keys": ["brain"]}),
+    ("basura", {"classes": ["company"], "keys": ["brain"]}),
     ({"classes": [], "keys": []}, {"classes": [], "keys": []}),
-    ({"classes": ["Company", 3, " "], "keys": "x"}, {"classes": ["company"], "keys": []}),
+    ({"classes": ["Company", 3, " "], "keys": "x"}, {"classes": ["company"], "keys": ["brain"]}),
     ({"keys": ["Hermes", "hermes"]}, {"classes": ["company"], "keys": ["hermes"]}),
 ])
 def test_ex_sanitize(router_mod, raw, esperado):
