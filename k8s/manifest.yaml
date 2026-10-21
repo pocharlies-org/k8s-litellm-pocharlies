@@ -8491,7 +8491,11 @@ data:
     # (residente no Ready -> rebind_alibaba) ni los fallbacks del Router: exento = no
     # desborda por capacidad, no = sin red. Ausente o no-dict = DEFAULT (la compañía
     # exenta); una lista vacía guardada desde el panel = nadie exento (= antes del 26-09).
-    DEFAULT_OVERFLOW_EXEMPT = {"classes": ["company"], "keys": []}
+    # 21-10-2026 (SKIRM-219, Dani): `brain` también exento por defecto. Su key ya no
+    # puede pedir Alibaba (models: tooling y qwen38-flash-next), así que un desborde de
+    # la válvula acabaría en 403; exento, encola en el residente con el tope de 4 en
+    # vuelo de la propia key (max_parallel_requests).
+    DEFAULT_OVERFLOW_EXEMPT = {"classes": ["company"], "keys": ["brain"]}
 
 
     def _sanitize_exempt(raw):
@@ -13313,7 +13317,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-fca89db9d273
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14238,7 +14242,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-fca89db9d273
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

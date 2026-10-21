@@ -383,7 +383,9 @@ contracts:
       {classes: [x-claude-class values], keys: [virtual key aliases]}: an
       exempt request skips the capacity valve (queues on the resident) and a
       non-operator sticky binding to Alibaba is released back to the
-      resident. Absent or malformed = {classes: [company], keys: []}; an
+      resident. Absent or malformed = {classes: [company], keys: [brain]}
+      (2026-10-21, SKIRM-219: the `brain` key only sees local models and its
+      own max_parallel_requests is 4, so a valve rewrite would be a 403); an
       empty list saved from the panel = nobody exempt.
       Since 2026-09-27 it also reads the ADDITIVE KV-budget fields
       (precedence 4b/4c, defaults in the module so an old dashboard is fine):
