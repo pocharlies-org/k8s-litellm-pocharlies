@@ -364,9 +364,12 @@ def test_los_gemelos_del_residente_solo_difieren_en_el_motor():
         assert ia.pop("backend") != ib.pop("backend"), f"{alias}: los dos en el mismo nodo"
         # DGX-897: el tope por pod es lo otro que cambia, el `--max-num-seqs` de cada motor
         # entre las dos replicas del proxy (TP=2 8, TP=1 5 — DGX-955h).
+        # DGX-1205: el TP=1 baja de 3 a 2. Los DOS alias pegan al mismo motor con
+        # semaforo propio, asi que lo que cuenta contra sus 5 plazas es la suma:
+        # 3 por pod eran 12 admisiones, 2 son 8.
         topes = {a["model_info"]["id"][-3:]: pa.pop("max_parallel_requests"),
                  b["model_info"]["id"][-3:]: pb.pop("max_parallel_requests")}
-        assert topes == {"tp2": 4, "tp1": 3}, f"{alias}: topes por pod {topes}"
+        assert topes == {"tp2": 4, "tp1": 2}, f"{alias}: topes por pod {topes}"
         assert pa == pb, f"{alias}: litellm_params divergen entre gemelos"
         assert ia == ib, f"{alias}: model_info diverge entre gemelos"
 
@@ -447,7 +450,9 @@ def test_la_nueva_va_al_motor_con_mas_plazas_libres():
 
 def test_con_empate_o_sin_lectura_fresca_decide_el_peso_de_siempre():
     pod = _pod(FakeValkey())
-    _carga(pod, tp2=(4, 0), tp1=(1, 0))      # 4 libres en los dos
+    # DGX-1205: el empate es de plazas YA PONDERADAS -- 1 libre en el TP=2
+    # (x3 = 3) contra 3 en el TP=1 (x1 = 3) -- y ahi sigue decidiendo el sorteo.
+    _carga(pod, tp2=(7, 0), tp1=(2, 0))
     assert 0.64 < _reparto(pod) < 0.86
     pod = _pod(FakeValkey())
     _carga(pod, tp2=(8, 2), tp1=(0, 0), edad=pod.VLLM_STALE_SECONDS + 1)
@@ -467,14 +472,42 @@ def test_sin_valkey_decide_el_sorteo_que_coincide_entre_pods():
 
 def test_una_rafaga_entre_dos_lecturas_no_cae_entera_en_el_mismo_motor():
     pod = _pod(FakeValkey())
-    _carga(pod, tp2=(6, 0), tp1=(1, 0))      # 2 libres frente a 4
-    assert [_elige(pod, f"r-{i}") for i in range(2)] == ["tp1", "tp1"]
-    assert pod._claims_since_read[URL_TP1] == 2
-    # Con las dos plazas de ventaja ya dadas empatan y vuelve a decidir el peso.
+    # DGX-1205: 1 libre en el TP=2 (x3 = 3) frente a 2 en el TP=1 (x1 = 2).
+    _carga(pod, tp2=(7, 0), tp1=(3, 0))
+    assert _elige(pod, "r-0") == "tp2"
+    assert pod._claims_since_read[URL_TP2] == 1
+    # Dada esa plaza, el TP=2 baja a 0 (x3 = 0) y la siguiente va al TP=1.
+    assert _elige(pod, "r-1") == "tp1"
+    _carga(pod, tp2=(7, 0), tp1=(3, 0))      # la lectura siguiente pone el contador a 0
+    assert pod._claims_since_read == {}
+
+
+def test_la_plaza_libre_va_ponderada_por_el_peso_del_motor():
+    """DGX-1205: 2 huecos en el TP=2 valen mas que 4 en el TP=1, porque el TP=1
+    va a un tercio por peticion (39,0 tok/s frente a ~60 medidos el 22-10).
+    Antes ganaba el TP=1 por tener mas huecos y se le cargaban los prompts
+    largos al motor lento."""
+    pod = _pod(FakeValkey())
+    _carga(pod, tp2=(6, 0), tp1=(1, 0))      # 2 libres (x3 = 6) frente a 4 (x1 = 4)
+    assert _elige(pod, "ses-nueva") == "tp2"
+    assert pod.BACKEND_AFFINITY_STATS["by_load"] == 1
+
+
+def test_el_motor_lento_sigue_recibiendo_cuando_el_rapido_esta_lleno():
+    """La ponderacion no es una exclusion: con el TP=2 sin hueco (0 x 3 = 0) la
+    conversacion nueva va al TP=1 igual que antes."""
+    pod = _pod(FakeValkey())
+    _carga(pod, tp2=(8, 2), tp1=(1, 0))
+    assert _elige(pod, "ses-nueva") == "tp1"
+
+
+def test_los_dos_sobrevendidos_empatan_y_decide_el_peso():
+    """Plazas negativas pisadas a 0: si no, el rapido sobrevendido (-1 x 3 = -3)
+    parecia peor que el lento sobrevendido (-1 x 1 = -1) y se premiaba al lento."""
+    pod = _pod(FakeValkey())
+    _carga(pod, tp2=(8, 1), tp1=(5, 1))
     assert pod.least_loaded_backend({"tp2": _con_motor(_deps(FAMILIA[0], ("tp2",))),
                                      "tp1": _con_motor(_deps(FAMILIA[0], ("tp1",)))}) is None
-    _carga(pod, tp2=(6, 0), tp1=(1, 0))      # la lectura siguiente pone el contador a 0
-    assert pod._claims_since_read == {}
 
 
 def test_la_ligada_no_se_mueve_aunque_su_motor_vaya_lleno():

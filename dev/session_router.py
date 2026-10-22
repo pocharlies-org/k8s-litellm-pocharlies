@@ -2463,9 +2463,20 @@ def least_loaded_backend(by_backend, now=None):
     `--max-num-seqs` de cada vLLM) menos lo que tiene en marcha y en cola en la
     ultima lectura fresca de SU /metrics, menos lo que este pod ya le ha dado desde
     esa lectura. None si a alguno le falta el dato (sondeo caido o viejo) o si
-    empatan: entonces decide el peso, como antes."""
+    empatan: entonces decide el peso, como antes.
+
+    DGX-1205: las plazas van PONDERADAS por el mismo peso del sorteo. Una plaza
+    libre no vale igual en cada motor -- medido el 22 de octubre en dgx3 con el banco
+    drenado, el TP=1 da 39,0 tok/s por peticion a 3 en vuelo contra los ~60 del
+    TP=2 -- y contarlas a pelo mandaba lo pesado al motor lento solo porque
+    tenia mas huecos vacios. `tp2=3,tp1=1` ya ES esa proporcion, asi que no se
+    anade mando nuevo: se aplica el que habia donde de verdad se decide.
+    Las plazas negativas (motor sobrevendido) se pisan a 0 antes de ponderar: si
+    no, el rapido sobrevendido parecia PEOR que el lento sobrevendido; con el 0
+    empatan y decide el peso, que es lo que se quiere."""
     now = time.monotonic() if now is None else now
     slots = dict(zip(VLLM_METRICS_URLS, VLLM_SLOTS))
+    pesos = _resident_backend_weights()
     free = {}
     for backend, deps in by_backend.items():
         url = _metrics_url(deps[0])
@@ -2473,7 +2484,8 @@ def least_loaded_backend(by_backend, now=None):
         if url not in slots or sample is None or now - sample[2] > VLLM_STALE_SECONDS:
             return None
         waiting, running, _ = sample
-        free[backend] = slots[url] - running - waiting - _claims_since_read.get(url, 0)
+        libres = slots[url] - running - waiting - _claims_since_read.get(url, 0)
+        free[backend] = max(0, libres) * pesos.get(backend, 1.0)
     best = max(free, key=free.get)
     return None if list(free.values()).count(free[best]) > 1 else best
 

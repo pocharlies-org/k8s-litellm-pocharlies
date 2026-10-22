@@ -409,7 +409,19 @@ data:
       litellm_params:
         <<: *qwen38_resident_params
         api_base: http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1
-        max_parallel_requests: 3
+        # DGX-1205: 3 -> 2 (4 entre las dos replicas), y lo mismo en el gemelo
+        # uncensored. El 3 de DGX-955h se calculo como si esta entrada fuera la
+        # UNICA que pega al TP=1, pero el semaforo es por deployment Y por pod y
+        # no se comparte: con el uncensored tambien a 3 eran 6 + 6 = 12 admisiones
+        # contra un motor de `--max-num-seqs 5`, o sea hasta 7 peticiones
+        # aparcadas dentro de vLLM esperando detras de las 5 en curso. El router
+        # SI ve esa cola (`num_requests_waiting` entra en `least_loaded_backend`),
+        # asi que no se queda ciego: lo que se pagaba era cola de verdad en el
+        # motor lento, 13 s por peticion delante a los 39 tok/s medidos el 22 de
+        # octubre. Con 2 el peor caso es 4 + 4 = 8 para 5 plazas.
+        # No se baja a 1: con 4 en total una rafaga por un solo alias no llenaria
+        # las 5 del motor. ROLLBACK: 3.
+        max_parallel_requests: 2
       model_info:
         <<: *qwen38_resident_info
         id: qwen38-flash-next-tp1
@@ -577,7 +589,10 @@ data:
       litellm_params:
         <<: *qwen38_uncensored_params
         api_base: http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1
-        max_parallel_requests: 3  # DGX-955h: 6 entre las dos replicas para 5 del TP=1 (la sexta encola en el motor)
+        # DGX-1205: 3 -> 2. Detalle en el comentario de `qwen38-flash-next` del TP=1;
+        # los dos gemelos cambian juntos, que es lo que fija
+        # test_los_gemelos_del_residente_solo_difieren_en_el_motor.
+        max_parallel_requests: 2
       model_info:
         <<: *qwen38_uncensored_info
         id: qwen38-flash-next-uncensored-tp1
@@ -10508,9 +10523,20 @@ data:
         `--max-num-seqs` de cada vLLM) menos lo que tiene en marcha y en cola en la
         ultima lectura fresca de SU /metrics, menos lo que este pod ya le ha dado desde
         esa lectura. None si a alguno le falta el dato (sondeo caido o viejo) o si
-        empatan: entonces decide el peso, como antes."""
+        empatan: entonces decide el peso, como antes.
+
+        DGX-1205: las plazas van PONDERADAS por el mismo peso del sorteo. Una plaza
+        libre no vale igual en cada motor -- medido el 22 de octubre en dgx3 con el banco
+        drenado, el TP=1 da 39,0 tok/s por peticion a 3 en vuelo contra los ~60 del
+        TP=2 -- y contarlas a pelo mandaba lo pesado al motor lento solo porque
+        tenia mas huecos vacios. `tp2=3,tp1=1` ya ES esa proporcion, asi que no se
+        anade mando nuevo: se aplica el que habia donde de verdad se decide.
+        Las plazas negativas (motor sobrevendido) se pisan a 0 antes de ponderar: si
+        no, el rapido sobrevendido parecia PEOR que el lento sobrevendido; con el 0
+        empatan y decide el peso, que es lo que se quiere."""
         now = time.monotonic() if now is None else now
         slots = dict(zip(VLLM_METRICS_URLS, VLLM_SLOTS))
+        pesos = _resident_backend_weights()
         free = {}
         for backend, deps in by_backend.items():
             url = _metrics_url(deps[0])
@@ -10518,7 +10544,8 @@ data:
             if url not in slots or sample is None or now - sample[2] > VLLM_STALE_SECONDS:
                 return None
             waiting, running, _ = sample
-            free[backend] = slots[url] - running - waiting - _claims_since_read.get(url, 0)
+            libres = slots[url] - running - waiting - _claims_since_read.get(url, 0)
+            free[backend] = max(0, libres) * pesos.get(backend, 1.0)
         best = max(free, key=free.get)
         return None if list(free.values()).count(free[best]) > 1 else best
 
@@ -13313,7 +13340,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-5e116b8311f6
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14238,7 +14265,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-5e116b8311f6
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
