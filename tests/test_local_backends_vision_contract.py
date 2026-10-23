@@ -63,6 +63,11 @@ ALIAS_LOCALES = {
     # adapter solo manda remitente, asunto y cuerpo): el flag describe al backend, no
     # el uso.
     "correo-clasificador",
+    # 23-10-2026 (SC-2917): el alias del clasificador del harness. Misma decision
+    # heredada: su `model_info` sale por ancla del residente, asi que declara
+    # `supports_vision: true` como el. Tambien es de TEXTO: el flag describe al
+    # backend, no el uso.
+    "harness-clasificador",
 }
 
 
