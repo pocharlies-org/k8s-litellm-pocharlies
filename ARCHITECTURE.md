@@ -95,10 +95,11 @@ réplicas según el perfil `llm-tp`: un servicio sin endpoints significa «no re
 (`v1.105.1-codex-e1cfa8cbd5`) el excedente sobre el tope **rechaza con 429 en el acto**; con el pin anterior
 (`ghcr.io/berriai/litellm:v1.100.0`) **encolaba FIFO** (DGX-874, en vivo el 20-09). El cambio vino con el bump
 DGX-1035 (17-10): `MaxParallelRequestsLimit.acquire` levanta `RateLimitError` y no hay control que restaure la
-espera ni en v1.105.1 ni en el main de upstream. Lo contractual es ENCOLAR (los topes 4/3 por pod de Dani lo
-presuponen); la regresión va declarada en `tests/integration/semaphore_queue_contract.py` — que mide con el
-Router real de la imagen pineada y deja el CI rojo ante cualquier bump que cambie la semántica sin declararla —
-hasta que SC-2917 la arregle.
+espera ni en v1.105.1 ni en el main de upstream. Los topes 4/3 por pod de Dani presuponen ENCOLAR; hoy
+RECHAZA y así está **declarado** en `tests/integration/semaphore_queue_contract.py` — contrato de
+caracterización que mide con el Router real de la imagen pineada y deja el CI rojo si un bump cambia la
+semántica sin declararla o pinea una imagen sin medir. El parche del fork que restaura la espera (historia
+de SC-2917, dictamen del arquitecto 23-10) cambiará la declaración a ENCOLA en su propio PR.
 
 ## 6. Tests y validaciones
 

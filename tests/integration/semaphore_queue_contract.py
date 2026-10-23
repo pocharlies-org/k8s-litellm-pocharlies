@@ -1,16 +1,17 @@
-"""SC-2917: el tope `max_parallel_requests` debe ENCOLAR, no rechazar. Router REAL de la imagen pineada.
+"""SC-2917: el tope `max_parallel_requests` tiene la semantica DECLARADA abajo por imagen. Router REAL.
 
 Medida contractual (la que DGX-874 hizo en vivo el 20-09 sobre v1.100.0, ahora dentro del repo):
 N+1 llamadas concurrentes contra UNA sola deployment con `max_parallel_requests: N` (tomado del
-manifiesto, no copiado) apuntando a un upstream falso que retiene cada llamada 1,5 s. Con la
-semantica correcta la (N+1)-esima ESPERA hueco y todas terminan bien. Con la semantica de
-v1.105.1 (arriba, `MaxParallelRequestsLimit.acquire` en router_utils/client_initalization_utils.py)
-alguien recibe 429 "already has ... requests in flight" en el acto — que es exactamente el fallo
-del clasificador del 23-10: el tope compartia el residente y rechazo en vez de cola.
+manifiesto, no copiado) apuntando a un upstream falso que retiene cada llamada 1,5 s. Si la
+(N+1)-esima ESPERA hueco y todas terminan, la semantica es ENCOLA; si alguien recibe 429
+"already has ... requests in flight" en el acto, es RECHAZA.
 
-El test FALLA con cualquier imagen que rechace, salvo las declaradas abajo como regresion
-conocida (misma mecanica que las excepciones declaradas de test_litellm_network_contract:
-CI verde hoy, rojo en cuanto un bump cambie la semantica sin que nadie lo declare).
+TEST DE CARACTERIZACION TRANSITORIO (dictamen del arquitecto, SC-2917, opcion d): fija lo que
+HAY, no lo que se desea — verde mientras la imagen pineada mantenga su semantica declarada, ROJO
+si un bump cambia la semantica sin declararla o pinea una imagen sin medir. La semantica que los
+topes 4/3 del residente presuponen es ENCOLA (asi estaba con v1.100.0); la imagen pineada hoy
+declara RECHAZA como REGRESION de SC-2917 (fallo del clasificador del 23-10). El parche del fork
+que restaure la espera cambia esta declaracion a ENCOLA en su propio PR.
 
 Uso: tests/integration/run_semaphore_queue_contract.sh (necesita docker y la imagen).
 """
@@ -28,12 +29,14 @@ MANIFEST = pathlib.Path(os.environ.get("REPO", ".")) / "k8s" / "manifest.yaml"
 DEPLOYMENT_ID = "qwen38-flash-next-tp2"
 HOLD_S = 1.5
 
-# Regresion declarada (SC-2917): estas imagenes rechazan con 429 en vez de encolar. Cada una
-# es un hecho MEDIDO, no una sospecha; cualquier otra imagen que rechace deja el CI rojo.
-# Quitar una entrada = exigirle a esa imagen el encolado verificado.
-DECLARED_RECHAZO = frozenset({
-    "v1.105.1-codex-e1cfa8cbd5",  # medido 23-10-2026: acquire() levanta RateLimitError
-})
+# Semantica DECLARADA por imagen pineada: {tag: "ENCOLA"|"RECHAZA"}. Cada valor es un hecho
+# MEDIDO con este mismo test contra esa imagen, no una sospecha. Imagen sin entrada, o cuya
+# semantica medida cambie sin actualizar la entrada = CI rojo.
+# SC-2917: RECHAZA es la REGRESION declarada (los topes 4/3 presuponen ENCOLA; DGX-874 midio
+# ENCOLA con v1.100.0). El parche del fork (historia de SC-2917) la cambiara a ENCOLA.
+SEMANTICA_DECLARADA = {
+    "v1.105.1-codex-e1cfa8cbd5": "RECHAZA",  # medido 23-10-2026: acquire() levanta RateLimitError
+}
 
 
 def _tope_del_manifiesto() -> int:
@@ -105,12 +108,18 @@ async def main() -> None:
     for estado, detalle in rechazadas + raras:
         print(f"  {estado}: {detalle[:200]}")
 
-    if marca == "ENCOLA":
-        return
-    tag = imagen.split("/")[-1].split("@")[0]
-    if marca == "RECHAZA" and tag in DECLARED_RECHAZO:
-        print(f"  REGRESION DECLARADA (SC-2917): {tag} rechaza en vez de encolar; "
-              "el arreglo se decide en SC-2917, el contrato sigue exigiendo ENCOLA.")
+    # "litellm:v1.105.1-codex-e1cfa8cbd5@sha256:95c..." -> "v1.105.1-codex-e1cfa8cbd5"
+    tag = imagen.split("/")[-1].split("@")[0].split(":", 1)[-1]
+    esperada = SEMANTICA_DECLARADA.get(tag)
+    if marca == "PASAN-SIN-COLA":
+        print("  INCONCLUYENTE: no hay ni rechazo ni espera medible; revisa el harness del test.")
+    elif esperada is None:
+        print(f"  SEMANTICA NO DECLARADA para {tag}: imagen pineada sin medir (o sin su entrada).")
+    elif marca != esperada:
+        nota = " (REGRESION SC-2917: los topes presuponen ENCOLA)" if esperada == "RECHAZA" else ""
+        print(f"  CAMBIO SIN DECLARAR: {tag} declarada {esperada}, medida {marca}{nota}.")
+    else:
+        print(f"  coincide con lo declarado para {tag}: {esperada}")
         return
     raise SystemExit(1)
 
