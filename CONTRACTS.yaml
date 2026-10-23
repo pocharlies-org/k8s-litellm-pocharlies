@@ -306,6 +306,14 @@ contracts:
       Tests: tests/test_resident_backend_affinity.py (unitarios, valkey de pega) y
       los contratos del model_list gemelo en tests/test_dense_uncensored_contract.py
       y tests/test_model_limits_contract.py.
+
+      2026-10-23 (SC-2917, del problema SC-2913): anadida al model_list la deployment
+      `harness-clasificador` (el clasificador de permisos del harness, mismo diseno
+      que `correo-clasificador`): id propio SIN sufijo `-tpN`, como el de correo —
+      trafico sin estado que no toma pin (el filtro no ve sufijo, no escribe y el
+      sorteo no lo clava). Su semforo propio es justo el punto: el clasificador deja
+      de hacer cola detras del trafico del residente y de recibir el 429 por grupo
+      lleno. Fija tests/test_harness_clasificador_alias_contract.py.
   - id: dgx.session-router.deployment-affinity-key.v1
     kind: schema
     value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>

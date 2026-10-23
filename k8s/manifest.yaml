@@ -478,6 +478,50 @@ data:
         # DGX-1103: la politica de fallos del ancla es de los GEMELOS; aqui, con un solo deployment, haria
         # contar los 500 contra `allowed_fails` y aparcaria justo lo que el parrafo de arriba no quiere.
         allowed_fails_policy: null
+    # ── `harness-clasificador`: el residente corto para el clasificador del harness ──
+    #
+    # 23-10-2026 (SC-2917, del problema SC-2913). El clasificador de permisos del harness
+    # (Stage 2) llama al residente directo `qwen38-flash-next`: con los slots del grupo
+    # llenos el semaforo `max_parallel_requests` RECHAZA con 429 en vez de encolar, y el
+    # timeout de 240 s deja un slot ocupado 4 minutos. El 429 caia al respaldo (Alibaba,
+    # muerto por quota), el clasificador se quedaba sin veredicto y el harness lo
+    # presentaba como denegacion de seguridad: dos sesiones paradas el 23-10 (DGX-1229 y
+    # DGX-865). Mismo diseno que `correo-clasificador` (DGX-874): MISMO Service del
+    # residente por ancla (hereda api_base, sello `refusal:0` y tope de paralelo), id
+    # propio = semaforo propio (el clasificador no hace cola tras el trafico de datos),
+    # `timeout: 6` (falla rapido en vez de ocupar un slot 240 s) y `num_retries: 0`.
+    # SIN arista de fallback a proposito: ampliar el grafo es decision del owner
+    # (test_tooling_profile_contract, PERMITIDAS); con semaforo propio el 429 por
+    # saturacion del residente deja de existir para este trafico, y un timeout corto es
+    # un timeout, no un no de seguridad (runbook sparks-perfil-computo). No esta en
+    # THINKING_TIERS ni en SWAPPABLE_ALIASES, igual que el de correo.
+    # OJO, dos sitios mas: la allowlist `models` de la key `claude-local` vive en la
+    # Postgres de LiteLLM y va ANTES que este manifiesto (INFRA-431) — el alias no se
+    # alcanza hasta anadirla (union, que POST /key/update REEMPLAZA); y el consumidor
+    # (que el clasificador pida este alias) es el plano de enrutado, no este fichero.
+    # Lo fija tests/test_harness_clasificador_alias_contract.py.
+    - model_name: harness-clasificador
+      litellm_params:
+        <<: *qwen38_resident_params
+        timeout: 6
+        num_retries: 0
+      model_info:
+        <<: *qwen38_resident_info
+        # id PROPIO pisado sobre el heredado del ancla (DGX-852): es la llave del pin,
+        # la del cooldown y la del semaforo. Dos deployments con el mismo id se aparcan
+        # juntos y se confunden en el health-check.
+        id: harness-clasificador
+        # Solo `none`: como `correo-clasificador`, la declaracion del menu no debe
+        # prometer la escalera completa a un clasificador.
+        supported_reasoning_efforts: [none]
+        # 60, no los 360/900 del residente: con un solo deployment el Router no entra
+        # en cooldown por timeouts (medido DGX-874); si alguna vez aparcase, no debe
+        # dejar al clasificador fuera minutos.
+        cooldown_time: 60
+        # DGX-1103: la politica del ancla es de los GEMELOS; con un solo deployment
+        # contaria los 500 contra `allowed_fails` y aparcaria lo contrario de lo que
+        # se quiere aqui.
+        allowed_fails_policy: null
     # ── `qwen38-flash-next-uncensored`: el residente llm-tp, abliterado ────────
     #
     # MISMO backend, mismo head, misma GPU. Lo unico que cambia es que esta peticion
@@ -13313,7 +13357,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-9ea662d1de3b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14238,7 +14282,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-9ea662d1de3b
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
