@@ -69,7 +69,13 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         #   alibaba-q38-flash no llegaba nunca (182 intentos fallidos para 37
         #   correos el 12-10). Va con num_retries 0; lo fija
         #   tests/test_correo_clasificador_alias_contract.py.
-        excepciones = {"qwen38-flash-next": 240, "correo-clasificador": 6}
+        #   harness-clasificador = 6 (23-10-2026, SC-2917): mismo diseno para el
+        #   clasificador de permisos del harness, que con los 240 s del residente
+        #   ocupaba un slot del grupo 4 minutos y recibia el 429 del semaforo
+        #   (dos sesiones paradas el 23-10, SC-2913). Sin fallback; lo fija
+        #   tests/test_harness_clasificador_alias_contract.py.
+        excepciones = {"qwen38-flash-next": 240, "correo-clasificador": 6,
+                       "harness-clasificador": 6}
         for entry in model_list:
             params = entry.get("litellm_params", {})
             if "timeout" not in params:
