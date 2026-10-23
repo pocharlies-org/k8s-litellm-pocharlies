@@ -4859,7 +4859,9 @@ data:
     #   claude-cloudblue  05-10-2026, decision del owner: Claude Code del Mac con
     #               datos de CloudBlue. Esos prompts no pueden salir a Alibaba (ni a
     #               ningun tercero): se queda en el residente o falla visible. Su
-    #               allowlist de la key solo tiene qwen38-flash-next y -uncensored.
+    #               allowlist (DB, /key/update) desde el 23-10-2026: claude-*,
+    #               qwen38-flash-next, -uncensored y qwen38-off; ningun alibaba-*.
+    #               Ver tambien ANTHROPIC_ONLY_CLAUDE_KEY_ALIASES.
     #   skirmbooks-ui  17-10-2026 (SKIRM-183, epica SKIRM-177): el OCR de facturas de
     #               clientes pide `tooling` con esta key (la misma que llevan los
     #               adaptadores de banking por `envFrom: skirmbooks-ui-secrets`). Sin
@@ -4876,6 +4878,38 @@ data:
     NO_FALLBACK_KEY_ALIASES = frozenset(
         {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight"}
     )
+
+    # CONTRACT: dgx.litellm.claude-anthropic-only.v1
+    # 23-10-2026, orden de Dani («esa key no tiene que tener ningun fallback a
+    # alibaba»): para estas keys un `claude-*` SOLO lo sirve Anthropic. El sello
+    # de NO_FALLBACK_KEY_ALIASES ya cierra los fallbacks del Router; esto cierra
+    # los REWRITES del propio hook. Hoy hay uno vivo: el claude_gate de la
+    # compania (session_router._company_claude) reescribe un `claude-*` con
+    # `x-claude-class: company` a su `target` (qwen38-flash-next) aunque la key
+    # este sellada, y la cabecera la puede mandar cualquier cliente con la key.
+    # Invariante al FINAL del pre-call: si el `claude-*` pedido ya no va a un
+    # `claude-*`, 403 visible en vez de servirlo el residente local o Alibaba.
+    # El grupo `claude-*` del model_list solo tiene deployments `anthropic/`.
+    ANTHROPIC_ONLY_CLAUDE_KEY_ALIASES = frozenset({"claude-cloudblue"})
+
+    def _claude_rewrite_denied(requested, served, key_label):
+        """(bool, detalle) si una key de ANTHROPIC_ONLY_CLAUDE_KEY_ALIASES pidio un
+        `claude-*` y el pre-call lo dejo apuntando a otro modelo."""
+        if key_label not in ANTHROPIC_ONLY_CLAUDE_KEY_ALIASES:
+            return False, None
+        requested = str(requested or "")
+        served = str(served or "")
+        if not requested.startswith("claude-") or served.startswith("claude-"):
+            return False, None
+        return True, {
+            "error": "claude_anthropic_only",
+            "key": key_label,
+            "requested": requested,
+            "rewritten_to": served,
+            "hint": ("Esta key solo sirve claude-* desde Anthropic: no se reescribe "
+                     "a un modelo local ni a Alibaba. Quita x-claude-class o pide "
+                     "el modelo local por su nombre."),
+        }
 
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
     # Alibaba». Con el sellado entero, el clasificador de correo de Synapse murio en
@@ -7765,6 +7799,17 @@ data:
             # no-stream no debe llegar nunca al backend con esa combinacion,
             # la haya metido quien la haya metido.
             _strip_stream_options_without_stream(data)
+
+            # dgx.litellm.claude-anthropic-only.v1: ultimo gate, despues de TODOS
+            # los rewrites (claude_gate de la compania, vision, capacidad, sesion).
+            _denied, _detail = _claude_rewrite_denied(
+                requested_model, data.get("model", ""),
+                _resolve_key_label(user_api_key_dict))
+            if _denied:
+                router_log.error(
+                    "claude-anthropic-only: key %r pidio %r y el pre-call lo dejo en %r -> 403",
+                    _detail["key"], _detail["requested"], _detail["rewritten_to"])
+                raise HTTPException(status_code=403, detail=_detail)
 
             return data
 
@@ -13313,7 +13358,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-53e0209fdc27
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14238,7 +14283,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-53e0209fdc27
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

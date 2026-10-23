@@ -882,6 +882,26 @@ contracts:
       UNCENSORED_ALLOWED_KEY_ALIASES es coherente con este veto: su motivo
       de entrada (la medicion interna) ya no existe. Pinned by
       tests/test_master_inference_veto_contract.py.
+  - id: dgx.litellm.claude-anthropic-only.v1
+    kind: allowlist
+    value: claude-cloudblue
+    anchor: 'def _claude_rewrite_denied(requested, served, key_label):'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Keys en ANTHROPIC_ONLY_CLAUDE_KEY_ALIASES (hoy solo claude-cloudblue, el
+      Claude Code del Mac con datos de CloudBlue) solo reciben un claude-*
+      servido por Anthropic. Ultimo gate del async_pre_call_hook de
+      litellm_strip_params: si un claude-* pedido por esa key sale del pre-call
+      apuntando a otro modelo (hoy, el claude_gate de la compania con
+      x-claude-class: company lo reescribe a qwen38-flash-next aunque la key este
+      sellada), HTTP 403 con motivo claude_anthropic_only en vez de servirlo el
+      residente local o Alibaba. Complementa el sello de NO_FALLBACK_KEY_ALIASES
+      (fallbacks del Router). Las demas keys conservan el gate de la compania.
+      Orden de Dani, 23-10-2026. Pinned by
+      tests/test_claude_anthropic_only_contract.py.
   - id: dgx.litellm.chatgpt-oauth.v1
     kind: allowlist
     value: gpt-
