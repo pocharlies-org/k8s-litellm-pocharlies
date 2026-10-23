@@ -77,3 +77,7 @@ jobs:
         run: echo "$HARBOR_PASSWORD" | docker login harbor.lan.e-dani.com -u "$HARBOR_USER" --password-stdin
       - name: Router real + Valkey real, dos pods
         run: tests/integration/run_alibaba_account_affinity.sh
+      # SC-2917: el tope max_parallel_requests debe ENCOLAR (medido DGX-874, v1.100.0). Rojo en
+      # cuanto un bump cambie la semantica sin declararla en semaphore_queue_contract.py.
+      - name: Semaforo del tope de peticiones (integration)
+        run: tests/integration/run_semaphore_queue_contract.sh
