@@ -178,7 +178,10 @@ data:
     #
     # max_parallel_requests NO ENCOLA. Cuando el contador en vuelo de la
     # deployment pasa del tope, LiteLLM levanta RateLimitError (HTTP 429) en el
-    # acto. vLLM si encola: mas alla de MAX_NUM_SEQS las peticiones esperan en su
+    # acto. (SC-2917, medido 23-10: vuelve a ser verdad en la imagen pineada
+    # v1.105.1-codex; encolaba con v1.100.0 — ver el bloque del residente y
+    # tests/integration/semaphore_queue_contract.py. Lo que los topes presuponen es ENCOLAR.)
+    # vLLM si encola: mas alla de MAX_NUM_SEQS las peticiones esperan en su
     # waiting queue, no se rechazan. Poner el tope del proxy a la altura de los
     # slots de EJECUCION del motor convertia "espera dos segundos" en "429 too
     # many requests", y el cliente lo remata con "exceeded retry limit".
@@ -229,8 +232,18 @@ data:
     # `alibaba-q38-flash`, y la peticion se cobra entera en el residente sin
     # que nadie escuche la respuesta.
     #
-    # Semantica VERIFICADA en vivo (20-09, tras desplegar #98): el
-    # `max_parallel_requests` NO rechaza — ENCOLA. Este LiteLLM lo implementa
+    # Semantica VERIFICADA en vivo (20-09, tras desplegar #98, sobre el pin de
+    # entonces — ghcr v1.100.0): el `max_parallel_requests` NO rechaza — ENCOLA.
+    # OJO (SC-2917, medido 23-10-2026): en la imagen pineada HOY
+    # (v1.105.1-codex-e1cfa8cbd5, bump DGX-1035 del 17-10) esto NO es cierto:
+    # `MaxParallelRequestsLimit.acquire` levanta 429 en el acto ("already has
+    # ... requests in flight" — el rechazo que tumbo al clasificador el 23-10).
+    # Medido con el Router real de cada imagen en
+    # tests/integration/semaphore_queue_contract.py: v1.100.0 ENCOLA,
+    # v1.105.1-codex RECHAZA. El contrato de caracterizacion fija la semantica
+    # declarada por imagen (hoy RECHAZA, regresion SC-2917); el parche del fork
+    # que restaura la espera la cambiara a ENCOLA. Lo de abajo describe la
+    # semantica QUE SE QUIERE (y la que tenia v1.100.0). Este LiteLLM lo implementaba
     # como un semaphore asyncio por deployment y por POD (router.py:
     # `_get_client(client_type="max_parallel_requests")` + `async with`), y sin
     # Redis el tope es 8 por replica: 16 efectivos entre las dos. El hook del
@@ -263,6 +276,9 @@ data:
         # 4 por pod son 8 por entrada. Antes, 16 por entrada y nunca se llenaba, así que un cliente podía
         # acaparar el residente (16 ranuras). Lo que pase ESPERA aquí (encola, no rechaza; su espera no cuenta
         # para `timeout`) y es FIFO: la prioridad por key solo la ordena la cola del vLLM. ROLLBACK: 8.
+        # SC-2917 (23-10): con la imagen pineada actual (v1.105.1-codex) el excedente NO espera: 429 en el
+        # acto (medido en tests/integration/semaphore_queue_contract.py, que lo fija como semantica
+        # declarada). ENCOLAR es lo que este tope presupone; el parche del fork (SC-2917) lo restaura.
         # 14-10-2026 (DGX-897, Dani): 4 -> 8 por pod = 16 entre las dos réplicas, el `--max-num-seqs` del TP=2.
         # 18-10-2026 (DGX-955h, Dani): 8 -> 4 por pod = 8, el `--max-num-seqs` del TP=2 tras medir la
         # saturación de prefill (x2,8 de 8 a 16 secuencias). Los gemelos TP=1 lo pisan a 3 (5, su
@@ -13313,7 +13329,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-8a04492eb8d3
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14238,7 +14254,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-cdc489f4df34
+        config.k8s.e-dani.com/revision: config-8a04492eb8d3
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

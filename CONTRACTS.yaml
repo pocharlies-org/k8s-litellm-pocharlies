@@ -250,6 +250,15 @@ contracts:
       cuatro `-tpN`), asi que la mudanza de sesiones queda para el motor caido (500 o
       /metrics mudo), no para el saturado. Clave y valor del pin sin cambios.
 
+      SC-2917 (2026-10-23): el SEMAFORO que admite las sesiones (`max_parallel_requests`
+      por deployment y por pod) cambio de semantica con el bump DGX-1035: en la imagen
+      pineada (v1.105.1-codex-e1cfa8cbd5) el excedente recibe 429 en el acto; con el pin
+      anterior (ghcr v1.100.0) ENCOLABA FIFO — medido con el Router real de cada imagen
+      en tests/integration/semaphore_queue_contract.py, que es el contrato. Afecta a
+      este pin en que las "plazas libres" del reparto ya no admiten con espera: una
+      sesion nueva puede recibir 429 en vez de hacer cola detras de las 4/3 por pod.
+      Clave y valor del pin sin cambios.
+
       DGX-1146 (2026-10-20, Dani): `model_info.cooldown_time` de los gemelos del residente
       de 900 a 360 s. El OOM del 20-10 tumbo el TP=2, que volvio solo en ~220 s, y el pin
       lo dejo aparcado 15 min con Alibaba en 429. Cuanto dura la expulsion, no cuando se

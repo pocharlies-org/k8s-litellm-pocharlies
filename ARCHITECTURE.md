@@ -91,6 +91,16 @@ un cambio de `session_router.py` rueda también el `plan-gateway`, que lo import
 Los modelos locales por defecto llevan `enable_thinking: false`: no cambiar sin pedirlo. Los pods Qwen pueden estar a 0/0
 réplicas según el perfil `llm-tp`: un servicio sin endpoints significa «no residente», no «roto».
 
+**Semántica del tope `max_parallel_requests` (SC-2917, medido 23-10-2026):** con la imagen pineada hoy
+(`v1.105.1-codex-e1cfa8cbd5`) el excedente sobre el tope **rechaza con 429 en el acto**; con el pin anterior
+(`ghcr.io/berriai/litellm:v1.100.0`) **encolaba FIFO** (DGX-874, en vivo el 20-09). El cambio vino con el bump
+DGX-1035 (17-10): `MaxParallelRequestsLimit.acquire` levanta `RateLimitError` y no hay control que restaure la
+espera ni en v1.105.1 ni en el main de upstream. Los topes 4/3 por pod de Dani presuponen ENCOLAR; hoy
+RECHAZA y así está **declarado** en `tests/integration/semaphore_queue_contract.py` — contrato de
+caracterización que mide con el Router real de la imagen pineada y deja el CI rojo si un bump cambia la
+semántica sin declararla o pinea una imagen sin medir. El parche del fork que restaura la espera (historia
+de SC-2917, dictamen del arquitecto 23-10) cambiará la declaración a ENCOLA en su propio PR.
+
 ## 6. Tests y validaciones
 
 ```sh
