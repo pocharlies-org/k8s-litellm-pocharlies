@@ -255,6 +255,16 @@ contracts:
       lo dejo aparcado 15 min con Alibaba en 429. Cuanto dura la expulsion, no cuando se
       dispara ni a donde se muda. Clave y valor del pin sin cambios.
 
+      DGX-1205 (2026-10-23, Dani): `least_loaded_backend` pondera las plazas libres con el
+      peso del backend (`tp2=3,tp1=1`) antes de compararlas, y las negativas se pisan a 0.
+      Un hueco en el TP=1 no vale lo que uno en el TP=2: medido el 22 de octubre con dgx3
+      drenado y prompts de 100k, 39,0 tok/s por peticion con 3 en vuelo frente a ~60 del
+      TP=2, y el reparto le mandaba el 44% del trafico (64.784 de 151.837 peticiones en 7
+      dias). El peso ya existia pero solo rompia empates. Ademas `max_parallel_requests`
+      de los dos alias del TP=1 baja de 3 a 2 por pod: con semaforo propio cada uno eran
+      6+6 admisiones contra `--max-num-seqs 5`. Cambia a que motor va una conversacion
+      NUEVA; clave, valor y semantica del pin sin cambios.
+
       Publisher y lector: session_router.resident_backend_filter, llamado por el
       Router en cada eleccion de deployment a traves de
       StripUnsupportedParams.async_filter_deployments, DESPUES del filtro de cuenta
