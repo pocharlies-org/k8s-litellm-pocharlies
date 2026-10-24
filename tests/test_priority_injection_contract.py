@@ -317,6 +317,7 @@ def test_el_mapa_vive_en_config_yaml():
     assert CONFIG_YAML["priority_by_alias"] == {
         "open-webui-v3": -10, "hermes": -10, "hermes-batch": 10, "brain": 20,
         "hindsight": 20,  # INFRA-940: sustituye al brain, misma prioridad
+        "analisis": 20,  # INFRA-988: extraccion y resumen de CDM, misma prioridad
         # DGX-601 (Dani): `claude-x86` es la misma key para la compania y para el
         # uso personal, asi que su nivel va MAPA por clase, no entero.
         "claude-x86": {"default": -5, "company": 5},
