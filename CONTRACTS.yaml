@@ -1226,10 +1226,16 @@ contracts:
       (pedido BSS 518016570950293, 3 meses por $195 pre-tax), 180.000
       creditos/mes, 47,5 % consumido = $30,875, mezcla de tokens de
       LiteLLM_SpendLogs del periodo (contaminacion AI Studio/galan medida: 0).
-      Ratio de cache segun doc Context Cache de Alibaba: 20 % del input
-      (implicito), 10 % en deepseek-v4.1-flash. k = 30,875/350,07 = 0,0882;
-      la ventana recalculada da $30,875 exactos. Consumidor: el spend que
-      publican SpendLogs y /v2/model/info (paneles del dashboard, Grafana).
+      k = 30,875/350,07 = 0,0882; la ventana recalculada da $30,875 exactos.
+      Consumidor: el spend que publican SpendLogs y /v2/model/info (paneles del
+      dashboard, Grafana).
+      2026-10-25: ratio de cache recalibrado a 0,50 del input en los 22 alias.
+      La doc Context Cache prometia 20 % del input (10 % en
+      deepseek-v4.1-flash) y con eso el proxy se quedaba corto por 2,8x: la
+      consola leyo 52,31 % de la ventana mensual (94.158 creditos) contra
+      2.622 M de cache-read medidos en SpendLogs, y ese numero solo sale con
+      f = 0,50. No se renombra ningun literal de la superficie (sigue siendo
+      cache_read_input_token_cost) y la k no cambia: sin .vN+1.
       2026-10-20 (DGX-1190): publicado el alias `alibaba-ds41f1017` (upstream
       `deepseek-v4.1-flash-1017`) con los tres precios de su familia
       `alibaba-dsv41-fl`; la k del pack no cambia y ningun literal de la

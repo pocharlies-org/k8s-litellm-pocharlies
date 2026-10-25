@@ -1268,7 +1268,8 @@ data:
     #
     # Alta 20-09-2026. Segundo upstream de pago que sale a Internet tras OpenRouter.
     #
-    # PRECIO TARIFICADO EN ESTE PROXY (25-09-2026): prorrateo del pack. La
+    # PRECIO TARIFICADO EN ESTE PROXY (25-09-2026, ratio de cache recalibrado
+    # 25-10-2026): prorrateo del pack. La
     # suscripcion real es PERSONAL Pro, no Team: el pedido de BSS 518016570950293
     # dice commodity `sfm_tokenplansolo_public_intl` / subscription_type `pro` /
     # 3 meses por $195 pre-tax ($240 de lista menos $45 de promo) = $65/mes, y la
@@ -1286,9 +1287,14 @@ data:
     #     q37-max $2,5/$7,5, q36-flash $0,25/$1,5, dsv4-pro $2,4/$4,8,
     #     dsv4-flash-0731 $0,44/$1,32, dsv4.1-flash $0,3/$1,2, glm-5.2/5.3
     #     $1,4/$4,4 (por M; deepseek a precio "busy").
-    #   - Cache: la doc Context Cache (18-09) da el ratio implicito por modelo:
-    #     20 % del input para todos, 10 % para deepseek-v4.1-flash. El cache del
-    #     token plan es implicito (no manda cache_control), y la respuesta trae
+    #   - Cache: 50 % del input, MEDIDO el 25-10-2026 contra la consola. La doc
+    #     Context Cache (18-09) prometia 20 % del input y 10 % para
+    #     deepseek-v4.1-flash; con esos ratios el proxy se quedaba CORTO por 2,8x:
+    #     la consola leyo 52,31 % de la ventana mensual (94.158 creditos) con
+    #     2.873 M de tokens nuestros, de los que 2.622 M eran cache-read. Esos
+    #     94.158 creditos solo salen con f = 0,50 (f = 0,20 daria 46.519; f = 0
+    #     daria 15.032; sin descuento alguno 172.463). El cache del token plan es
+    #     implicito (no manda cache_control), y la respuesta trae
     #     prompt_tokens_details.cached_tokens, que es lo que come
     #     cache_read_input_token_cost en LiteLLM (leido en el source 1.100.0:
     #     generic_cost_per_token descuenta los cache-hit del input y los tarifica
@@ -1380,7 +1386,7 @@ data:
         # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000017639273
-        cache_read_input_token_cost: 0.00000003527855
+        cache_read_input_token_cost: 0.00000008819637
         output_cost_per_token: 0.00000052917818
         supports_function_calling: true
         supports_vision: true
@@ -1422,7 +1428,7 @@ data:
         # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000017639273
-        cache_read_input_token_cost: 0.00000003527855
+        cache_read_input_token_cost: 0.00000008819637
         output_cost_per_token: 0.00000052917818
         supports_function_calling: true
         supports_vision: true
@@ -1500,7 +1506,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000001322945
-        cache_read_input_token_cost: 0.00000000264589
+        cache_read_input_token_cost: 0.00000000661473
         output_cost_per_token: 0.00000004145229
         # 20-09-2026: la otra mitad del cooldown asimetrico (ver `qwen38-flash-next`).
         # Este aparca CORTO porque es el ULTIMO recurso: si se expulsa a este y el
@@ -1549,7 +1555,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000001322945
-        cache_read_input_token_cost: 0.00000000264589
+        cache_read_input_token_cost: 0.00000000661473
         output_cost_per_token: 0.00000004145229
         # 20-09-2026: la otra mitad del cooldown asimetrico (ver `qwen38-flash-next`).
         # Este aparca CORTO porque es el ULTIMO recurso: si se expulsa a este y el
@@ -1590,7 +1596,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000003527855
-        cache_read_input_token_cost: 0.00000000705571
+        cache_read_input_token_cost: 0.00000001763928
         output_cost_per_token: 0.00000014111418
         supports_function_calling: true
         supports_vision: true
@@ -1624,7 +1630,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000003527855
-        cache_read_input_token_cost: 0.00000000705571
+        cache_read_input_token_cost: 0.00000001763928
         output_cost_per_token: 0.00000014111418
         supports_function_calling: true
         supports_vision: true
@@ -1650,7 +1656,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000022049091
-        cache_read_input_token_cost: 0.00000004409818
+        cache_read_input_token_cost: 0.00000011024546
         output_cost_per_token: 0.00000066147272
         supports_function_calling: true
         supports_vision: false
@@ -1684,7 +1690,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000022049091
-        cache_read_input_token_cost: 0.00000004409818
+        cache_read_input_token_cost: 0.00000011024546
         output_cost_per_token: 0.00000066147272
         supports_function_calling: true
         supports_vision: false
@@ -1710,7 +1716,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000002204909
-        cache_read_input_token_cost: 0.00000000440982
+        cache_read_input_token_cost: 0.00000001102455
         output_cost_per_token: 0.00000013229454
         supports_function_calling: true
         supports_vision: true
@@ -1744,7 +1750,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000002204909
-        cache_read_input_token_cost: 0.00000000440982
+        cache_read_input_token_cost: 0.00000001102455
         output_cost_per_token: 0.00000013229454
         supports_function_calling: true
         supports_vision: true
@@ -1770,7 +1776,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000002645891
-        cache_read_input_token_cost: 0.00000000264589
+        cache_read_input_token_cost: 0.00000001322945
         output_cost_per_token: 0.00000010583564
         supports_function_calling: true
         supports_vision: true
@@ -1804,7 +1810,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000002645891
-        cache_read_input_token_cost: 0.00000000264589
+        cache_read_input_token_cost: 0.00000001322945
         output_cost_per_token: 0.00000010583564
         supports_function_calling: true
         supports_vision: true
@@ -1832,7 +1838,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000002645891
-        cache_read_input_token_cost: 0.00000000264589
+        cache_read_input_token_cost: 0.00000001322945
         output_cost_per_token: 0.00000010583564
         supports_function_calling: true
         supports_vision: true
@@ -1856,7 +1862,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000002645891
-        cache_read_input_token_cost: 0.00000000264589
+        cache_read_input_token_cost: 0.00000001322945
         output_cost_per_token: 0.00000010583564
         supports_function_calling: true
         supports_vision: true
@@ -1882,7 +1888,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000021167127
-        cache_read_input_token_cost: 0.00000004233425
+        cache_read_input_token_cost: 0.00000010583563
         output_cost_per_token: 0.00000042334254
         supports_function_calling: true
         supports_vision: false
@@ -1916,7 +1922,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000021167127
-        cache_read_input_token_cost: 0.00000004233425
+        cache_read_input_token_cost: 0.00000010583563
         output_cost_per_token: 0.00000042334254
         supports_function_calling: true
         supports_vision: false
@@ -1942,7 +1948,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.0000000388064
-        cache_read_input_token_cost: 0.00000000776128
+        cache_read_input_token_cost: 0.00000001940320
         output_cost_per_token: 0.0000001164192
         supports_function_calling: true
         supports_vision: false
@@ -1976,7 +1982,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.0000000388064
-        cache_read_input_token_cost: 0.00000000776128
+        cache_read_input_token_cost: 0.00000001940320
         output_cost_per_token: 0.0000001164192
         supports_function_calling: true
         supports_vision: false
@@ -2002,7 +2008,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000012347491
-        cache_read_input_token_cost: 0.00000002469498
+        cache_read_input_token_cost: 0.00000006173746
         output_cost_per_token: 0.000000388064
         supports_function_calling: true
         supports_vision: false
@@ -2036,7 +2042,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000012347491
-        cache_read_input_token_cost: 0.00000002469498
+        cache_read_input_token_cost: 0.00000006173746
         output_cost_per_token: 0.000000388064
         supports_function_calling: true
         supports_vision: false
@@ -2062,7 +2068,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000012347491
-        cache_read_input_token_cost: 0.00000002469498
+        cache_read_input_token_cost: 0.00000006173746
         output_cost_per_token: 0.000000388064
         supports_function_calling: true
         supports_vision: false
@@ -2096,7 +2102,7 @@ data:
         backend: alibaba-model-studio
         # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
         input_cost_per_token: 0.00000012347491
-        cache_read_input_token_cost: 0.00000002469498
+        cache_read_input_token_cost: 0.00000006173746
         output_cost_per_token: 0.000000388064
         supports_function_calling: true
         supports_vision: false
@@ -13386,7 +13392,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7f8dde11706c
+        config.k8s.e-dani.com/revision: config-4be4f99d7af9
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14311,7 +14317,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7f8dde11706c
+        config.k8s.e-dani.com/revision: config-4be4f99d7af9
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
