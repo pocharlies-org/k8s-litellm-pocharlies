@@ -7146,6 +7146,58 @@ data:
         _slm["hermes_profile"] = str(profile)
         return True
 
+    def _session_title_header(data):
+        """La etiqueta de sesión de la cabecera x-claude-session-title, o None.
+
+        Mismas tres fuentes y clave case-insensitive que _hermes_profile. El valor
+        es SOLO una etiqueta (custom-title/ai-title dicho por el lanzador): se
+        colapsa todo espacio en blanco a un solo espacio — el formato de
+        ANTHROPIC_CUSTOM_HEADERS es una línea por cabecera, un título con salto
+        partiría la cabecera — y se corta a 120, el tope de claude-rc-status.
+        Nunca un recorte del prompt: quien no tiene etiqueta no manda cabecera.
+        Fail-open: nunca lanza."""
+        # CONTRACT: dgx.claude.session-title-header.v1
+        try:
+            sources = [
+                data.get("headers"),
+                (data.get("metadata") or {}).get("headers"),
+                (data.get("litellm_metadata") or {}).get("headers"),
+            ]
+        except AttributeError:
+            return None
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            try:
+                for key, value in source.items():
+                    if isinstance(key, str) and key.lower() == "x-claude-session-title" and value:
+                        v = re.sub(r"\s+", " ", str(value)).strip()[:120]
+                        return v or None
+            except (AttributeError, TypeError):
+                continue
+        return None
+
+    def _stamp_session_title(data, titulo) -> bool:
+        """Sella spend_logs_metadata.session_title: la etiqueta que el cliente mandó
+        por cabecera, para el HISTÓRICO — el índice de títulos del x86 no ve las
+        sesiones cuyo transcript vive en otra máquina (el hueco del Top-20 en sid
+        corto). Mismo dict y misma vía que _stamp_claude_class. Sin etiqueta no se
+        escribe nada. True si sello."""
+        if not titulo or not isinstance(data, dict):
+            return False
+        _mvar = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+        _meta = data.get(_mvar)
+        if not isinstance(_meta, dict):
+            _meta = {}
+            data[_mvar] = _meta
+        _slm = _meta.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            _meta["spend_logs_metadata"] = _slm
+        # CONTRACT: dgx.litellm.spendlogs-session-title.v1
+        _slm["session_title"] = str(titulo)
+        return True
+
 
     def _stamp_refusal_probe(request_data, obj) -> bool:
         """Sella la sonda si `obj` la trae. Mismas dos vias que _stamp_refusal_text
@@ -7729,6 +7781,10 @@ data:
                 _stamp_hermes_profile(data, _hermes_profile(data))
             except Exception as e:
                 log.warning("profile stamp error: %s", e)
+            try:
+                _stamp_session_title(data, _session_title_header(data))
+            except Exception as e:
+                log.warning("session title stamp error: %s", e)
             try:
                 _route_meta = data.get("metadata")
                 if not isinstance(_route_meta, dict):
@@ -13330,7 +13386,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-388d99f94d57
+        config.k8s.e-dani.com/revision: config-7f8dde11706c
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14255,7 +14311,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-388d99f94d57
+        config.k8s.e-dani.com/revision: config-7f8dde11706c
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
