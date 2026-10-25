@@ -264,6 +264,13 @@ contracts:
       lo dejo aparcado 15 min con Alibaba en 429. Cuanto dura la expulsion, no cuando se
       dispara ni a donde se muda. Clave y valor del pin sin cambios.
 
+      DGX-1291 (2026-10-25, Dani): prueba a 10 secuencias en el TP=2 con auditoria a 24 h —
+      el tope de 8 estaba puesto y apretaba (maximo 8 en 24 h, 10 peticiones en espera).
+      `max_parallel_requests` del ancla y de su gemelo 4->5 por pod (10 entre las dos
+      replicas del proxy) y SESSION_ROUTER_VLLM_SLOTS default 8,5 -> 10,5. El TP=1 sigue
+      en 5 y `local_slots` del panel de ruteo pasa de 13 a 15 (10 + 5). Clave y valor del
+      pin sin cambios.
+
       Publisher y lector: session_router.resident_backend_filter, llamado por el
       Router en cada eleccion de deployment a traves de
       StripUnsupportedParams.async_filter_deployments, DESPUES del filtro de cuenta
