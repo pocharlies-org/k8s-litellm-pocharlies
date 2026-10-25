@@ -283,7 +283,10 @@ data:
         # 18-10-2026 (DGX-955h, Dani): 8 -> 4 por pod = 8, el `--max-num-seqs` del TP=2 tras medir la
         # saturación de prefill (x2,8 de 8 a 16 secuencias). Los gemelos TP=1 lo pisan a 3 (5, su
         # `--max-num-seqs`: 3x2 réplicas admite 6 y la sexta encola dentro del motor). ROLLBACK: 8.
-        max_parallel_requests: 4
+        # 25-10-2026 (DGX-1291, Dani): 4 -> 5 por pod = 10, el `--max-num-seqs` del TP=2 subido a prueba
+        # con auditoría a 24 h (el tope estaba puesto: 8 de máximo en 24 h y 10 peticiones en espera).
+        # Sin esto el proxy sigue cortando a 8 y la prueba del servidor no mide nada. ROLLBACK: 4.
+        max_parallel_requests: 5
         # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
         # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
@@ -531,8 +534,8 @@ data:
         api_key: not-used
         timeout: 600
         # DGX-587: 8 -> 4 (por pod). DGX-897 (14-10): 4 -> 8, 16 en el TP=2. DGX-955h (18-10): 8 -> 4
-        # (8 en el TP=2); su gemelo TP=1 lo pisa a 3 (5). Detalle en qwen38-flash-next.
-        max_parallel_requests: 4
+        # (8 en el TP=2); su gemelo TP=1 lo pisa a 3 (5). DGX-1291 (25-10): 4 -> 5 (10), con el ancla.
+        max_parallel_requests: 5
         extra_body: { cache_salt: "refusal:1.0" }
       model_info: &qwen38_uncensored_info
         # DGX-852: id estable con sufijo de backend, mismo criterio que su
@@ -8526,6 +8529,9 @@ data:
     # (k8s-ai-pocharlies#197): el desborde salta a 13, la capacidad REAL del residente;
     # con el 24 viejo se admitían 11 peticiones más de las que cabían y encolaban dentro
     # del motor (lento sin desbordar).
+    # DGX-1291 (25-10-2026, Dani): 8,5 -> 10,5 con el TP=2 a 10 secuencias a prueba con
+    # auditoría a 24 h (k8s-ai-pocharlies#217); el desborde salta a 15 y `local_slots` del
+    # panel con él — manda el menor, así que con el 13 viejo las 3 plazas nuevas no se usan.
 
 
     def _parse_slots(raw):
@@ -8535,7 +8541,7 @@ data:
             return ()
 
 
-    VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "8,5"))
+    VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "10,5"))
     _vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
     # DGX-974: la ultima lectura de CADA motor, url -> (waiting, running, read_at), y
     # cuantas peticiones nuevas le ha dado ESTE pod desde esa lectura: el reparto de
@@ -13386,7 +13392,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7f8dde11706c
+        config.k8s.e-dani.com/revision: config-a78361566e53
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14311,7 +14317,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7f8dde11706c
+        config.k8s.e-dani.com/revision: config-a78361566e53
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

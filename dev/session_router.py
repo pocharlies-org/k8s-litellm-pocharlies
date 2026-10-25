@@ -408,6 +408,9 @@ _vllm_queue = {"waiting": None, "running": None, "since": None, "read_at": None}
 # (k8s-ai-pocharlies#197): el desborde salta a 13, la capacidad REAL del residente;
 # con el 24 viejo se admitían 11 peticiones más de las que cabían y encolaban dentro
 # del motor (lento sin desbordar).
+# DGX-1291 (25-10-2026, Dani): 8,5 -> 10,5 con el TP=2 a 10 secuencias a prueba con
+# auditoría a 24 h (k8s-ai-pocharlies#217); el desborde salta a 15 y `local_slots` del
+# panel con él — manda el menor, así que con el 13 viejo las 3 plazas nuevas no se usan.
 
 
 def _parse_slots(raw):
@@ -417,7 +420,7 @@ def _parse_slots(raw):
         return ()
 
 
-VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "8,5"))
+VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "10,5"))
 _vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
 # DGX-974: la ultima lectura de CADA motor, url -> (waiting, running, read_at), y
 # cuantas peticiones nuevas le ha dado ESTE pod desde esa lectura: el reparto de
