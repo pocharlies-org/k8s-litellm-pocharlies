@@ -986,6 +986,41 @@ contracts:
       trae; sin cabecera no se escribe nada. Consumido por dgx-infra
       services/dashboard (Inferencia: uso por perfil y consumidor en ventanas
       1m..30d). Aditivo. Pinned by tests/test_spendlogs_hermes_profile_contract.py.
+  - id: dgx.claude.session-title-header.v1
+    # Cabecera de etiqueta de sesion: convencion de datos entre el lanzador
+    # (publisher, x86-host-runtime / Paseo) y el hook (consumer, aqui). Mismo
+    # kind que dgx.claude.class-header.v1 por la misma razon (checker).
+    kind: schema
+    value: x-claude-session-title
+    role: consumer
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-25. Cabecera opcional con la ETIQUETA de la sesion (custom-title /
+      ai-title dicho por el lanzador; nunca un recorte del prompt, ruling del CTO
+      en claude-rc-status.py::_etiqueta). El hook la lee de las mismas tres
+      fuentes que x-hermes-profile, colapsa espacios y corta a 120. Quien no tiene
+      etiqueta no manda cabecera. Publisher en x86-host-runtime (PR aparte).
+  - id: dgx.litellm.spendlogs-session-title.v1
+    # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
+    # que lee por SQL el panel (titulo del Top-20 para sesiones cuyo transcript
+    # no esta en el indice del x86). Mismo kind que claude_class.
+    kind: schema
+    value: session_title
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-25. El pre-call hook de strip_params sella
+      spend_logs_metadata.session_title = etiqueta de la cabecera
+      x-claude-session-title (dgx.claude.session-title-header.v1) cuando la
+      peticion la trae; sin cabecera no se escribe nada. Consumido por dgx-infra
+      services/dashboard (SessionRouting: nombre de sesion cuando el indice de
+      titulos del x86 no conoce el sid -- sesiones cuyo transcript vive en otra
+      maquina). Aditivo. Pinned by
+      tests/test_spendlogs_session_title_contract.py.
   - id: dgx.litellm.key-fallbacks.demos.v1
     # kind 'allowlist': es la lista de keys (por key_alias) que tienen salida
     # externa en `tooling`; el consumidor la usa sabiendo que su key la tiene.
