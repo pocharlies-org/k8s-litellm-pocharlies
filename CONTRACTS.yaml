@@ -1190,6 +1190,32 @@ contracts:
       (el gate corre en el pre-call sobre el modelo pedido), asi que `alibaba-q38-flash`
       no hace falta en la lista. Renombrar el alias o retirar un modelo es un cambio
       de este contrato: mover a Aurora (values) en el mismo push.
+  - id: dgx.litellm.virtual-key.skirmbooks-ui.v1
+    # kind allowlist: allowlist `models` de la key virtual `skirmbooks-ui` (secret
+    # skirmshop/skirmbooks-ui-secrets, espejo ESO del item 1Password
+    # skirmshop-skirmbooks-ui). Vive solo en la Postgres de LiteLLM (/key/update).
+    kind: allowlist
+    value: skirmbooks-ui
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-27 (DGX-1034, epica SKIRM-177). Clave virtual de LiteLLM que usan la UI
+      de Skirmbooks y los cinco pods de banking (envFrom skirmbooks-ui-secrets): el
+      OCR de facturas de clientes, fiscal-lookup, invoice-llm y el fiscal-validator.
+      Nacio el 2026-08-22 con `models: []` (= todos), asi que podia pedir un alias
+      cloud por su nombre directo (`alibaba-q38-flash`) pese al sellado
+      `disable_fallbacks` de SKIRM-183 (dgx.litellm.tooling-cloud-fallback.v1): el
+      sellado gobierna a donde DEGRADA el Router; la allowlist gobierna lo que se
+      puede PEDIR. DGX-1034 la recorto a `["tooling"]` por /key/update — unico alias
+      que pide su codigo (grep en skirmbooks-gestoria-src; el default `fast` del UI
+      no es alias del model_list y el despliegue fija LITELLM_OCR_MODEL=tooling).
+      Medido: /key/info -> `models: ["tooling"]`; llamada real por key: `tooling` ->
+      200, `alibaba-q38-flash` -> 403 (`key_model_access`). Anadir un alias a la
+      allowlist o retirarlo es un cambio de este contrato: mover a Skirmbooks
+      (despliegue k8s-skirmbooks-pocharlies) en el mismo push. Precedente:
+      claude-cloudblue, que ya solo tiene el residente y su -uncensored.
   - id: dgx.litellm.virtual-key.copilot-jake-chat.v1
     # kind allowlist: allowlist `models` de la key virtual `copilot-jake-chat`
     # (copiloto del side panel de agent-jake). La allowlist se fijo en el
