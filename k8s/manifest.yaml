@@ -13453,7 +13453,7 @@ spec:
         - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: litellm
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-e1cfa8cbd5@sha256:95c0120031f582c6eb2dc0650c91dafa7cd85ac69ce780ac79d3de24227cb387
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.4-codex-f079455c49@sha256:0399d677ae6f80a4d14859c1e55dac9ae9ba61d97dc736075bbad9f57b6ad7fc
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -14363,7 +14363,7 @@ spec:
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-e1cfa8cbd5@sha256:95c0120031f582c6eb2dc0650c91dafa7cd85ac69ce780ac79d3de24227cb387
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.4-codex-f079455c49@sha256:0399d677ae6f80a4d14859c1e55dac9ae9ba61d97dc736075bbad9f57b6ad7fc
           command:
             - python
             - -m
