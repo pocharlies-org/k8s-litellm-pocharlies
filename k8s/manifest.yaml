@@ -4893,6 +4893,19 @@ data:
     # allowlist gobierna lo que la key puede PEDIR; esto gobierna a donde puede
     # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
     # Alibaba sin que nadie lo pida.
+    #
+    # 27-10-2026 (DGX-1034): y a `skirmbooks-ui` se le recorto tambien el allowlist,
+    # que era la otra mitad del hueco. La key nacio el 22-08 con `models: []` (= todos),
+    # asi que aunque esta politica le impide DEGRADAR a `alibaba-q38-flash`, la key
+    # podia PEDIR ese alias cloud por su nombre directo. Operacion sobre la key en
+    # Postgres (`POST /key/update`, fuera de git como las demas allowlists; ver la
+    # nota de INFRA-431 arriba): `models: ["tooling"]`, medido en `/key/info`. Es el
+    # unico alias que pide su codigo (grep en skirmbooks-gestoria-src: el OCR de
+    # facturas, fiscal-lookup, invoice-llm y el fiscal-validator piden `tooling`; el
+    # default `fast` del UI no es alias del model_list y el despliegue fija
+    # LITELLM_OCR_MODEL=tooling). Verificado con llamada real por key: `tooling` ->
+    # 200, `alibaba-q38-flash` -> 403 (`key_model_access`). Precedente: la key
+    # `claude-cloudblue`, que ya solo tiene el residente y su -uncensored.
     NO_FALLBACK_KEY_ALIASES = frozenset(
         {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis"}
     )
