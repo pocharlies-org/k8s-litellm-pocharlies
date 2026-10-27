@@ -1484,6 +1484,11 @@ contracts:
       pocharlies-org/litellm, rama pocharlies-codex), que se descarga con
       imagePullSecrets harbor-pull; el job de integración del CI importa
       `plan_gateway.py` dentro de esa imagen antes del merge.
+
+      SC-2767 (2026-10-27): re-pineo del vigilante litellm-fork-update a
+      harbor.lan.e-dani.com/homelab/litellm:v1.106.4-codex-f079455c49 (upstream
+      v1.106.4 mergeado en pocharlies-codex; ruta, puerto, allowlist y auth sin
+      cambios — `plan_gateway.py` solo usa stdlib, httpx y session_router).
   - id: dgx.litellm.model-alias.omnivoice-tts-trained.v1
     kind: schema
     value: omnivoice-tts-trained
