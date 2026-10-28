@@ -1524,14 +1524,19 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
-      Garantía de procedencia de las operaciones sobre virtual keys: con
-      `litellm_settings.store_audit_logs: true` (SC-2507, 28-10), cada
+      Garantía de procedencia de las operaciones sobre virtual keys: con la
+      auditoría activada (SC-2507, 28-10), cada
       created/updated/deleted/blocked/unblocked/rotated de una key escribe en
       la tabla `LiteLLM_AuditLog` con `changed_by` y `changed_by_api_key`
       (gate `is_audit_logging_enabled()`, litellm/proxy/management_helpers/
       audit_logs.py; en v1.105.1 no existe mecanismo automatico que ponga
       blocked=true en una key — solo el endpoint admin /key/block, medido en
-      el fork). Consumida por security/ops: es la respuesta a «quien bloqueó
-      aurora-rca el 10/10», que sin esto quedo sin rastro 6 dias (Request
-      SC-2507). Quitar el flag deja la tabla muerta: apagarla es un cambio
-      de contrato, no de config.
+      el fork). Activacion viva = la env `LITELLM_STORE_AUDIT_LOGS=true` del
+      Deployment litellm: en el fork nada asigna el valor de
+      `litellm_settings.store_audit_logs` al atributo de modulo que lee el
+      gate (medido 28-10: con el flag de config, attr sigue None y la tabla
+      no escribe); la linea de config se queda por semantica upstream y por si el
+      fork se sincroniza. Consumida por security/ops: es la respuesta a «quien
+      bloqueó aurora-rca el 10/10», que sin esto quedo sin rastro 6 dias
+      (Request SC-2507). Quitar la env deja la tabla muerta: apagarla es un
+      cambio de contrato, no de config.

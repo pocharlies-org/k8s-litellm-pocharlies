@@ -13488,6 +13488,13 @@ spec:
             # y reversible: revert = un commit.
             - { name: MALLOC_ARENA_MAX, value: "2" }
             - { name: LITELLM_LOG, value: INFO }
+            # SC-2507: en el fork v1.105.1-codex nada asigna litellm_settings.store_audit_logs
+            # al atributo de modulo que lee is_audit_logging_enabled() (medido 28-10: con
+            # store_audit_logs: true en el config, el proceso sigue con attr=None y
+            # LiteLLM_AuditLog no escribe). La unica via viva del gate es esta variable
+            # (audit_logs.py: get_secret_bool("LITELLM_STORE_AUDIT_LOGS")). Sin ella, el
+            # /key/block que dejo muda a la IA de Aurora 6 dias vuelve a quedar sin rastro.
+            - { name: LITELLM_STORE_AUDIT_LOGS, value: "true" }
             # 05-09-2026 (SC-203): que /v1/messages (formato Anthropic) se
             # sirva por la ruta de chat completions y no por la de responses.
             # Con la ruta de responses, el razonamiento del residente no
