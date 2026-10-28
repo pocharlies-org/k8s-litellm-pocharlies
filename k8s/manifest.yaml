@@ -2309,6 +2309,14 @@ data:
         output_cost_per_token: 0
         disable_background_health_check: true
     litellm_settings:
+      # CONTRACT: dgx.litellm.key-audit.v1
+      # SC-2507 (28-10): el 10/10 alguien hizo /key/block a `aurora-rca` y la IA de
+      # Aurora quedo muda 6 dias sin rastro de quien. En litellm v1.105.1 no hay
+      # mecanismo automatico que ponga blocked=true en una key (solo el endpoint
+      # /key/block, medido en el fork); lo que faltaba es procedencia. Con esto,
+      # cada block/unblock/rotate escribe en LiteLLM_AuditLog quien y con que key
+      # admin (litellm/proxy/management_helpers/audit_logs.py).
+      store_audit_logs: true
       success_callback:
       - db
       - prometheus
@@ -13405,7 +13413,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-98469fe98eed
+        config.k8s.e-dani.com/revision: config-a225e059ec0e
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14330,7 +14338,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-98469fe98eed
+        config.k8s.e-dani.com/revision: config-a225e059ec0e
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
