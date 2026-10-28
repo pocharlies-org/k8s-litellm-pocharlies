@@ -1516,3 +1516,22 @@ contracts:
       («saldo sin medir»). Con `Depends(user_api_key_auth)` — como `/admin/refusal-*`
       — autentica sin correr el veto. Cambiar este path exige mover ACCOUNT_PATH en
       el consumidor en el mismo push.
+  - id: dgx.litellm.key-audit.v1
+    kind: schema
+    value: LiteLLM_AuditLog
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Garantía de procedencia de las operaciones sobre virtual keys: con
+      `litellm_settings.store_audit_logs: true` (SC-2507, 28-10), cada
+      created/updated/deleted/blocked/unblocked/rotated de una key escribe en
+      la tabla `LiteLLM_AuditLog` con `changed_by` y `changed_by_api_key`
+      (gate `is_audit_logging_enabled()`, litellm/proxy/management_helpers/
+      audit_logs.py; en v1.105.1 no existe mecanismo automatico que ponga
+      blocked=true en una key — solo el endpoint admin /key/block, medido en
+      el fork). Consumida por security/ops: es la respuesta a «quien bloqueó
+      aurora-rca el 10/10», que sin esto quedo sin rastro 6 dias (Request
+      SC-2507). Quitar el flag deja la tabla muerta: apagarla es un cambio
+      de contrato, no de config.
