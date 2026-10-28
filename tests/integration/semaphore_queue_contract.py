@@ -36,7 +36,6 @@ HOLD_S = 1.5
 # ENCOLA con v1.100.0). El parche del fork (historia de SC-2917) la cambiara a ENCOLA.
 SEMANTICA_DECLARADA = {
     "v1.105.1-codex-e1cfa8cbd5": "RECHAZA",  # medido 23-10-2026: acquire() levanta RateLimitError
-    "v1.106.4-codex-f079455c49": "RECHAZA",  # medido 27-10-2026 (CI): mismo acquire() con RateLimitError
 }
 
 
