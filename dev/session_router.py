@@ -1751,7 +1751,8 @@ def stamp_alibaba_session_affinity(data):
 #   - Sin sid (ni cabecera ni prefijo) se sortea la cuenta por cupo con
 #     `draw_account` (DGX-619, octubre 2026): no hay sesion que clavar, pero el
 #     50/50 ciego del Router gastaba la cuenta sin cupo (k1 al 91,5 %). Sin pin,
-#     sin Valkey; cualquier excepcion deja la lista intacta (fail-open).
+#     sin Valkey; cualquier excepcion deja intactas las CANDIDATAS (fail-open):
+#     con pesos conocidos la cuenta sin cupo no vuelve a entrar (rework DGX-639).
 # CONTRACT: dgx.session-router.alibaba-account-pin.v1
 # (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
 ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
@@ -1898,13 +1899,40 @@ def preferred_account(user_key, sid, accounts, weights=None, epoch=0):
     return next(a for a in reversed(ordered) if tramos[a] > 0)
 
 
+def _sin_cupo_cuentas(accounts, weights):
+    """Cuentas con peso CONOCIDO <= 0 en `alibaba_account_weights` (rework
+    DGX-639): el panel declaro que no les queda cupo y no son candidatas — ni al
+    sorteo ponderado ni al fail-open. Un peso ausente o no numerico es
+    DESCONOCIDO y no se descarta: el reparto uniforme es solo para pesos
+    realmente sin leer. Sin pesos validos (dict vacio) = nada conocido = vacio."""
+    if not isinstance(weights, dict) or not weights:
+        return set()
+    return {a for a in accounts
+            if isinstance(weights.get(a), (int, float))
+            and not isinstance(weights.get(a), bool)
+            and weights[a] <= 0.0}
+
+
+# Ultimos pesos leidos (rework DGX-639): una cuenta que el panel declaro sin cupo
+# no puede volver a ser candidata porque un refresco posterior no conteste.
+# Medido 17-10 (criterio 6 de DGX-619): panel publicando k1=0,0 y k1 llevandose el
+# 23,1 % del gasto — la excepcion al leer los pesos se tragaba los conocidos.
+_pesos_ultimos = {}
+
+
 async def _account_weights():
-    """Pesos por cuenta de la config del panel (caché SWR, sin I/O en el camino). {} si no hay."""
+    """Pesos por cuenta de la config del panel (caché SWR, sin I/O en el camino).
+    {} solo mientras NUNCA se leyo ninguno: si la lectura falla, valen los
+    ultimos validos (rework DGX-639, ver `_pesos_ultimos`)."""
+    global _pesos_ultimos
     try:
         weights = (await _config()).get("alibaba_account_weights")
-        return weights if isinstance(weights, dict) else {}
     except Exception:
-        return {}
+        return _pesos_ultimos
+    if isinstance(weights, dict):
+        _pesos_ultimos = weights
+        return weights
+    return _pesos_ultimos
 
 
 async def draw_account(accounts):
@@ -1913,8 +1941,16 @@ async def draw_account(accounts):
     `alibaba_account_weights`) que una sesion nueva, sobre un id aleatorio.
     No escribe pin ni toca Valkey: no hay sesion que clavar. El gateway de media
     (DGX-621) llama LITERALMENTE esto; prohibido definir fórmula propia.
-    Sin pesos (config fria) = tramos iguales, la misma formula de siempre."""
-    return preferred_account("draw", uuid.uuid4().hex, accounts, await _account_weights())
+    Con pesos conocidos, las cuentas con peso <= 0 no son candidatas (rework
+    DGX-639); si todas lo estan, la lista se queda intacta (mejor intentarlo que
+    sorteo vacio). Sin pesos (config fria) = tramos iguales, la misma formula de
+    siempre."""
+    weights = await _account_weights()
+    candidatos = list(accounts)
+    sin_cupo = _sin_cupo_cuentas(candidatos, weights)
+    if sin_cupo and len(sin_cupo) < len(candidatos):
+        candidatos = [a for a in candidatos if a not in sin_cupo]
+    return preferred_account("draw", uuid.uuid4().hex, candidatos, weights)
 
 
 async def warm_config():
@@ -1993,7 +2029,7 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
     # mueve a nadie (la afinidad de siempre), y si no queda otra cuenta la lista se
     # queda intacta: mejor intentarlo que dejar el grupo sin deployment.
     weights = await _account_weights()
-    sin_cupo = {a for a in by_account if weights.get(a, 1.0) <= 0.0} if weights else set()
+    sin_cupo = _sin_cupo_cuentas(by_account, weights)
     if sin_cupo and len(sin_cupo) < len(by_account):
         for a in sin_cupo:
             by_account.pop(a)
@@ -2003,12 +2039,14 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
     if not sid:
         # DGX-619: peticion anonima — no hay sesion que clavar, pero si cupo que
         # respetar. Sorteo ponderado sobre las cuentas con deployment sano con la
-        # MISMA formula que una sesion nueva, sin pin ni Valkey. Fail-open:
-        # cualquier excepcion deja la lista intacta (el 50/50 de antes).
+        # MISMA formula que una sesion nueva, sin pin ni Valkey. Fail-open (rework
+        # DGX-639): cualquier excepcion deja las CANDIDATAS — con pesos conocidos
+        # la cuenta sin cupo ya esta fuera de `by_account`; el 50/50 sobre TODAS
+        # queda solo para cuando los pesos nunca se leyeron.
         try:
             return by_account[await draw_account(by_account)]
         except Exception:
-            return healthy_deployments
+            return [dep for deps in by_account.values() for dep in deps]
     user_key = _affinity_user_key(request_kwargs)
     key = account_pin_key(user_key, sid)
 
