@@ -380,8 +380,11 @@ def test_sin_sid_sortea_una_cuenta_sin_escribir_pin():
 
 
 def test_sin_sid_falla_abierto_a_la_lista_completa():
-    """Cualquier excepcion del sorteo deja la lista intacta (fail-open, como el
-    resto del modulo): una peticion anonima nunca se cae por el selector."""
+    """Cualquier excepcion del sorteo deja intacta la lista de CANDIDATAS (el
+    fail-open del resto del modulo): una peticion anonima nunca se cae por el
+    selector. Sin pesos leidos las candidatas son TODAS las cuentas; con pesos
+    conocidos la del 0 ya no esta (rework DGX-639 —
+    test_fail_open_sin_sid_no_reintroduce_la_cuenta_sin_cupo)."""
     pod = _pod(FakeValkey())
 
     async def boom(accounts):
@@ -391,7 +394,7 @@ def test_sin_sid_falla_abierto_a_la_lista_completa():
     deps = _deps("alibaba-q38-max")
     out = run(pod.alibaba_account_filter(
         "alibaba-q38-max", deps, {"metadata": {"user_api_key_hash": KEY_A}}))
-    assert out is deps
+    assert {d["model_info"]["id"] for d in out} == {d["model_info"]["id"] for d in deps}
 
 
 def test_el_sid_se_lee_tambien_de_litellm_metadata():
@@ -736,3 +739,113 @@ def test_dos_pods_sin_valkey_misma_epoca_misma_cuenta():
     c = _con_pesos(_pod(None), {"k1": 0.3, "k2": 0.7})
     _epoca(c, 42)
     assert en_a != run(cuentas(c, sids))
+
+
+# ── peso 0 conocido: nunca candidata (rework DGX-639, medicion criterio 6) ────
+#
+# Medicion del criterio 6 (nota-sre-criterio6-v2, DGX-619, ventana 16-17/10): el
+# panel publico k1=0,0 y k2=1,0 durante las 24 h y k1 se llevo el 23,1 % del
+# gasto (1050 peticiones), con sesiones pesadas de claude-local cayendo en k1
+# sobre las 02:20Z. Conocidos los pesos, ningun sorteo debe elegir k1. El hueco
+# en codigo: una excepcion al leer los pesos se tragaba los conocidos
+# (`_account_weights` devolvia {}) y el reparto volvia uniforme sobre TODAS las
+# cuentas; y el fail-open del camino sin sid devolvia la lista COMPLETA, k1
+# incluida.
+
+
+def _lectura_rota(pod):
+    """A partir de ahora la lectura de la config del panel lanza (panel
+    inalcanzable, timeout): lo que leia el pod antes sigue siendo «conocido»."""
+    async def cfg_rota():
+        raise ConnectionError("panel no alcanzable")
+    pod._config = cfg_rota
+    return pod
+
+
+def test_pesos_conocidos_cero_nunca_sale_en_draw_account():
+    """Regresion del sorteo ponderado: 10 000 sorteos por el `draw_account` REAL
+    con {k1: 0.0, k2: 1.0} — k1 jamas. Se fija aqui porque el fallo medido la
+    devolvia por otra via, no por esta formula."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+    draws = _sorteos(pod, 10000)
+    assert draws.count("k1") == 0, draws.count("k1")
+
+
+def test_sin_sid_filtro_con_peso_cero_devuelve_solo_k2():
+    """Camino sin sid de `alibaba_account_filter` (el chat anonimo, el del gasto
+    medido): con pesos conocidos {k1: 0.0, k2: 1.0}, ninguna de 10 000 llamadas
+    devuelve un deployment de k1."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+
+    async def go():
+        for i in range(10000):
+            out = await pod.alibaba_account_filter(
+                "alibaba-q38-flash", _deps("alibaba-q38-flash"),
+                {"metadata": {"user_api_key_hash": KEY_A}})
+            assert _account(out) == "k2", i
+
+    run(go())
+
+
+def test_lectura_de_pesos_que_cae_mantiene_fuera_a_k1_conocida():
+    """El fallo medido (rojo antes del arreglo): los pesos se leen una vez
+    (k1=0,0 conocido) y despues la lectura del panel falla. Hoy la excepcion se
+    traga los pesos y el reparto uniforme devuelve k1 ~50 % de las veces: con
+    {k1: 0.0, k2: 1.0} leidos, k1 no puede volver a ser candidata."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+    assert run(pod.draw_account(["k1", "k2"])) == "k2"  # lectura valida: k1 fuera
+    _lectura_rota(pod)
+    draws = _sorteos(pod, 10000)
+    assert draws.count("k1") == 0, draws.count("k1")
+
+
+def test_filtro_sin_sid_con_lectura_rota_mantiene_k1_fuera():
+    """Misma caida de lectura sobre el camino del chat anonimo: tras una lectura
+    valida de {k1: 0.0, k2: 1.0}, el filtro sin sid no devuelve un deployment de
+    k1 en 2000 llamadas."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+    assert run(pod.draw_account(["k1", "k2"])) == "k2"
+    _lectura_rota(pod)
+
+    async def go():
+        for i in range(2000):
+            out = await pod.alibaba_account_filter(
+                "alibaba-q38-flash", _deps("alibaba-q38-flash"),
+                {"metadata": {"user_api_key_hash": KEY_A}})
+            assert _account(out) == "k2", i
+
+    run(go())
+
+
+def test_sesion_caducada_con_lectura_rota_no_cae_en_k1():
+    """El caso medido, con sid: sesiones cuyo pin caduco (hueco > TTL) se
+    re-sortean con la lectura de pesos ya caida. Ningun sid de 2000 cae en k1 si
+    {k1: 0.0, k2: 1.0} se leyo valido antes (las de las 02:20Z cayeron)."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+    assert run(pod.draw_account(["k1", "k2"])) == "k2"
+    _lectura_rota(pod)
+
+    async def go():
+        for i in range(2000):
+            out = await pod.alibaba_account_filter(
+                "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(f"cad{i}"))
+            assert _account(out) == "k2", i
+
+    run(go())
+
+
+def test_fail_open_sin_sid_no_reintroduce_la_cuenta_sin_cupo():
+    """El `except Exception` del camino sin sid devolvia la lista COMPLETA de
+    deployments (el 50/50 de antes): con pesos conocidos {k1: 0.0, k2: 1.0} y el
+    sorteo roto, un fallo no puede devolver trafico a k1 — el fail-open es sobre
+    las candidatas (k1 ya descartada por peso 0 conocido), no sobre la lista."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+
+    async def sorteo_roto(accounts):
+        raise RuntimeError("sorteo roto")
+    pod.draw_account = sorteo_roto
+
+    out = run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash"),
+        {"metadata": {"user_api_key_hash": KEY_A}}))
+    assert _account(out) == "k2"

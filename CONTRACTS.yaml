@@ -218,6 +218,19 @@ contracts:
       tramos intactos; sin .v2 por el mismo motivo que DGX-619: «el pin manda sobre el
       peso» no era promesa de este contrato — la mudanza solo estaba descrita por
       falta de deployment sano.
+
+      ADITIVO (DGX-639 rework, 2026-10-30): con pesos CONOCIDOS, toda cuenta con peso
+      <= 0 queda fuera de la lista de candidatas tambien en `draw_account` (el seam del
+      chat sin sid y del plan-gateway) y en el fail-open del filtro sin sid, que
+      devuelve las candidatas y no la lista completa; y si la lectura de los pesos
+      falla, valen los ultimos pesos validos leidos (`_pesos_ultimos`) — el reparto
+      uniforme queda solo para pesos realmente desconocidos (nunca leidos). Medido el
+      17-10 (criterio 6 de DGX-619, nota-sre-criterio6-v2): el panel publicando
+      k1=0,0 y k1 llevandose el 23,1 % del gasto porque una lectura de pesos que no
+      contestaba los borraba y el sorteo volvia uniforme sobre TODAS. «Fail-open a la
+      lista completa» (parrafo DGX-619) describia el mecanismo, no prometia trafico a
+      una cuenta sin cupo; sin .v2 por el mismo precedente. Clave, valor, TTL del pin
+      y formula de tramos intactos.
   - id: dgx.session-router.resident-backend-pin.v1
     kind: schema
     value: resident_backend_pin:v1:<api-key-hash>:<sid>
