@@ -74,6 +74,15 @@ def test_the_seven_aliases_go_to_the_chatgpt_provider_for_free():
 
 
 
+@pytest.mark.parametrize("name", sorted(ALIASES))
+def test_chat_efforts_match_the_official_codex_catalog(name):
+    _, cfg = _config()
+    entry = next(m for m in cfg["model_list"] if m["model_name"] == name)
+    expected = ["low", "medium", "high", "xhigh", "max"]
+    assert entry["model_info"]["supported_reasoning_efforts"] == expected
+    assert "reasoning_effort" not in entry["litellm_params"]
+
+
 def test_the_image_aliases_go_to_the_chatgpt_provider_for_free_and_unprobed():
     _, cfg = _config()
     by_name = {m["model_name"]: m for m in cfg["model_list"]}
