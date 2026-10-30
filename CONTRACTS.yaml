@@ -619,6 +619,10 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
+      INFRA-1036 (2026-10-30), additive: all seven ChatGPT chat aliases publish
+      low, medium, high, xhigh, max, verified with 35 real API calls. The Codex
+      catalog also lists ultra for some models, but upstream rejects it as an
+      API reasoning.effort (HTTP 400), so it is not advertised. Defaults unchanged.
       Cross-process contract between this proxy and its LLM clients (opencode,
       OpenClaw, Claude Code). The proxy publishes a reasoning-effort vocabulary
       in `supported_reasoning_efforts`; clients read it, paint a menu, and send

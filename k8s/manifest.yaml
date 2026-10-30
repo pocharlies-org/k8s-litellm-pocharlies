@@ -873,6 +873,8 @@ data:
     #
     # tests/test_retired_gpt5_bridge_contract.py sigue sosteniendo la lapida de los
     # nombres de enrutado automatico (router/auto/...), que no vuelven.
+    # Official Codex /models catalog, client_version=1.105.1 (2026-10-30).
+    # ultra is a Codex delegation mode, not an API effort: upstream returns 400.
     - model_name: gpt-6.1-sol
       litellm_params:
         model: chatgpt/gpt-6.1-sol
@@ -881,6 +883,7 @@ data:
         description: GPT-6.1 Sol - el mas nuevo (29-09-2026) via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-6-astra
       litellm_params:
@@ -890,6 +893,7 @@ data:
         description: GPT-6 Astra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-6-sol
       litellm_params:
@@ -899,6 +903,7 @@ data:
         description: GPT-6 Sol via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-6-luna
       litellm_params:
@@ -908,6 +913,7 @@ data:
         description: GPT-6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-5.6-sol
       litellm_params:
@@ -917,6 +923,7 @@ data:
         description: GPT-5.6 Sol via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-5.6-terra
       litellm_params:
@@ -926,6 +933,7 @@ data:
         description: GPT-5.6 Terra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-5.6-luna
       litellm_params:
@@ -935,6 +943,7 @@ data:
         description: GPT-5.6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     # DGX-1077: imagen por la misma cuenta, para los motores `chatgpt-*` del DGX Studio
     # (key `studio-chatgpt`). Mismo gate `gpt-` y misma regla: solo seleccion manual.
@@ -13413,7 +13422,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a225e059ec0e
+        config.k8s.e-dani.com/revision: config-ca1c8390df4d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14345,7 +14354,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a225e059ec0e
+        config.k8s.e-dani.com/revision: config-ca1c8390df4d
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
