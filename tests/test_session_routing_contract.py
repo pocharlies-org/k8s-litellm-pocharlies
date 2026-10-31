@@ -464,7 +464,7 @@ class _Env:
     Alibaba (regla de retorno 4c)."""
 
     def __init__(self, mod, cfg, bound=None, cooldown=False, inflight=0, stuck=False,
-                 kv_cap=None, kv_total=None, kv_born=None):
+                 kv_cap=None, kv_total=None, kv_born=None, up=()):
         self.writes = []
         self.ledger = []
         self.albind_touches = []
@@ -473,6 +473,9 @@ class _Env:
         mod._ensure_vllm_poller = lambda: None
         mod._ensure_sessions_poller = lambda: None
         mod._queue_stuck = lambda now=None: stuck
+        # Servidores con /metrics fresco (DGX-897): reset SIEMPRE, mismo motivo que las cachés de abajo.
+        mod._vllm_up.clear()
+        mod._vllm_up.update(dict.fromkeys(up, time.monotonic()))
         # Cachés de los sondeos: reset SIEMPRE (el módulo es scope=module y
         # comparte estado entre tests; sin esto un test con capacidad filtraría
         # al siguiente).
@@ -562,12 +565,25 @@ def test_plan_explicito_local_nunca_se_rechaza(router_mod):
     assert env.writes == []  # sticky no se escribe para planes explícitos
 
 
-def test_plan_explicito_claude_es_noop_en_el_hook(router_mod):
+def test_plan_explicito_claude_sin_cuentas_en_la_key_se_queda_en_el_residente(router_mod):
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=0,
                                 session_plans={SID: "claude"}), inflight=99)
     data = _data()
     assert env.run(data) is False
     assert data["model"] == RESIDENT
+
+
+def test_plan_explicito_claude_reescribe_a_claude_con_su_beta_y_tope(router_mod):
+    """DGX-1099: la puerta plan=claude vive aqui (antes, en el claude-router del x86)."""
+    env = _Env(router_mod, _cfg(session_plans={SID: "claude"},
+                                claude_accounts={"claude-x86": [{"id": "info"}]}))
+    data = _data(max_tokens=128000, metadata={"user_api_key_alias": "claude-x86"},
+                 extra_headers={"anthropic-beta": "otra-beta"})
+    assert env.run(data) is True
+    assert data["model"] == router_mod.CLAUDE_PLAN_MODEL
+    assert data["max_tokens"] == router_mod.CLAUDE_PLAN_MAX_TOKENS
+    assert data["extra_headers"]["anthropic-beta"] == "otra-beta," + router_mod.CLAUDE_PLAN_BETA
+    assert data["metadata"]["_session_routing_rerouted"] is True
 
 
 def test_plan_explicito_alibaba_reescribe_y_marca(router_mod):
@@ -676,6 +692,42 @@ def test_valvula_por_debajo_de_slots_no_actua(router_mod):
     data = _data()
     assert env.run(data) is False
     assert data["model"] == RESIDENT
+
+
+@pytest.mark.parametrize("stuck, inflight", [(False, 99), (True, 0)])
+@pytest.mark.parametrize("company", [False, True])
+def test_valvula_no_muda_una_conversacion_con_contexto(router_mod, stuck, inflight, company):
+    """DGX-1066: con un turno previo del asistente la petición encola en el residente,
+    ni por lleno ni por cola, ni la de la compañía; la primera petición desborda como antes."""
+    cfg = _cfg(sticky=True, instant_reject=True, local_slots=8, overflow_exempt=NADIE_EXENTO)
+    headers = {"x-claude-class": router_mod.COMPANY_CLASS} if company else {}
+    turnos = [{"role": "user", "content": "hola"}]
+    con_contexto = turnos + [{"role": "assistant", "content": "dime"}, {"role": "user", "content": "sigue"}]
+    for messages, desborda in ((con_contexto, False), (turnos, True)):
+        env = _Env(router_mod, cfg, inflight=inflight, stuck=stuck)
+        data = _data(messages=messages, metadata={"headers": headers})
+        assert env.run(data) is desborda, (messages, company, stuck)
+        assert data["model"] == (OVERFLOW if desborda else RESIDENT)
+        assert env.writes == [(SID, "alibaba" if desborda else "local")]
+
+
+@pytest.mark.parametrize("vivos, umbral", [((0, 1), 15), ((0,), 10), ((1,), 5)])
+def test_desborde_a_la_suma_de_los_servidores_vivos(router_mod, vivos, umbral):
+    """DGX-897: con el panel de techo a 24, Alibaba entra a la suma de los `--max-num-seqs`
+    de los servidores que contestan: DGX-1291 (25-10) 15 con los dos (10+5), 10 solo el
+    TP=2 y 5 solo el TP=1 (antes 13 / 8 / 5, DGX-955h)."""
+    up = [router_mod.VLLM_METRICS_URLS[i] for i in vivos]
+    for inflight, desborda in ((umbral - 1, False), (umbral, True)):
+        env = _Env(router_mod, _cfg(instant_reject=True, local_slots=24), inflight=inflight, up=up)
+        assert env.run(_data()) is desborda, (vivos, inflight)
+
+
+def test_el_panel_es_techo_y_sin_lectura_manda_solo(router_mod):
+    env = _Env(router_mod, _cfg(instant_reject=True, local_slots=10), inflight=10,
+               up=router_mod.VLLM_METRICS_URLS)
+    assert env.run(_data()) is True  # 10 < 24: manda el panel
+    env = _Env(router_mod, _cfg(instant_reject=True, local_slots=24), inflight=23)
+    assert env.run(_data()) is False  # sondeo sin dato: el panel, como antes
 
 
 def test_valvula_con_cooldown_desconocido_degrada(router_mod):
@@ -973,7 +1025,7 @@ def test_ex_key_no_listada_sigue_desbordando(router_mod):
     env = _Env(router_mod, _cfg(sticky=True, instant_reject=True, local_slots=2,
                                 overflow_exempt={"classes": ["company"], "keys": ["hermes"]}),
                inflight=99)
-    data = _data(metadata={"user_api_key_alias": "claude-local"})
+    data = _data(metadata={"user_api_key_alias": "claude-x86"})
     assert env.run(data) is True
     assert data["model"] == OVERFLOW
 
@@ -1072,7 +1124,7 @@ def test_gate_de_valvula_exacto_y_helper_robusto(router_src):
     """La válvula: la compañía por SU interruptor, el resto por instant_reject, y
     siempre solo sobre el residente (no se ensancha a otras rutas). La lectura de la
     clase es case-insensitive por clave y el marcador de contrato está en el sitio."""
-    assert ('valvula = not exempt and (\n'
+    assert ('valvula = not exempt and not _has_context(data) and (\n'
             '        (company and company_overflow) or (not company and config["instant_reject"]))'
             in router_src)
     assert "if valvula and model == RESIDENT_MODEL:" in router_src
@@ -1107,15 +1159,22 @@ def _policy(mod, cfg, data, requested="tooling"):
     return asyncio.run(mod.apply_company_policy(data, requested))
 
 
+def _sin_gate(mod, raw):
+    """company saneado sin claude_gate (DGX-1099), que se prueba en test_claude_account_filter."""
+    out = dict(mod._sanitize(raw)["company"])
+    assert out.pop("claude_gate") == mod.CLAUDE_GATE_OFF
+    return out
+
+
 def test_company_sanitize_solo_un_false_bool_apaga(router_mod):
     # `bots_alibaba` (SC-2082 P6c) tiene la polaridad contraria y vale False por defecto.
-    assert router_mod._sanitize({})["company"] == {
+    assert _sin_gate(router_mod, {}) == {
         "claude": True, "alibaba": True, "bots_alibaba": False}
-    assert router_mod._sanitize({"company": {"alibaba": "false", "claude": 0}})["company"] == {
+    assert _sin_gate(router_mod, {"company": {"alibaba": "false", "claude": 0}}) == {
         "claude": True, "alibaba": True, "bots_alibaba": False}
-    assert router_mod._sanitize({"company": {"alibaba": False}})["company"] == {
+    assert _sin_gate(router_mod, {"company": {"alibaba": False}}) == {
         "claude": True, "alibaba": False, "bots_alibaba": False}
-    assert router_mod._sanitize({"company": ["basura"]})["company"] == {
+    assert _sin_gate(router_mod, {"company": ["basura"]}) == {
         "claude": True, "alibaba": True, "bots_alibaba": False}
     assert router_mod.DEFAULT_CONFIG["company"] == {
         "claude": True, "alibaba": True, "bots_alibaba": False}
@@ -1167,6 +1226,19 @@ def test_company_sellada_no_se_reescribe_a_alibaba(router_mod):
     assert env.run(data, resident_ready=False) is False
     assert data["model"] == RESIDENT
     assert env.writes == []
+
+
+def test_el_cto_de_hermes_conserva_alibaba_con_el_interruptor_apagado(router_mod):
+    """SC-2504 (Dani, 16-10): el interruptor «Fallback Alibaba» corta el trabajo de la compañía, no al supervisor."""
+    cfg = _cfg(company={"alibaba": False})
+    cto = _data(model="alibaba-q38-flash", metadata={"headers": {"x-claude-class": "company", "X-Hermes-Profile": "cto"}})
+    assert _policy(router_mod, cfg, cto, requested="alibaba-q38-flash") == (False, None)
+    assert "disable_fallbacks" not in cto
+    for otro in (_data(model="alibaba-q38-flash", metadata={"headers": {"x-claude-class": "company",
+                                                                        "x-hermes-profile": "analista"}}),
+                 _company_data(model="alibaba-q38-flash")):
+        denegada, detalle = _policy(router_mod, cfg, otro, requested="alibaba-q38-flash")
+        assert denegada is True and detalle["error"] == "company_alibaba_disabled"
 
 
 def test_company_policy_fail_open(router_mod):
@@ -1567,7 +1639,7 @@ def test_kv_bot_umbral_bajo_interactivo_alto(router_mod):
 
 def test_kv_company_es_bot_por_clase(router_mod):
     """Sin exención, la clase company cuenta como bot (umbral bajo) aunque su
-    key alias sea claude-local (la key la comparten CLI interactivo y compañía)."""
+    key alias sea claude-x86 (la key la comparten CLI interactivo y compañía)."""
     env = _Env(router_mod, _cfg(sticky=True, overflow_exempt=NADIE_EXENTO),
                kv_cap=1_000_000, kv_total=700_000)
     data = _company_data(messages=_big_msg(50_000))
@@ -1658,7 +1730,7 @@ def test_retorno_respeta_residente_no_ready(router_mod):
 
 @pytest.mark.parametrize("raw,esperado", [
     ({}, {"kv_budget_pct": 85, "bot_budget_pct": 60, "session_idle_s": 600,
-          "return_max_tokens": 30000, "alibaba_return_after_s": 3600,
+          "return_max_tokens": 30000, "alibaba_return_after_s": 600,
           "bot_keys": ["hermes-batch", "aurora-rca", "brain"]}),
     ({"kv_budget_pct": "85"}, {"kv_budget_pct": 85}),   # string => default
     ({"kv_budget_pct": True}, {"kv_budget_pct": 85}),   # bool => default
@@ -1684,7 +1756,7 @@ def test_kv_sanitize_defaults_explicitos(router_mod):
     assert cfg["bot_budget_pct"] == router_mod.DEFAULT_BOT_BUDGET_PCT == 60
     assert cfg["session_idle_s"] == router_mod.DEFAULT_SESSION_IDLE_S == 600
     assert cfg["return_max_tokens"] == router_mod.DEFAULT_RETURN_MAX_TOKENS == 30000
-    assert cfg["alibaba_return_after_s"] == router_mod.DEFAULT_ALIBABA_RETURN_AFTER_S == 3600
+    assert cfg["alibaba_return_after_s"] == router_mod.DEFAULT_ALIBABA_RETURN_AFTER_S == 600
     assert cfg["bot_keys"] == list(router_mod.DEFAULT_BOT_KEYS)
     assert router_mod.DEFAULT_CONFIG["kv_budget_pct"] == 85
 
@@ -1732,6 +1804,62 @@ def test_sondeo_de_vllm_alimenta_la_capacidad(router_src):
     assert '_kv_capacity["tokens"] = capacity' in router_src
 
 
+def test_el_sondeo_suma_cola_y_capacidad_sobre_los_dos_backends(fresh_mod):
+    """DGX-852: el residente es 2 + 1 y la valvula decide sobre el POOL.
+
+    Un ciclo con las DOS URL contestando = suma de colas y suma de KV. Con una
+    caida se suma SIN esa y el ciclo sigue (un motor muerto no puede apagar el
+    sondeo del otro); sin ninguna no se anota nada (ultimo-bueno), que es lo que
+    impide que un rollout desvie trafico a Alibaba por falta de datos. Que la
+    capacidad baje a la del motor que contesta es la direccion segura: a un
+    backend que no publica /metrics no le mandas contexto nuevo.
+    """
+    m = fresh_mod
+    assert len(m.VLLM_METRICS_URLS) == 2, m.VLLM_METRICS_URLS
+    tp2, tp1 = m.VLLM_METRICS_URLS
+
+    def cuerpo(waiting, running, kv):
+        return (
+            f'vllm:num_requests_waiting{{model_name="{m.VLLM_MODEL_NAME}"}} {waiting}\n'
+            f'vllm:num_requests_running{{model_name="{m.VLLM_MODEL_NAME}"}} {running}\n'
+            f'vllm:cache_config_info{{kv_cache_size_tokens="{kv}"}} 1.0\n'
+        )
+
+    class Resp:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            pass
+
+    class Cliente:
+        def __init__(self, paginas):
+            self.paginas = paginas
+
+        async def get(self, url):
+            if url not in self.paginas:
+                raise ConnectionError("backend caido")
+            return Resp(self.paginas[url])
+
+    asyncio.run(m._poll_vllm_once(
+        Cliente({tp2: cuerpo(4, 10, 3200000), tp1: cuerpo(1, 5, 1000000)})))
+    assert m._vllm_queue["waiting"] == 5.0
+    assert m._vllm_queue["running"] == 15.0
+    assert m._kv_capacity["tokens"] == 4200000
+    # DGX-974: ademas de la suma, la lectura de CADA motor (cola, en marcha).
+    assert m._vllm_by_url[tp2][:2] == (4.0, 10.0)
+    assert m._vllm_by_url[tp1][:2] == (1.0, 5.0)
+
+    asyncio.run(m._poll_vllm_once(Cliente({tp2: cuerpo(2, 8, 3200000)})))
+    assert m._vllm_queue["waiting"] == 2.0
+    assert m._kv_capacity["tokens"] == 3200000
+
+    antes = m._vllm_queue["waiting"]
+    asyncio.run(m._poll_vllm_once(Cliente({})))
+    assert m._vllm_queue["waiting"] == antes == 2.0
+    assert m._kv_capacity["tokens"] == 3200000
+
+
 def test_estimacion_prompt_tokens(fresh_mod):
     m = fresh_mod
     data = {"messages": [{"role": "user", "content": "x" * 3500}]}
@@ -1744,9 +1872,10 @@ def test_estimacion_prompt_tokens(fresh_mod):
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 5000}},
     ]}]}
     assert m._estimate_prompt_tokens(con_media) < 50
-    # chars_per_token aprendido del tracker: 7 chars/token => la mitad
+    # chars_per_token aprendido del tracker (por alias): 7 chars/token => la mitad
     class Tracker:
-        chars_per_token = 7.0
+        def cpc_for(self, alias):
+            return 7.0
     assert abs(m._estimate_prompt_tokens(data, Tracker()) - 500) <= 15
 
 
@@ -1907,11 +2036,11 @@ def test_burst_solo_un_true_bool_enciende(router_mod, raw):
 
 
 def test_burst_sanitize_conserva_company_claude_y_alibaba(router_mod):
-    out = router_mod._sanitize({"company": {"bots_alibaba": True, "alibaba": False, "claude": False}})["company"]
+    out = _sin_gate(router_mod, {"company": {"bots_alibaba": True, "alibaba": False, "claude": False}})
     assert out == {"claude": False, "alibaba": False, "bots_alibaba": True}
 
 
-@pytest.mark.parametrize("alias", ["hermes", "claude-local", "aurora-rca", "brain", None])
+@pytest.mark.parametrize("alias", ["hermes", "claude-x86", "aurora-rca", "brain", None])
 def test_burst_solo_la_key_hermes_batch(router_mod, alias):
     env = _Env(router_mod, _burst_cfg())
     data = _burst_data(alias=alias)

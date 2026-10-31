@@ -75,7 +75,7 @@ priority_by_alias:
   hermes: -10
   hermes-batch: 10
   neutra: 0
-  claude-local:
+  claude-x86:
     default: -5
     company: 5
   roto-por-clase:
@@ -136,17 +136,17 @@ def test_prioridad_cero_no_inyecta_nada(tmp_path):
 
 
 def test_alias_por_clase_sin_clave_uso_personal_sale_por_delante(tmp_path):
-    # `claude-local` comparte key para la compania y para el uso personal: sin
+    # `claude-x86` comparte key para la compania y para el uso personal: sin
     # clase (la de Dani) sale con el `default` del mapa, por delante del resto.
     mod, _ = _mod_with_config(tmp_path)
-    d = _data("qwen38-flash-next", "claude-local")
+    d = _data("qwen38-flash-next", "claude-x86")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == -5
 
 
 def test_alias_por_clase_company_sale_un_poco_por_detras_pero_antes_del_lote(tmp_path):
     mod, _ = _mod_with_config(tmp_path)
-    d = _data("qwen38-flash-next", "claude-local", cls="company")
+    d = _data("qwen38-flash-next", "claude-x86", cls="company")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == 5
     # el lote (hermes-batch: 10) sigue por detras: menor numero = antes
@@ -157,7 +157,7 @@ def test_alias_por_clase_company_sale_un_poco_por_detras_pero_antes_del_lote(tmp
 
 def test_alias_por_clase_con_clase_no_listada_usa_el_default(tmp_path):
     mod, _ = _mod_with_config(tmp_path)
-    d = _data("qwen38-flash-next", "claude-local", cls="otra-cosa")
+    d = _data("qwen38-flash-next", "claude-x86", cls="otra-cosa")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == -5
 
@@ -165,7 +165,7 @@ def test_alias_por_clase_con_clase_no_listada_usa_el_default(tmp_path):
 def test_alias_por_clase_compara_sin_importar_mayusculas(tmp_path):
     # El header llega con la caja del cable; _claude_class lo normaliza.
     mod, _ = _mod_with_config(tmp_path)
-    d = _data("qwen38-flash-next", "claude-local", cls="COMPANY")
+    d = _data("qwen38-flash-next", "claude-x86", cls="COMPANY")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == 5
 
@@ -185,8 +185,8 @@ def test_uncensored_manda_sobre_el_mapa_de_alias_con_qualquier_key(tmp_path):
     # El motivo: no tiene proveedor de alternativa, si espera no se sirve en otro
     # sitio. Da igual que la key sea la del lote (10) o la de la compania (5).
     mod, _ = _mod_with_config(tmp_path)
-    for alias, cls in (("hermes-batch", None), ("claude-local", "company"),
-                       ("claude-local", None), ("sin-mapear", None)):
+    for alias, cls in (("hermes-batch", None), ("claude-x86", "company"),
+                       ("claude-x86", None), ("sin-mapear", None)):
         d = _data("qwen38-flash-next-uncensored", alias, cls=cls)
         mod.apply_priority(d)
         assert d["extra_body"]["priority"] == -20, (alias, cls)
@@ -205,7 +205,7 @@ def test_uncensored_sin_nivel_configurado_no_inyecta_por_ser_uncensored(tmp_path
     # `priority_uncensored` ausente => se comporta como antes de DGX-601.
     mod, _ = _mod_with_config(
         tmp_path, content=CFG.replace("priority_uncensored: -20", ""))
-    d = _data("qwen38-flash-next-uncensored", "claude-local")
+    d = _data("qwen38-flash-next-uncensored", "claude-x86")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == -5   # por alias, no por ser uncensored
 
@@ -316,9 +316,12 @@ def test_cache_no_reparsea_sin_cambio_de_mtime(tmp_path):
 def test_el_mapa_vive_en_config_yaml():
     assert CONFIG_YAML["priority_by_alias"] == {
         "open-webui-v3": -10, "hermes": -10, "hermes-batch": 10, "brain": 20,
-        # DGX-601 (Dani): `claude-local` es la misma key para la compania y para el
+        "hindsight": 20,  # INFRA-940: sustituye al brain, misma prioridad
+        "analisis": 20,  # INFRA-988: extraccion y resumen de CDM, misma prioridad
+        # DGX-601 (Dani): `claude-x86` es la misma key para la compania y para el
         # uso personal, asi que su nivel va MAPA por clase, no entero.
-        "claude-local": {"default": -5, "company": 5},
+        "claude-x86": {"default": -5, "company": 5},
+        "claude-mac": -5,  # DGX-1099: el MacBook de casa con su propia key
     }
     # DGX-601: lo uncensored no tiene alternativa -> nivel propio, por delante.
     assert CONFIG_YAML["priority_uncensored"] == -20
@@ -333,8 +336,12 @@ def test_el_modulo_no_hardcodea_alias_ni_niveles():
     # hablan de bot_keys no cuentan; cualquier otra aparicion sigue parando aqui.
     # Segunda excepcion (SC-2082 P6c): BOT_BURST_KEYS, la lista FIJA de la key de los
     # bots de la compania que manda el BURST de Alibaba. Tampoco es prioridad.
+    # DGX-852: fuera las lineas de comentario. Lo que se prohíbe es el NIVEL en
+    # código; en prosa `-10` era un falso positivo permanente (una fecha dd-mm-2026
+    # como la del encabezado de la seccion del backend del residente).
     src = "\n".join(l for l in ROUTER_SRC.splitlines()
-                    if "bot_keys" not in l.lower() and "BOT_BURST_KEYS =" not in l)
+                    if "bot_keys" not in l.lower() and "BOT_BURST_KEYS =" not in l
+                    and not l.lstrip().startswith("#"))
     for token in ("open-webui-v3", "hermes-batch", "priority_by_alias: {",
                   "-10", "+10"):
         assert token not in src, f"{token!r} hardcodeado en session_router"

@@ -63,7 +63,13 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         #   compañía) a propósito — si el cliente se rinde antes que el proxy el
         #   turno muere en silencio y el fallback a alibaba-qwen38-flash no se
         #   dispara nunca. Detalle en el comentario de la entrada del manifest.
-        excepciones = {"qwen38-flash-next": 240}
+        #   correo-clasificador = 6 (13-10-2026, DGX-874): el residente con un
+        #   respaldo que SI llega a tiempo para el clasificador de correo de
+        #   Synapse, que corta a los 30 s. Con los 240 s del residente el salto a
+        #   alibaba-q38-flash no llegaba nunca (182 intentos fallidos para 37
+        #   correos el 12-10). Va con num_retries 0; lo fija
+        #   tests/test_correo_clasificador_alias_contract.py.
+        excepciones = {"qwen38-flash-next": 240, "correo-clasificador": 6}
         for entry in model_list:
             params = entry.get("litellm_params", {})
             if "timeout" not in params:
@@ -98,12 +104,7 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         service = self.resource("Service", "litellm")
         service_spec = service["spec"]
         deployment_selector = deployment["spec"]["selector"]["matchLabels"]
-        # La etiqueta de opt-in del descheduler (29-09-2026, vuelta al x86) es la
-        # unica que el pod lleva de mas: no entra en selectores.
-        pod_labels = {
-            k: v for k, v in pod_template["metadata"]["labels"].items()
-            if k != "e-dani.com/vuelve-a-x86"
-        }
+        pod_labels = pod_template["metadata"]["labels"]
 
         self.assertEqual(deployment_selector, pod_labels)
         self.assertEqual(service_spec["selector"], pod_labels)

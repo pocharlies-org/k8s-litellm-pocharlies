@@ -26,12 +26,8 @@ def _exec_module(source, name):
     return namespace
 
 
-def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
-    tracker_module = _exec_module(
-        _config_data()["active_request_tracking.py"],
-        "active_request_tracking_contract",
-    )
-
+def _tracker_with_clock(tracker_module, temp_dir):
+    # Reloj falso: los contratos miden con segundos exactos.
     class Clock:
         value = 100.0
 
@@ -39,12 +35,22 @@ def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
             return self.value
 
     clock = Clock()
+    tracker = tracker_module["ActiveRequestTracker"](
+        str(Path(temp_dir) / "active.json"),
+        clock=clock,
+    )
+    return clock, tracker
+
+
+def test_tracker_emits_exact_backend_tokens_speed_and_ttft():
+    tracker_module = _exec_module(
+        _config_data()["active_request_tracking.py"],
+        "active_request_tracking_contract",
+    )
+
     with tempfile.TemporaryDirectory() as temp_dir:
+        clock, tracker = _tracker_with_clock(tracker_module, temp_dir)
         active_file = Path(temp_dir) / "active.json"
-        tracker = tracker_module["ActiveRequestTracker"](
-            str(active_file),
-            clock=clock,
-        )
         tracker.start(
             "request-1",
             trace_id="trace-123",
@@ -120,6 +126,7 @@ def test_sidecar_preserves_exact_metrics(monkeypatch):
                 "server_id": "vllm-ornith-35b-nvfp4-mtp-dgx1",
                 "prompt_tokens": 3490,
                 "completion_tokens": 34,
+                "completion_tokens_estimate": 30,
                 "output_speed_tps": 33.0,
                 "ttft_ms": 1000,
                 "ts": 100.0,
@@ -131,6 +138,8 @@ def test_sidecar_preserves_exact_metrics(monkeypatch):
     assert normalized[0]["server_id"] == "vllm-ornith-35b-nvfp4-mtp-dgx1"
     assert normalized[0]["prompt_tokens"] == 3490
     assert normalized[0]["completion_tokens"] == 34
+    # SC-2675: la estimacion por chunks viaja junto al real.
+    assert normalized[0]["completion_tokens_estimate"] == 30
     assert normalized[0]["output_speed_tps"] == 33.0
     assert normalized[0]["ttft_ms"] == 1000
 
@@ -182,6 +191,9 @@ def test_resident_service_maps_to_its_dashboard_card():
     base = "http://qwen38-flash-next.llm.svc.cluster.local:8000/v1"
     assert resolve(None, base) == "qwen38-flash-next-head"
     assert resolve("openai/qwen38-flash-next", base) == "qwen38-flash-next-head"
+    # DGX-906: el TP=1 del 2+1 cae en la tarjeta de dgx3, no en «not attributed».
+    tp1 = "http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1"
+    assert resolve("openai/qwen38-flash-next", tp1) == "qwen38-flash-next-worker-dgx3"
     # Lo externo sigue sin servidor: Alibaba no es una tarjeta del panel.
     assert resolve(None, "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1") is None
 
@@ -210,8 +222,9 @@ def test_continuous_usage_rides_extra_body_for_messages():
 def test_hook_feeds_tracker_from_the_openai_chunk_and_restores_the_seal():
     hook = _config_data()["litellm_strip_params.py"]
     # El parche de chunk_creator alimenta el tracker: en /v1/messages el hook del
-    # proxy itera bytes SSE sin usage.
-    assert "_track_live_chunk(self, usage)" in hook
+    # proxy itera bytes SSE sin usage. SC-2675: pasa tambien el chunk, para
+    # estimar la salida cuando el proveedor no manda usage hasta el final.
+    assert "_track_live_chunk(self, usage, chunk)" in hook
     assert "tracking_id, model=None, api_base=api_base)" in hook
     # El residente por nombre directo pide el uso continuo SIN la admision de
     # compute-mode (que le quitaria el fallback a Alibaba).
@@ -230,3 +243,127 @@ def test_hook_feeds_tracker_from_the_openai_chunk_and_restores_the_seal():
 def test_tracking_id_also_rides_litellm_metadata_for_messages():
     hook = _config_data()["litellm_strip_params.py"]
     assert 'data["litellm_metadata"]["_tracking_id"] = tracking_id' in hook
+
+
+def test_server_is_stamped_when_the_router_dispatches():
+    # DGX-924: sin stream el server_id llegaba al terminar; con el residente
+    # repartido entre dos vLLM, synapse/brain/cb-review no tenian linea en vuelo.
+    hook = _config_data()["litellm_strip_params.py"]
+    start = hook.index("def log_pre_api_call(self, model, messages, kwargs)")
+    pre_api = hook[start:hook.index("async def async_log_failure_event", start)]
+    assert "_stamp_backend(kwargs, tracking_id)" in pre_api
+
+    stamp = next(
+        node for node in ast.walk(ast.parse(hook))
+        if isinstance(node, ast.FunctionDef) and node.name == "_stamp_backend"
+    )
+    calls = []
+
+    class Tracker:
+        def update_backend(self, tracking_id, *, model, api_base):
+            calls.append((tracking_id, model, api_base))
+
+    namespace = {"request_tracker": Tracker()}
+    exec(compile(ast.Module(body=[stamp], type_ignores=[]), "stamp", "exec"), namespace)
+    tp1 = "http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1"
+    namespace["_stamp_backend"]({"litellm_params": {"api_base": tp1}}, "r1")
+    namespace["_stamp_backend"]({"litellm_params": {}, "api_base": None}, "r2")
+    assert calls == [("r1", None, tp1)]
+
+
+def test_tracker_estimates_live_output_from_chunks_without_usage():
+    # SC-2675: Alibaba/DashScope no manda usage hasta el ultimo chunk (medido
+    # 18-10: 1 usage en 10586). Sin esto, la fila en vuelo no tenia ni ttft ni
+    # velocidad: los caracteres del stream lo dan.
+    tracker_module = _exec_module(
+        _config_data()["active_request_tracking.py"],
+        "active_request_tracking_chunk_contract",
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock, tracker = _tracker_with_clock(tracker_module, temp_dir)
+        active_file = Path(temp_dir) / "active.json"
+        tracker.start(
+            "request-1",
+            trace_id="trace-1",
+            key_alias="claude-x86",
+            model="alibaba-q38-flash",
+            call_type="acompletion",
+            api_base=None,
+        )
+        # Un chunk sin caracteres (solo delta vacio) no mueve nada.
+        clock.value += 0.5
+        assert tracker.tick_chunk("request-1", 0) is None
+        # chars_per_token arranca en 3.5: 7 caracteres son 2 tokens.
+        tracker.tick_chunk("request-1", 7)
+        clock.value += 1.0
+        tracker.tick_chunk("request-1", 7)
+
+        request = json.loads(active_file.read_text())["request-1"]
+        assert request["ttft_ms"] == 500
+        assert request["completion_tokens"] is None
+        assert request["completion_tokens_estimate"] == 4
+        assert request["output_speed_tps"] == 2.0
+
+        # El usage real manda: la ventana arranca de cero con su escala y el
+        # estimado no se pisa sobre el real.
+        clock.value += 1.0
+        tracker.update_usage("request-1", prompt_tokens=100, completion_tokens=10)
+        clock.value += 1.0
+        tracker.update_usage(
+            "request-1", prompt_tokens=100, completion_tokens=16, force_flush=True
+        )
+        request = json.loads(active_file.read_text())["request-1"]
+        assert request["completion_tokens"] == 16
+        assert request["completion_tokens_estimate"] == 4
+        assert request["output_speed_tps"] == 6.0
+
+
+def test_tracker_speed_ignores_bursts_after_a_pause_and_right_after_reset():
+    # DGX-1148: el usage llega a saltos (medido 20-10: 900 → 911 tokens en
+    # 4 s) y una petición de 15 tokens salió a 851 t/s: tras una pausa la
+    # ventana se quedaba con dos muestras a milisegundos.
+    tracker_module = _exec_module(
+        _config_data()["active_request_tracking.py"],
+        "active_request_tracking_burst_contract",
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        clock, tracker = _tracker_with_clock(tracker_module, temp_dir)
+        active_file = Path(temp_dir) / "active.json"
+        tracker.start(
+            "request-1",
+            trace_id="trace-1",
+            key_alias="claude-x86",
+            model="qwen38-flash-next",
+            call_type="anthropic_messages",
+            api_base=None,
+        )
+
+        def speed():
+            return json.loads(active_file.read_text())["request-1"]["output_speed_tps"]
+
+        # Primer usage real y otro a 10 ms: eso no es una velocidad.
+        clock.value += 1
+        tracker.update_usage("request-1", prompt_tokens=50000, completion_tokens=1)
+        clock.value += 0.01
+        tracker.update_usage(
+            "request-1", prompt_tokens=50000, completion_tokens=15, force_flush=True
+        )
+        assert speed() is None
+
+        clock.value += 0.99
+        tracker.update_usage(
+            "request-1", prompt_tokens=50000, completion_tokens=20, force_flush=True
+        )
+        assert speed() == 19.0
+
+        # Pausa de 8 s y ráfaga de 40 tokens en 10 ms: se mide contra la
+        # última muestra antes de la ventana, no contra la de hace 10 ms.
+        clock.value += 8
+        tracker.update_usage("request-1", prompt_tokens=50000, completion_tokens=40)
+        clock.value += 0.01
+        tracker.update_usage(
+            "request-1", prompt_tokens=50000, completion_tokens=60, force_flush=True
+        )
+        assert speed() == round(40 / 8.01, 2)

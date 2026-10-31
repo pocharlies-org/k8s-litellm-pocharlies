@@ -37,11 +37,7 @@ import yaml
 
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
-GROUPS = [
-    "alibaba-q38-max", "alibaba-q38-flash", "alibaba-q37-plus", "alibaba-q37-max",
-    "alibaba-q36-flash", "alibaba-dsv41-fl", "alibaba-dsv4-pro", "alibaba-dsv4f0731",
-    "alibaba-glm-53", "alibaba-glm-52",
-]
+from alibaba_groups import GROUPS
 
 # Flags que el twin tiene que repetir SI o SI (riesgo de copia: se pudren).
 MIRRORED_LITELLM_PARAMS = ("model", "api_base", "timeout", "num_retries")
@@ -112,6 +108,21 @@ def router_mod(router_src):
 
 
 # ── 1. forma de los deployments ──────────────────────────────────────────────
+
+
+# 12-10-2026 (DGX-842): lo que Model Studio publica para sus qwen3.8. `high` y `max`
+# se ACEPTAN pero el proveedor los mapea a `xhigh`, y anunciarlos ponia dos opciones
+# iguales en todo picker que lee el menu del proxy (opencode, el seed de Hermes, Paseo).
+# Doc: alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses
+RECETA_OFICIAL_QWEN38 = ["none", "low", "medium", "xhigh"]
+
+
+@pytest.mark.parametrize("grupo", ["alibaba-q38-max", "alibaba-q38-flash"])
+def test_el_menu_de_effort_de_los_qwen38_es_la_receta_oficial(deployments_by_group, grupo):
+    """Ni un nivel mas: la escalera anunciada es la que honra el proveedor (k1 y k2)."""
+    for k, dep in enumerate(deployments_by_group[grupo]):
+        assert (dep.get("model_info") or {}).get("supported_reasoning_efforts") == \
+            RECETA_OFICIAL_QWEN38, f"{grupo}-k{k + 1}"
 
 
 def test_dos_deployments_por_grupo_y_espejo_exacto(deployments_by_group):
@@ -338,20 +349,18 @@ def test_tier_afinidad_anclado_al_mismo_nodo_que_litellm(docs):
     """El claim de afinidad se paga por peticion: con la Valkey en otro
     nodo el RTT del overlay (Tailscale) salio medido p50 27 ms — un
     impuesto sobre cada peticion alibaba. La prueba exige que el Deployment
-    litellm-valkey lleve la misma afinidad que el proxy (29-09: preferencia por
-    ubuntu con failover a sauvage), para que ambos vivan y salten juntos."""
+    litellm-valkey lleve la misma afinidad y tolerancias que el proxy (solo
+    ubuntu, DGX-1090), para que vivan juntos."""
     vk = next(d for d in docs
               if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm-valkey")
     lite = next(d for d in docs
                 if d.get("kind") == "Deployment" and d["metadata"]["name"] == "litellm")
     vsp, lsp = vk["spec"]["template"]["spec"], lite["spec"]["template"]["spec"]
     assert vsp.get("affinity") == lsp["affinity"], (
-        "Valkey con otra afinidad que el proxy: en reposo o en failover acabarian "
-        "en nodos distintos y cada peticion alibaba pagaria el RTT del overlay")
+        "Valkey con otra afinidad que el proxy: acabarian en nodos distintos y "
+        "cada peticion alibaba pagaria el RTT del overlay")
     assert vsp.get("tolerations") == lsp["tolerations"], (
-        "sin las mismas tolerancias el Valkey no puede seguir al proxy a sauvage")
-    assert (vk["spec"]["template"]["metadata"]["labels"].get("e-dani.com/vuelve-a-x86")
-            == "true"), "sin la etiqueta el descheduler no lo devuelve al x86"
+        "sin las mismas tolerancias el Valkey puede acabar en otro nodo que el proxy")
 
 
 def test_stamp_activa_antes_de_cualquier_cosa(router_src):

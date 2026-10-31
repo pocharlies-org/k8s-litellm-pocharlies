@@ -167,10 +167,21 @@ def test_proxy_fallbacks_never_leave_local_models():
     # global) ni ninguna ruta `-uncensored` (el sello `cache_salt: refusal:N` es una
     # extension de nuestro vLLM; Alibaba la ignora y la ruta perderia su proposito
     # EN SILENCIO). Ampliar esta lista es una decision del owner, no del que pasa.
-    PERMITIDAS = {"qwen38-flash-next": ["alibaba-q38-flash"]}
+    #
+    # 13-10-2026 (DGX-874): segunda arista, `correo-clasificador` -> el mismo gemelo.
+    # Es el residente con `timeout: 6` para el clasificador de correo de Synapse, que
+    # corta a los 30 s y no esperaba a los 240 s de la primera. No abre un destino
+    # nuevo: el envio a Alibaba de ese prompt es el de la decision de Dani del 12-10
+    # (DGX-841); la ampliacion es la del plan de DGX-869 (aprobado por el architect) y
+    # security la ratifica antes de que la key `synapse` alcance el alias (paso L1: hasta
+    # entonces no mueve trafico).
+    PERMITIDAS = {
+        "qwen38-flash-next": ["alibaba-q38-flash"],
+        "correo-clasificador": ["alibaba-q38-flash"],
+    }
     assert graph == PERMITIDAS, (
-        "el grafo de fallbacks solo admite la arista aprobada el 20-09-2026; "
-        f"encontrado: {graph}"
+        "el grafo de fallbacks solo admite las aristas aprobadas (20-09-2026 y "
+        f"13-10-2026); encontrado: {graph}"
     )
 
     # Ninguna ruta sellada puede tener fallback: perderia el sello sin avisar.

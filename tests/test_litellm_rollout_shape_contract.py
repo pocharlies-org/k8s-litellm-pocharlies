@@ -32,11 +32,9 @@ def test_surge_without_spread(deploy):
     """Surge 1 / maxUnavailable 0, y SIN topologySpreadConstraints.
 
     El surge sigue siendo lo que desserializa el rollout (sin el, cada replica
-    espera los 720s de drenaje de la anterior). El reparto por hostname se quito
-    el 29-09: con `sauvage` elegible como failover, un spread (aunque fuera
-    ScheduleAnyway) mandaria la segunda replica a OVH en cada rollout y el
-    descheduler la devolveria -- ida y vuelta. Sin spread no hay deadlock posible:
-    el pod de surge cabe en cualquier nodo elegible.
+    espera los 720s de drenaje de la anterior). Sin spread: con un solo nodo
+    elegible (DGX-1090) no hay nada que repartir, y un spread por hostname con
+    DoNotSchedule dejaria el pod de surge Pending.
     """
     rolling = deploy["spec"]["strategy"]["rollingUpdate"]
     assert rolling["maxSurge"] == 1, (
@@ -46,8 +44,7 @@ def test_surge_without_spread(deploy):
         "con maxUnavailable > 0 se pierde capacidad durante el rollout, y con solo "
         "2 replicas eso es la mitad del proxy de TODO el trafico LLM")
     assert not deploy["spec"]["template"]["spec"].get("topologySpreadConstraints"), (
-        "un spread por hostname con sauvage elegible reparte una replica a OVH en "
-        "cada rollout y el descheduler la devuelve: ida y vuelta")
+        "con un solo nodo elegible un spread por hostname no reparte nada")
 
 
 def test_replicas_keep_HA_without_over_provisioning(deploy):
@@ -68,8 +65,8 @@ def test_the_PDB_cannot_block_a_node_drain(deploy):
     drenaje de nodo -- rutina en los ks5. Se expresa como `maxUnavailable` para que
     siga siendo correcto si las replicas vuelven a cambiar.
 
-    29-09-2026: con `sauvage` como failover, drenar `ubuntu` ya no se cuelga: el
-    pod desalojado tiene donde ir, y el descheduler lo devuelve al descordonar.
+    Con un solo nodo elegible (DGX-1090), drenar `ubuntu` deja litellm sin
+    replicas hasta descordonar: es el precio aceptado de no tener failover.
     """
     spec = _named("PodDisruptionBudget", "litellm")["spec"]
     assert "minAvailable" not in spec, (
@@ -183,9 +180,9 @@ def test_startup_budget_covers_measured_boot_three_times(deploy):
 
 
 # --------------------------------------------------------------------------
-# 29-09-2026: el anclaje a `ubuntu` (SC-404) pasa a PREFERENCIA con failover a
-# `sauvage`, tras el corte de luz del 29-09 que dejo el proxy de todo el trafico
-# LLM atado a un nodo apagado. Detalle en doc/node-affinity-ubuntu.md.
+# 18-10-2026 (DGX-1090): solo `ubuntu`. El failover a `sauvage` del 29-09 fallo
+# en su primer uso real (disco de OVH al 100 %, proceso en estado D). Detalle en
+# doc/node-affinity-ubuntu.md.
 # --------------------------------------------------------------------------
 
 
@@ -193,34 +190,25 @@ def _node_affinity(deploy):
     return deploy["spec"]["template"]["spec"]["affinity"]["nodeAffinity"]
 
 
-def test_prefers_x86_and_fails_over_to_sauvage_only(deploy):
-    """Elegibles SOLO `ubuntu` y `sauvage`; en reposo, `ubuntu`.
+def test_lives_only_on_x86(deploy):
+    """Elegible SOLO `ubuntu`.
 
-    Ni los Sparks (dedicated=llm, memoria unificada, SystemOOM del 19-08) ni el
-    plano de control ks5. Y sin tolerar `dedicated`: eso es decision del owner
-    del pool de GPU, no de este manifiesto.
+    Ni `sauvage` (DGX-1090), ni los Sparks (dedicated=llm, memoria unificada,
+    SystemOOM del 19-08), ni el plano de control ks5. Y sin tolerar `dedicated`
+    ni `role=edge`: lo primero es decision del owner del pool de GPU, lo segundo
+    volveria a abrir la puerta de OVH.
     """
     na = _node_affinity(deploy)
     req = na["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"]
     assert req == [{"matchExpressions": [
-        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu", "sauvage"]}]}]
-    pref = na["preferredDuringSchedulingIgnoredDuringExecution"]
-    assert pref == [{"weight": 100, "preference": {"matchExpressions": [
-        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu"]}]}}]
+        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu"]}]}]
+    assert "preferredDuringSchedulingIgnoredDuringExecution" not in na
     tol = deploy["spec"]["template"]["spec"]["tolerations"]
-    assert not [t for t in tol if t.get("key") == "dedicated"], (
-        "tolerar dedicated=llm:NoSchedule mete al router en el pool dedicado de GPU")
-    assert {"key": "role", "operator": "Equal", "value": "edge",
-            "effect": "NoSchedule"} in tol, "sin tolerar role=edge no cabe en sauvage"
-
-
-def test_failover_is_fast_and_comes_back(deploy):
-    """30 s de toleracion a unreachable/not-ready (defecto 300) y la etiqueta
-    de opt-in del descheduler que lo devuelve al x86 cuando vuelve."""
-    tol = {t["key"]: t for t in deploy["spec"]["template"]["spec"]["tolerations"]}
-    for key in ("node.kubernetes.io/unreachable", "node.kubernetes.io/not-ready"):
-        assert tol[key]["effect"] == "NoExecute"
-        assert tol[key]["tolerationSeconds"] <= 60, f"{key}: failover de minutos"
+    assert tol == [{"key": "pool", "operator": "Equal", "value": "dev",
+                    "effect": "PreferNoSchedule"}], (
+        "solo el taint blando del x86: dedicated mete al router en el pool de GPU, "
+        "role=edge lo deja caer en sauvage y unreachable/not-ready cortos lo "
+        "desalojan sin otro nodo adonde ir")
     labels = deploy["spec"]["template"]["metadata"]["labels"]
-    assert labels.get("e-dani.com/vuelve-a-x86") == "true", (
-        "sin la etiqueta el descheduler no lo devuelve al x86 y se queda en OVH")
+    assert "e-dani.com/vuelve-a-x86" not in labels, (
+        "sin failover no hay vuelta: el opt-in del descheduler sobra")

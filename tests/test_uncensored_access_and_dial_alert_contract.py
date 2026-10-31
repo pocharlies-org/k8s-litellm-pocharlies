@@ -154,7 +154,7 @@ def test_a_head_that_does_not_answer_is_NOT_a_failure():
 def test_the_dial_class_alerts_and_insists_without_failing_the_job():
     """`abliterado` no es `caido`: LiteLLM sirve, y eso es justo el problema.
 
-    - tiene que AVISAR (no puede quedarse en el log)
+    - tiene que AVISAR (desde INFRA-912 el aviso es el log, y lleva el como volver)
     - tiene que INSISTIR como `caido`: el fallo es que pasen horas sin enterarse, y
       aqui no hay hora de reset que esperar como con la cuota
     - NO puede hacer fallar el Job: dejaria la Application en Degraded cada 10 min
@@ -186,7 +186,7 @@ def test_las_cuatro_superficies_del_owner_pueden_pedir_la_abliterada(hook):
     """
     # DGX-454: hermes-batch es la clave de los perfiles de compania y su picker
     # promete lo mismo que el de hermes: fuera de la lista, la fila mentiria 403.
-    for alias in ("open-webui-v3", "claude-local", "hermes", "hermes-batch", "synapse"):
+    for alias in ("open-webui-v3", "claude-x86", "hermes", "hermes-batch", "synapse"):
         assert alias in hook.UNCENSORED_ALLOWED_KEY_ALIASES, alias
         for perfil in ("qwen38-u-off", "qwen38-flash-next-uncensored"):
             denied, _ = hook._uncensored_access_denied(perfil, alias)

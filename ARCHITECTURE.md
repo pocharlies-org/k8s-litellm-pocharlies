@@ -8,12 +8,33 @@
 
 | cliente | repositorio / ruta | versión desplegada | cómo se despliega |
 |---|---|---|---|
-| Proxy LiteLLM | `k8s/manifest.yaml` | `ghcr.io/berriai/litellm:v1.100.0@sha256:c8756e7b…` | ArgoCD app `litellm` (path `k8s`, `main`) |
+| Proxy LiteLLM | `k8s/manifest.yaml` | `harbor.lan.e-dani.com/homelab/litellm` (v1.105.1 + Codex, fork `pocharlies-org/litellm`) | ArgoCD app `litellm` (path `k8s`, `main`) |
 | Redis (`redis:7-alpine`), CronJobs (watchdog, spendlogs index/retention; `python:3.12-slim`, `postgres:16-alpine`) | `k8s/litellm-watchdog-cron.yaml`, `spendlogs-*.yaml` | tags | ídem |
 | `plan-gateway` (Deployment propio, 2 réplicas, mismo digest que el proxy) | `k8s/manifest.yaml` (`plan-gateway-config` → `plan_gateway.py`) | ídem imagen | ArgoCD app `litellm`, mismo path |
+| CronJob `chatgpt-token-keeper` (`python:3.12-slim`, stdlib) + semilla `litellm-chatgpt-oauth` | `k8s/chatgpt-token-keeper.yaml` | tag | ídem |
 | Scrape de métricas | `k8s/vmservicescrape.yaml` | — | ídem |
 
 Los clientes del router (Claude CLI del x86, Hermes, OpenClaw, document-intake, auto-reply…) usan `https://litellm…`/`litellm.litellm.svc:4000`.
+
+**`chatgpt-token-keeper`** (DGX-1053) es el renovador **canónico** del token OAuth de la cuenta ChatGPT Plus de Dani y el
+**único escritor** del Secret `litellm-chatgpt-token`: lo crea desde la semilla de 1Password (ExternalSecret
+`litellm-chatgpt-oauth`, item `litellm` campo `CHATGPT_OAUTH_AUTH_JSON`) y lo renueva con 72 h de margen sobre 240 h. Los pods
+de `litellm` lo montan en solo lectura en `CHATGPT_TOKEN_DIR`: el provider `chatgpt/` no tiene cerrojo y OpenAI rota el
+refresh token, así que dos réplicas renovando revocarían la sesión. Sin RWX/NFS (SC-381). Re-login: cabecera del fichero.
+Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-x86,hermes,studio-chatgpt,claude-mac,hindsight`; solo selección manual).
+
+**Claude por suscripción** (DGX-1099): ocho entradas `claude-*` (`model_info.id` `claude-acct-<id>`), una por cuenta, con
+su setup-token de `litellm-claude-cuentas` (ExternalSecret de los items `claude-cuenta-<id>` de `k8s-pocharlies`, por id; SC-2745). Las virtual keys
+de máquina (`claude-x86` en el x86, `claude-mac` en el MacBook de casa, `claude-cloudblue` en el de CloudBlue) piden el
+nombre de Anthropic y `session_router.claude_account_filter` elige la cuenta con la política por key que publica el panel
+(`claude_accounts` de `/api/model-routing/config`): la primera de su lista por debajo de su salto; una conversación empezada
+se queda en su cuenta hasta que esa cuenta pasa su salto (o da 429 o créditos), y entonces salta; sin política, ninguna. `claude_quota.py` guarda la cuota de cada respuesta en
+`claude:quota:<id>`. Contratos `dgx.litellm.claude-quota.v1` y `dgx.session-router.claude-account-pin.v1`. Sin fallbacks y
+sin mensajes en Langfuse (`turn_off_message_logging`). Las sesiones de la compañía (`x-claude-class: company`) usan la lista
+`claude_accounts["compania"]` sea cual sea su key, y `apply_company_policy` les aplica el interruptor «Claude» y
+`company.claude_gate` (rewrite al residente con tope, o 403), lo que antes hacía el claude-router del x86. Con «Claude»
+apagado y el gate en rewrite, todo `claude-*` va al target; con el gate en off o block, 403 (SC-2667: un rol del plugin
+despachado por `Agent` pide el `model:` de git).
 
 **`plan-gateway`** (`plan-gateway.litellm.svc:4002`, solo dentro del cluster, sin IngressRoute) es el sitio único por el que
 pasa la **media** (imagen, vídeo, voz) del Token Plan de Alibaba. Consumidores, uno por token
@@ -28,7 +49,7 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
   sesión), OpenRouter y otros proveedores de pago, Postgres compartido, `gpu-arbiter-state` (admisión por compute mode),
   Langfuse (callbacks), 1Password/ExternalSecrets.
 - **Dependen de él** — todo el estate: sesiones de la compañía (router local de Claude), Hermes, document-intake, auto-reply,
-  dashboards. **`CONTRACTS.yaml`** publica ~22 contratos (`dgx.claude.class-header.v1`, `dgx.session-router.*`,
+  dashboards. **`CONTRACTS.yaml`** publica ~23 contratos (`dgx.claude.class-header.v1`, `dgx.session-router.*`,
   `dgx.model-routing.config.v1/v2`, `dgx.litellm.active-requests.v1`, `dgx.hermes.profile-header.v1`, `dgx.litellm.virtual-key.*`,
   `litellm.reasoning-effort.v1`…): nunca renombrar, solo `.vN+1` con `Contract-Change:`.
 - **ArgoCD** `litellm`: repo `pocharlies-org/k8s-litellm-pocharlies`, path `k8s`, tronco **`main`**.
@@ -37,7 +58,7 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
 
 | pieza | versión | para qué | no se usa en su lugar |
 |---|---|---|---|
-| LiteLLM | v1.100.0 (digest) | routing multi-proveedor | proxies a medida |
+| LiteLLM | v1.105.1 (digest) | routing multi-proveedor | proxies a medida |
 | `plan-gateway` (`plan_gateway.py`, ASGI puro sobre uvicorn + httpx de la imagen del proxy) | DGX-621 | media del Token Plan (imagen, vídeo, voz): LiteLLM no soporta ahí el vídeo asíncrono ni TTS/ASR nativos del plan Team, y `pass_through_endpoints` no reparte ni reintenta ni registra por cuenta. **Excepción razonada** a «proxies a medida»: allowlist de 4 rutas, ~300 líneas, sin estado | un proxy general, un mapa de tareas en Valkey, una fórmula de elección propia |
 | Python 3.12 | CI (`.github/requirements/litellm-contracts.txt`, dependencias bloqueadas) | suite de contratos | — |
 | `dev/session_router.py` | repo | enrutador de sesión/afinidad (hook del proxy) | lógica en el cliente |
@@ -52,6 +73,8 @@ vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (l
 | **Selector de cuenta Alibaba** (UNA fórmula; la época de ventana = TTL del pin entra en el hash, DGX-639) | `session_router.preferred_account` + el seam `draw_account(accounts)`/`warm_config()` | `dev/session_router.py` = embed de `litellm-config` (`tests/test_session_router_dev_copy_contract.py` los iguala; manda el manifiesto) | chat sin sid (`alibaba_account_filter`) y `plan-gateway`: nadie define otra fórmula (`tests/test_plan_gateway_contract.py`, test AST) |
 | Gateway de media del plan | `plan_gateway.py` | `k8s/manifest.yaml`, ConfigMap `plan-gateway-config` (inline, sin copia en `dev/`) | Studio, omnivoice |
 | Compatibilidad Anthropic | `doc/anthropic-compat.md` | ídem | Claude CLI |
+| Cuota de la cuenta ChatGPT (última lectura de las cabeceras `x-codex-*`, DGX-1078) | `chatgpt_quota.py` (callback CustomLogger) + clave Valkey `chatgpt:quota` en `litellm-valkey`, TTL 8 d (`dgx.litellm.chatgpt-quota.v1`) | `k8s/manifest.yaml`, ConfigMap `litellm-config` (inline, sin copia en `dev/`) | dashboard de dgx-infra (`/api/chatgpt/quota`, `codex_quota` de `/api/activity`, /cuentas) |
+| Puertas al proxy por lane (alias del Service `litellm`, mismo selector y puerto; Hermes pinta una fila por host) | Services `litellm-openrouter`, `litellm-alibaba` y `litellm-chatgpt` (DGX-1053, `dgx.litellm.service-alias.chatgpt.v1`) | `k8s/manifest.yaml` | Hermes (`extraProviders`) |
 
 **BURST Alibaba (SC-2082 P6c).** `session_router._apply` lee `company.bots_alibaba` de `/api/model-routing/config` (campo aditivo
 de v2, saneado aparte de `DEFAULT_COMPANY`: solo un `true` bool enciende). Con él, la key `hermes-batch` (lista fija
@@ -67,6 +90,16 @@ tres parejas configmap/deployment/anotación; `python3 tests/test_configmap_revi
 un cambio de `session_router.py` rueda también el `plan-gateway`, que lo importa.
 Los modelos locales por defecto llevan `enable_thinking: false`: no cambiar sin pedirlo. Los pods Qwen pueden estar a 0/0
 réplicas según el perfil `llm-tp`: un servicio sin endpoints significa «no residente», no «roto».
+
+**Semántica del tope `max_parallel_requests` (SC-2917, medido 23-10-2026):** con la imagen pineada hoy
+(`v1.105.1-codex-e1cfa8cbd5`) el excedente sobre el tope **rechaza con 429 en el acto**; con el pin anterior
+(`ghcr.io/berriai/litellm:v1.100.0`) **encolaba FIFO** (DGX-874, en vivo el 20-09). El cambio vino con el bump
+DGX-1035 (17-10): `MaxParallelRequestsLimit.acquire` levanta `RateLimitError` y no hay control que restaure la
+espera ni en v1.105.1 ni en el main de upstream. Los topes 4/3 por pod de Dani presuponen ENCOLAR; hoy
+RECHAZA y así está **declarado** en `tests/integration/semaphore_queue_contract.py` — contrato de
+caracterización que mide con el Router real de la imagen pineada y deja el CI rojo si un bump cambia la
+semántica sin declararla o pinea una imagen sin medir. El parche del fork que restaura la espera (historia
+de SC-2917, dictamen del arquitecto 23-10) cambiará la declaración a ENCOLA en su propio PR.
 
 ## 6. Tests y validaciones
 

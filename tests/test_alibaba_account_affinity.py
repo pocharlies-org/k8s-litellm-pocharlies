@@ -27,11 +27,7 @@ import yaml
 
 MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 
-GROUPS = [
-    "alibaba-q38-max", "alibaba-q38-flash", "alibaba-q37-plus", "alibaba-q37-max",
-    "alibaba-q36-flash", "alibaba-dsv41-fl", "alibaba-dsv4-pro", "alibaba-dsv4f0731",
-    "alibaba-glm-53", "alibaba-glm-52",
-]
+from alibaba_groups import GROUPS
 KEY_A = "a" * 64
 KEY_B = "b" * 64
 
@@ -340,7 +336,9 @@ def test_valkey_lenta_cuenta_como_caida_y_no_estira_la_peticion():
 
 def test_memoria_local_acotada():
     pod = _pod(None)
-    pod._ACCOUNT_PINS_LOCAL_MAX = 50
+    # DGX-852: el tope es `_PINS_LOCAL_MAX`, compartido por las dos familias de
+    # ancla (cuenta de Alibaba y backend del residente).
+    pod._PINS_LOCAL_MAX = 50
 
     async def go():
         for i in range(500):
@@ -382,8 +380,11 @@ def test_sin_sid_sortea_una_cuenta_sin_escribir_pin():
 
 
 def test_sin_sid_falla_abierto_a_la_lista_completa():
-    """Cualquier excepcion del sorteo deja la lista intacta (fail-open, como el
-    resto del modulo): una peticion anonima nunca se cae por el selector."""
+    """Cualquier excepcion del sorteo deja intacta la lista de CANDIDATAS (el
+    fail-open del resto del modulo): una peticion anonima nunca se cae por el
+    selector. Sin pesos leidos las candidatas son TODAS las cuentas; con pesos
+    conocidos la del 0 ya no esta (rework DGX-639 —
+    test_fail_open_sin_sid_no_reintroduce_la_cuenta_sin_cupo)."""
     pod = _pod(FakeValkey())
 
     async def boom(accounts):
@@ -393,7 +394,7 @@ def test_sin_sid_falla_abierto_a_la_lista_completa():
     deps = _deps("alibaba-q38-max")
     out = run(pod.alibaba_account_filter(
         "alibaba-q38-max", deps, {"metadata": {"user_api_key_hash": KEY_A}}))
-    assert out is deps
+    assert {d["model_info"]["id"] for d in out} == {d["model_info"]["id"] for d in deps}
 
 
 def test_el_sid_se_lee_tambien_de_litellm_metadata():
@@ -465,20 +466,62 @@ def test_con_pesos_sigue_siendo_determinista_entre_pods():
     run(go())
 
 
-def test_el_peso_no_mueve_una_sesion_ya_clavada():
+def test_un_peso_bajo_no_mueve_una_sesion_ya_clavada():
+    """El reparto es proporcional al cupo, no un freno: una cuenta con poco cupo
+    sigue sirviendo a quien ya esta clavado en ella (afinidad, DGX-619)."""
     valkey = FakeValkey()
     pod = _pod(valkey)
 
     async def go():
         out = await pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("fija"))
         antes = _account(out)
-        otra = "k2" if antes == "k1" else "k1"
-        _con_pesos(pod, {antes: 0.0, otra: 1.0})
+        _con_pesos(pod, {antes: 0.05, "k1" if antes == "k2" else "k2": 0.95})
         out = await pod.alibaba_account_filter("alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("fija"))
         return antes, _account(out)
 
     antes, despues = run(go())
     assert antes == despues
+
+
+def test_la_cuenta_sin_cupo_no_recibe_ni_una_peticion_aunque_tenga_el_pin():
+    """DGX-1036: peso 0 = el panel dice que no le queda cupo. Antes mandaba el pin y
+    la sesion pagaba un 429 en cada vuelta (el cooldown de Alibaba dura 60 s y la
+    cuenta volvia a la rotacion). Se muda sola y el pin queda reescrito."""
+    valkey = FakeValkey()
+    pod = _pod(valkey)
+
+    async def go():
+        antes = _account(await pod.alibaba_account_filter(
+            "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("clavada")))
+        otra = "k2" if antes == "k1" else "k1"
+        _con_pesos(pod, {antes: 0.0, otra: 1.0})
+        out = await pod.alibaba_account_filter(
+            "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs("clavada"))
+        # Y en el OTRO grupo del plan, con las DOS cuentas sanas: tampoco pisa la
+        # que no tiene cupo (el filtro la descarta antes de mirar el pin).
+        otra_vez = _account(await pod.alibaba_account_filter(
+            "alibaba-q38-max", _deps("alibaba-q38-max"), _kwargs("clavada")))
+        return antes, _account(out), otra, otra_vez
+
+    antes, despues, otra, en_otro_grupo = run(go())
+    assert despues == otra != antes
+    assert valkey.data[pod.account_pin_key(KEY_A, "clavada")] == otra
+    assert pod.ACCOUNT_AFFINITY_STATS["moves"] == 1
+    assert en_otro_grupo == otra, "la cuenta sin cupo sigue recibiendo peticiones"
+
+
+def test_la_unica_cuenta_sana_con_peso_cero_no_deja_el_grupo_sin_deployment():
+    """El freno del peso 0 no puede vaciar `by_account`: si no hay otra cuenta, la del
+    0 es la unica a la que ir — mejor intentar contra ella que un `No deployments
+    available` seguro. Sin el guard, la sesion clavada se caia contra un dict vacio."""
+    valkey = FakeValkey()
+    pod = _con_pesos(_pod(valkey), {"k1": 0.0, "k2": 1.0})
+    sid = "sola-k1"
+    valkey.data[pod.account_pin_key(KEY_A, sid)] = "k1"          # clavada en la sin cupo
+    out = run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash", accounts=("k1",)), _kwargs(sid)))
+    assert _account(out) == "k1"
+    assert pod.ACCOUNT_AFFINITY_STATS["moves"] == 0
 
 
 def test_pin_caducado_con_valkey_sana_se_re_sortea_no_se_reactiva_local():
@@ -696,3 +739,113 @@ def test_dos_pods_sin_valkey_misma_epoca_misma_cuenta():
     c = _con_pesos(_pod(None), {"k1": 0.3, "k2": 0.7})
     _epoca(c, 42)
     assert en_a != run(cuentas(c, sids))
+
+
+# ── peso 0 conocido: nunca candidata (rework DGX-639, medicion criterio 6) ────
+#
+# Medicion del criterio 6 (nota-sre-criterio6-v2, DGX-619, ventana 16-17/10): el
+# panel publico k1=0,0 y k2=1,0 durante las 24 h y k1 se llevo el 23,1 % del
+# gasto (1050 peticiones), con sesiones pesadas de claude-local cayendo en k1
+# sobre las 02:20Z. Conocidos los pesos, ningun sorteo debe elegir k1. El hueco
+# en codigo: una excepcion al leer los pesos se tragaba los conocidos
+# (`_account_weights` devolvia {}) y el reparto volvia uniforme sobre TODAS las
+# cuentas; y el fail-open del camino sin sid devolvia la lista COMPLETA, k1
+# incluida.
+
+
+def _lectura_rota(pod):
+    """A partir de ahora la lectura de la config del panel lanza (panel
+    inalcanzable, timeout): lo que leia el pod antes sigue siendo «conocido»."""
+    async def cfg_rota():
+        raise ConnectionError("panel no alcanzable")
+    pod._config = cfg_rota
+    return pod
+
+
+def test_pesos_conocidos_cero_nunca_sale_en_draw_account():
+    """Regresion del sorteo ponderado: 10 000 sorteos por el `draw_account` REAL
+    con {k1: 0.0, k2: 1.0} — k1 jamas. Se fija aqui porque el fallo medido la
+    devolvia por otra via, no por esta formula."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+    draws = _sorteos(pod, 10000)
+    assert draws.count("k1") == 0, draws.count("k1")
+
+
+def test_sin_sid_filtro_con_peso_cero_devuelve_solo_k2():
+    """Camino sin sid de `alibaba_account_filter` (el chat anonimo, el del gasto
+    medido): con pesos conocidos {k1: 0.0, k2: 1.0}, ninguna de 10 000 llamadas
+    devuelve un deployment de k1."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+
+    async def go():
+        for i in range(10000):
+            out = await pod.alibaba_account_filter(
+                "alibaba-q38-flash", _deps("alibaba-q38-flash"),
+                {"metadata": {"user_api_key_hash": KEY_A}})
+            assert _account(out) == "k2", i
+
+    run(go())
+
+
+def test_lectura_de_pesos_que_cae_mantiene_fuera_a_k1_conocida():
+    """El fallo medido (rojo antes del arreglo): los pesos se leen una vez
+    (k1=0,0 conocido) y despues la lectura del panel falla. Hoy la excepcion se
+    traga los pesos y el reparto uniforme devuelve k1 ~50 % de las veces: con
+    {k1: 0.0, k2: 1.0} leidos, k1 no puede volver a ser candidata."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+    assert run(pod.draw_account(["k1", "k2"])) == "k2"  # lectura valida: k1 fuera
+    _lectura_rota(pod)
+    draws = _sorteos(pod, 10000)
+    assert draws.count("k1") == 0, draws.count("k1")
+
+
+def test_filtro_sin_sid_con_lectura_rota_mantiene_k1_fuera():
+    """Misma caida de lectura sobre el camino del chat anonimo: tras una lectura
+    valida de {k1: 0.0, k2: 1.0}, el filtro sin sid no devuelve un deployment de
+    k1 en 2000 llamadas."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+    assert run(pod.draw_account(["k1", "k2"])) == "k2"
+    _lectura_rota(pod)
+
+    async def go():
+        for i in range(2000):
+            out = await pod.alibaba_account_filter(
+                "alibaba-q38-flash", _deps("alibaba-q38-flash"),
+                {"metadata": {"user_api_key_hash": KEY_A}})
+            assert _account(out) == "k2", i
+
+    run(go())
+
+
+def test_sesion_caducada_con_lectura_rota_no_cae_en_k1():
+    """El caso medido, con sid: sesiones cuyo pin caduco (hueco > TTL) se
+    re-sortean con la lectura de pesos ya caida. Ningun sid de 2000 cae en k1 si
+    {k1: 0.0, k2: 1.0} se leyo valido antes (las de las 02:20Z cayeron)."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+    assert run(pod.draw_account(["k1", "k2"])) == "k2"
+    _lectura_rota(pod)
+
+    async def go():
+        for i in range(2000):
+            out = await pod.alibaba_account_filter(
+                "alibaba-q38-flash", _deps("alibaba-q38-flash"), _kwargs(f"cad{i}"))
+            assert _account(out) == "k2", i
+
+    run(go())
+
+
+def test_fail_open_sin_sid_no_reintroduce_la_cuenta_sin_cupo():
+    """El `except Exception` del camino sin sid devolvia la lista COMPLETA de
+    deployments (el 50/50 de antes): con pesos conocidos {k1: 0.0, k2: 1.0} y el
+    sorteo roto, un fallo no puede devolver trafico a k1 — el fail-open es sobre
+    las candidatas (k1 ya descartada por peso 0 conocido), no sobre la lista."""
+    pod = _con_pesos(_pod(None), {"k1": 0.0, "k2": 1.0})
+
+    async def sorteo_roto(accounts):
+        raise RuntimeError("sorteo roto")
+    pod.draw_account = sorteo_roto
+
+    out = run(pod.alibaba_account_filter(
+        "alibaba-q38-flash", _deps("alibaba-q38-flash"),
+        {"metadata": {"user_api_key_hash": KEY_A}}))
+    assert _account(out) == "k2"

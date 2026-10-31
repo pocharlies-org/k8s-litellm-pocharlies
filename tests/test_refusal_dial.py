@@ -1,5 +1,5 @@
 """Prueba el bloque del dial EXTRAIDO del ConfigMap, con httpx y router falsos."""
-import json, logging, os, sys, textwrap, threading, time, types, unittest
+import json, logging, math, os, sys, textwrap, threading, time, types, unittest
 from pathlib import Path
 
 import yaml
@@ -73,7 +73,7 @@ SYNTH = [
 ]
 os.environ["LITELLM_REFUSAL_RUNTIMES"] = json.dumps(SYNTH)
 
-ns = {"os": os, "json": json, "time": time, "threading": threading,
+ns = {"os": os, "json": json, "math": math, "time": time, "threading": threading,
       "httpx": httpx_stub, "log": logging.getLogger("t")}
 exec(compile(BLOCK, "dial", "exec"), ns)
 del os.environ["LITELLM_REFUSAL_RUNTIMES"]
@@ -187,8 +187,9 @@ class DialTest(unittest.TestCase):
     def test_env_override_con_json_roto_cae_al_default(self):
         os.environ["LITELLM_REFUSAL_RUNTIMES"] = "{no json"
         try:
-            # El default de produccion: un runtime desde el 26-09 (fuera 27b).
-            self.assertEqual(len(ns["_load_refusal_runtimes"]()), 1)
+            # El default de produccion: dos runtimes desde DGX-852 (el residente
+            # es 2 + 1: TP=2 y TP=1, cada uno con su /admin/refusal_lambda).
+            self.assertEqual(len(ns["_load_refusal_runtimes"]()), 2)
         finally:
             del os.environ["LITELLM_REFUSAL_RUNTIMES"]
 
@@ -202,6 +203,20 @@ class DialTest(unittest.TestCase):
         self.assertEqual(
             ns["_refusal_fleet_name"](by["qwen38-27b-nvfp4"]),
             "vllm-qwen38-27b-uncensored")
+
+    def test_dgx980_el_sello_por_peticion_se_lee_como_su_lambda(self):
+        # El alias -uncensored lleva `refusal:1.0`; el motor lo aplica por encima
+        # del dial, y es lo que hay que sellar. Lo que no es un sello de refusal, nada.
+        f = ns["_salt_lambda"]
+        self.assertEqual(f("refusal:1.0"), 1.0)
+        self.assertEqual(f("refusal:0"), 0.0)
+        self.assertIsNone(f(None))
+        self.assertIsNone(f("conversacion-42"))
+        self.assertIsNone(f("refusal:x"))
+        # No finitos: la sal es entrada del cliente y romperia el JSON del panel.
+        self.assertIsNone(f("refusal:inf"))
+        self.assertIsNone(f("refusal:nan"))
+        self.assertIsNone(f("refusal:1e999"))
 
     def test_estado_publicado_lleva_alias_on_lambda_y_per_rank(self):
         heads[QW] = {"lambda": 1.0, "consistent": True, "per_rank": [1.0]}
@@ -243,11 +258,13 @@ class DialTest(unittest.TestCase):
         # backend que ya no tiene nombre en el catalog es pintar una fila muerta
         # en el panel.
         real = ns["REFUSAL_RUNTIMES_DEFAULT"]
+        # DGX-852 (14-10-2026): dos motores del MISMO modelo, cada uno con su dial.
         self.assertEqual(
             sorted(r["key"] for r in real),
-            ["qwen38-flash-next"])
+            ["qwen38-flash-next", "qwen38-flash-next-tp1"])
         by = {r["key"]: r for r in real}
         self.assertEqual(by["qwen38-flash-next"]["on_lambda"], 1.0)
+        self.assertEqual(by["qwen38-flash-next-tp1"]["on_lambda"], 1.0)
         self.assertNotIn("deepseek", json.dumps(real).lower())
         self.assertNotIn("27b", json.dumps(real).lower())
 
@@ -263,6 +280,11 @@ class DialTest(unittest.TestCase):
         rt = by["qwen38-flash-next"]
         self.assertNotIn("-head.", rt["admin_url"])
         self.assertEqual(ns["_refusal_fleet_name"](rt), "qwen38-flash-next")
+        # DGX-852: igual el TP=1 -- su Service propio, y la chapa con el nombre de
+        # ese Service (es la fila que la flota del panel tendra que tener).
+        tp1 = by["qwen38-flash-next-tp1"]
+        self.assertNotIn("-head.", tp1["admin_url"])
+        self.assertEqual(ns["_refusal_fleet_name"](tp1), "qwen38-flash-next-tp1")
 
     def test_env_override_valido_se_respeta(self):
         os.environ["LITELLM_REFUSAL_RUNTIMES"] = json.dumps([
@@ -274,6 +296,60 @@ class DialTest(unittest.TestCase):
             self.assertEqual(rts[0]["on_lambda"], 0.7)
         finally:
             del os.environ["LITELLM_REFUSAL_RUNTIMES"]
+
+
+class GemelosTest(unittest.TestCase):
+    """DGX-852: UN alias servido por DOS motores con dial propio.
+
+    Con el registro de produccion (sin el override sintetico de `DialTest`) y el
+    model_list real del residente 2+1. Es lo que se rompe si alguien afloja el
+    `api_base_match` del TP=2: `qwen38-flash-next` es subcadena del host del
+    gemelo, asi que el primer runtime se comia las peticiones clavadas en TP=1 --
+    selladas con la lambda del motor equivocado y sin chapa para el segundo dial.
+    """
+
+    def setUp(self):
+        sys.modules["litellm.proxy.proxy_server"] = proxy_server
+        heads.clear(); calls["n"] = 0
+        os.environ.pop("LITELLM_REFUSAL_RUNTIMES", None)
+        # Segunda ejecucion del MISMO bloque extraido, sin override: los runtimes
+        # y los matches que corren en el cluster.
+        real = {"os": os, "json": json, "math": math, "time": time, "threading": threading,
+                "httpx": httpx_stub, "log": logging.getLogger("t")}
+        exec(compile(BLOCK, "dial-real", "exec"), real)
+        real["_alias_runtime_cache"].update({"ts": 0.0, "map": {}})
+        self.real = real
+        router.model_list = [
+            {"model_name": "qwen38-flash-next", "litellm_params": {
+                "api_base": "http://qwen38-flash-next.llm.svc.cluster.local:8000/v1"}},
+            {"model_name": "qwen38-flash-next", "litellm_params": {
+                "api_base": "http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1"}},
+        ]
+
+    def test_el_alias_gemelo_queda_apuntado_a_los_dos_runtimes(self):
+        self.assertEqual(
+            self.real["_alias_runtime_map"]()["qwen38-flash-next"],
+            ["qwen38-flash-next", "qwen38-flash-next-tp1"])
+
+    def test_sin_api_base_sella_por_el_primero_declarado(self):
+        # El pin del backend se decide DESPUES de este hook: con dos motores y el
+        # nombre a secas no se sabe cual va a contestar, y la etiqueta historica
+        # toma el del mayor peso (TP=2).
+        self.assertEqual(
+            self.real["_refusal_runtime_for"]("qwen38-flash-next", None)["key"],
+            "qwen38-flash-next")
+
+    def test_el_api_base_del_tp1_sella_SU_dial(self):
+        self.assertEqual(
+            self.real["_refusal_runtime_for"](
+                "qwen38-flash-next",
+                "http://qwen38-flash-next-tp1.llm.svc.cluster.local:8000/v1")["key"],
+            "qwen38-flash-next-tp1")
+
+    def test_la_chapa_lista_el_alias_en_las_dos_filas(self):
+        by = self.real["_refusal_aliases_by_runtime"]()
+        self.assertIn("qwen38-flash-next", by["qwen38-flash-next"])
+        self.assertIn("qwen38-flash-next", by["qwen38-flash-next-tp1"])
 
 
 if __name__ == "__main__":

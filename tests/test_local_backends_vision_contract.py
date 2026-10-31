@@ -57,6 +57,12 @@ ALIAS_LOCALES = {
     # medirla, no suponerla.
     "qwen38-off",
     "qwen38-u-off",
+    # 13-10-2026 (DGX-874): el alias del clasificador de correo. Misma decision
+    # heredada: su `model_info` sale por ancla del residente (`qwen38_resident_info`),
+    # asi que declara `supports_vision: true` como el. Es un alias de TEXTO (el
+    # adapter solo manda remitente, asunto y cuerpo): el flag describe al backend, no
+    # el uso.
+    "correo-clasificador",
 }
 
 

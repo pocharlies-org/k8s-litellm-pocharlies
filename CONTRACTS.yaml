@@ -55,6 +55,9 @@ contracts:
       only effect is to get the company's overflow policy. Absent or any
       other value keeps the instant_reject behavior; any read error is
       fail-open.
+      DGX-1066 (2026-10-18, Dani): both valves (company overflow and
+      instant_reject) only move a conversation with no prior assistant
+      turn; one that already has context queues on the resident.
       Since 2026-09-23 the value "company" also gates the company Alibaba
       switch (field company.alibaba of dgx.model-routing.config.v1): when it
       is false, company requests are sealed with disable_fallbacks and an
@@ -63,6 +66,10 @@ contracts:
       metadata.headers AND litellm_metadata.headers: on LiteLLM's
       LITELLM_METADATA_ROUTES (/v1/messages, i.e. all of Claude Code) the
       request headers land in litellm_metadata, measured live 2026-09-23.
+      SC-2504 (2026-10-16, Dani): the switch is for the company's work (stories, epics, Requests), not for its
+      supervisor: a company request whose x-hermes-profile is in ALIBABA_SIEMPRE (today {"cto"}) is neither sealed nor
+      rejected, so the CTO of Hermes keeps its alibaba-* fallback with the switch off. Read from the same three header
+      sources; forging it only costs Alibaba spend, attributed to the forger's key.
   - id: dgx.session-router.sticky-key.v1
     kind: schema
     value: session-router:sticky:<sid>
@@ -90,6 +97,11 @@ contracts:
       is computed AFTER the hook strips Claude Code's x-anthropic-billing-header
       system block (2026-09-23), so it no longer carries that per-conversation
       suffix.
+      Since 2026-10-18 (DGX-1076) it is also computed after the hook moves
+      Claude Code's project memory path out of the system into the first
+      user message: the hash input still holds it, so conversations of
+      different directories keep distinct keys; a client without session id
+      that sends that path gets a new key once, on deploy.
   - id: dgx.session-router.sessions-hash.v1
     kind: schema
     value: session-router:sessions
@@ -193,6 +205,136 @@ contracts:
       coinciden sin hablar entre si (mismo reloj de pared; en el borde de ventana
       manda el SET NX); clave, valor y TTL intactos; `draw_account` sin cambios (sin
       .v2: es la entrada del hash que ya describe esta nota, no la superficie).
+
+      ADITIVO (DGX-1036, 2026-10-17, Dani): una cuenta con peso 0 en
+      `alibaba_account_weights` sale de `by_account` ANTES de consultar el pin, asi
+      que una sesion clavada en ella MUDA en su primer intento en vez de pagar un 429
+      en cada vuelta (el cooldown de Alibaba dura 60 s: la cuenta muerta volvia a la
+      rotacion un minuto despues y el pin la reclamaba). Peso 0 es senal de cupo, no
+      de precio: `pesos_cuentas_alibaba` lo saca del % restante de la ventana mensual,
+      por debajo de su suelo. Un peso bajo NO mueve a nadie —la afinidad de arriba
+      sigue igual—, y si la unica cuenta sana es la del 0 la lista se queda intacta
+      (mejor intentarlo que un grupo sin deployment). Clave, valor, TTL y formula de
+      tramos intactos; sin .v2 por el mismo motivo que DGX-619: «el pin manda sobre el
+      peso» no era promesa de este contrato — la mudanza solo estaba descrita por
+      falta de deployment sano.
+
+      ADITIVO (DGX-639 rework, 2026-10-30): con pesos CONOCIDOS, toda cuenta con peso
+      <= 0 queda fuera de la lista de candidatas tambien en `draw_account` (el seam del
+      chat sin sid y del plan-gateway) y en el fail-open del filtro sin sid, que
+      devuelve las candidatas y no la lista completa; y si la lectura de los pesos
+      falla, valen los ultimos pesos validos leidos (`_pesos_ultimos`) — el reparto
+      uniforme queda solo para pesos realmente desconocidos (nunca leidos). Medido el
+      17-10 (criterio 6 de DGX-619, nota-sre-criterio6-v2): el panel publicando
+      k1=0,0 y k1 llevandose el 23,1 % del gasto porque una lectura de pesos que no
+      contestaba los borraba y el sorteo volvia uniforme sobre TODAS. «Fail-open a la
+      lista completa» (parrafo DGX-619) describia el mecanismo, no prometia trafico a
+      una cuenta sin cupo; sin .v2 por el mismo precedente. Clave, valor, TTL del pin
+      y formula de tramos intactos.
+  - id: dgx.session-router.resident-backend-pin.v1
+    kind: schema
+    value: resident_backend_pin:v1:<api-key-hash>:<sid>
+    anchor: "resident_backend_pin:v1:"
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-852 (2026-10-14, Dani): una conversacion vive en UN motor del residente.
+      Desde el 2+1 `qwen38-flash-next` lo sirven DOS vLLM independientes con el
+      MISMO modelo (par TP=2 en dgx2+dgx1, ~3,2M de tokens KV y 16 secuencias;
+      TP=1 en dgx3, ~1,0M y 8) y sus cachés de prefijo NO se comparten: un turno
+      que cambia de motor re-prefría el contexto entero (25-30 s medidos a 64K).
+      Criterio de Dani: un solo pool, cada conversacion clavada a un backend y las
+      nuevas repartidas por capacidad.
+
+      DGX-955h (2026-10-18, Dani): capacidades medidas y recortadas — TP=2 16->8
+      secuencias (prefill x2,8 mas lento de 8 a 16 en vuelo, 16.100->5.700 tok/s) y
+      TP=1 8->5. Afecta a `least_loaded_backend` (plazas = slots - en marcha/cola) y a
+      la valvula de desborde (SESSION_ROUTER_VLLM_SLOTS default 16,8 -> 8,5).
+      Tras el corte de luz del mismo dia: un backend cuyo /metrics no contesta
+      mientras otro si sale del reparto (`live_backends`) y su sesion ligada muda;
+      la admision llm-tp acepta el TP=1 de dgx3 (`qwen38-worker-dgx3`) como
+      alternativa al par TP=2. Clave y valor del pin sin cambios.
+
+      DGX-1103 (2026-10-18, Dani): un timeout ya no aparca a un gemelo en el Router
+      (`model_info.allowed_fails_policy.TimeoutErrorAllowedFails` sin techo en los
+      cuatro `-tpN`), asi que la mudanza de sesiones queda para el motor caido (500 o
+      /metrics mudo), no para el saturado. Clave y valor del pin sin cambios.
+
+      SC-2917 (2026-10-23): el SEMAFORO que admite las sesiones (`max_parallel_requests`
+      por deployment y por pod) cambio de semantica con el bump DGX-1035: en la imagen
+      pineada (v1.105.1-codex-e1cfa8cbd5) el excedente recibe 429 en el acto; con el pin
+      anterior (ghcr v1.100.0) ENCOLABA FIFO — medido con el Router real de cada imagen
+      en tests/integration/semaphore_queue_contract.py, que es el contrato. Afecta a
+      este pin en que las "plazas libres" del reparto ya no admiten con espera: una
+      sesion nueva puede recibir 429 en vez de hacer cola detras de las 4/3 por pod.
+      Clave y valor del pin sin cambios.
+
+      DGX-1146 (2026-10-20, Dani): `model_info.cooldown_time` de los gemelos del residente
+      de 900 a 360 s. El OOM del 20-10 tumbo el TP=2, que volvio solo en ~220 s, y el pin
+      lo dejo aparcado 15 min con Alibaba en 429. Cuanto dura la expulsion, no cuando se
+      dispara ni a donde se muda. Clave y valor del pin sin cambios.
+
+      DGX-1291 (2026-10-25, Dani): prueba a 10 secuencias en el TP=2 con auditoria a 24 h —
+      el tope de 8 estaba puesto y apretaba (maximo 8 en 24 h, 10 peticiones en espera).
+      `max_parallel_requests` del ancla y de su gemelo 4->5 por pod (10 entre las dos
+      replicas del proxy) y SESSION_ROUTER_VLLM_SLOTS default 8,5 -> 10,5. El TP=1 sigue
+      en 5 y `local_slots` del panel de ruteo pasa de 13 a 15 (10 + 5). Clave y valor del
+      pin sin cambios.
+
+      Publisher y lector: session_router.resident_backend_filter, llamado por el
+      Router en cada eleccion de deployment a traves de
+      StripUnsupportedParams.async_filter_deployments, DESPUES del filtro de cuenta
+      de Alibaba y cada uno fail-open por su cuenta. Valkey del session router
+      (litellm-valkey, db de REDIS_URL); valor "tpN" = sufijo del model_info.id
+      estable `<alias>-tpN` del deployment (los ids son explicitos en el
+      model_list: son a la vez la clave del pin, la del cooldown del Router y la
+      del filtro); SET NX = gana el primero. <api-key-hash> = user_api_key_hash
+      (sha256), igual que en Alibaba, pero es OTRA familia de claves: la misma sid
+      puede estar clavada a la cuenta k1 de Alibaba y al backend tp2 del
+      residente, y los dos pines se leen y se escriben por separado.
+
+      TTL DE INACTIVIDAD RESIDENT_BACKEND_PIN_TTL_SECONDS, default
+      STICKY_TTL_LOCAL_SECONDS (30 min) y keepalive (`EXPIRE`) en cada acierto: lo
+      que defiende es la caché de prefijo del MOTOR y el vinculo de la sesion a
+      local caduca a la vez. La memoria local del pod (`_backend_pins_local`,
+      tope compartido `_PINS_LOCAL_MAX`) caduca igual y solo se consulta cuando la
+      lectura de Valkey FALLA.
+
+      Backend de una sesion nueva o caducada (DGX-974, 16-10): el que tenga MAS
+      plazas libres en ese momento, `--max-num-seqs` (SESSION_ROUTER_VLLM_SLOTS)
+      menos en marcha y en cola de la ultima lectura fresca de SU /metrics (el
+      sondeo de la valvula; cada deployment se casa con su /metrics por su
+      api_base), menos lo que ese pod ya le dio desde la lectura. Solo con Valkey,
+      cuyo SET NX hace coincidir a las dos replicas. Con empate, sin lectura fresca
+      o sin Valkey: sha256(api-key-hash:sid:epoca)
+      sobre los tramos de `SESSION_ROUTER_RESIDENT_WEIGHTS` (env, default
+      "tp2=3,tp1=1" desde DGX-950, decision de Dani del 16-10: con "tp2=2,tp1=1"
+      (DGX-897, 14-10) el TP=1 se llenaba y hacia cola con plazas libres en el TP=2;
+      antes de DGX-897 ya era 3:1 y el TP=1 se quedaba casi sin trabajo; NO
+      `alibaba_account_weights`, que es cupo gastado y otra decision). Pesos que
+      no cubren todos los backends o que suman 0 = reparto uniforme, la MISMA
+      formula de tramos que Alibaba. Determinista: las dos replicas coinciden sin
+      Valkey. Peticion sin sid (ni cabecera ni prefijo de conversacion): el motor
+      con mas plazas libres, o si no el sorteo ponderado de `preferred_backend`,
+      SIN escribir pin.
+
+      Mudanza: el backend clavado se queda; si el Router lo dejo sin deployment
+      sano (cooldown) la sesion MUDA ENTERA, el pin se reescribe y no vuelve. Sin
+      pin y con UN solo backend en la lista la lista pasa INTACTA (`is`, no copia)
+      y NO se escribe pin: una sesion que nace durante una caida no hereda una
+      ligadura que no eligio nadie, y vuelve a sortearse cuando el gemelo vuelve.
+      Cualquier excepcion = lista intacta.
+
+      ADITIVO en esta misma entrada (no .v2): el sid tiene que llegar al filtro,
+      que solo ve `request_kwargs`; `stamp_resident_session_affinity` lo estampa
+      en `metadata["session_id"]` en el pre_call_hook para los alias de
+      `RESIDENT_FAMILY`, con el mismo extractor que el vinculo sesion->plan.
+      Tests: tests/test_resident_backend_affinity.py (unitarios, valkey de pega) y
+      los contratos del model_list gemelo en tests/test_dense_uncensored_contract.py
+      y tests/test_model_limits_contract.py.
   - id: dgx.session-router.deployment-affinity-key.v1
     kind: schema
     value: deployment_affinity:v1:session:<grupo>:<api-key-hash>:<sid>
@@ -234,9 +376,9 @@ contracts:
       carga, el order: 2 del YAML es la inercia.
       La Valkey (litellm-valkey) lleva la MISMA afinidad que el proxy: el
       claim se paga en cada peticion y el RTT del overlay entre nodos es
-      ~27 ms p50 (medido 26-09). Desde 2026-09-29 esa afinidad es preferred
-      ubuntu con failover a sauvage (y vuelta por descheduler): valor, Service
-      y puerto no cambian; en failover ambos saltan juntos. El minimo de
+      ~27 ms p50 (medido 26-09). Desde 2026-10-18 (DGX-1090) esa afinidad es
+      solo ubuntu, sin failover a sauvage: valor, Service y puerto no
+      cambian. El minimo de
       orders se calcula solo entre declarados, por eso el -k1 declara 1.
   - id: dgx.model-routing.config.v1
     kind: http-route
@@ -280,13 +422,30 @@ contracts:
       in bot_keys) held to the lower threshold; session_idle_s (int 30-86400,
       600) — a session counts as live while it shows activity inside this
       window; return_max_tokens (int 1000-1000000, 30000) and
-      alibaba_return_after_s (int 60-86400, 3600) — the rules that let an
+      alibaba_return_after_s (int 60-86400, 600 since 2026-10-17 DGX-1028, 3600 before) — the rules that let an
       Alibaba-bound session come back (compacted and fits / born long enough
       ago and fits); bot_keys (list of lower-cased key aliases, default
       [hermes, aurora-rca]) — which keys are bots for the threshold. Unknown
       or malformed field = module default; the valve additionally stays off
       until KV capacity is discovered and the sessions hash has a fresh read
       (fail-open).
+  - id: dgx.model-routing.config.stream.v1
+    kind: http-route
+    value: /api/model-routing/config/stream
+    role: consumer
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-19). Espejo del publisher de dgx-infra. La config de
+      routing llega empujada por SSE: `event: config` con el cuerpo de
+      dgx.model-routing.config.v2 al conectar y en cada cambio, con latido cada
+      15 s. session_router._config_stream se suscribe (read timeout 45 s,
+      reconexion con backoff de 1 a 30 s). Con el stream vivo, _config() no
+      hace GET; caido, vuelve el GET con TTL 5 s hasta la siguiente config.
+      MODEL_ROUTING_CONFIG_STREAM=off vuelve al sondeo.
+
   - id: dgx.model-routing.config.v2
     kind: http-route
     value: /api/model-routing/config
@@ -316,6 +475,125 @@ contracts:
       `burst_alibaba_degradado` si Alibaba esta en cooldown). Sellada
       (company.alibaba=false), `-uncensored` y alibaba.overflow=false ganan.
       Sin .vN+1: no hay cambio incompatible. Productor: dgx-infra (P6d).
+      2026-10-14 (DGX-897, Dani): local_slots pasa a ser TECHO global. El umbral
+      de la valvula en vuelo es el menor entre local_slots y la suma del tope de
+      los servidores del residente con /metrics fresco (SESSION_ROUTER_VLLM_SLOTS,
+      default 16,8 = TP=2 y TP=1): 24 con los dos, 16 solo el TP=2, 8 solo el
+      TP=1. Sin ninguna lectura fresca manda solo local_slots, como antes. Mismo
+      campo y mismo rango: sin .vN+1.
+      2026-10-18 (DGX-1099): campo ADITIVO claude_accounts =
+      {"<alias de virtual key>": [{id, salto_7d, salto_5h}, ...]} — por key, la
+      lista ORDENADA de cuentas de Claude (ids de las entradas claude-acct-<id>)
+      y su salto en % de la ventana de 7 d y de 5 h (0-100, 90 si falta). Alias
+      en minusculas; ids [a-z0-9-] sin repetir; basura = fuera. Ausente = {} =
+      ninguna key puede usar claude-* (el filtro no abre nunca). Lo lee
+      session_router.claude_account_filter. Sin .vN+1: aditivo. Productor:
+      dgx-infra (panel «Sesiones de Dani · Cuentas de»).
+      Con DGX-1099 tambien cambia lo que hace session_plans[sid]=claude (y
+      default_plan/sticky=claude): si la key de la peticion tiene cuentas en
+      claude_accounts, el residente se reescribe a SESSION_ROUTER_CLAUDE_PLAN_MODEL
+      (claude-opus-5) con la beta context-1m y max_tokens topado a 64000, lo
+      que antes hacia el claude-router del x86; sin cuentas, sigue en el
+      residente como antes. Mismo campo y mismos valores: sin .vN+1.
+      2026-10-19 (DGX-1099, opcion B): este hook pasa a CONSUMIR company.claude
+      y company.claude_gate ({mode off|rewrite|block, allow, target,
+      max_tokens}, mismo esquema que ya leia el claude-router del x86) sobre
+      peticiones claude-* con x-claude-class: company: claude=false -> 403
+      (y un plan claude no la saca del residente); gate fuera de allow ->
+      rewrite a target con tope, o 403; gate ausente, basura o con target
+      claude-* = off. Ademas la clave reservada claude_accounts["compania"] es
+      la lista de cuentas de esa clase, sea cual sea su key. Campos ya
+      publicados: sin .vN+1.
+      2026-10-19 (DGX-1099, DB caida): el alias con el que se busca la key en
+      claude_accounts sale de la cache de keys de LiteLLM
+      (general_settings.user_api_key_cache_ttl, 3600 s) aunque postgres no
+      responda; antes caia al token restringido failed-to-connect-to-db, sin
+      politica, y claude-* daba «No deployments». Una key no vista en la ultima
+      hora sigue sin cuentas. Mismos campos: sin .vN+1. Pinned by
+      tests/test_db_down_keeps_key_alias_contract.py.
+      2026-10-19 (SC-2667, Dani): con company.claude=false y claude_gate en
+      rewrite, un claude-* de clase company va al target con tope (incluso
+      lo que esta en allow) en vez de 403; con el gate en off o block sigue
+      el 403. Los roles del plugin harness despachados por Agent piden el
+      model: de git y ningun lanzamiento lo cambia. Mismos campos: sin .vN+1.
+      Pinned by tests/test_claude_account_filter.py.
+      2026-10-20 (SC-2804): la estimacion de prompt de la valvula
+      (_estimate_prompt_tokens) divide ya por la proporcion aprendida DEL
+      ALIAS (tracker.cpc_for) en vez del EMA global; sin tracker o alias sin
+      muestra, 3,5 como antes. Ningun campo ni umbral cambia: sin .vN+1.
+  - id: dgx.litellm.claude-quota.v1
+    kind: schema
+    value: claude:quota:<account-id>
+    anchor: 'CLAUDE_QUOTA_PREFIX = "claude:quota"'
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-18). El callback claude_quota.py guarda en
+      litellm-valkey db 0 la ultima lectura de cuota de cada cuenta de Claude
+      (entrada claude-acct-<id>), sacada de las cabeceras
+      anthropic-ratelimit-unified-* de cada respuesta (tambien los 429 y los
+      streams de /v1/messages, que solo las traen en httpx_response): JSON
+      {observed_at, status, reset, representative_claim, five_hour,
+      seven_day, overage_in_use}, cada ventana {utilization (0-1), resets_at
+      (epoch s)}. TTL 8 dias. Lectores: session_router.claude_account_filter
+      (salto) y dgx-infra services/dashboard (barras de cuota), solo GET.
+      Pinned by tests/test_claude_account_filter.py.
+  - id: dgx.litellm.claude-official-headers.v1
+    kind: schema
+    value: 'claude-code-20250219,thinking-token-count-2026-05-13,inline-tools-2026-09-15'
+    anchor: 'CLAUDE_OFFICIAL_BETAS = ('
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+      - dev/session_router.py
+    status: active
+    note: >-
+      DGX-1189 (2026-10-20). Las peticiones de los 8 deployments claude-acct-*
+      salen hacia Anthropic con las cabeceras del cliente oficial: user-agent y
+      familia x-stainless-* medidos a Claude Code 2.1.304 (fijos en el
+      manifiesto; si sube la version del CLI, actualizar ahi), y las betas del
+      cliente pasan porque session_router amplia la lista del manager de
+      litellm con claude-code-20250219, thinking-token-count-2026-05-13 e
+      inline-tools-2026-09-15 (y re-amplia tras reload). Lector: la auditoria
+      de deteccion de Anthropic (que el trafico del pool parezca del CLI).
+      Pinned by tests/test_claude_official_headers_contract.py.
+  - id: dgx.session-router.claude-account-pin.v1
+    kind: schema
+    value: claude_account_pin:v1:<key-alias>:<sid>
+    anchor: 'CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"'
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-18). Una conversacion de Claude vive en UNA cuenta
+      (la cache de prompts no se comparte entre cuentas). Valor = id de la
+      cuenta; TTL de inactividad CLAUDE_ACCOUNT_PIN_TTL_SECONDS (3600, la vida
+      de la cache de Anthropic), renovado en cada acierto. Se reescribe
+      cuando la cuenta pasa su salto (desde 2026-10-19), queda rechazada (429
+      de suscripcion o creditos) o sale del Router. Publisher y lector:
+      session_router.claude_account_filter.
+  - id: dgx.litellm.service-alias.chatgpt.v1
+    kind: http-route
+    value: litellm-chatgpt
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1053 (2026-10-18). Service alias of `litellm` (same selector and
+      port 4000, label `app: litellm`) consumed by Hermes
+      (k8s-openclaw-qwen36-pocharlies#658, extraProviders `litellm-chatgpt`)
+      so its /model picker renders the `gpt-*` aliases (ChatGPT account,
+      dgx.litellm.chatgpt-oauth.v1) in their own row. Same reason as
+      litellm-openrouter / dgx.litellm.service-alias.alibaba.v1: Hermes groups
+      picker rows by (base_url, credential, api_mode). Not a backend and not an
+      access control: routing stays by model name and the `gpt-` gate decides
+      who may call.
   - id: dgx.litellm.service-alias.alibaba.v1
     kind: http-route
     value: litellm-alibaba
@@ -338,6 +616,9 @@ contracts:
       fell from ~93 % to ~70 % cached. /v1/messages is back on DashScope's
       IMPLICIT (text-prefix) cache; /v1/chat/completions still forwards the
       markers a client sends.
+      2026-10-16 (INFRA-882): the Service gains the metadata label `app: litellm`
+      so the VMServiceScrape `litellm` selects it; name, selector and port are
+      unchanged. Additive: no .vN+1.
 
   - id: litellm.reasoning-effort.v1
     kind: schema
@@ -351,6 +632,10 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
+      INFRA-1036 (2026-10-30), additive: all seven ChatGPT chat aliases publish
+      low, medium, high, xhigh, max, verified with 35 real API calls. The Codex
+      catalog also lists ultra for some models, but upstream rejects it as an
+      API reasoning.effort (HTTP 400), so it is not advertised. Defaults unchanged.
       Cross-process contract between this proxy and its LLM clients (opencode,
       OpenClaw, Claude Code). The proxy publishes a reasoning-effort vocabulary
       in `supported_reasoning_efforts`; clients read it, paint a menu, and send
@@ -380,6 +665,13 @@ contracts:
       Same recipe for `tooling`/`tooling-uncensored` since 2026-09-23. The
       thinking-off aliases `qwen38-off`/`qwen38-u-off` advertise only [none]
       and the hook forces them off whatever effort the client sends.
+      Cloud aliases carry the provider's own ladder, not ours: since 2026-10-12
+      (DGX-842) `alibaba-q38-max` and `alibaba-q38-flash` advertise Model Studio's
+      published recipe [none, low, medium, xhigh] — the provider maps `minimal` to
+      `low` and `high`/`max` to `xhigh`, so advertising those two painted two
+      identical options in every client that reads the menu (opencode, the Hermes
+      seed, Paseo). Guarded by
+      tests/test_alibaba_second_key_affinity_contract.py::test_el_menu_de_effort_de_los_qwen38_es_la_receta_oficial.
   - id: dgx.litellm.tooling-cloud-fallback.v1
     kind: schema
     value: TOOLING_FALLBACKS
@@ -395,10 +687,44 @@ contracts:
       (redeploy/restart, 15-20 min) the hook degrades them to their cloud twin
       `alibaba-q38-flash` (route_state=degraded, warning log) instead of the
       previous fail-closed 503 `tooling_resident_not_ready`. Keys in
-      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue) keep failing closed via
-      disable_fallbacks, and the abliterated aliases have no chain. Guarded by
-      tests/test_tooling_profile_contract.py and
+      NO_FALLBACK_KEY_ALIASES (aurora-rca, synapse, brain, claude-cloudblue,
+      skirmbooks-ui, hindsight) keep failing closed via
+      disable_fallbacks, and the abliterated aliases have no chain. ADDITIVE
+      (DGX-841, 2026-10-12, Dani): `synapse` naming the resident directly
+      (`qwen38-flash-next`) was left unsealed (KEY_DIRECT_FALLBACK_MODELS) so the
+      Router edge `qwen38-flash-next` -> `alibaba-q38-flash` applied; `synapse` on
+      `tooling` or any `-uncensored` stays sealed. Narrowed by DGX-874 C1, below.
+      Guarded by tests/test_tooling_profile_contract.py and
       tests/test_aurora_fallback_policy_contract.py.
+      ADDITIVE (DGX-874, 2026-10-13): `correo-clasificador`, a second direct name
+      for the resident Service with timeout 6 and num_retries 0 (Synapse's mail
+      classifier), with its own Router edge `correo-clasificador` ->
+      `alibaba-q38-flash`; the one model `synapse` has left unsealed. The key
+      `synapse` reaches the alias only once its allowlist (Postgres, outside git)
+      names it. Guarded by tests/test_correo_clasificador_alias_contract.py.
+      MIGRATION (DGX-874 C1, 2026-10-13, security): no diversion by load for
+      `synapse`. With `qwen38-flash-next` unsealed, the hook's session router
+      (default plan, instant_reject valve, KV budget, sticky, re-bind) rewrote the
+      key's requests to `alibaba-q38-flash`: 78 % of them on 2026-10-13, all with
+      attempted_fallbacks=0. `qwen38-flash-next` leaves KEY_DIRECT_FALLBACK_MODELS:
+      `synapse` is sealed again with it (the resident answers or the call fails in
+      plain sight, and the Gmail adapter's reclassification loop retries); its
+      Router edge stays for the keys that are not sealed. The only way `synapse`
+      reaches Alibaba is now a Router edge, and only for `correo-clasificador`,
+      which is not in ROUTED_MODELS so the session router never touches it.
+      TOOLING_FALLBACKS itself is unchanged. Guarded by
+      tests/test_synapse_resident_fallback_contract.py.
+      ADDITIVE (SKIRM-183, 2026-10-17): `skirmbooks-ui` — the key Skirmbooks' OCR
+      and its banking adapters call `tooling` with (envFrom skirmbooks-ui-secrets)
+      — joins the sealed set. With no resident Ready the text of a client invoice
+      no longer reaches the cloud twin: the call fails in plain sight, the
+      workflow parks the invoice as `cancelled` with reason "OCR cancelado" and
+      the scheduled redrive recovers it. Guarded by
+      tests/test_skirmbooks_ui_no_fallback_contract.py.
+      ADDITIVE (INFRA-940, 2026-10-18): `hindsight` (Hindsight, the agent memory
+      that replaces the brain) joins the sealed set like `brain`: with no resident
+      Ready its retain/reflect calls fail closed instead of reaching the cloud twin.
+      Guarded by tests/test_hindsight_no_fallback_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
       from the /inferencia panel (ALIBABA · TOKEN PLAN, field
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
@@ -427,7 +753,8 @@ contracts:
       Consumed by dgx-infra services/dashboard/api/litellm_active.py and
       api/routes_hud.py: the /inferencia cards put each live request on its
       engine card by `server_id` (MUST equal the card's srv.id, e.g.
-      `qwen38-flash-next-head`) and derive the per-request phase
+      `qwen38-flash-next-head`; since 2026-10-15 the TP=1 Service
+      `qwen38-flash-next-tp1` maps to `qwen38-flash-next-worker-dgx3`) and derive the per-request phase
       (queue/prefill vs decode) from `ttft_ms`, `completion_tokens` and the
       live `output_speed_tps`. Fields are additive; null means "not
       measured", never zero. Since 2026-09-23 the resident is measured live
@@ -441,12 +768,22 @@ contracts:
       fallback revives the row the primary's failure had closed. Pinned by
       tests/test_active_requests_pod_scoping_contract.py (AC5) and
       tests/test_active_request_route_origin_contract.py.
+      Since 2026-10-20 (DGX-1148) `output_speed_tps` is measured against
+      the last sample before its 2 s window and stays at its previous
+      value (null at first) until at least 1 s is measured, so a burst
+      after a stream pause no longer reads as hundreds of t/s; same field,
+      same unit. Pinned by tests/test_active_request_metrics_contract.py.
       Since 2026-09-24 each row also carries the additive
       prompt_tokens_estimate: input size ESTIMATED at the pre-call (text
       characters / a chars-per-token ratio learned from real prompt_tokens),
       so a request still in queue/prefill shows its size before the first
       token. It never replaces prompt_tokens, which stays backend-only.
       Pinned by tests/test_prompt_tokens_estimate_contract.py.
+      Since 2026-10-20 (SC-2804) the learned ratio is PER ALIAS: a dict of
+      EMAs in ActiveRequestTracker (cpc_for(alias); unknown alias = 3.5).
+      One global EMA over heterogeneous traffic overestimated long Claude
+      Code turns by up to +50 % (est 330628 vs real 220728, measured
+      2026-10-20). Same field, same unit: no .vN+1.
       Since 2026-09-25 session_router.py (same pod, other process) reads this
       route and /internal/active-requests/local from a background poll every
       0.5 s instead of synchronously per request (remote = aggregate minus
@@ -472,6 +809,40 @@ contracts:
       semaphores) admits 4 in flight per pod (8 across the 2 replicas): a request over
       that waits in LiteLLM's per-deployment semaphore before reaching the engine, so
       it shows here with no `ttft_ms` (queue phase) longer than before. No field change. Since 2026-10-05 (DGX-589) each row also carries the additive `priority`: the vLLM priority apply_priority stamped in extra_body (int; null = no priority, i.e. 0, or a non-resident destination). The /inferencia panel orders its estimated engine queue with it (lower first, then oldest). Pinned by tests/test_active_request_priority_contract.py.
+      Since 2026-10-15 (DGX-924) no field or value changed: `server_id` is stamped when
+      the Router dispatches the request to its deployment (log_pre_api_call), not at
+      the first streamed chunk or at the end of a non-streaming call. With the resident
+      alias load-balanced across two vLLM (2+1), a non-streaming request (synapse,
+      brain, cb-review) had `server_id` null for its whole flight and a streaming one
+      during its prefill, so the panel could only count them as not attributed. A
+      request still waiting in LiteLLM's per-deployment semaphore keeps it null.
+      Pinned by tests/test_active_request_metrics_contract.py.
+      Since 2026-10-16 (DGX-951), additive: every row carries `cached_tokens` (int|null),
+      the part of `prompt_tokens` served from the engine's prefix cache, as the provider
+      reports it in `usage.prompt_tokens_details.cached_tokens` (or Anthropic-style
+      `cache_read_input_tokens`); null until a usage reports it, and reset with the other
+      usage fields on a fallback. Nothing is renamed or removed. Pinned by
+      tests/test_active_request_cached_tokens_contract.py.
+      Since 2026-10-16 (DGX-980) no field is renamed or removed, but `refusal_lambda`
+      (here and in spend_logs_metadata) is the lambda the request is SERVED with: its
+      per-request seal `cache_salt: refusal:<x>` when it carries one (the request's or,
+      without extra_body, the one its alias deployment declares, e.g. 1.0 for
+      qwen38-flash-next-uncensored), else the runtime's global dial. Before, it was always
+      the dial, so with the dial at 0 an uncensored-alias request was stamped 0 although
+      the engine served it at 1.0. A non-finite salt (inf, nan) is not a seal:
+      `refusal_lambda` is always a finite number or absent. Pinned by
+      tests/test_refusal_dial.py and tests/test_uncensored_alias_contract.py.
+      Since 2026-10-18 (SC-2675), additive: every row carries
+      `completion_tokens_estimate` (int|null) — output tokens ESTIMATED from
+      the characters streamed in chunks that carry no `usage`, for providers
+      that report usage only on the final chunk (Alibaba/DashScope: 1 usage
+      chunk in 10586, measured 2026-10-18). The estimate divides by the same
+      learned chars-per-token ratio as `prompt_tokens_estimate`. The first
+      content chunk also seals `ttft_ms` and feeds the same 2 s speed window
+      as real usage, so a live Alibaba request shows its speed; once real
+      `completion_tokens` arrives it wins and the window resets (the scales
+      differ). It never replaces `completion_tokens`. Pinned by
+      tests/test_active_request_metrics_contract.py.
   - id: dgx.hermes.profile-header.v1
     # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
     kind: schema
@@ -488,8 +859,14 @@ contracts:
       The strip_params hook reads it (case-insensitive key, lowercased value,
       anything not matching [a-z0-9][a-z0-9_.-]{0,63} is dropped) and the
       tracker serves it as `profile` on /internal/active-requests. Label only:
-      no routing, admission or billing decision depends on it. Pinned by
-      tests/test_active_request_profile_contract.py.
+      no routing, admission or billing decision depends on it — with one
+      exception since 2026-10-16 (SC-2504): session_router.apply_company_policy
+      exempts a profile in ALIBABA_SIEMPRE ({"cto"}) from the company Alibaba
+      switch (`company_alibaba_disabled`), read by session_router._hermes_profile
+      with the same normalisation. Spoofable like x-claude-class (every client
+      holds the same key); the only gain is Alibaba fallback for one request.
+      Pinned by tests/test_active_request_profile_contract.py and
+      tests/test_session_routing_contract.py::test_el_cto_de_hermes_conserva_alibaba_con_el_interruptor_apagado.
   - id: dgx.litellm.refusal-probe-stamp.v1
     # Claves que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de refusal. Mismo kind que class-header: es una
@@ -538,6 +915,66 @@ contracts:
       UNCENSORED_ALLOWED_KEY_ALIASES es coherente con este veto: su motivo
       de entrada (la medicion interna) ya no existe. Pinned by
       tests/test_master_inference_veto_contract.py.
+  - id: dgx.litellm.chatgpt-oauth.v1
+    kind: allowlist
+    value: gpt-
+    anchor: 'def _chatgpt_access_denied(requested, key_label):'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1053 (2026-10-18). Siete alias `gpt-6.1-sol`, `gpt-6-astra`,
+      `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` y
+      `gpt-5.6-luna` contra la cuenta ChatGPT Plus de Dani por el provider
+      `chatgpt/` (OAuth) de la imagen de casa (DGX-1035), coste 0. Solo
+      seleccion manual: ningun fallback, router_settings, model_group_alias
+      ni desvio de vision llega a ellos (la causa de los baneos de agosto de
+      la cuenta anterior). Gate fail-closed por prefijo `gpt-` en el
+      pre_call_hook: LITELLM_CHATGPT_ALLOWED_KEYS = claude-x86 (Claude CLI
+      y Paseo por claude-local-router), hermes y studio-chatgpt; vacia =
+      nadie, ni la master. DGX-1077 (2026-10-18), aditivo: tres alias de
+      imagen `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` y `gpt-image-2`
+      (mode image_generation, coste 0) para los motores `chatgpt-*` del DGX
+      Studio, que entran con la key `studio-chatgpt`.
+      INFRA-942 (2026-10-19), aditivo: la key `hindsight` (memoria de agentes,
+      ns hindsight, solo texto) entra en LITELLM_CHATGPT_ALLOWED_KEYS por decision
+      de Dani, para ingerir con `gpt-6-luna`.
+      Token: el pod de litellm lee CHATGPT_TOKEN_DIR=/var/run/chatgpt-oauth,
+      el Secret litellm-chatgpt-token montado en solo lectura. Lo crea desde
+      la semilla de 1Password (ExternalSecret litellm-chatgpt-oauth, item
+      litellm campo CHATGPT_OAUTH_AUTH_JSON) y lo renueva con 72 h de margen
+      SOLO el CronJob chatgpt-token-keeper: OpenAI rota el refresh token y el
+      provider no tiene cerrojo. Pinned by
+      tests/test_chatgpt_oauth_contract.py.
+      MIGRATE (DGX-1053, 2026-10-18): CHATGPT_DEVICE_LOGIN=never en el
+      Deployment (imagen del fork con el fix 160cffc0). Sin token valido el
+      alias responde 401 AuthenticationError sin device login, el despliegue
+      del alias se conserva en el arranque y el pod se recupera solo cuando el
+      keeper deja el token (antes el pod se quedaba sin Ready).
+      MIGRATE (DGX-1137, 2026-10-19): repin a la imagen del fork e1cfa8cbd5. Un
+      system a mitad de turno (Claude CLI por /v1/messages) llega a Codex como
+      item role=developer en vez de role=system, que el backend rechazaba con
+      400 "System messages are not allowed". Sin cambio de forma: mismos
+      alias, mismas claves del gate. Fix enviado a upstream (BerriAI/litellm#47444).
+  - id: dgx.litellm.chatgpt-quota.v1
+    kind: schema
+    value: chatgpt:quota
+    anchor: 'CHATGPT_QUOTA_KEY = "chatgpt:quota"'
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1078 (2026-10-18). El callback chatgpt_quota.py guarda en
+      litellm-valkey db 0 la ultima lectura de cuota de la cuenta ChatGPT
+      Plus, sacada de las cabeceras x-codex-* de cada respuesta (tambien los
+      429): JSON {observed_at, plan_type, active_limit, primary, secondary,
+      credits_unlimited, credits_balance}, cada ventana {used_percent,
+      window_minutes, reset_at (epoch s)}; primary = 300 min, secondary =
+      10080 min. TTL 8 dias. Consumidor: dgx-infra services/dashboard
+      (/api/chatgpt/quota y /api/activity codex_quota), solo GET. Pinned by
+      tests/test_chatgpt_quota_contract.py.
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que
@@ -573,6 +1010,41 @@ contracts:
       trae; sin cabecera no se escribe nada. Consumido por dgx-infra
       services/dashboard (Inferencia: uso por perfil y consumidor en ventanas
       1m..30d). Aditivo. Pinned by tests/test_spendlogs_hermes_profile_contract.py.
+  - id: dgx.claude.session-title-header.v1
+    # Cabecera de etiqueta de sesion: convencion de datos entre el lanzador
+    # (publisher, x86-host-runtime / Paseo) y el hook (consumer, aqui). Mismo
+    # kind que dgx.claude.class-header.v1 por la misma razon (checker).
+    kind: schema
+    value: x-claude-session-title
+    role: consumer
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-25. Cabecera opcional con la ETIQUETA de la sesion (custom-title /
+      ai-title dicho por el lanzador; nunca un recorte del prompt, ruling del CTO
+      en claude-rc-status.py::_etiqueta). El hook la lee de las mismas tres
+      fuentes que x-hermes-profile, colapsa espacios y corta a 120. Quien no tiene
+      etiqueta no manda cabecera. Publisher en x86-host-runtime (PR aparte).
+  - id: dgx.litellm.spendlogs-session-title.v1
+    # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
+    # que lee por SQL el panel (titulo del Top-20 para sesiones cuyo transcript
+    # no esta en el indice del x86). Mismo kind que claude_class.
+    kind: schema
+    value: session_title
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-25. El pre-call hook de strip_params sella
+      spend_logs_metadata.session_title = etiqueta de la cabecera
+      x-claude-session-title (dgx.claude.session-title-header.v1) cuando la
+      peticion la trae; sin cabecera no se escribe nada. Consumido por dgx-infra
+      services/dashboard (SessionRouting: nombre de sesion cuando el indice de
+      titulos del x86 no conoce el sid -- sesiones cuyo transcript vive en otra
+      maquina). Aditivo. Pinned by
+      tests/test_spendlogs_session_title_contract.py.
   - id: dgx.litellm.key-fallbacks.demos.v1
     # kind 'allowlist': es la lista de keys (por key_alias) que tienen salida
     # externa en `tooling`; el consumidor la usa sabiendo que su key la tiene.
@@ -604,7 +1076,7 @@ contracts:
     # puertas del hook que la listan igual que a su gemela de chat.
     kind: allowlist
     value: hermes-batch
-    anchor: opencode-20260630-local,hermes,hermes-batch
+    anchor: hermes,hermes-batch
     role: provider
     files:
       - k8s/manifest.yaml
@@ -629,7 +1101,7 @@ contracts:
     # la puerta uncensored del hook (LITELLM_UNCENSORED_ALLOWED_KEYS).
     kind: allowlist
     value: hermes-cloudblue
-    anchor: openclaw-qwen36-prod,playground,open-webui-v3,opencode-20260630-local,claude-local,hermes,hermes-batch,synapse,hermes-cloudblue
+    anchor: openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue
     role: provider
     files:
       - k8s/manifest.yaml
@@ -642,6 +1114,54 @@ contracts:
       LITELLM_UNCENSORED_ALLOWED_KEYS del Deployment con el default del hook mas
       este alias (sin tocar el codigo de litellm_strip_params.py). Renombrar o
       retirar el alias deja fuera la ruta abliterada para este consumidor.
+  - id: dgx.litellm.virtual-key.claude-casa.v1
+    kind: allowlist
+    value: claude-casa
+    anchor: hermes-cloudblue,claude-casa
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: removed
+    replaced_by: dgx.litellm.virtual-key.claude-mac.v1
+    approved_by: dani 2026-10-20 (la key nunca llego a crearse; Dani pidio llamarla claude-mac)
+    note: >-
+      DGX-1099 (2026-10-18). Clave virtual de LiteLLM del Claude Code y Paseo del
+      MacBook de casa (antes compartia claude-local con el x86): cada maquina con
+      su key para que el panel le ponga su politica de cuentas de Claude
+      (claude_accounts). Mismos models que claude-local mas `claude-*`; entra en
+      LITELLM_UNCENSORED_ALLOWED_KEYS, LITELLM_CHATGPT_ALLOWED_KEYS y
+      priority_by_alias (-5, uso personal). Se crea por /key/generate; su valor
+      vive en el Mac (~/.config/claude-local/env), nunca en git.
+  - id: dgx.litellm.virtual-key.claude-mac.v1
+    kind: allowlist
+    value: claude-mac
+    anchor: hermes-cloudblue,claude-mac
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-20). Clave virtual de LiteLLM del Claude Code (CLI y
+      pestana Code de Claude Desktop) y Paseo del MacBook de casa (mac-casa);
+      sustituye a claude-casa, que nunca se creo. Mismos models que claude-x86;
+      entra en LITELLM_UNCENSORED_ALLOWED_KEYS, LITELLM_CHATGPT_ALLOWED_KEYS y
+      priority_by_alias (-5). El panel le pone la politica de cuentas de la
+      pestana mac-casa (claude_accounts). Se crea por /key/generate; su valor
+      vive solo en el Mac (~/.claude/settings.json), nunca en git.
+  - id: dgx.litellm.virtual-key.claude-x86.v1
+    kind: allowlist
+    value: claude-x86
+    anchor: claude-x86
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1099 (2026-10-20). Clave virtual de LiteLLM del x86 (Claude Code, Paseo
+      y la compania), renombrada desde `claude-local` via /key/update (mismo
+      token, mismos models). El panel le pone la politica de cuentas de la
+      pestana x86 y priority_by_alias la mapea {default: -5, company: 5}. Su
+      valor vive en ~/.config/claude-local/env del x86, nunca en git.
   - id: dgx.litellm.virtual-key.keep-hub.v1
     # kind allowlist: la superficie es la allowlist `models` de la key virtual
     # `keep-hub`, que vive SOLO en la Postgres de LiteLLM (se fija por
@@ -687,6 +1207,32 @@ contracts:
       (el gate corre en el pre-call sobre el modelo pedido), asi que `alibaba-q38-flash`
       no hace falta en la lista. Renombrar el alias o retirar un modelo es un cambio
       de este contrato: mover a Aurora (values) en el mismo push.
+  - id: dgx.litellm.virtual-key.skirmbooks-ui.v1
+    # kind allowlist: allowlist `models` de la key virtual `skirmbooks-ui` (secret
+    # skirmshop/skirmbooks-ui-secrets, espejo ESO del item 1Password
+    # skirmshop-skirmbooks-ui). Vive solo en la Postgres de LiteLLM (/key/update).
+    kind: allowlist
+    value: skirmbooks-ui
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-10-27 (DGX-1034, epica SKIRM-177). Clave virtual de LiteLLM que usan la UI
+      de Skirmbooks y los cinco pods de banking (envFrom skirmbooks-ui-secrets): el
+      OCR de facturas de clientes, fiscal-lookup, invoice-llm y el fiscal-validator.
+      Nacio el 2026-08-22 con `models: []` (= todos), asi que podia pedir un alias
+      cloud por su nombre directo (`alibaba-q38-flash`) pese al sellado
+      `disable_fallbacks` de SKIRM-183 (dgx.litellm.tooling-cloud-fallback.v1): el
+      sellado gobierna a donde DEGRADA el Router; la allowlist gobierna lo que se
+      puede PEDIR. DGX-1034 la recorto a `["tooling"]` por /key/update — unico alias
+      que pide su codigo (grep en skirmbooks-gestoria-src; el default `fast` del UI
+      no es alias del model_list y el despliegue fija LITELLM_OCR_MODEL=tooling).
+      Medido: /key/info -> `models: ["tooling"]`; llamada real por key: `tooling` ->
+      200, `alibaba-q38-flash` -> 403 (`key_model_access`). Anadir un alias a la
+      allowlist o retirarlo es un cambio de este contrato: mover a Skirmbooks
+      (despliegue k8s-skirmbooks-pocharlies) en el mismo push. Precedente:
+      claude-cloudblue, que ya solo tiene el residente y su -uncensored.
   - id: dgx.litellm.virtual-key.copilot-jake-chat.v1
     # kind allowlist: allowlist `models` de la key virtual `copilot-jake-chat`
     # (copiloto del side panel de agent-jake). La allowlist se fijo en el
@@ -723,7 +1269,7 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
-      2026-09-25 (Dani: "prorrateo del pack"). Los 10 alias alibaba-* llevan
+      2026-09-25 (Dani: "prorrateo del pack"). Los 11 alias alibaba-* llevan
       input_cost_per_token / cache_read_input_token_cost /
       output_cost_per_token = precio de lista internacional x k, con k
       calibrado contra la ventana real del plan: pack Individual Pro $65/mes
@@ -734,6 +1280,10 @@ contracts:
       (implicito), 10 % en deepseek-v4.1-flash. k = 30,875/350,07 = 0,0882;
       la ventana recalculada da $30,875 exactos. Consumidor: el spend que
       publican SpendLogs y /v2/model/info (paneles del dashboard, Grafana).
+      2026-10-20 (DGX-1190): publicado el alias `alibaba-ds41f1017` (upstream
+      `deepseek-v4.1-flash-1017`) con los tres precios de su familia
+      `alibaba-dsv41-fl`; la k del pack no cambia y ningun literal de la
+      superficie se renombra: sin .vN+1.
       El supuesto creditos~lista es inspeccionable en la cabecera de la
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
       cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
@@ -746,7 +1296,7 @@ contracts:
     # `DASHSCOPE_API_KEY_2` es el literal que comparten las dos mitades de la
     # superficie: el ExternalSecret que materializa el
     # Secret `litellm-alibaba-2` y el env `optional: true` del Deployment que
-    # alimenta `os.environ/DASHSCOPE_API_KEY_2` de los diez `-k2`.
+    # alimenta `os.environ/DASHSCOPE_API_KEY_2` de los once `-k2`.
     value: DASHSCOPE_API_KEY_2
     role: publisher
     files:
@@ -756,7 +1306,7 @@ contracts:
       2026-09-26 (DGX-444). Superficie de la segunda cuenta del plan Team de
       Alibaba Model Studio: ExternalSecret `litellm-alibaba-2` -> Secret del
       mismo nombre -> env `DASHSCOPE_API_KEY_2` (optional: true) -> el hook
-      ensure_alibaba_key2_active sube los diez `-k2` de order 2 a order 1 en
+      ensure_alibaba_key2_active sube los once `-k2` de order 2 a order 1 en
       memoria cuando la key existe (afinidad por sesion:
       dgx.session-router.deployment-affinity-key.v1). GATE DGX-444: el
       ExternalSecret queda COMENTADO FUERA del despliegue porque el item
@@ -817,7 +1367,10 @@ contracts:
       de ahi el `model_group_retry_policy` del manifest
       (`alibaba-q38-flash: BadRequestErrorRetries: 2`), que da tres
       generaciones nuevas por turno SOLO en ese grupo; lo fija
-      tests/test_alibaba_400_retry_policy_contract.py.
+      tests/test_alibaba_400_retry_policy_contract.py. 2026-10-18 (DGX-1075):
+      el mismo mapa lleva `qwen38-flash-next: TimeoutErrorRetries: 0` (un
+      Timeout de 240 s del residente va directo a su fallback a Alibaba); el
+      fichero de test fija los dos grupos y nada mas.
   - id: dgx.litellm.priority-field.v1
     kind: schema
     value: priority
@@ -843,7 +1396,7 @@ contracts:
       del proxy litellm 1.100.0 que una clave top-level desconocida en
       config.yaml se ignora sin error, por eso el mapa es top-level. ADITIVO (INFRA-364, 2026-10-01): alias `brain: 20`, la prioridad mas
       baja de todas (detras de hermes-batch: 10); `brain` entra tambien en
-      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`. ADITIVO (DGX-601, 2026-10-06): el valor del mapa puede ser ENTERO (como siempre) o MAPA por clase de sesion (`{default: int, "<x-claude-class>": int}`), y el config gana una clave top-level `priority_uncensored` que manda sobre el mapa cuando el destino resuelto es uncensored (`_is_uncensored`). El campo que sale hacia vLLM es el mismo `priority` (int) y el gate del residente no cambia; `claude-local` pasa a `{default: -5, company: 5}` y lo uncensored a -20. Forma rara en un valor => ese alias no inyecta (fail-open de siempre).
+      DEFAULT_BOT_KEYS y en NO_FALLBACK_KEY_ALIASES (no degrada a Alibaba). ADITIVO (DGX-589, 2026-10-05): el valor inyectado se sella tambien en la fila de /internal/active-requests (`priority`, dgx.litellm.active-requests.v1), para que el panel /inferencia ordene la cola estimada sin copiar `priority_by_alias`. ADITIVO (DGX-601, 2026-10-06): el valor del mapa puede ser ENTERO (como siempre) o MAPA por clase de sesion (`{default: int, "<x-claude-class>": int}`), y el config gana una clave top-level `priority_uncensored` que manda sobre el mapa cuando el destino resuelto es uncensored (`_is_uncensored`). El campo que sale hacia vLLM es el mismo `priority` (int) y el gate del residente no cambia; `claude-local` pasa a `{default: -5, company: 5}` y lo uncensored a -20. Forma rara en un valor => ese alias no inyecta (fail-open de siempre). ADITIVO (INFRA-940, 2026-10-18): alias `hindsight: 20` (Hindsight, que sustituye al brain), la misma prioridad que `brain`; el campo y el gate no cambian. ADITIVO (INFRA-988, 2026-10-24): alias `analisis: 20` (extraccion y resumen de CDM), la misma prioridad que `brain` e `hindsight`; el campo y el gate no cambian.
   - id: dgx.litellm.stream-options-guard.v1
     kind: schema
     value: stream_options
@@ -883,8 +1436,9 @@ contracts:
     note: >-
       DGX-621 (plan DGX-619, 2026-10-06). Sitio UNICO por el que pasa la media
       (imagen, video, voz) del Token Plan de Alibaba: Service `plan-gateway`
-      :4002 en ns `litellm`, ClusterIP y SIN IngressRoute (solo consumidores
-      dentro del cluster: Studio, omnivoice). Deployment propio, etiqueta
+      :4002 en ns `litellm`, ClusterIP y SIN IngressRoute (consumidores: Studio,
+      omnivoice, y openmontage desde el nodo x86 por el ClusterIP — mismo patrón
+      que el MinIO de `upload_render.py`). Deployment propio, etiqueta
       `app: plan-gateway` (nunca `app: litellm`), codigo inline en el ConfigMap
       `plan-gateway-config` (`plan_gateway.py`). URL para los consumidores (espejo
       en dgx-infra y k8s-ai, DGX-619 P2/P4):
@@ -898,9 +1452,10 @@ contracts:
       el del token-plan). No hay ruta de salud: las sondas son tcpSocket.
 
       AUTH: `Authorization: Bearer <token>`, UN token por consumidor
-      (PLAN_GATEWAY_TOKEN_STUDIO, PLAN_GATEWAY_TOKEN_OMNIVOICE; ExternalSecret
-      `plan-gateway-tokens`, items 1Password `plan-gateway-studio` y
-      `plan-gateway-omnivoice`), comparado con hmac.compare_digest; sin token o
+      (PLAN_GATEWAY_TOKEN_STUDIO, PLAN_GATEWAY_TOKEN_OMNIVOICE,
+      PLAN_GATEWAY_TOKEN_OPENMONTAGE (SC-2498, x86 OpenMontage por ClusterIP);
+      ExternalSecret `plan-gateway-tokens`, items 1Password `plan-gateway-studio`,
+      `plan-gateway-omnivoice` y `plan-gateway-openmontage`), comparado con hmac.compare_digest; sin token o
       con uno malo, 401. El nombre del consumidor es el `caller` del ledger. El
       Authorization y el X-Plan-Account que entran se descartan y el gateway pone
       la key de la cuenta elegida; hop-by-hop fuera; X-DashScope-Async y
@@ -937,3 +1492,68 @@ contracts:
 
       NO prometido: mapa de tareas, reparto por modelo (k2 acepta los cuatro
       modelos, medido), ruta de salud, IngressRoute.
+
+      DGX-1035 (2026-10-17): el runtime pasa a ghcr.io/berriai/litellm:v1.105.1
+      (el mismo pin que el proxy); `plan_gateway.py` solo usa stdlib, httpx y
+      session_router, e importa limpio en esa imagen (medido).
+      Después, la misma historia lo pasa a la imagen de casa
+      harbor.lan.e-dani.com/homelab/litellm (v1.105.1 + Codex del fork
+      pocharlies-org/litellm, rama pocharlies-codex), que se descarga con
+      imagePullSecrets harbor-pull; el job de integración del CI importa
+      `plan_gateway.py` dentro de esa imagen antes del merge.
+  - id: dgx.litellm.model-alias.omnivoice-tts-trained.v1
+    kind: schema
+    value: omnivoice-tts-trained
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: deprecated
+    replaced_by: omnivoice-tts
+    remove_after: "2026-10-27"
+    note: >-
+      DEPRECATED 2026-10-20 (DGX-1186): SC-2812 deja un unico OmniVoice bf16 que
+      sirve clones, voice-design y voces kind:model cambiando los pesos; no hay
+      ya un segundo backend que enrutar. Sustituido por `omnivoice-tts` (el
+      unico). Vivio un dia: anadido en DGX-1173 para el chip trained del
+      playground, retirado por decision de Dani al quedar un solo motor.
+  - id: dgx.litellm.openrouter-account-upstream.v1
+    kind: http-route
+    value: /admin/openrouter-account
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Ruta del saldo/cupo de OpenRouter que publica el hook de litellm-config y
+      llama el panel (dgx-infra, services/dashboard/api/routes_openrouter.py,
+      ACCOUNT_PATH; contrato gemelo dgx.litellm.openrouter-account.v1). Nace bajo
+      `/admin/` y NO bajo `/openrouter/`: LiteLLM registra por dentro un
+      pass-through `/openrouter/{path}` del proveedor que eclipseaba la ruta y cuyo
+      guardrail corría el veto de inferencia y devolvía 403 a la master key del panel
+      («saldo sin medir»). Con `Depends(user_api_key_auth)` — como `/admin/refusal-*`
+      — autentica sin correr el veto. Cambiar este path exige mover ACCOUNT_PATH en
+      el consumidor en el mismo push.
+  - id: dgx.litellm.key-audit.v1
+    kind: schema
+    value: LiteLLM_AuditLog
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      Garantía de procedencia de las operaciones sobre virtual keys: con la
+      auditoría activada (SC-2507, 28-10), cada
+      created/updated/deleted/blocked/unblocked/rotated de una key escribe en
+      la tabla `LiteLLM_AuditLog` con `changed_by` y `changed_by_api_key`
+      (gate `is_audit_logging_enabled()`, litellm/proxy/management_helpers/
+      audit_logs.py; en v1.105.1 no existe mecanismo automatico que ponga
+      blocked=true en una key — solo el endpoint admin /key/block, medido en
+      el fork). Activacion viva = la env `LITELLM_STORE_AUDIT_LOGS=true` del
+      Deployment litellm: en el fork nada asigna el valor de
+      `litellm_settings.store_audit_logs` al atributo de modulo que lee el
+      gate (medido 28-10: con el flag de config, attr sigue None y la tabla
+      no escribe); la linea de config se queda por semantica upstream y por si el
+      fork se sincroniza. Consumida por security/ops: es la respuesta a «quien
+      bloqueó aurora-rca el 10/10», que sin esto quedo sin rastro 6 dias
+      (Request SC-2507). Quitar la env deja la tabla muerta: apagarla es un
+      cambio de contrato, no de config.

@@ -194,13 +194,13 @@ def test_ac10_lo_que_no_se_toca_sigue_intacto():
     env = {e["name"]: e["value"] for e in litellm["env"] if "value" in e}
     assert env["LITELLM_DRAIN_TIMEOUT_SEC"] == "660"
 
-    # AC10: la afinidad no se ensancha mas alla de ubuntu (preferido) y sauvage
-    # (failover, 29-09-2026); el detalle lo guarda test_litellm_rollout_shape_contract.
+    # AC10: la afinidad no se ensancha mas alla de ubuntu (DGX-1090); el detalle
+    # lo guarda test_litellm_rollout_shape_contract.
     terms = template["affinity"]["nodeAffinity"][
         "requiredDuringSchedulingIgnoredDuringExecution"
     ]["nodeSelectorTerms"]
     assert terms[0]["matchExpressions"] == [
-        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu", "sauvage"]}
+        {"key": "kubernetes.io/hostname", "operator": "In", "values": ["ubuntu"]}
     ]
 
 
@@ -665,6 +665,18 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
         for row in shape_new.get("active") or []:
             assert "priority" in row, "falta priority en la fila"
             row.pop("priority")
+        # Y para `cached_tokens` (16-10, DGX-951): de prompt_tokens, los que
+        # salieron de la caché de prefijo del motor. ADITIVA, el panel la lee con
+        # .get() (sin ella, la fila no pinta caché).
+        for row in shape_new.get("active") or []:
+            assert "cached_tokens" in row, "falta cached_tokens en la fila"
+            row.pop("cached_tokens")
+        # Y para `completion_tokens_estimate` (18-10, SC-2675): salida estimada
+        # por caracteres del stream, para proveedores sin usage en vuelo
+        # (Alibaba). ADITIVA, el panel la lee con .get().
+        for row in shape_new.get("active") or []:
+            assert "completion_tokens_estimate" in row, "falta completion_tokens_estimate en la fila"
+            row.pop("completion_tokens_estimate")
         assert _shape(body_old) == shape_new, (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
             f"ahora: {json.dumps(shape_new)}"
