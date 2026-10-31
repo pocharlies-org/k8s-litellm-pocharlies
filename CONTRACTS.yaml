@@ -1153,6 +1153,24 @@ contracts:
       priority_by_alias (-5). El panel le pone la politica de cuentas de la
       pestana mac-casa (claude_accounts). Se crea por /key/generate; su valor
       vive solo en el Mac (~/.claude/settings.json), nunca en git.
+  - id: dgx.litellm.virtual-key.claude-atlantic.v1
+    kind: allowlist
+    value: claude-atlantic
+    anchor: claude-atlantic
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      31-10-2026 (Dani). Clave virtual de LiteLLM del Claude Code y Paseo que
+      corren en el pod paseo-0 de atlantic (antes compartian claude-x86, y el
+      panel no las distinguia). Mismos models que claude-x86; entra en
+      LITELLM_UNCENSORED_ALLOWED_KEYS, LITELLM_CHATGPT_ALLOWED_KEYS y
+      priority_by_alias (mapa {default: -5, company: 5}, como claude-x86: el
+      pod corre personal y compania). La politica de cuentas de Claude la
+      comparte con la de x86 (company_control.claude_accounts). Se crea por
+      /key/generate; su valor vive en el home del pod
+      (~/.config/claude-local/env en el PVC paseo-home), nunca en git.
   - id: dgx.litellm.virtual-key.claude-x86.v1
     kind: allowlist
     value: claude-x86
