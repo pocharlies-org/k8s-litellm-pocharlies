@@ -1231,13 +1231,13 @@ def test_company_sellada_no_se_reescribe_a_alibaba(router_mod):
 def test_el_cto_de_hermes_conserva_alibaba_con_el_interruptor_apagado(router_mod):
     """SC-2504 (Dani, 16-10): el interruptor «Fallback Alibaba» corta el trabajo de la compañía, no al supervisor."""
     cfg = _cfg(company={"alibaba": False})
-    cto = _data(model="alibaba-q38-flash", metadata={"headers": {"x-claude-class": "company", "X-Hermes-Profile": "cto"}})
-    assert _policy(router_mod, cfg, cto, requested="alibaba-q38-flash") == (False, None)
+    cto = _data(model="alibaba-explicito-a", metadata={"headers": {"x-claude-class": "company", "X-Hermes-Profile": "cto"}})
+    assert _policy(router_mod, cfg, cto, requested="alibaba-explicito-a") == (False, None)
     assert "disable_fallbacks" not in cto
-    for otro in (_data(model="alibaba-q38-flash", metadata={"headers": {"x-claude-class": "company",
-                                                                        "x-hermes-profile": "analista"}}),
-                 _company_data(model="alibaba-q38-flash")):
-        denegada, detalle = _policy(router_mod, cfg, otro, requested="alibaba-q38-flash")
+    for otro in (_data(model="alibaba-explicito-a", metadata={"headers": {"x-claude-class": "company",
+                                                                          "x-hermes-profile": "analista"}}),
+                 _company_data(model="alibaba-explicito-a")):
+        denegada, detalle = _policy(router_mod, cfg, otro, requested="alibaba-explicito-a")
         assert denegada is True and detalle["error"] == "company_alibaba_disabled"
 
 

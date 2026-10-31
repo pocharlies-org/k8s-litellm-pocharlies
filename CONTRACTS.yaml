@@ -21,6 +21,11 @@ contracts:
     files:
       - dev/session_router.py
       - k8s/manifest.yaml
+      # SC-1901: el contrato se fija tambien desde el test de session routing,
+      # que comprueba que el marcador sigue en el modulo bajo prueba y ejercita
+      # la cabecera. El test deriva el residente del default del hook en runtime
+      # (no nombra modelos): rotar el residente no toca este registry.
+      - tests/test_session_routing_contract.py
     status: active
     note: >-
       Session-class request header stamped by the x86 claude-local-router
