@@ -15,10 +15,12 @@ Medido el 20-10-2026: litellm mandaba `user-agent: litellm/1.105.1` y descartaba
      dev/capture_claude_cli_headers.py; si el manifiesto va detras, fallan los tests.
   4. Y no solo el config con el que arranca el proceso: test_el_cable_... mide lo que
      litellm pone en el egress hacia api.anthropic.com (donde haya litellm; en CI se salta).
-  5. El TLS esta medido y NO coincide: el CLI nativo (Node/undici) y el proxy (httpx)
-     salen con JA3 y JA4 distintos — el oficial no ofrece ALPN y el proxy ofrece
-     http/1.1. No lo fija el manifiesto; los numeros, en la nota del contrato v2 y en
-     el docstring del capturador. Los fija el parser que prueba aqui abajo.
+  5. El TLS esta medido y NO coincide: el CLI nativo y el proxy (httpx) salen con JA3 y
+     JA4 distintos — el oficial no ofrece ALPN y el proxy ofrece http/1.1. No lo fija el
+     manifiesto, y tampoco "el mismo runtime": el CLI es Bun 1.4.4 con BoringSSL y su
+     ClientHello viene de su propia config TLS, no del runtime (node 26.12.1 y bun 1.4.4
+     con fetch dan huellas distintas a la suya). Los numeros, en la nota del contrato v2
+     y en el docstring del capturador. El parser que prueba aqui abajo los fija.
 """
 import hashlib
 import pathlib

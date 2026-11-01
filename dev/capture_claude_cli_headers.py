@@ -13,10 +13,18 @@ Dos modos, dos tramos del cable:
                  se corre dentro del pod del proxy.
   --tls          el otro indicio, el que no arregla el YAML: JA3/JA4 del ClientHello.
                  Mide el CLI nativo y litellm con el mismo sink TLS (ver tls()).
-                 Medido 2026-11-01 — divergen por completo: CLI (Node/undici) JA3
+                 Medido 2026-11-01 — divergen por completo: CLI JA3
                  1b68cea258d57ce22f08d83af5d91c56 / JA4 t13d181100_5d04281c6031_dc7e9eda0726
                  sin ALPN; litellm (httpx) JA3 84271532a49d4795439fe0addea3b46d / JA4
                  t13d1114h1_01855bbd05ee_6c778d45a497 con ALPN http/1.1.
+                 El CLI no corre sobre Node: es un binario Bun 1.4.4 con BoringSSL (el
+                 `node/v26.12.1` que trae es la cadena que reporta el SDK, no su runtime).
+                 Ni el Node ni el Bun del mismo versionado reproducen su huella: `fetch`
+                 con node 26.12.1 da JA3 a1c9e2336b2d2cf759168b9ff5ae3ae9 / JA4
+                 t13d5212h2_b262b3658495_8e6e362c5eac, y con bun 1.4.4 JA3
+                 78a4cc3aa0c7089939b0e8d64fba98c1 / JA4 t13d1713h1_5b57614c22b0_7f527383e249.
+                 El CLI fija cifrados y apaga ALPN; no es "el runtime del CLI" lo que da su
+                 ClientHello, es su configuracion TLS.
 
 Uso:  python3 -I dev/capture_claude_cli_headers.py [--claude <ruta>] [--cable]
       python3 -I dev/capture_claude_cli_headers.py --tls [cli|litellm|ambos]
@@ -186,7 +194,7 @@ def cable(timeout_s: int = 240) -> int:
 
 # ── TLS: JA3 / JA4 del egress ────────────────────────────────────────────────
 # Las cabeceras las fija el YAML; el ClientHello no: lo construye la libreria de cada
-# lado (httpx en litellm, Node/undici en el CLI). Se mide con el mismo instrumento en
+# lado (httpx en litellm, Bun 1.4.4 con BoringSSL en el CLI). Se mide con el mismo instrumento en
 # los dos: un sink que hace de api.anthropic.com con certificado propio y se queda con
 # el ClientHello crudo antes del handshake, con el nombre de verdad en el SNI (el DNS se
 # parchea, la pila TLS no). Especificacion FoxIO JA4+: JA3 = MD5 de
