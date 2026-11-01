@@ -46,7 +46,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WATCHDOG = ROOT / "k8s" / "litellm-watchdog-cron.yaml"
-SA = "/tmp/paperclip-sta9-sa"
+SA = "/tmp/watchdog-sta9-sa"
 
 # L1 pregunta a los Services del DEPLOYMENT de cada perfil de computo (fix #56):
 # el Service de POOL `tooling` no publica 8000 (sus endpoints publican 8888) y

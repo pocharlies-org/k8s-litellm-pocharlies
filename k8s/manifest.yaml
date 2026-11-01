@@ -283,7 +283,10 @@ data:
         # 18-10-2026 (DGX-955h, Dani): 8 -> 4 por pod = 8, el `--max-num-seqs` del TP=2 tras medir la
         # saturación de prefill (x2,8 de 8 a 16 secuencias). Los gemelos TP=1 lo pisan a 3 (5, su
         # `--max-num-seqs`: 3x2 réplicas admite 6 y la sexta encola dentro del motor). ROLLBACK: 8.
-        max_parallel_requests: 4
+        # 25-10-2026 (DGX-1291, Dani): 4 -> 5 por pod = 10, el `--max-num-seqs` del TP=2 subido a prueba
+        # con auditoría a 24 h (el tope estaba puesto: 8 de máximo en 24 h y 10 peticiones en espera).
+        # Sin esto el proxy sigue cortando a 8 y la prueba del servidor no mide nada. ROLLBACK: 4.
+        max_parallel_requests: 5
         # 03-09-2026: sello EXPLICITO a 0. Desde #38 el residente sirve con el
         # lambda global en 1.0, asi que sin sello ESTA ruta tambien sale ablada
         # y el alias "censurado" no lo es. Con refusal:0 la peticion vuelve al
@@ -531,8 +534,8 @@ data:
         api_key: not-used
         timeout: 600
         # DGX-587: 8 -> 4 (por pod). DGX-897 (14-10): 4 -> 8, 16 en el TP=2. DGX-955h (18-10): 8 -> 4
-        # (8 en el TP=2); su gemelo TP=1 lo pisa a 3 (5). Detalle en qwen38-flash-next.
-        max_parallel_requests: 4
+        # (8 en el TP=2); su gemelo TP=1 lo pisa a 3 (5). DGX-1291 (25-10): 4 -> 5 (10), con el ancla.
+        max_parallel_requests: 5
         extra_body: { cache_salt: "refusal:1.0" }
       model_info: &qwen38_uncensored_info
         # DGX-852: id estable con sufijo de backend, mismo criterio que su
@@ -870,6 +873,8 @@ data:
     #
     # tests/test_retired_gpt5_bridge_contract.py sigue sosteniendo la lapida de los
     # nombres de enrutado automatico (router/auto/...), que no vuelven.
+    # Official Codex /models catalog, client_version=1.105.1 (2026-10-30).
+    # ultra is a Codex delegation mode, not an API effort: upstream returns 400.
     - model_name: gpt-6.1-sol
       litellm_params:
         model: chatgpt/gpt-6.1-sol
@@ -878,6 +883,7 @@ data:
         description: GPT-6.1 Sol - el mas nuevo (29-09-2026) via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-6-astra
       litellm_params:
@@ -887,6 +893,7 @@ data:
         description: GPT-6 Astra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-6-sol
       litellm_params:
@@ -896,6 +903,7 @@ data:
         description: GPT-6 Sol via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-6-luna
       litellm_params:
@@ -905,6 +913,7 @@ data:
         description: GPT-6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-5.6-sol
       litellm_params:
@@ -914,6 +923,7 @@ data:
         description: GPT-5.6 Sol via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-5.6-terra
       litellm_params:
@@ -923,6 +933,7 @@ data:
         description: GPT-5.6 Terra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     - model_name: gpt-5.6-luna
       litellm_params:
@@ -932,6 +943,7 @@ data:
         description: GPT-5.6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
     # DGX-1077: imagen por la misma cuenta, para los motores `chatgpt-*` del DGX Studio
     # (key `studio-chatgpt`). Mismo gate `gpt-` y misma regla: solo seleccion manual.
@@ -2315,6 +2327,14 @@ data:
         output_cost_per_token: 0
         disable_background_health_check: true
     litellm_settings:
+      # CONTRACT: dgx.litellm.key-audit.v1
+      # SC-2507 (28-10): el 10/10 alguien hizo /key/block a `aurora-rca` y la IA de
+      # Aurora quedo muda 6 dias sin rastro de quien. En litellm v1.105.1 no hay
+      # mecanismo automatico que ponga blocked=true en una key (solo el endpoint
+      # /key/block, medido en el fork); lo que faltaba es procedencia. Con esto,
+      # cada block/unblock/rotate escribe en LiteLLM_AuditLog quien y con que key
+      # admin (litellm/proxy/management_helpers/audit_logs.py).
+      store_audit_logs: true
       success_callback:
       - db
       - prometheus
@@ -2716,6 +2736,11 @@ data:
         default: -5       # sin clase: uso personal de Dani
         company: 5        # sesion de la compania: por delante del lote, detras del resto
       claude-mac: -5     # DGX-1099: el Claude Code del MacBook de casa, uso personal como claude-x86
+      # 31-10-2026 (Dani): el Paseo de atlantic (pod paseo-0) con key propia para que
+      # el panel lo distinga del x86. Corre personal y compania: mismo mapa que claude-x86.
+      claude-atlantic:
+        default: -5       # sin clase: uso personal de Dani
+        company: 5        # sesion de la compania: por delante del lote, detras del resto
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
       hindsight: 20       # Hindsight (retain/reflect, INFRA-940): sustituye al brain, misma prioridad
@@ -4899,6 +4924,19 @@ data:
     # allowlist gobierna lo que la key puede PEDIR; esto gobierna a donde puede
     # DEGRADAR el Router despues, que es la via por la que el trafico se iria a
     # Alibaba sin que nadie lo pida.
+    #
+    # 27-10-2026 (DGX-1034): y a `skirmbooks-ui` se le recorto tambien el allowlist,
+    # que era la otra mitad del hueco. La key nacio el 22-08 con `models: []` (= todos),
+    # asi que aunque esta politica le impide DEGRADAR a `alibaba-q38-flash`, la key
+    # podia PEDIR ese alias cloud por su nombre directo. Operacion sobre la key en
+    # Postgres (`POST /key/update`, fuera de git como las demas allowlists; ver la
+    # nota de INFRA-431 arriba): `models: ["tooling"]`, medido en `/key/info`. Es el
+    # unico alias que pide su codigo (grep en skirmbooks-gestoria-src: el OCR de
+    # facturas, fiscal-lookup, invoice-llm y el fiscal-validator piden `tooling`; el
+    # default `fast` del UI no es alias del model_list y el despliegue fija
+    # LITELLM_OCR_MODEL=tooling). Verificado con llamada real por key: `tooling` ->
+    # 200, `alibaba-q38-flash` -> 403 (`key_model_access`). Precedente: la key
+    # `claude-cloudblue`, que ya solo tiene el residente y su -uncensored.
     NO_FALLBACK_KEY_ALIASES = frozenset(
         {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis"}
     )
@@ -7155,6 +7193,58 @@ data:
         _slm["hermes_profile"] = str(profile)
         return True
 
+    def _session_title_header(data):
+        """La etiqueta de sesión de la cabecera x-claude-session-title, o None.
+
+        Mismas tres fuentes y clave case-insensitive que _hermes_profile. El valor
+        es SOLO una etiqueta (custom-title/ai-title dicho por el lanzador): se
+        colapsa todo espacio en blanco a un solo espacio — el formato de
+        ANTHROPIC_CUSTOM_HEADERS es una línea por cabecera, un título con salto
+        partiría la cabecera — y se corta a 120, el tope de claude-rc-status.
+        Nunca un recorte del prompt: quien no tiene etiqueta no manda cabecera.
+        Fail-open: nunca lanza."""
+        # CONTRACT: dgx.claude.session-title-header.v1
+        try:
+            sources = [
+                data.get("headers"),
+                (data.get("metadata") or {}).get("headers"),
+                (data.get("litellm_metadata") or {}).get("headers"),
+            ]
+        except AttributeError:
+            return None
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            try:
+                for key, value in source.items():
+                    if isinstance(key, str) and key.lower() == "x-claude-session-title" and value:
+                        v = re.sub(r"\s+", " ", str(value)).strip()[:120]
+                        return v or None
+            except (AttributeError, TypeError):
+                continue
+        return None
+
+    def _stamp_session_title(data, titulo) -> bool:
+        """Sella spend_logs_metadata.session_title: la etiqueta que el cliente mandó
+        por cabecera, para el HISTÓRICO — el índice de títulos del x86 no ve las
+        sesiones cuyo transcript vive en otra máquina (el hueco del Top-20 en sid
+        corto). Mismo dict y misma vía que _stamp_claude_class. Sin etiqueta no se
+        escribe nada. True si sello."""
+        if not titulo or not isinstance(data, dict):
+            return False
+        _mvar = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+        _meta = data.get(_mvar)
+        if not isinstance(_meta, dict):
+            _meta = {}
+            data[_mvar] = _meta
+        _slm = _meta.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            _meta["spend_logs_metadata"] = _slm
+        # CONTRACT: dgx.litellm.spendlogs-session-title.v1
+        _slm["session_title"] = str(titulo)
+        return True
+
 
     def _stamp_refusal_probe(request_data, obj) -> bool:
         """Sella la sonda si `obj` la trae. Mismas dos vias que _stamp_refusal_text
@@ -7738,6 +7828,10 @@ data:
                 _stamp_hermes_profile(data, _hermes_profile(data))
             except Exception as e:
                 log.warning("profile stamp error: %s", e)
+            try:
+                _stamp_session_title(data, _session_title_header(data))
+            except Exception as e:
+                log.warning("session title stamp error: %s", e)
             try:
                 _route_meta = data.get("metadata")
                 if not isinstance(_route_meta, dict):
@@ -8479,6 +8573,9 @@ data:
     # (k8s-ai-pocharlies#197): el desborde salta a 13, la capacidad REAL del residente;
     # con el 24 viejo se admitían 11 peticiones más de las que cabían y encolaban dentro
     # del motor (lento sin desbordar).
+    # DGX-1291 (25-10-2026, Dani): 8,5 -> 10,5 con el TP=2 a 10 secuencias a prueba con
+    # auditoría a 24 h (k8s-ai-pocharlies#217); el desborde salta a 15 y `local_slots` del
+    # panel con él — manda el menor, así que con el 13 viejo las 3 plazas nuevas no se usan.
 
 
     def _parse_slots(raw):
@@ -8488,7 +8585,7 @@ data:
             return ()
 
 
-    VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "8,5"))
+    VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "10,5"))
     _vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
     # DGX-974: la ultima lectura de CADA motor, url -> (waiting, running, read_at), y
     # cuantas peticiones nuevas le ha dado ESTE pod desde esa lectura: el reparto de
@@ -9819,7 +9916,8 @@ data:
     #   - Sin sid (ni cabecera ni prefijo) se sortea la cuenta por cupo con
     #     `draw_account` (DGX-619, octubre 2026): no hay sesion que clavar, pero el
     #     50/50 ciego del Router gastaba la cuenta sin cupo (k1 al 91,5 %). Sin pin,
-    #     sin Valkey; cualquier excepcion deja la lista intacta (fail-open).
+    #     sin Valkey; cualquier excepcion deja intactas las CANDIDATAS (fail-open):
+    #     con pesos conocidos la cuenta sin cupo no vuelve a entrar (rework DGX-639).
     # CONTRACT: dgx.session-router.alibaba-account-pin.v1
     # (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
     ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
@@ -9966,13 +10064,40 @@ data:
         return next(a for a in reversed(ordered) if tramos[a] > 0)
 
 
+    def _sin_cupo_cuentas(accounts, weights):
+        """Cuentas con peso CONOCIDO <= 0 en `alibaba_account_weights` (rework
+        DGX-639): el panel declaro que no les queda cupo y no son candidatas — ni al
+        sorteo ponderado ni al fail-open. Un peso ausente o no numerico es
+        DESCONOCIDO y no se descarta: el reparto uniforme es solo para pesos
+        realmente sin leer. Sin pesos validos (dict vacio) = nada conocido = vacio."""
+        if not isinstance(weights, dict) or not weights:
+            return set()
+        return {a for a in accounts
+                if isinstance(weights.get(a), (int, float))
+                and not isinstance(weights.get(a), bool)
+                and weights[a] <= 0.0}
+
+
+    # Ultimos pesos leidos (rework DGX-639): una cuenta que el panel declaro sin cupo
+    # no puede volver a ser candidata porque un refresco posterior no conteste.
+    # Medido 17-10 (criterio 6 de DGX-619): panel publicando k1=0,0 y k1 llevandose el
+    # 23,1 % del gasto — la excepcion al leer los pesos se tragaba los conocidos.
+    _pesos_ultimos = {}
+
+
     async def _account_weights():
-        """Pesos por cuenta de la config del panel (caché SWR, sin I/O en el camino). {} si no hay."""
+        """Pesos por cuenta de la config del panel (caché SWR, sin I/O en el camino).
+        {} solo mientras NUNCA se leyo ninguno: si la lectura falla, valen los
+        ultimos validos (rework DGX-639, ver `_pesos_ultimos`)."""
+        global _pesos_ultimos
         try:
             weights = (await _config()).get("alibaba_account_weights")
-            return weights if isinstance(weights, dict) else {}
         except Exception:
-            return {}
+            return _pesos_ultimos
+        if isinstance(weights, dict):
+            _pesos_ultimos = weights
+            return weights
+        return _pesos_ultimos
 
 
     async def draw_account(accounts):
@@ -9981,8 +10106,16 @@ data:
         `alibaba_account_weights`) que una sesion nueva, sobre un id aleatorio.
         No escribe pin ni toca Valkey: no hay sesion que clavar. El gateway de media
         (DGX-621) llama LITERALMENTE esto; prohibido definir fórmula propia.
-        Sin pesos (config fria) = tramos iguales, la misma formula de siempre."""
-        return preferred_account("draw", uuid.uuid4().hex, accounts, await _account_weights())
+        Con pesos conocidos, las cuentas con peso <= 0 no son candidatas (rework
+        DGX-639); si todas lo estan, la lista se queda intacta (mejor intentarlo que
+        sorteo vacio). Sin pesos (config fria) = tramos iguales, la misma formula de
+        siempre."""
+        weights = await _account_weights()
+        candidatos = list(accounts)
+        sin_cupo = _sin_cupo_cuentas(candidatos, weights)
+        if sin_cupo and len(sin_cupo) < len(candidatos):
+            candidatos = [a for a in candidatos if a not in sin_cupo]
+        return preferred_account("draw", uuid.uuid4().hex, candidatos, weights)
 
 
     async def warm_config():
@@ -10061,7 +10194,7 @@ data:
         # mueve a nadie (la afinidad de siempre), y si no queda otra cuenta la lista se
         # queda intacta: mejor intentarlo que dejar el grupo sin deployment.
         weights = await _account_weights()
-        sin_cupo = {a for a in by_account if weights.get(a, 1.0) <= 0.0} if weights else set()
+        sin_cupo = _sin_cupo_cuentas(by_account, weights)
         if sin_cupo and len(sin_cupo) < len(by_account):
             for a in sin_cupo:
                 by_account.pop(a)
@@ -10071,12 +10204,14 @@ data:
         if not sid:
             # DGX-619: peticion anonima — no hay sesion que clavar, pero si cupo que
             # respetar. Sorteo ponderado sobre las cuentas con deployment sano con la
-            # MISMA formula que una sesion nueva, sin pin ni Valkey. Fail-open:
-            # cualquier excepcion deja la lista intacta (el 50/50 de antes).
+            # MISMA formula que una sesion nueva, sin pin ni Valkey. Fail-open (rework
+            # DGX-639): cualquier excepcion deja las CANDIDATAS — con pesos conocidos
+            # la cuenta sin cupo ya esta fuera de `by_account`; el 50/50 sobre TODAS
+            # queda solo para cuando los pesos nunca se leyeron.
             try:
                 return by_account[await draw_account(by_account)]
             except Exception:
-                return healthy_deployments
+                return [dep for deps in by_account.values() for dep in deps]
         user_key = _affinity_user_key(request_kwargs)
         key = account_pin_key(user_key, sid)
 
@@ -13339,7 +13474,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-84c80678cd58
+        config.k8s.e-dani.com/revision: config-86a501d78773
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13414,6 +13549,13 @@ spec:
             # y reversible: revert = un commit.
             - { name: MALLOC_ARENA_MAX, value: "2" }
             - { name: LITELLM_LOG, value: INFO }
+            # SC-2507: en el fork v1.105.1-codex nada asigna litellm_settings.store_audit_logs
+            # al atributo de modulo que lee is_audit_logging_enabled() (medido 28-10: con
+            # store_audit_logs: true en el config, el proceso sigue con attr=None y
+            # LiteLLM_AuditLog no escribe). La unica via viva del gate es esta variable
+            # (audit_logs.py: get_secret_bool("LITELLM_STORE_AUDIT_LOGS")). Sin ella, el
+            # /key/block que dejo muda a la IA de Aurora 6 dias vuelve a quedar sin rastro.
+            - { name: LITELLM_STORE_AUDIT_LOGS, value: "true" }
             # 05-09-2026 (SC-203): que /v1/messages (formato Anthropic) se
             # sirva por la ruta de chat completions y no por la de responses.
             # Con la ruta de responses, el razonamiento del residente no
@@ -13538,7 +13680,7 @@ spec:
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -13553,7 +13695,7 @@ spec:
             # entran por `claude-x86` (claude-local-router); Hermes por `hermes`; los
             # motores de imagen del DGX Studio por `studio-chatgpt` (DGX-1077); Hindsight
             # (solo texto) por `hindsight` (INFRA-942).
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-x86,hermes,studio-chatgpt,claude-mac,hindsight" }
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-x86,hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
             # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
@@ -14264,7 +14406,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-84c80678cd58
+        config.k8s.e-dani.com/revision: config-86a501d78773
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

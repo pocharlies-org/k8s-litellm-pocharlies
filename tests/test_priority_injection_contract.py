@@ -322,6 +322,8 @@ def test_el_mapa_vive_en_config_yaml():
         # uso personal, asi que su nivel va MAPA por clase, no entero.
         "claude-x86": {"default": -5, "company": 5},
         "claude-mac": -5,  # DGX-1099: el MacBook de casa con su propia key
+        # 31-10-2026 (Dani): el Paseo de atlantic con key propia; personal + compania, mismo mapa que claude-x86.
+        "claude-atlantic": {"default": -5, "company": 5},
     }
     # DGX-601: lo uncensored no tiene alternativa -> nivel propio, por delante.
     assert CONFIG_YAML["priority_uncensored"] == -20

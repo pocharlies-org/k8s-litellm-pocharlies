@@ -33,7 +33,7 @@ KEEPER = ROOT / "k8s" / "chatgpt-token-keeper.yaml"
 ALIASES = {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 IMAGE_ALIASES = {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
-ALLOWED_KEYS = ("claude-x86", "hermes", "studio-chatgpt", "claude-mac", "hindsight")  # DGX-1099: claude-mac; INFRA-942: hindsight
+ALLOWED_KEYS = ("claude-x86", "hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic)
 WANT_FN = {"_chatgpt_access_denied"}
 WANT_CONST = {"CHATGPT_ALIAS_PREFIX", "CHATGPT_ALLOWED_KEY_ALIASES"}
 
@@ -72,6 +72,15 @@ def test_the_seven_aliases_go_to_the_chatgpt_provider_for_free():
         # background_health_checks esta activo: sin esto cada ronda gastaria cuota de la cuenta.
         assert entry["model_info"]["disable_background_health_check"] is True
 
+
+
+@pytest.mark.parametrize("name", sorted(ALIASES))
+def test_chat_efforts_match_the_official_codex_catalog(name):
+    _, cfg = _config()
+    entry = next(m for m in cfg["model_list"] if m["model_name"] == name)
+    expected = ["low", "medium", "high", "xhigh", "max"]
+    assert entry["model_info"]["supported_reasoning_efforts"] == expected
+    assert "reasoning_effort" not in entry["litellm_params"]
 
 
 def test_the_image_aliases_go_to_the_chatgpt_provider_for_free_and_unprobed():
