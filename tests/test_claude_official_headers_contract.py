@@ -15,7 +15,14 @@ Medido el 20-10-2026: litellm mandaba `user-agent: litellm/1.105.1` y descartaba
      dev/capture_claude_cli_headers.py; si el manifiesto va detras, fallan los tests.
   4. Y no solo el config con el que arranca el proceso: test_el_cable_... mide lo que
      litellm pone en el egress hacia api.anthropic.com (donde haya litellm; en CI se salta).
+  5. El TLS esta medido y NO coincide: el CLI nativo y el proxy (httpx) salen con JA3 y
+     JA4 distintos — el oficial no ofrece ALPN y el proxy ofrece http/1.1. No lo fija el
+     manifiesto, y tampoco "el mismo runtime": el CLI es Bun 1.4.4 con BoringSSL y su
+     ClientHello viene de su propia config TLS, no del runtime (node 26.12.1 y bun 1.4.4
+     con fetch dan huellas distintas a la suya). Los numeros, en la nota del contrato v2
+     y en el docstring del capturador. El parser que prueba aqui abajo los fija.
 """
+import hashlib
 import pathlib
 import sys
 import types
@@ -84,6 +91,39 @@ def test_los_ocho_fingerprints_son_distintos_y_verosimiles():
 def test_el_manifiesto_sincronizado_con_el_generador():
     _, cambios = fp.sync(MANIFEST.read_text())
     assert not cambios, f"fuera de sincronia (corre --write): {', '.join(cambios)}"
+
+
+def test_el_parseador_ja3_ja4_no_se_lee_fuera_del_registro():
+    """Un ClientHello de mentirijillas con campos conocidos: fija que el parser los lee bien.
+
+    Los dos bugs que esto caza: leer las longitudes de las listas como si fueran valores
+    (curvas y signature_algorithms salian con un 0x0028 de mas) y parsear un registro
+    troceado por TCP. Las cadenas en claro son la asercion; el hash es su MD5/SHA256.
+    """
+    extensiones = [
+        (0x0000, bytes.fromhex("0005000003" + b"abc".hex())),   # SNI abc
+        (0x000b, bytes.fromhex("0100")),                         # ec_point_formats: 0
+        (0x000a, bytes.fromhex("0004001d0017")),                  # curvas 29, 23
+        (0x000d, bytes.fromhex("000404030804")),                  # sigalgs 0403, 0804
+        (0x002b, bytes.fromhex("020304")),                        # supported_versions 0x0304
+        (0x0010, bytes.fromhex("0003026832")),                    # ALPN h2
+    ]
+    bloques = b"".join(bytes.fromhex(f"{t:04x}{len(d):04x}{d.hex()}") for t, d in extensiones)
+    cuerpo = (bytes.fromhex("0303") + b"\xaa" * 32 + b"\x00"
+              + bytes.fromhex("0006130113021303") + b"\x01\x00"
+              + len(bloques).to_bytes(2, "big") + bloques)
+    h = bytes.fromhex("160301") + (len(cuerpo) + 4).to_bytes(2, "big") + b"\x01" \
+        + len(cuerpo).to_bytes(3, "big") + cuerpo
+
+    cadena, hash3 = cap.ja3(cap._lee_clienthello(h))
+    assert cadena == "771,4865,4866,4867,0,11,10,13,43,16,29,23,0"
+    assert hash3 == hashlib.md5(cadena.encode()).hexdigest()
+
+    huella, claro = cap.ja4(cap._lee_clienthello(h))
+    prefijo, hash_cifrados, hash_extensiones = huella.split("_")
+    assert prefijo == "t13d0306h2", claro          # TLS1.3, SNI de dominio, 3 cifrados, 6 extensiones, ALPN h2
+    assert hash_cifrados == hashlib.sha256(b"1301,1302,1303").hexdigest()[:12]
+    assert hash_extensiones == hashlib.sha256(b"000a,000b,000d,002b_0403,0804").hexdigest()[:12]
 
 
 def test_el_cable_lleva_el_fingerprint_de_cada_cuenta():

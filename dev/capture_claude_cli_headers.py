@@ -11,23 +11,44 @@ Dos modos, dos tramos del cable:
                  sink hace de api.anthropic.com y corre el Router de litellm con el
                  bloque `headers:` del manifiesto tal cual. Necesita litellm instalado:
                  se corre dentro del pod del proxy.
+  --tls          el otro indicio, el que no arregla el YAML: JA3/JA4 del ClientHello.
+                 Mide el CLI nativo y litellm con el mismo sink TLS (ver tls()).
+                 Medido 2026-11-01 — divergen por completo: CLI JA3
+                 1b68cea258d57ce22f08d83af5d91c56 / JA4 t13d181100_5d04281c6031_dc7e9eda0726
+                 sin ALPN; litellm (httpx) JA3 84271532a49d4795439fe0addea3b46d / JA4
+                 t13d1114h1_01855bbd05ee_6c778d45a497 con ALPN http/1.1.
+                 El CLI no corre sobre Node: es un binario Bun 1.4.4 con BoringSSL (el
+                 `node/v26.12.1` que trae es la cadena que reporta el SDK, no su runtime).
+                 Ni el Node ni el Bun del mismo versionado reproducen su huella: `fetch`
+                 con node 26.12.1 da JA3 a1c9e2336b2d2cf759168b9ff5ae3ae9 / JA4
+                 t13d5212h2_b262b3658495_8e6e362c5eac, y con bun 1.4.4 JA3
+                 78a4cc3aa0c7089939b0e8d64fba98c1 / JA4 t13d1713h1_5b57614c22b0_7f527383e249.
+                 El CLI fija cifrados y apaga ALPN; no es "el runtime del CLI" lo que da su
+                 ClientHello, es su configuracion TLS.
 
 Uso:  python3 -I dev/capture_claude_cli_headers.py [--claude <ruta>] [--cable]
+      python3 -I dev/capture_claude_cli_headers.py --tls [cli|litellm|ambos]
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.server
+import ipaddress
 import json
+import os
 import pathlib
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import claude_fingerprints as fp  # noqa: E402
+
+ANFITRION = "api.anthropic.com"   # el nombre real: el SNI tiene que ser este en los dos lados
 
 RESPUESTA = json.dumps({
     "id": "msg_1", "type": "message", "role": "assistant",
@@ -171,16 +192,301 @@ def cable(timeout_s: int = 240) -> int:
     return 0 if averiguadas == len(deps) else 1
 
 
+# ── TLS: JA3 / JA4 del egress ────────────────────────────────────────────────
+# Las cabeceras las fija el YAML; el ClientHello no: lo construye la libreria de cada
+# lado (httpx en litellm, Bun 1.4.4 con BoringSSL en el CLI). Se mide con el mismo instrumento en
+# los dos: un sink que hace de api.anthropic.com con certificado propio y se queda con
+# el ClientHello crudo antes del handshake, con el nombre de verdad en el SNI (el DNS se
+# parchea, la pila TLS no). Especificacion FoxIO JA4+: JA3 = MD5 de
+# version,cifrados,extensiones,curvas,formatos-de-punto en orden; JA4 = prefijo
+# (proto/version/SNI/numeros/ALPN) + SHA256[0:12] de los cifrados ordenados +
+# SHA256[0:12] de las extensiones ordenadas (sin SNI ni ALPN) con las signature_algorithms
+# detras. GREASE fuera de todo.
+_VER_JA4 = {0x0200: "s2", 0x0300: "s3", 0x0301: "10", 0x0302: "11", 0x0303: "12",
+            0x0304: "13", 0x0305: "15", 0x0306: "16"}
+
+
+def _es_grease(v: int) -> bool:
+    return (v & 0x0F0F) == 0x0A0A
+
+
+def _lista_2(b: bytes) -> list[int]:
+    return [int.from_bytes(b[i:i + 2], "big") for i in range(0, len(b) - 1, 2)]
+
+
+def _lee_clienthello(b: bytes) -> dict:
+    """Los campos que necesitan JA3 y JA4, sacados de un registro Handshake (0x16)."""
+    if len(b) < 6 or b[0] != 0x16 or b[5] != 0x01:
+        raise ValueError("no es un ClientHello (registro 0x16 con handshake 0x01)")
+    cur = 5 + 4                                    # cabecera de registro + tipo y longitud
+    version = int.from_bytes(b[cur:cur + 2], "big"); cur += 2
+    cur += 32                                      # random
+    cur += 1 + b[cur]                              # session id
+    n = int.from_bytes(b[cur:cur + 2], "big"); cur += 2
+    cifrados = _lista_2(b[cur:cur + n]); cur += n
+    m = b[cur]; cur += 1
+    cur += m                                       # compression methods
+    ne = int.from_bytes(b[cur:cur + 2], "big"); cur += 2
+    extensiones: dict[int, bytes] = {}
+    orden: list[int] = []
+    fin = cur + ne
+    while cur + 4 <= fin:
+        et = int.from_bytes(b[cur:cur + 2], "big")
+        el = int.from_bytes(b[cur + 2:cur + 4], "big")
+        extensiones[et] = b[cur + 4:cur + 4 + el]
+        orden.append(et)
+        cur += 4 + el
+
+    sni = ""
+    if 0 in extensiones:
+        largo = int.from_bytes(extensiones[0][3:5], "big")
+        sni = extensiones[0][5:5 + largo].decode("ascii", "replace")
+    alpn = []
+    if 16 in extensiones:
+        p, fin_a = 2, int.from_bytes(extensiones[16][:2], "big")
+        while p < 2 + fin_a:
+            l = extensiones[16][p]
+            alpn.append(extensiones[16][p + 1:p + 1 + l].decode("ascii", "replace"))
+            p += 1 + l
+    # cada lista lleva su propia longitud delante: 2 bytes en grupos y sigalgs, 1 en
+    # supported_versions (ec_point_formats es de 1 byte por elemento, ver abajo)
+    return {
+        "version": version,
+        "cifrados": cifrados,
+        "extensiones": orden,
+        "curvas": _lista_2(extensiones.get(10, b"")[2:]),
+        "punto": list(extensiones.get(11, b"")[1:]) if 11 in extensiones else [],
+        "sigalgs": _lista_2(extensiones.get(13, b"")[2:]),
+        "soportadas": _lista_2(extensiones.get(43, b"")[1:]),
+        "sni": sni,
+        "alpn": alpn,
+    }
+
+
+def ja3(h: dict) -> tuple[str, str]:
+    """(cadena legible, hash MD5) — la cadena es lo que hay que documentar si diverge."""
+    grupos = [
+        str(h["version"]),
+        ",".join(str(x) for x in h["cifrados"] if not _es_grease(x)),
+        ",".join(str(x) for x in h["extensiones"] if not _es_grease(x)),
+        ",".join(str(x) for x in h["curvas"]),
+        ",".join(str(x) for x in h["punto"]),
+    ]
+    cadena = ",".join(grupos)
+    return cadena, hashlib.md5(cadena.encode()).hexdigest()
+
+
+def ja4(h: dict) -> tuple[str, str]:
+    """(fingerprint, secciones en claro) — el prefijo explica el hash, no lo adivines."""
+    c = sorted(x for x in h["cifrados"] if not _es_grease(x))
+    e_todo = [x for x in h["extensiones"] if not _es_grease(x)]
+    e = sorted(x for x in e_todo if x not in (0, 16))     # SNI y ALPN fuera del hash
+    version = max(h["soportadas"], default=h["version"])
+    if not h["sni"]:
+        marca = "nn"
+    else:
+        try:
+            ipaddress.ip_address(h["sni"])
+            marca = "i"
+        except ValueError:
+            marca = "d"
+    alpn = [c2 for a in h["alpn"] for c2 in a if c2.isalnum()]
+    prefijo = f"t{_VER_JA4.get(version, '??')}{marca}{len(c):02d}{len(e_todo):02d}" \
+              f"{(alpn[0] + alpn[-1]).lower() if alpn else '00'}"
+    cif = ",".join(f"{x:04x}" for x in c)
+    ext = ",".join(f"{x:04x}" for x in e)
+    sig = ",".join(f"{x:04x}" for x in h["sigalgs"])
+    claro = f"{prefijo}_{cif}_{ext}_{sig}"
+    hashb = hashlib.sha256(cif.encode()).hexdigest()[:12] if cif else "000000000000"
+    hashe = (hashlib.sha256("_".join(p for p in (ext, sig) if p).encode()).hexdigest()[:12]
+             if (ext or sig) else "000000000000")
+    return f"{prefijo}_{hashb}_{hashe}", claro
+
+
+def _certificado(d: pathlib.Path) -> str:
+    """Autofirmado para api.anthropic.com: el cliente verifica contra él, sin desactivar TLS."""
+    crt, clave = d / "crt.pem", d / "key.pem"
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(clave),
+         "-out", str(crt), "-days", "2", "-subj", "/CN=api.anthropic.com",
+         "-addext", "subjectAltName=DNS:api.anthropic.com"],
+        check=True, capture_output=True)
+    return str(crt)
+
+
+def _registro_tls(sock, espera_s: float = 2.0) -> bytes:
+    """Primer registro TLS por MSG_PEEK, sin consumir: el handshake sigue funcionando.
+
+    El ClientHello puede llegar troceado por TCP (padding mediante): se espera a que este
+    entero o a que dejen de llegar bytes, si no el parser lee fuera del registro.
+    """
+    visto, hasta = b"", time.monotonic() + espera_s
+    while time.monotonic() < hasta:
+        try:
+            b = sock.recv(65536, socket.MSG_PEEK)
+        except OSError:
+            b = b""
+        if len(b) >= 5 and len(b) >= int.from_bytes(b[3:5], "big") + 5:
+            return b[:int.from_bytes(b[3:5], "big") + 5]
+        if len(b) > len(visto):
+            visto = b
+            continue
+        time.sleep(0.05)
+    return visto
+
+
+class _SinkTLS(http.server.ThreadingHTTPServer):
+    """Hace de api.anthropic.com por TLS y guarda el ClientHello de cada conexion."""
+
+    daemon_threads = True
+
+    def __init__(self, addr, ctx):
+        self.ctx = ctx
+        self.clienthellos = []
+        self.capturadas = []                     # _Sink do_POST escribe aqui
+        super().__init__(addr, _Sink)
+
+    def get_request(self):
+        cruda, direccion = self.socket.accept()
+        hola = _registro_tls(cruda)
+        if hola:
+            self.clienthellos.append(hola)
+        return self.ctx.wrap_socket(cruda, server_side=True), direccion
+
+
+def _informa(server, resultados: dict, lado: str) -> None:
+    """Traduce el ultimo ClientHello recibido a JA3/JA4 y lo pinta con las secciones en claro."""
+    if not server.clienthellos:
+        print(f"[{lado}] no llego ningun ClientHello al sink")
+        return
+    h = _lee_clienthello(server.clienthellos.pop())
+    cadena, hash3 = ja3(h)
+    huella, claro = ja4(h)
+    resultados[lado] = {"ja3": hash3, "ja4": huella}
+    print(f"\n[{lado}]  SNI={h['sni']}  ALPN={h['alpn']}")
+    print(f"  JA3  {hash3}")
+    print(f"       {cadena}")
+    print(f"  JA4  {huella}")
+    print(f"       {claro}")
+
+
+def tls(cliente: str = "ambos", timeout_s: int = 180, puerto: int = 0) -> int:
+    """JA3/JA4 del egress: el del CLI nativo y el de litellm, medidos igual en los dos lados.
+
+    shortcut: para medir el CLI hay que escuchar en el 443 (`--puerto 443`, con sudo): el CLI
+    se queda colgado si ANTHROPIC_BASE_URL lleva un puerto no estandar (medido el 01-11 en el
+    x86 — con https://api.anthropic.com:41234 no abre conexion). litellm no lo padece.
+    """
+    import ssl
+
+    resultados: dict[str, dict] = {}
+    with tempfile.TemporaryDirectory() as d:
+        tmp = pathlib.Path(d)
+        crt = _certificado(tmp)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(crt, str(tmp / "key.pem"))
+        try:
+            server = _SinkTLS(("127.0.0.1", puerto), ctx)
+        except PermissionError:
+            print(f"el puerto {puerto} necesita privilegios: correr con sudo")
+            return 1
+        puerto = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"https://{ANFITRION}" if puerto == 443 else f"https://{ANFITRION}:{puerto}"
+
+        if cliente in ("cli", "ambos"):
+            # El CLI ignora NODE_OPTIONS (medido el 01-11: con --require el preload no llega a
+            # ejecutarse y la peticion se va a la Anthropic real), asi que el nombre se desvia
+            # por /etc/hosts, que glibc si obedece. Ventana de segundos, restaurado al salir.
+            hosts = pathlib.Path("/etc/hosts")
+            try:
+                original = hosts.read_text()
+                hosts.write_text(f"{original}\n127.0.0.1 {ANFITRION}\n")
+            except OSError as exc:
+                print(f"no puedo escribir /etc/hosts ({exc.strerror}): el lado del CLI necesita "
+                      f"sudo y --puerto 443")
+                return 1
+            config = str(tmp / "cli")
+            pathlib.Path(config).mkdir()
+            try:
+                subprocess.run(
+                    [cli_instalado(), "-p", "hi", "--model", "claude-opus-5-5",
+                     "--output-format", "json"],
+                    cwd=config, timeout=timeout_s, capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    env={"HOME": str(pathlib.Path.home()), "PATH": "/usr/bin:/bin",
+                         "CLAUDE_CONFIG_DIR": config, "ANTHROPIC_BASE_URL": base,
+                         "ANTHROPIC_API_KEY": "sk-ant-capture", "ANTHROPIC_AUTH_TOKEN": "",
+                         "NODE_EXTRA_CA_CERTS": crt})
+            except FileNotFoundError:
+                print(f"no encuentro el CLI en {cli_instalado()} — pasar --claude <ruta> "
+                      f"(con sudo, HOME apunta a root y no esta el de tu usuario)")
+                return 1
+            except subprocess.TimeoutExpired as exc:
+                # el ClientHello ya esta capturado aunque el CLI se quede reintentando:
+                # importa la huella, no que la prueba salga limpia.
+                err = (exc.stderr or b"").decode("utf-8", "replace").strip()
+                print(f"[claude-cli] el CLI no cerro en {timeout_s}s "
+                      f"(se mide el ClientHello igualmente)")
+                if err:
+                    print(f"  stderr del CLI: {err[-300:]}")
+            finally:
+                hosts.write_text(original)
+
+        if cliente in ("litellm", "ambos"):
+            os.environ["SSL_CERT_FILE"] = crt
+            real = socket.getaddrinfo
+            socket.getaddrinfo = lambda h, *a, **k: (
+                real("127.0.0.1", *a, **k) if h == "api.anthropic.com" else real(h, *a, **k))
+            try:
+                from litellm import Router
+                p = dict(despliegues_claude()[0]["litellm_params"])
+                p.update(api_base=base, api_key="sk-ant-oat01-tls")
+                Router(model_list=[{"model_name": "tls", "litellm_params": p}],
+                       num_retries=0).completion(
+                    model="tls", messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=8, timeout=timeout_s)
+            except ImportError:
+                print("litellm no esta aqui: el lado del proxy se mide dentro del pod")
+            except Exception as exc:  # noqa: BLE001 — interesa el ClientHello, no la respuesta
+                print(f"[litellm] fallo la peticion ({type(exc).__name__}: {str(exc)[:100]}), "
+                      f"se mide el ClientHello igualmente")
+            finally:
+                socket.getaddrinfo = real
+        server.shutdown()
+        if cliente in ("cli", "ambos"):
+            _informa(server, resultados, "claude-cli")
+        if cliente in ("litellm", "ambos"):
+            _informa(server, resultados, "litellm")
+
+    lados = list(resultados)
+    if len(resultados) == 2:
+        a, b = (resultados[x] for x in lados)
+        print(f"\ndivergencia: JA3 {'IGUAL' if a['ja3'] == b['ja3'] else 'DISTINTO'} · "
+              f"JA4 {'IGUAL' if a['ja4'] == b['ja4'] else 'DISTINTO'}")
+        if a["ja3"] != b["ja3"]:
+            print("  el TLS del proxy NO se parece al del CLI: es un indicio real, "
+                  "no arreglable en el manifiesto (lo fija httpx, no el YAML)")
+    return 0 if resultados else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--claude", default=None, help="ruta del binario a analizar (por defecto el instalado)")
     ap.add_argument("--cable", action="store_true",
                     help="prueba del egress: los 8 deployments del manifiesto contra un sink "
                          "que hace de api.anthropic.com (necesita litellm; correr en el pod)")
+    ap.add_argument("--tls", nargs="?", const="ambos", choices=("cli", "litellm", "ambos"),
+                    help="JA3/JA4 del ClientHello: el del CLI nativo y/o el de litellm, "
+                         "medidos con el mismo sink TLS")
+    ap.add_argument("--puerto", type=int, default=0,
+                    help="donde escucha el sink TLS (0 = uno libre; el CLI necesita el 443)")
     args = ap.parse_args(argv)
 
     if args.cable:
         return cable()
+    if args.tls:
+        return tls(args.tls, puerto=args.puerto)
 
     ruta = args.claude or cli_instalado()
     reales = capturar(ruta)
