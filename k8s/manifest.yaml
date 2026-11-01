@@ -2128,13 +2128,15 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_INFO
-        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
-        # CONTRACT: dgx.litellm.claude-official-headers.v1
-        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
-        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
-        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        # DGX-1189: la peticion debe parecer del cliente oficial. `anthropic-beta` y
+        # CONTRACT: dgx.litellm.claude-official-headers.v2
+        # `x-app` ya los reenvia el proxy desde el cliente; `user-agent` y la familia
+        # `x-stainless-*` no llegan solos: los fija dev/claude_fingerprints.py con un
+        # perfil de maquina por cuenta (los 8 son distintos a proposito). Al subir el
+        # CLI: captura real con dev/capture_claude_cli_headers.py, sube
+        # CLAUDE_CLI_VERSION y corre --write.
         headers:
-          user-agent: "claude-cli/2.1.304 (external, cli)"
+          user-agent: "claude-cli/2.1.316 (external, cli)"
           x-app: cli
           x-stainless-arch: x64
           x-stainless-lang: js
@@ -2142,7 +2144,7 @@ data:
           x-stainless-package-version: 0.128.0
           x-stainless-retry-count: "0"
           x-stainless-runtime: node
-          x-stainless-runtime-version: v26.3.0
+          x-stainless-runtime-version: v26.12.1
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-info
@@ -2153,20 +2155,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_CORREO
-        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
-        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
-        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
-        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        # DGX-1189: la peticion debe parecer del cliente oficial; `anthropic-beta` y
+        # `x-app` los reenvia el proxy desde el cliente, `user-agent` y la familia
+        # `x-stainless-*` los fija dev/claude_fingerprints.py (un perfil por cuenta;
+        # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
+        # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.304 (external, cli)"
+          user-agent: "claude-cli/2.1.316 (external, cli)"
           x-app: cli
           x-stainless-arch: x64
           x-stainless-lang: js
           x-stainless-os: Linux
-          x-stainless-package-version: 0.128.0
+          x-stainless-package-version: 0.126.0
           x-stainless-retry-count: "0"
           x-stainless-runtime: node
-          x-stainless-runtime-version: v26.3.0
+          x-stainless-runtime-version: v24.10.0
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-correo
@@ -2177,20 +2180,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_EDANI
-        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
-        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
-        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
-        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        # DGX-1189: la peticion debe parecer del cliente oficial; `anthropic-beta` y
+        # `x-app` los reenvia el proxy desde el cliente, `user-agent` y la familia
+        # `x-stainless-*` los fija dev/claude_fingerprints.py (un perfil por cuenta;
+        # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
+        # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.304 (external, cli)"
+          user-agent: "claude-cli/2.1.316 (external, cli)"
           x-app: cli
-          x-stainless-arch: x64
+          x-stainless-arch: arm64
           x-stainless-lang: js
-          x-stainless-os: Linux
+          x-stainless-os: MacOS
           x-stainless-package-version: 0.128.0
           x-stainless-retry-count: "0"
           x-stainless-runtime: node
-          x-stainless-runtime-version: v26.3.0
+          x-stainless-runtime-version: v22.14.0
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-edani
@@ -2201,21 +2205,22 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_TERCERA
-        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
-        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
-        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
-        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        # DGX-1189: la peticion debe parecer del cliente oficial; `anthropic-beta` y
+        # `x-app` los reenvia el proxy desde el cliente, `user-agent` y la familia
+        # `x-stainless-*` los fija dev/claude_fingerprints.py (un perfil por cuenta;
+        # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
+        # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.304 (external, cli)"
+          user-agent: "claude-cli/2.1.316 (external, cli)"
           x-app: cli
-          x-stainless-arch: x64
+          x-stainless-arch: arm64
           x-stainless-lang: js
           x-stainless-os: Linux
-          x-stainless-package-version: 0.128.0
+          x-stainless-package-version: 0.127.0
           x-stainless-retry-count: "0"
           x-stainless-runtime: node
-          x-stainless-runtime-version: v26.3.0
-          x-stainless-timeout: "600"
+          x-stainless-runtime-version: v26.2.0
+          x-stainless-timeout: "900"
       model_info:
         id: claude-acct-tercera
         input_cost_per_token: 0
@@ -2225,20 +2230,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_WORKS_SHARED
-        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
-        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
-        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
-        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        # DGX-1189: la peticion debe parecer del cliente oficial; `anthropic-beta` y
+        # `x-app` los reenvia el proxy desde el cliente, `user-agent` y la familia
+        # `x-stainless-*` los fija dev/claude_fingerprints.py (un perfil por cuenta;
+        # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
+        # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.304 (external, cli)"
+          user-agent: "claude-cli/2.1.316 (external, cli)"
           x-app: cli
           x-stainless-arch: x64
           x-stainless-lang: js
           x-stainless-os: Linux
-          x-stainless-package-version: 0.128.0
+          x-stainless-package-version: 0.124.0
           x-stainless-retry-count: "0"
           x-stainless-runtime: node
-          x-stainless-runtime-version: v26.3.0
+          x-stainless-runtime-version: v26.1.0
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-works-shared
@@ -2249,20 +2255,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_FLASH
-        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
-        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
-        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
-        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        # DGX-1189: la peticion debe parecer del cliente oficial; `anthropic-beta` y
+        # `x-app` los reenvia el proxy desde el cliente, `user-agent` y la familia
+        # `x-stainless-*` los fija dev/claude_fingerprints.py (un perfil por cuenta;
+        # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
+        # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.304 (external, cli)"
+          user-agent: "claude-cli/2.1.316 (external, cli)"
           x-app: cli
           x-stainless-arch: x64
           x-stainless-lang: js
-          x-stainless-os: Linux
-          x-stainless-package-version: 0.128.0
+          x-stainless-os: MacOS
+          x-stainless-package-version: 0.125.0
           x-stainless-retry-count: "0"
           x-stainless-runtime: node
-          x-stainless-runtime-version: v26.3.0
+          x-stainless-runtime-version: v24.9.0
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-flash
@@ -2273,21 +2280,22 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_MAX
-        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
-        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
-        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
-        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        # DGX-1189: la peticion debe parecer del cliente oficial; `anthropic-beta` y
+        # `x-app` los reenvia el proxy desde el cliente, `user-agent` y la familia
+        # `x-stainless-*` los fija dev/claude_fingerprints.py (un perfil por cuenta;
+        # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
+        # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.304 (external, cli)"
+          user-agent: "claude-cli/2.1.316 (external, cli)"
           x-app: cli
           x-stainless-arch: x64
           x-stainless-lang: js
           x-stainless-os: Linux
-          x-stainless-package-version: 0.128.0
+          x-stainless-package-version: 0.127.0
           x-stainless-retry-count: "0"
           x-stainless-runtime: node
           x-stainless-runtime-version: v26.3.0
-          x-stainless-timeout: "600"
+          x-stainless-timeout: "900"
       model_info:
         id: claude-acct-max
         input_cost_per_token: 0
@@ -2297,20 +2305,21 @@ data:
       litellm_params:
         model: "anthropic/claude-*"
         api_key: os.environ/CLAUDE_OAT_SERGIO
-        # DGX-1189: la peticion debe parecer del cliente oficial (medido con Claude
-        # Code 2.1.304 el 20-10): `anthropic-beta` y `x-app` ya los reenvia el proxy
-        # desde el cliente; `user-agent` y la familia `x-stainless-*` no llegan solos.
-        # shortcut: el user-agent es fijo; si sube la version del CLI, actualizar aqui.
+        # DGX-1189: la peticion debe parecer del cliente oficial; `anthropic-beta` y
+        # `x-app` los reenvia el proxy desde el cliente, `user-agent` y la familia
+        # `x-stainless-*` los fija dev/claude_fingerprints.py (un perfil por cuenta;
+        # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
+        # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.304 (external, cli)"
+          user-agent: "claude-cli/2.1.316 (external, cli)"
           x-app: cli
-          x-stainless-arch: x64
+          x-stainless-arch: arm64
           x-stainless-lang: js
           x-stainless-os: Linux
           x-stainless-package-version: 0.128.0
           x-stainless-retry-count: "0"
           x-stainless-runtime: node
-          x-stainless-runtime-version: v26.3.0
+          x-stainless-runtime-version: v24.11.0
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-sergio
@@ -13708,7 +13717,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-fda73ad877fd
+        config.k8s.e-dani.com/revision: config-b19fbdaff583
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14640,7 +14649,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-fda73ad877fd
+        config.k8s.e-dani.com/revision: config-b19fbdaff583
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
