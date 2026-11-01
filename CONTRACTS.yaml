@@ -531,14 +531,40 @@ contracts:
       - dev/session_router.py
     status: active
     note: >-
-      DGX-1189 (2026-10-20). Las peticiones de los 8 deployments claude-acct-*
-      salen hacia Anthropic con las cabeceras del cliente oficial: user-agent y
-      familia x-stainless-* medidos a Claude Code 2.1.304 (fijos en el
-      manifiesto; si sube la version del CLI, actualizar ahi), y las betas del
-      cliente pasan porque session_router amplia la lista del manager de
-      litellm con claude-code-20250219, thinking-token-count-2026-05-13 e
-      inline-tools-2026-09-15 (y re-amplia tras reload). Lector: la auditoria
-      de deteccion de Anthropic (que el trafico del pool parezca del CLI).
+      DGX-1189 (2026-10-20). Las betas del cliente oficial llegan a Anthropic porque
+      session_router amplia la lista del manager de litellm con
+      claude-code-20250219, thinking-token-count-2026-05-13 e inline-tools-2026-09-15
+      (y re-amplia tras reload, que vacia la cache). El valor declarado (las tres
+      betas) no cambia con v2: lo que cubre v2 son las CABECERAS del cliente
+      (user-agent y familia x-stainless-*), que hasta ahora estaban fijas a mano en
+      el manifiesto. Lector: la auditoria de deteccion de Anthropic (que el trafico
+      del pool parezca del CLI).
+      Pinned by tests/test_claude_official_headers_contract.py.
+  - id: dgx.litellm.claude-official-headers.v2
+    kind: schema
+    value: 'claude-cli/<version> (external, cli) + familia x-stainless-* con 1 perfil de maquina por cuenta'
+    anchor: 'CLAUDE_CLI_VERSION = '
+    role: publisher
+    # el anchor vive solo en el generador: el manifiesto lleva las cabeceras GENERADAS,
+    # por eso ya no es un fichero donde el valor se pueda grepear.
+    files:
+      - dev/claude_fingerprints.py
+    status: active
+    note: >-
+      Mismas betas que v1. Cambia como se producen las cabeceras: las fija
+      dev/claude_fingerprints.py con UN perfil de maquina por cuenta (los 8
+      claude-acct-* salen con huellas distintas: OS, arch, node y sdk distintos,
+      porque ocho suscripciones con la misma huella byte a byte no son un fleet de
+      usuarios) y el user-agent va atado a CLAUDE_CLI_VERSION, unica fuente de la
+      version. Antes de subir el CLI se captura su cabecera real con
+      dev/capture_claude_cli_headers.py (sink local + CLAUDE_CONFIG_DIR aparte,
+      porque el bloque env de ~/.claude/settings.json fija ANTHROPIC_BASE_URL y gana
+      al entorno); si el manifiesto va detras del CLI, fallan los tests. Medido
+      2026-10-31: el CLI instalado era 2.1.316 y el manifiesto fijaba 2.1.304; el
+      node embebido real es v26.12.1, no v26.3.0; con API key y config aparte el
+      CLI se reporta "(external, sdk-cli)" y fijamos "(external, cli)", que es el
+      modo interactivo. Lector: la auditoria de deteccion de Anthropic. No lo
+      cubre: el fingerprint TLS (httpx, no Node) y la cadencia del pool.
       Pinned by tests/test_claude_official_headers_contract.py.
   - id: dgx.session-router.claude-account-pin.v1
     kind: schema
