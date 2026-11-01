@@ -2326,6 +2326,50 @@ data:
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
+    # INFRA-269 (C1-fila, regla 6 del architect): grupo de prueba para provocar
+    # el salto de fallback REAL del Router sin tocar el residente y sin gastar
+    # tokens. Nadie lo consume: no está en el grafo de producción y solo se le
+    # llega nombrándolo a propósito (la ráfaga y la comprobación de la fila, en
+    # 50-entrega.md de INFRA-1081).
+    #   - Primario: puerto 9 (discard) del propio pod — nadie escucha ahí, la
+    #     conexión se RECHAZA en ~2 s y el hook de fallo por intento clasifica
+    #     `servicio-caido` (regla 2). `num_retries: 0` (precedente
+    #     `correo-clasificador`) para saltar enseguida, sin reintento en el mismo
+    #     deployment; `cooldown_time: 0` para que el cooldown global (300 s) no
+    #     aparque el primario y las ráfagas siguientes sigan saltando.
+    #   - Destino: `mock_response` (litellm_params oficial v1.105.1): LiteLLM
+    #     devuelve una respuesta prefabricada sin llamar a ningún upstream —
+    #     cero tokens, coste 0 declarado (mismo patrón de coste que las cuentas
+    #     claude de arriba). Pasa igualmente por pre_call/post_call, así que la
+    #     fila se escribe en "LiteLLM_SpendLogs" con los cuatro campos
+    #     `fallback_*`: eso es exactamente lo que mide C1-fila.
+    #   - La arista NO está en `router_settings.fallbacks` (lista blanca del
+    #     owner, tests/test_tooling_profile_contract.py): la ráfaga la declara
+    #     POR PETICION — `"fallbacks": ["infra1081-fallback-mock"]` en el body
+    #     de /v1/chat/completions (mecanismo oficial, el mismo que usan las keys
+    #     con fallbacks selladas). Ráfaga y comprobación, en 50-entrega.md.
+    - model_name: infra1081-fallback-probe
+      litellm_params:
+        model: openai/infra1081-refused
+        api_base: http://127.0.0.1:9/v1
+        api_key: sk-infra1081-no-usada
+        num_retries: 0
+        cooldown_time: 0
+      model_info:
+        id: infra1081-refused
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
+    - model_name: infra1081-fallback-mock
+      litellm_params:
+        model: openai/infra1081-mock
+        api_key: sk-infra1081-no-usada
+        mock_response: "respuesta de prueba INFRA-1081 (sin tokens)"
+      model_info:
+        id: infra1081-mock
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        disable_background_health_check: true
     litellm_settings:
       # CONTRACT: dgx.litellm.key-audit.v1
       # SC-2507 (28-10): el 10/10 alguien hizo /key/block a `aurora-rca` y la IA de
@@ -2711,6 +2755,12 @@ data:
       fallbacks:
         - qwen38-flash-next: ["alibaba-q38-flash"]
         - correo-clasificador: ["alibaba-q38-flash"]
+        # INFRA-269: el grupo de prueba del model_list (infra1081-fallback-probe)
+        # NO añade arista aqui: el grafo global es lista blanca del owner
+        # (tests/test_tooling_profile_contract.py) y la ráfaga C1 declara su
+        # salto POR PETICION con el parametro `fallbacks` del body (el mismo
+        # mecanismo que las keys con fallbacks selladas). Ver el comentario del
+        # grupo en el model_list.
     # DGX-453 (29-09-2026): prioridad de cola del residente (campo `priority` en
     # extra_body, menor = mas urgente, default 0) segun el ALIAS de la virtual key,
     # decidido AQUI y no en codigo: se reordena la cola sin tocar el hook.
@@ -4839,6 +4889,71 @@ data:
             to_model=hop[1],
             api_base=backend[1] if backend else None,
         )
+
+    # INFRA-269 (regla 2 del architect): ENUM CERRADO del motivo del salto del
+    # Router. Literal: el lector (dgx-infra, GET /api/inference/fallback-events)
+    # lo documenta como `motivo_enum` y la UI pinta solo estos — no inventa
+    # categorias ni traduce. `reroute` NO es motivo: es `route_kind` (en vuelo,
+    # session_router) y un reroute nunca llega a este codigo (aqui solo hay
+    # saltos reales del Router, los que sella `_fallback_hop_from_payload`).
+    FALLBACK_MOTIVOS = ("sobrecarga", "error", "servicio-caido", "sin-clasificar")
+
+    def _fallback_motivo_from_exception(exception) -> str:
+        """Mapea la excepcion del intento fallido al enum (regla 2):
+        429/RateLimit/tope de en vuelo -> sobrecarga; Timeout/APIError/5xx ->
+        error; ConnectionError/«no healthy deployments» -> servicio-caido;
+        resto -> sin-clasificar (catch-all: ningun evento se pierde y el enum
+        sigue cerrado). Se llama desde el hook de fallo POR INTENTO con la
+        excepcion que LiteLLM entrega (instantanea de misma clase y mismos
+        args), por eso se clasifica por nombre de clase, status_code y texto:
+        LiteLLM NO pone el motivo en el metadata de la fila
+        (run_async_fallback solo escribe original_model_group/model_group/
+        attempted_fallbacks; el original_exception viaja aparte)."""
+        try:
+            if exception is None:
+                return "sin-clasificar"
+            name = type(exception).__name__.lower()
+            try:
+                status = int(getattr(exception, "status_code", 0) or 0)
+            except (TypeError, ValueError):
+                status = 0
+            text = str(exception).lower()
+            # servicio-caido PRIMERO: litellm envuelve la conexion rechazada en
+            # APIConnectionError, que trae status 500 y si no se mira aqui
+            # caería en `error`. «no healthy deployments» es el grupo sin
+            # despliegues vivos (RouterErrors.no_healthy_deployments,
+            # caído-detectado).
+            if (
+                "connectionerror" in name
+                or "connectionrefused" in name
+                or "connecterror" in name
+                or "connection refused" in text
+                or "connection error" in text
+                or "connection reset" in text
+                or "no healthy deployments" in text
+                or "no deployments available" in text
+                or "no deployments configured" in text
+            ):
+                return "servicio-caido"
+            # sobrecarga: 429/RateLimitError de upstream y el tope de en vuelo
+            # por alias del residente (max_parallel_requests, k8s-litellm #224),
+            # que LiteLLM tambien levanta como RateLimitError 429.
+            if (
+                status == 429
+                or "ratelimit" in name
+                or "rate limit" in text
+                or "too many requests" in text
+            ):
+                return "sobrecarga"
+            # error: Timeout, APIError y demas 5xx (excepciones de upstream con
+            # respuesta).
+            if "timeout" in name or "apierror" in name or 500 <= status < 600:
+                return "error"
+            return "sin-clasificar"
+        except Exception:
+            # El catch-all es `sin-clasificar`, nunca una excepcion: un fallo
+            # de la clasificacion jamas rompe la peticion (regla 1).
+            return "sin-clasificar"
 
     def _auth_field(user_api_key_dict, name):
         if isinstance(user_api_key_dict, dict):
@@ -7245,6 +7360,47 @@ data:
         _slm["session_title"] = str(titulo)
         return True
 
+    def _stamp_fallback_hop(kwargs, hop, motivo) -> bool:
+        """Sella los CUATRO campos del salto del Router dentro de
+        spend_logs_metadata de la fila (INFRA-269, C1-fila): `fallback_motivo`,
+        `fallback_ts` (epoch s), `fallback_desde`, `fallback_hacia`. Nunca
+        planos: la allowlist de SpendLogsMetadata tira lo plano en silencio
+        (comentario del sello de lambda). La fila queda auto-descriptiva: el
+        lector no necesita el tracker.
+
+        El dict que se escribe aqui es el que lee la fila:
+        `get_litellm_metadata_from_kwargs` (core_helpers.py, v1.105.1) toma
+        `litellm_params["litellm_metadata"]` si existe y no esta vacio, si no
+        `litellm_params["metadata"]`, y `log_pre_api_call` recibe el
+        `model_call_details` VIVO del logging_obj (el mismo del que se escribe
+        la fila al terminar el intento). Misma prioridad que el lector; misma
+        forma defensiva que _stamp_claude_class: un fallo del sello jamas rompe
+        la peticion (la llamada lo envuelve en try/except). True si sello."""
+        if not hop or not isinstance(kwargs, dict):
+            return False
+        litellm_params = kwargs.get("litellm_params")
+        if not isinstance(litellm_params, dict):
+            return False
+        bucket = None
+        for name in ("litellm_metadata", "metadata"):
+            candidate = litellm_params.get(name)
+            if isinstance(candidate, dict) and candidate:
+                bucket = candidate
+                break
+        if bucket is None:
+            bucket = {}
+            litellm_params["metadata"] = bucket
+        _slm = bucket.get("spend_logs_metadata")
+        if not isinstance(_slm, dict):
+            _slm = {}
+            bucket["spend_logs_metadata"] = _slm
+        # CONTRACT: dgx.litellm.spendlogs-fallback-motivo.v1
+        _slm["fallback_motivo"] = str(motivo)
+        _slm["fallback_ts"] = int(time.time())
+        _slm["fallback_desde"] = str(hop[0])
+        _slm["fallback_hacia"] = str(hop[1])
+        return True
+
 
     def _stamp_refusal_probe(request_data, obj) -> bool:
         """Sella la sonda si `obj` la trae. Mismas dos vias que _stamp_refusal_text
@@ -7919,6 +8075,27 @@ data:
                 _note_fallback_from_payload(kwargs)
             except Exception as e:
                 log.debug("track_fallback pre_api error: %s", e)
+            # INFRA-269 (C1-fila): cuando ESTE intento es un salto del Router,
+            # los cuatro campos del salto van DENTRO de spend_logs_metadata de
+            # la fila (nunca planos — allowlist). El motivo lo clasifica el
+            # hook de fallo por intento sobre la excepcion y lo deja en el
+            # tracker por _tracking_id; sin entrada, `sin-clasificar`. Se
+            # detecta el hop aqui mismo (no con el resultado del tracker de
+            # arriba: la fila se sella tambien si el tracker perdio la fila,
+            # que es una carrera con end()). Defensivo con el patron de
+            # _stamp_claude_class: un fallo del sello jamas rompe la peticion.
+            try:
+                hop = _fallback_hop_from_payload(kwargs)
+                if hop:
+                    tracking_id = _tracking_id_from_payload(kwargs)
+                    motivo = (
+                        request_tracker.fallback_motivo(tracking_id)
+                        if tracking_id
+                        else None
+                    )
+                    _stamp_fallback_hop(kwargs, hop, motivo or "sin-clasificar")
+            except Exception as e:
+                log.debug("fallback stamp error: %s", e)
             # DGX-924: y el servidor se sella aqui, al despachar. Esperar al primer
             # chunk (stream) o al final (no-stream) dejaba sin servidor el prefill,
             # o todo el vuelo de synapse/brain/cb-review; con el residente
@@ -8069,6 +8246,34 @@ data:
                 log.debug("track_deployment_success_usage error: %s", e)
             _track_end_from_payload(request_data, "deployment_success")
             return response
+
+        async def async_post_call_failure_deployment_hook(
+            self,
+            request_data,
+            exception,
+            call_type,
+            fallback_depth=None,
+        ):
+            # INFRA-269 (regla 1): senal de fallo POR INTENTO (oficial v1.105.1;
+            # `log_failure_event` NO sirve: dispara una sola vez, al fallo final
+            # de la peticion logica). Clasifica el motivo (regla 2) desde la
+            # excepcion y lo guarda en el tracker por _tracking_id; el sello de
+            # los cuatro campos lo hace log_pre_api_call del SALTO siguiente,
+            # que lo lee. `request_data` llega envuelto en MappingProxyType
+            # (inmutable a proposito: el sello no se hace aqui) — se desenvuelve
+            # con dict() para el walk de _tracking_id, que solo conoce dicts.
+            # LiteLLM ya envuelve este hook en su try/except (un callback roto
+            # no debe tapar el fallo real), pero tampoco dejamos nosotros que
+            # suba nada.
+            try:
+                tracking_id = _tracking_id_from_payload(dict(request_data))
+                if tracking_id:
+                    request_tracker.note_fallback_motivo(
+                        tracking_id,
+                        _fallback_motivo_from_exception(exception),
+                    )
+            except Exception as e:
+                log.debug("track_fallback_motivo error: %s", e)
 
     # Every alias served by our own vLLM deployments. `local` and the v024-f2
     # names were dropped on 2026-07-27: their deployments were deleted on 07-26.
@@ -11670,6 +11875,14 @@ data:
             # peticion desaparecia del panel justo mientras la servia Alibaba.
             self._recently_ended: Dict[str, Tuple[float, Dict[str, Any]]] = {}
             self.revive_window_s = 120.0
+            # INFRA-269 (regla 1): motivo del ultimo intento fallido,
+            # clasificado por el hook de fallo por intento (enum de la regla 2)
+            # y sellado en la fila por log_pre_api_call del salto siguiente,
+            # que lo lee por _tracking_id. Vive FUERA de _records porque el
+            # fallo del primario CIERRA la fila (end()) antes o despues del
+            # salto -- es una carrera -- y el motivo tiene que sobrevivir a ese
+            # cierre para que el sello del hop lo encuentre.
+            self._fallback_motivos: Dict[str, Tuple[float, str]] = {}
             # Caracteres de prompt por token, APRENDIDO de las propias peticiones:
             # cada una trae sus caracteres al empezar y el backend manda sus
             # tokens reales con el primer token. SC-2804: un EMA POR ALIAS — la
@@ -12032,6 +12245,31 @@ data:
                 self._flush_locked(now, force=True)
                 return copy.deepcopy(record)
 
+        def note_fallback_motivo(self, request_id: str, motivo: str) -> None:
+            """Guarda el motivo (enum regla 2) del intento que acaba de fallar
+            (INFRA-269). Lo escribe el hook de fallo por intento; lo lee
+            log_pre_api_call del salto para sellar la fila."""
+            if not request_id or not motivo:
+                return
+            with self._lock:
+                self._fallback_motivos[str(request_id)] = (self.clock(), str(motivo))
+
+        def fallback_motivo(self, request_id: str) -> Optional[str]:
+            """Motivo guardado para esta peticion; None si no hay entrada o ya
+            caduco (pasa el revive_window_s sin salto: el sello del hop ocurre
+            en el intento siguiente, segundos despues del fallo)."""
+            if not request_id:
+                return None
+            now = self.clock()
+            with self._lock:
+                entry = self._fallback_motivos.get(str(request_id))
+                if entry is None:
+                    return None
+                if now - entry[0] > self.revive_window_s:
+                    self._fallback_motivos.pop(str(request_id), None)
+                    return None
+                return entry[1]
+
         def snapshot(self) -> Dict[str, Dict[str, Any]]:
             now = self.clock()
             with self._lock:
@@ -12059,6 +12297,11 @@ data:
                 if now - ended_at > self.revive_window_s
             ]:
                 self._recently_ended.pop(request_id, None)
+            for request_id in [
+                rid for rid, (seen_at, _motivo) in self._fallback_motivos.items()
+                if now - seen_at > self.revive_window_s
+            ]:
+                self._fallback_motivos.pop(request_id, None)
             return bool(stale)
 
         def _flush_locked(self, now: float, *, force: bool) -> None:
@@ -13474,7 +13717,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-86a501d78773
+        config.k8s.e-dani.com/revision: config-b19fbdaff583
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14406,7 +14649,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-86a501d78773
+        config.k8s.e-dani.com/revision: config-b19fbdaff583
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

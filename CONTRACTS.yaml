@@ -1076,6 +1076,30 @@ contracts:
       titulos del x86 no conoce el sid -- sesiones cuyo transcript vive en otra
       maquina). Aditivo. Pinned by
       tests/test_spendlogs_session_title_contract.py.
+  - id: dgx.litellm.spendlogs-fallback-motivo.v1
+    # Cuatro claves que el hook escribe juntas en spend_logs_metadata de
+    # LiteLLM_SpendLogs cuando el Router salta de grupo, y que lee el endpoint
+    # /api/inference/fallback-events de dgx-infra. Mismo kind que claude_class:
+    # convencion de datos entre procesos.
+    kind: schema
+    value: fallback_motivo
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-11-01 (INFRA-269). El hook sella los CUATRO campos juntos dentro de
+      spend_logs_metadata (nunca planos: la allowlist de SpendLogsMetadata tira
+      lo plano en silencio): fallback_motivo (enum cerrado
+      {sobrecarga, error, servicio-caido, sin-clasificar}, regla 2 del
+      architect; clasificado por el hook async_post_call_failure_deployment_hook
+      desde la excepcion del intento y guardado en el tracker por
+      _tracking_id; sin entrada, sin-clasificar), fallback_ts (epoch s),
+      fallback_desde y fallback_hacia (grupos del salto, de
+      _fallback_hop_from_payload). La fila es auto-descriptiva: el lector no
+      necesita el tracker. reroute NO es motivo (es route_kind). Consumido por
+      dgx-infra services/dashboard (dgx.inference.fallback-events.v1). Aditivo.
+      Pinned by tests/test_fallback_motivo_stamp_contract.py.
   - id: dgx.litellm.key-fallbacks.demos.v1
     # kind 'allowlist': es la lista de keys (por key_alias) que tienen salida
     # externa en `tooling`; el consumidor la usa sabiendo que su key la tiene.
