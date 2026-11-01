@@ -13,17 +13,21 @@ Medido el 20-10-2026: litellm mandaba `user-agent: litellm/1.105.1` y descartaba
      cuenta (ocho huellas distintas) y CLAUDE_CLI_VERSION como unica fuente de la
      version. Antes de subir el CLI se captura su cabecera real con
      dev/capture_claude_cli_headers.py; si el manifiesto va detras, fallan los tests.
+  4. Y no solo el config con el que arranca el proceso: test_el_cable_... mide lo que
+     litellm pone en el egress hacia api.anthropic.com (donde haya litellm; en CI se salta).
 """
 import pathlib
 import sys
 import types
 
+import pytest
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "k8s" / "manifest.yaml"
 DEV = ROOT / "dev" / "session_router.py"
 sys.path.insert(0, str(DEV.parent))
+import capture_claude_cli_headers as cap  # noqa: E402
 import claude_fingerprints as fp  # noqa: E402
 
 BETAS = ("claude-code-20250219", "thinking-token-count-2026-05-13", "inline-tools-2026-09-15")
@@ -80,6 +84,23 @@ def test_los_ocho_fingerprints_son_distintos_y_verosimiles():
 def test_el_manifiesto_sincronizado_con_el_generador():
     _, cambios = fp.sync(MANIFEST.read_text())
     assert not cambios, f"fuera de sincronia (corre --write): {', '.join(cambios)}"
+
+
+def test_el_cable_lleva_el_fingerprint_de_cada_cuenta():
+    """Lo que ve Anthropic, no solo el config con el que arranco el proceso.
+
+    Mide el egress: los 8 deployments del manifiesto contra un sink que hace de
+    api.anthropic.com, pasando por el Router de litellm. Necesita litellm, que en CI no
+    esta (el lock de contratos es minimo); se corre donde si lo hay, o a mano en el pod:
+      kubectl exec -n litellm <pod> -c litellm -- python3 -I /tmp/fp/... --cable
+    """
+    try:
+        from litellm import Router  # noqa: F401
+    except ImportError:
+        # importorskip no vale: sin el paquete hay un `litellm` de namespace (unknown
+        # location) que pasa por importable y luego no tiene Router.
+        pytest.skip("el cable necesita el litellm del proxy")
+    assert cap.cable() == 0, "la cabecera no llega al egress como la fija el contrato"
 
 
 def _cargar_session_router_con_manager_falso():
