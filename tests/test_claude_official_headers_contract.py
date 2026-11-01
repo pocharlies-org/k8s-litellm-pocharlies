@@ -9,8 +9,13 @@ Medido el 20-10-2026: litellm mandaba `user-agent: litellm/1.105.1` y descartaba
   2. session_router amplia la lista de betas del manager de litellm in-process
      (las tres que Claude Code manda y litellm no conoce) y re-amplia tras un
      reload, que vacia la cache.
+  3. Las cabeceras las genera dev/claude_fingerprints.py con UN perfil de maquina por
+     cuenta (ocho huellas distintas) y CLAUDE_CLI_VERSION como unica fuente de la
+     version. Antes de subir el CLI se captura su cabecera real con
+     dev/capture_claude_cli_headers.py; si el manifiesto va detras, fallan los tests.
 """
 import pathlib
+import sys
 import types
 
 import yaml
@@ -18,6 +23,8 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "k8s" / "manifest.yaml"
 DEV = ROOT / "dev" / "session_router.py"
+sys.path.insert(0, str(DEV.parent))
+import claude_fingerprints as fp  # noqa: E402
 
 BETAS = ("claude-code-20250219", "thinking-token-count-2026-05-13", "inline-tools-2026-09-15")
 
@@ -40,6 +47,39 @@ def test_los_ocho_deployments_claude_llevan_las_cabeceras_oficiales():
         assert headers.get("x-app") == "cli", dep["model_info"]["id"]
         for key in ("x-stainless-lang", "x-stainless-runtime", "x-stainless-package-version"):
             assert key in headers, f"{dep['model_info']['id']} sin {key}"
+
+
+def test_el_user_agent_va_atras_del_cli_instalado():
+    """El UA lo fija dev/claude_fingerprints.py: si sube el CLI y nadie actualiza, esto falla."""
+    ua_esperada = f"claude-cli/{fp.CLAUDE_CLI_VERSION} (external, cli)"
+    for dep in _deployments():
+        headers = dep["litellm_params"].get("headers") or {}
+        assert headers.get("user-agent") == ua_esperada, (
+            f"{dep['model_info']['id']}: UA {headers.get('user-agent')!r} != {ua_esperada!r} "
+            f"(captura real con dev/capture_claude_cli_headers.py y corre --write)")
+
+
+def test_los_ocho_fingerprints_son_distintos_y_verosimiles():
+    """Ocho cuentas con la misma huella no son un fleet de usuarios: cada perfil es una maquina."""
+    huellas = {}
+    for dep in _deployments():
+        headers = dep["litellm_params"].get("headers") or {}
+        huella = {k: headers.get(k) for k in
+                  ("x-stainless-os", "x-stainless-arch", "x-stainless-runtime-version",
+                   "x-stainless-package-version", "x-stainless-timeout")}
+        assert huella["x-stainless-os"] in fp.OS_VALIDOS, dep["model_info"]["id"]
+        assert huella["x-stainless-arch"] in fp.ARCH_VALIDOS, dep["model_info"]["id"]
+        huellas[dep["model_info"]["id"]] = tuple(sorted(huella.items()))
+    duplicadas = {h for h in huellas.values() if list(huellas.values()).count(h) > 1}
+    assert not duplicadas, f"fingerprints repetidos en {len(duplicadas)} huellas: {sorted(huellas)}"
+    # y en el generador, que es donde se escribe: dos perfiles iguales no deben colarse
+    gen = {tuple(sorted(h.items())) for h in fp.fingerprints().values()}
+    assert len(gen) == len(fp.CUENTAS), "dos cuentas con el mismo perfil en dev/claude_fingerprints.py"
+
+
+def test_el_manifiesto_sincronizado_con_el_generador():
+    _, cambios = fp.sync(MANIFEST.read_text())
+    assert not cambios, f"fuera de sincronia (corre --write): {', '.join(cambios)}"
 
 
 def _cargar_session_router_con_manager_falso():
