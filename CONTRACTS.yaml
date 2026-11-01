@@ -588,8 +588,17 @@ contracts:
       2026-10-31: el CLI instalado era 2.1.316 y el manifiesto fijaba 2.1.304; el
       node embebido real es v26.12.1, no v26.3.0; con API key y config aparte el
       CLI se reporta "(external, sdk-cli)" y fijamos "(external, cli)", que es el
-      modo interactivo. Lector: la auditoria de deteccion de Anthropic. No lo
-      cubre: el fingerprint TLS (httpx, no Node) y la cadencia del pool.
+      modo interactivo. Lector: la auditoria de deteccion de Anthropic. El TLS ya
+      esta medido (2026-11-01, `dev/capture_claude_cli_headers.py --tls`: sink TLS con
+      SNI real, el mismo instrumento en los dos lados): el CLI nativo (Node/undici
+      2.1.316, en el x86) da JA3 1b68cea258d57ce22f08d83af5d91c56 y JA4
+      t13d181100_5d04281c6031_dc7e9eda0726, sin ALPN; litellm (httpx/OpenSSL, dentro
+      del pod) da JA3 84271532a49d4795439fe0addea3b46d y JA4
+      t13d1114h1_01855bbd05ee_6c778d45a497, con ALPN http/1.1. Divergen por
+      completo: lo mas legible es que el cliente oficial no ofrece ALPN y el proxy si,
+      y los conjuntos de cifrados y extensiones son distintos (18/11 frente a 11/14).
+      No se arregla en el manifiesto: lo fija la pila TLS, no el YAML. Queda sin
+      medir: la cadencia del pool y el IP de salida.
       Pinned by tests/test_claude_official_headers_contract.py.
   - id: dgx.session-router.claude-account-pin.v1
     kind: schema
