@@ -2777,6 +2777,11 @@ data:
         default: -5       # sin clase: uso personal de Dani
         company: 5        # sesion de la compania: por delante del lote, detras del resto
       claude-mac: -5     # DGX-1099: el Claude Code del MacBook de casa, uso personal como claude-x86
+      # 31-10-2026 (Dani): el Paseo de atlantic (pod paseo-0) con key propia para que
+      # el panel lo distinga del x86. Corre personal y compania: mismo mapa que claude-x86.
+      claude-atlantic:
+        default: -5       # sin clase: uso personal de Dani
+        company: 5        # sesion de la compania: por delante del lote, detras del resto
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
       hindsight: 20       # Hindsight (retain/reflect, INFRA-940): sustituye al brain, misma prioridad
@@ -13703,7 +13708,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2a202e15edb5
+        config.k8s.e-dani.com/revision: config-fda73ad877fd
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13909,7 +13914,7 @@ spec:
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -13924,7 +13929,7 @@ spec:
             # entran por `claude-x86` (claude-local-router); Hermes por `hermes`; los
             # motores de imagen del DGX Studio por `studio-chatgpt` (DGX-1077); Hindsight
             # (solo texto) por `hindsight` (INFRA-942).
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-x86,hermes,studio-chatgpt,claude-mac,hindsight" }
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-x86,hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
             # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
@@ -14635,7 +14640,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2a202e15edb5
+        config.k8s.e-dani.com/revision: config-fda73ad877fd
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
