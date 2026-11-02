@@ -318,14 +318,14 @@ def test_el_mapa_vive_en_config_yaml():
         "open-webui-v3": -10, "hermes": -10, "hermes-batch": 10, "brain": 20,
         "hindsight": 20,  # INFRA-940: sustituye al brain, misma prioridad
         "analisis": 20,  # INFRA-988: extraccion y resumen de CDM, misma prioridad
-        # DGX-601 (Dani): `claude-x86` es la misma key para la compania y para el
-        # uso personal, asi que su nivel va MAPA por clase, no entero.
-        "claude-x86": {"default": -5, "company": 5},
+        # DGX-601 (Dani): las keys de maquina de Dani son la misma key para la compania y
+        # para el uso personal, asi que su nivel va MAPA por clase, no entero.
         "claude-mac": -5,  # DGX-1099: el MacBook de casa con su propia key
-        # 31-10-2026 (Dani): el Paseo de atlantic con key propia; personal + compania, mismo mapa que claude-x86.
+        # 31-10-2026 (Dani): el Paseo de atlantic con key propia; personal + compania.
         "claude-atlantic": {"default": -5, "company": 5},
         # 02-11-2026 (DGX-1395): la compania asincrona con key propia, renombrada desde
-        # claude-x86 (mismo token); mismo mapa. `claude-x86` sigue hasta retirar la alias vieja.
+        # claude-x86 (mismo token, mismo mapa). `claude-x86` ya no esta: la key fue
+        # renombrada via /key/update y ninguna key lleva ese alias (medido en la BD).
         "claude-atlantic-compania": {"default": -5, "company": 5},
     }
     # DGX-601: lo uncensored no tiene alternativa -> nivel propio, por delante.

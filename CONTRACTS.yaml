@@ -1156,7 +1156,9 @@ contracts:
     # la puerta uncensored del hook (LITELLM_UNCENSORED_ALLOWED_KEYS).
     kind: allowlist
     value: hermes-cloudblue
-    anchor: openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue
+    # Ancla refrescada el 02-11-2026 (DGX-1395): `claude-x86` salio de la env al renombrarse
+    # la key a `claude-atlantic-compania`; el valor de esta entrada no cambia.
+    anchor: openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue
     role: provider
     files:
       - k8s/manifest.yaml
@@ -1254,13 +1256,23 @@ contracts:
     role: provider
     files:
       - k8s/manifest.yaml
-    status: active
+    status: deprecated
+    replaced_by: dgx.litellm.virtual-key.claude-atlantic-compania.v1
+    remove_after: "2026-12-01"
     note: >-
+      DEPRECATED 2026-11-02 (DGX-1395): renombrada a
+      `dgx.litellm.virtual-key.claude-atlantic-compania.v1` via /key/update (mismo
+      token, mismos models). Sale de LITELLM_CHATGPT_ALLOWED_KEYS,
+      LITELLM_UNCENSORED_ALLOWED_KEYS y priority_by_alias: tras el rename ya no
+      existe ninguna key con este alias, asi que la entrada no describe superficie
+      viva. Lo que sigue describe la superficie tal como era.
+
       DGX-1099 (2026-10-20). Clave virtual de LiteLLM del x86 (Claude Code, Paseo
       y la compania), renombrada desde `claude-local` via /key/update (mismo
       token, mismos models). El panel le pone la politica de cuentas de la
       pestana x86 y priority_by_alias la mapea {default: -5, company: 5}. Su
-      valor vive en ~/.config/claude-local/env del x86, nunca en git.
+      valor vivia en ~/.config/claude-local/env del x86, nunca en git; desde el
+      01-11 ese fichero lleva el token de `claude-atlantic` (medido por hash).
   - id: dgx.litellm.virtual-key.claude-atlantic-compania.v1
     kind: allowlist
     value: claude-atlantic-compania
