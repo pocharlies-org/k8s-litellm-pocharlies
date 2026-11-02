@@ -856,8 +856,10 @@ data:
     #     model_group_alias, ningun desvio de vision o catalogo apunta aqui. Lo vigila
     #     tests/test_chatgpt_oauth_contract.py.
     #   - Cerrados por el gate fail-closed `_chatgpt_access_denied` (prefijo `gpt-`,
-    #     LITELLM_CHATGPT_ALLOWED_KEYS): solo `claude-x86` (Claude CLI y Paseo),
-    #     `hermes` y `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077).
+    #     LITELLM_CHATGPT_ALLOWED_KEYS): las keys de maquina de Dani
+    #     (`claude-atlantic` Paseo, `claude-atlantic-compania` compania asincrona —
+    #     renombrada desde `claude-x86`, DGX-1395 — y `claude-mac`), `hermes`,
+    #     `hindsight` y `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077).
     #     La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
     #     desde antes de la purga del 21-08 y lo heredaria sola al volver el alias: el
     #     gate la para. Cualquier key nueva, igual.
@@ -2777,15 +2779,12 @@ data:
       hermes: -10         # turnos de los bots: por delante del lote
       # DGX-601 (06-10-2026, Dani): un alias puede valer ENTERO (lo de siempre) o
       # MAPA por clase de sesion (`x-claude-class`, que estampa el lanzador de la
-      # compania). `claude-x86` comparte la misma key para el Claude Code de la
-      # compania y para el uso personal: hasta ahora los dos salian sin campo, es
-      # decir con el default de vLLM (0), compitiendo iguales. El uso personal va
-      # por delante (-5) y el de la compania por detras (5), pero aun por delante
-      # del lote (10).
-      claude-x86:
-        default: -5       # sin clase: uso personal de Dani
-        company: 5        # sesion de la compania: por delante del lote, detras del resto
-      claude-mac: -5     # DGX-1099: el Claude Code del MacBook de casa, uso personal como claude-x86
+      # compania). Las keys de maquina de Dani comparten la misma key para el Claude
+      # Code de la compania y para el uso personal: hasta ahora los dos salian sin
+      # campo, es decir con el default de vLLM (0), compitiendo iguales. El uso
+      # personal va por delante (-5) y el de la compania por detras (5), pero aun por
+      # delante del lote (10).
+      claude-mac: -5     # DGX-1099: el Claude Code del MacBook de casa, uso personal
       # 31-10-2026 (Dani): el Paseo de atlantic (pod paseo-0) con key propia para que
       # el panel lo distinga del x86. Corre personal y compania: mismo mapa que claude-x86.
       claude-atlantic:
@@ -13765,7 +13764,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-81effee777aa
+        config.k8s.e-dani.com/revision: config-f5b7ab20458f
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13971,7 +13970,7 @@ spec:
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -13982,11 +13981,13 @@ spec:
             # Falla CERRADO como el de OpenRouter: vacia = nadie, ni la master.
             # `grok-account` lleva el saldo (max_budget) y `grok-probe` solo la sonda.
             - { name: LITELLM_GROK_ALLOWED_KEYS, value: "grok-account,grok-probe" }
-            # DGX-1053: los alias `gpt-*` (cuenta ChatGPT Plus de Dani). Claude CLI y Paseo
-            # entran por `claude-x86` (claude-local-router); Hermes por `hermes`; los
-            # motores de imagen del DGX Studio por `studio-chatgpt` (DGX-1077); Hindsight
-            # (solo texto) por `hindsight` (INFRA-942).
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "claude-x86,hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania" }
+            # DGX-1053: los alias `gpt-*` (cuenta ChatGPT Plus de Dani). Las keys de maquina
+            # de Dani entran por su alias (`claude-atlantic` Paseo, `claude-atlantic-compania`
+            # compania asincrona, `claude-mac`); Hermes por `hermes`; los motores de imagen
+            # del DGX Studio por `studio-chatgpt` (DGX-1077); Hindsight (solo texto) por
+            # `hindsight` (INFRA-942). `claude-x86` fuera: renombrada a
+            # `claude-atlantic-compania` (DGX-1395), ya no hay key con ese alias.
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
             # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
@@ -14697,7 +14698,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-81effee777aa
+        config.k8s.e-dani.com/revision: config-f5b7ab20458f
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
