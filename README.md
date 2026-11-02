@@ -8,3 +8,4 @@ LiteLLM — router de LLMs multi-proveedor. DB: shared postgres
 
 ## GitOps
 Gestionado por ArgoCD desde [k8s-gitops-pocharlies](https://github.com/pocharlies/k8s-gitops-pocharlies).
+<!-- INFRA-334 p95 warm-pool test 3 -->
