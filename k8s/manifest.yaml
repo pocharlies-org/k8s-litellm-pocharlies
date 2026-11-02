@@ -5052,8 +5052,14 @@ data:
     # LITELLM_OCR_MODEL=tooling). Verificado con llamada real por key: `tooling` ->
     # 200, `alibaba-q38-flash` -> 403 (`key_model_access`). Precedente: la key
     # `claude-cloudblue`, que ya solo tiene el residente y su -uncensored.
+    # 02-11-2026 (Dani): `agent-jake-cloudblue`, el copiloto de la extension Agent Jake del
+    # perfil de Chrome de trabajo de CloudBlue (manda contenido de Gmail y Jira de CloudBlue).
+    # Su allowlist `models` es solo `qwen38-flash-next` (residente, hardware propio), pero la
+    # arista del Router `qwen38-flash-next` -> `alibaba-q38-flash` actua sobre cualquier key
+    # que no este aqui: con el residente caido el contenido saldria a Alibaba. Sellada, falla
+    # a la vista. Misma razon que `claude-cloudblue`.
     NO_FALLBACK_KEY_ALIASES = frozenset(
-        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis"}
+        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis", "agent-jake-cloudblue"}
     )
 
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
@@ -13717,7 +13723,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b19fbdaff583
+        config.k8s.e-dani.com/revision: config-4e3738adeadb
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14649,7 +14655,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b19fbdaff583
+        config.k8s.e-dani.com/revision: config-4e3738adeadb
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

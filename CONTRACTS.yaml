@@ -1221,6 +1221,32 @@ contracts:
       comparte con la de x86 (company_control.claude_accounts). Se crea por
       /key/generate; su valor vive en el home del pod
       (~/.config/claude-local/env en el PVC paseo-home), nunca en git.
+  - id: dgx.litellm.virtual-key.agent-jake-cloudblue.v1
+    # kind allowlist: allowlist `models` de la key virtual `agent-jake-cloudblue`
+    # (fijada en el /key/generate, vive en la Postgres de LiteLLM) mas su sellado
+    # sin fallback en NO_FALLBACK_KEY_ALIASES (manifiesto).
+    kind: allowlist
+    value: agent-jake-cloudblue
+    anchor: agent-jake-cloudblue
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      02-11-2026 (Dani). Clave virtual de LiteLLM del copiloto de la extension
+      Agent Jake en el perfil de Chrome de trabajo de CloudBlue (Mac
+      CBF66QTX9WX6): manda contenido de paginas de CloudBlue (Gmail, Jira), asi
+      que NUNCA puede llegar a OpenAI ni a Alibaba. Dos puertas: (1) allowlist
+      `models: ["qwen38-flash-next"]` por /key/generate (medido: /v1/models ->
+      solo ese alias; alibaba-q38-flash, gpt-6-luna, claude-*, tooling y el
+      -uncensored dan 403); (2) la key entra en NO_FALLBACK_KEY_ALIASES, porque
+      la allowlist gobierna lo que se PIDE, no a donde DEGRADA el Router, y
+      `qwen38-flash-next` tiene arista `-> alibaba-q38-flash`
+      (dgx.litellm.tooling-cloud-fallback.v1). Limites: rpm 120, tpm 2M,
+      max_parallel_requests 8, sin presupuesto (hardware propio). Su valor
+      (token RAW `sk-...`) vive en 1Password (vault Employee, item `LiteLLM
+      agent-jake-cloudblue`), nunca en git. Precedente: claude-cloudblue.
+      Renombrar o retirar el alias deja la key sin sellar.
   - id: dgx.litellm.virtual-key.claude-x86.v1
     kind: allowlist
     value: claude-x86
