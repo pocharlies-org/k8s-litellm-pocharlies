@@ -1261,6 +1261,20 @@ contracts:
       token, mismos models). El panel le pone la politica de cuentas de la
       pestana x86 y priority_by_alias la mapea {default: -5, company: 5}. Su
       valor vive en ~/.config/claude-local/env del x86, nunca en git.
+  - id: dgx.litellm.virtual-key.claude-atlantic-compania.v1
+    kind: allowlist
+    value: claude-atlantic-compania
+    anchor: claude-atlantic-compania
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1395 (2026-11-02). Clave virtual de LiteLLM de las sesiones asincronas de
+      compania, renombrada desde `claude-x86` via /key/update (mismo token, mismos
+      models); `claude-atlantic` (el Paseo vivo) queda aparte. priority_by_alias la
+      mapea {default: -5, company: 5}; entra en LITELLM_CHATGPT_ALLOWED_KEYS y
+      LITELLM_UNCENSORED_ALLOWED_KEYS. Su valor vive en el env de la compania, nunca en git.
   - id: dgx.litellm.virtual-key.keep-hub.v1
     # kind allowlist: la superficie es la allowlist `models` de la key virtual
     # `keep-hub`, que vive SOLO en la Postgres de LiteLLM (se fija por
