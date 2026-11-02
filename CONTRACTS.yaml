@@ -1682,3 +1682,27 @@ contracts:
       bloqueó aurora-rca el 10/10», que sin esto quedo sin rastro 6 dias
       (Request SC-2507). Quitar la env deja la tabla muerta: apagarla es un
       cambio de contrato, no de config.
+  - id: dgx.litellm.claude-account-stats.v1
+    # kind 'schema': el checker solo admite allowlist|cloudevent|http-route|queue|
+    # routing-key|schema|workflow-file. Un nombre de metrica con consumidor fuera del
+    # repo (VictoriaMetrics y quien consulte los 30 dias) es convencion de datos.
+    kind: schema
+    value: litellm_claude_account_stats
+    role: publisher
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+      - tests/test_claude_account_stats_contract.py
+    note: 'Los cinco contadores de `claude_account_filter` (`hits`, `claims`, `moves`,
+      `empty`, `redis_errors`) expuestos por el `/metrics` del proxy con la etiqueta
+      `contador`, leidos del dict `CLAUDE_ACCOUNT_STATS` en cada scrape (colector de
+      lectura: no hay llamada que se pueda olvidar). DGX-1417, 02-11-2026: sin ellos el
+      reparto de cuentas de Claude no se puede medir, porque los contadores morian con
+      el pod y no hay historico. Existe para responder a cuanto obliga el salto
+      automatico de cuenta (la decision sobre la solucion B, que la credencial la
+      sostenga el cliente). Medido en el pod con la libreria real: `prometheus_client`
+      escribe la serie como `litellm_claude_account_stats_total` (el sufijo `_total` lo
+      pone el kind counter); el nombre que se registra y fija el test es el de arriba sin
+      sufijo. Cambiar el nombre o quitar una etiqueta es breaking: entra una entrada
+      `.v2` y esta a `status: removed`. El squash de #326 dejo el embed del configmap viejo
+      (el colector solo en `dev/`); sincronizado con el revision `config-81effee777aa`.'
