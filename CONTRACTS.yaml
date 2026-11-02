@@ -1169,6 +1169,33 @@ contracts:
       LITELLM_UNCENSORED_ALLOWED_KEYS del Deployment con el default del hook mas
       este alias (sin tocar el codigo de litellm_strip_params.py). Renombrar o
       retirar el alias deja fuera la ruta abliterada para este consumidor.
+  - id: dgx.litellm.virtual-key.socialmedia.v1
+    # kind allowlist: la superficie es la key virtual `socialmedia`, listada en
+    # la puerta uncensored del hook (LITELLM_UNCENSORED_ALLOWED_KEYS); su
+    # allowlist `models` vive SOLO en la Postgres de LiteLLM (se fija por
+    # /key/update, no en este fichero).
+    kind: allowlist
+    value: socialmedia
+    anchor: socialmedia
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      INFRA-125 (02-11-2026). Clave virtual unica de LiteLLM para todo
+      socialmedia: mcp-sse/mcp-server (summarize, search, drafts, digest) y la
+      consola dgx-messages (compose-llm, asistente, suggest, ask, improve).
+      Creada 2026-10-02 por pedido de Dani; su valor vive en 1Password
+      (k8s-pocharlies/litellm#SOCIALMEDIA_KEY), nunca en git. Entra en
+      LITELLM_UNCENSORED_ALLOWED_KEYS para que el CronJob del bot de
+      verificacion facial de Sauvage (INFRA-745, desplegado por
+      k8s-socialmedia-pocharlies#421) pueda pedir
+      `qwen38-flash-next-uncensored`; autorizado por el veredicto de security
+      INFRA-1108. Queda la otra puerta, operativa y fuera de git como las
+      demas allowlists: anadir el alias al `models` de la key con
+      `POST /key/update` enviando la union (hoy ["tooling"], medido
+      02-11-2026 en /key/info), porque /key/update REEMPLAZA la lista. Retirar
+      el alias de esta env deja la ruta abliterada denegada para la key.
   - id: dgx.litellm.virtual-key.claude-casa.v1
     kind: allowlist
     value: claude-casa
