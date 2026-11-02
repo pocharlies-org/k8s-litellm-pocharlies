@@ -2152,6 +2152,44 @@ CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"
 # conversacion ya esta fria en todas las cuentas y re-elegir sale gratis.
 CLAUDE_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("CLAUDE_ACCOUNT_PIN_TTL_SECONDS", "3600"))
 CLAUDE_ACCOUNT_STATS = {"hits": 0, "claims": 0, "moves": 0, "empty": 0, "redis_errors": 0}
+
+
+# DGX-1417 (02-11): los contadores a Prometheus. Es un colector de lectura: no toca los `return` del
+# filtro, lee el dict en cada scrape, así que nunca se queda desfasado ni hay que acordarse de llamarlo.
+# Vale para decidir la solución B: sin histórico no se puede separar «el salto automático no hace falta»
+# de «en estas 7 horas nadie tocó el techo» (los contadores morían con el pod).
+# CONTRACT: dgx.litellm.claude-account-stats.v1
+# (ancla: litellm_claude_account_stats) metrica del /metrics del proxy, consumida por VictoriaMetrics.
+def _registra_stats_prometheus():
+    """Expone CLAUDE_ACCOUNT_STATS en /metrics. Sin prometheus_client (el lock de contratos de CI es
+    mínimo: pytest, PyYAML y httpx) no registra nada y el dict sigue siendo la única fuente."""
+    try:
+        from prometheus_client import REGISTRY
+        from prometheus_client.core import CounterMetricFamily
+    except ImportError:
+        return None
+
+    class _StatsCuentasClaude:
+        def collect(self):
+            familia = CounterMetricFamily(
+                "litellm_claude_account_stats",
+                "Contadores de claude_account_filter: aciertos de pin, reclamaciones, mudanzas de "
+                "cuenta, keys sin cuentas y errores de Valkey",
+                labels=["contador"],
+            )
+            for nombre, valor in CLAUDE_ACCOUNT_STATS.items():
+                familia.add_metric([nombre], valor)
+            yield familia
+
+    colector = _StatsCuentasClaude()
+    try:
+        REGISTRY.register(colector)
+    except ValueError:
+        return None          # el módulo se recargó: el primer colector ya está registrado y es válido
+    return colector
+
+
+_claude_stats_prometheus = _registra_stats_prometheus()
 _claude_refresh_at = [float("-inf")]
 _U = "anthropic-ratelimit-unified-"
 
