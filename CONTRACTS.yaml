@@ -1692,4 +1692,5 @@ contracts:
       escribe la serie como `litellm_claude_account_stats_total` (el sufijo `_total` lo
       pone el kind counter); el nombre que se registra y fija el test es el de arriba sin
       sufijo. Cambiar el nombre o quitar una etiqueta es breaking: entra una entrada
-      `.v2` y esta a `status: removed`.'
+      `.v2` y esta a `status: removed`. El squash de #326 dejo el embed del configmap viejo
+      (el colector solo en `dev/`); sincronizado con el revision `config-81effee777aa`.'
