@@ -13923,7 +13923,15 @@ spec:
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic" }
+            # INFRA-125 (02-11-2026): entra `socialmedia`, la key unica de
+            # socialmedia (mcp-sse, dgx-messages y el CronJob del bot Sauvage
+            # INFRA-745), que pide `qwen38-flash-next-uncensored` para la vision
+            # del barrido de fotos. Veredicto security INFRA-1108: el alta del
+            # alias en la key esta autorizado; la otra puerta (el `models` de la
+            # key en Postgres, `POST /key/update` con la union) es operativa y
+            # va aparte, fuera de git como las demas allowlists.
+            # CONTRACT: dgx.litellm.virtual-key.socialmedia.v1
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,claude-x86,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,socialmedia" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
