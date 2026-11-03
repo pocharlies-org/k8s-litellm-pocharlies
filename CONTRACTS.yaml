@@ -756,6 +756,19 @@ contracts:
       that replaces the brain) joins the sealed set like `brain`: with no resident
       Ready its retain/reflect calls fail closed instead of reaching the cloud twin.
       Guarded by tests/test_hindsight_no_fallback_contract.py.
+      ADDITIVE (SC-4384, 2026-11-03, epic SC-1823): `skills-eval` — the virtual
+      key the skill-evaluation judge of k8s-skills-catalog (`tools/evaluar.py`,
+      runner pool `arc-skills-eval`) calls LiteLLM with — joins the sealed set.
+      Its Postgres allowlist already lets it ASK only `qwen38-flash-next` and
+      `tooling` (measured on /key/list), but that does not close DEGRADATION: 42
+      of its requests in the window of the cancelled run 41647405969 were
+      rewritten to `alibaba-q38-flash` by the session router (capacity valve,
+      sticky, default plan), and the Router edge does the same when the resident
+      is not Ready. A skill verdict measured on a model other than the one
+      `docs/evaluacion.md` registers (`qwen38-flash-next`) is a false measurement,
+      not a degraded one, so the key fails in plain sight instead — the `evaluar`
+      job publishes neither `verificada` nor `retirada` with the wrong model.
+      Guarded by tests/test_skills_eval_no_fallback_contract.py.
       Since 2026-09-25 it can be switched off at runtime, without a deploy,
       from the /inferencia panel (ALIBABA · TOKEN PLAN, field
       alibaba.tooling_fallback of /api/model-routing/config): off, the list is
@@ -1249,6 +1262,37 @@ contracts:
       (token RAW `sk-...`) vive en 1Password (vault Employee, item `LiteLLM
       agent-jake-cloudblue`), nunca en git. Precedente: claude-cloudblue.
       Renombrar o retirar el alias deja la key sin sellar.
+  - id: dgx.litellm.virtual-key.skills-eval.v1
+    # kind allowlist: allowlist `models` de la key virtual `skills-eval` (fijada en
+    # el /key/generate de SC-3635, vive en la Postgres de LiteLLM) mas su sellado
+    # sin fallback en NO_FALLBACK_KEY_ALIASES (manifiesto).
+    kind: allowlist
+    value: skills-eval
+    anchor: skills-eval
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      03-11-2026 (SC-4384, epica SC-1823). Clave virtual con la que el JUEZ de
+      evaluacion de skills del catalogo (k8s-skills-catalog: `tools/evaluar.py`,
+      job `evaluar` de `evaluar-skill.yml` en el pool de runners
+      `arc-skills-eval`) llama a LiteLLM por https. Su valor (token RAW `sk-...`)
+      vive en el secret de Actions `SKILLS_EVAL_LITELLM_KEY` del repo del
+      catalogo (SC-3635), nunca en git. Dos puertas, y esta PR pone la segunda:
+      (1) allowlist `models: ["qwen38-flash-next", "tooling"]` en Postgres
+      (medido 03-11-2026 en `/key/list`), fijada en su /key/generate; (2) entra
+      en NO_FALLBACK_KEY_ALIASES, porque la allowlist gobierna lo que se PIDE, no
+      a donde DEGRADA el Router: `qwen38-flash-next` tiene arista
+      `-> alibaba-q38-flash` y el session router reescribe el residente por
+      capacidad, sticky y plan por defecto (42 reescrituras medidas en la ventana
+      del run cancelado 41647405969). `docs/evaluacion.md` del catalogo registra
+      `qwen38-flash-next` como el modelo del veredicto, asi que un salto a la
+      nube no es degradacion: es una medida falsa. Sellada, la llamada falla a la
+      vista y el job no publica veredicto. Precedentes: aurora-rca (tambien
+      mide), agent-jake-cloudblue. Renombrar o retirar el alias deja la key sin
+      sellar. Guardado por
+      tests/test_skills_eval_no_fallback_contract.py.
   - id: dgx.litellm.virtual-key.claude-x86.v1
     kind: allowlist
     value: claude-x86

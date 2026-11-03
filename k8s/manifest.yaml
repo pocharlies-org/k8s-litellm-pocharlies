@@ -5061,8 +5061,21 @@ data:
     # arista del Router `qwen38-flash-next` -> `alibaba-q38-flash` actua sobre cualquier key
     # que no este aqui: con el residente caido el contenido saldria a Alibaba. Sellada, falla
     # a la vista. Misma razon que `claude-cloudblue`.
+    # 03-11-2026 (SC-4384, epica SC-1823): `skills-eval`, la key del JUEZ de evaluacion de
+    #               skills (k8s-skills-catalog: `tools/evaluar.py`, pool `arc-skills-eval`).
+    #               Su allowlist `models` de Postgres ya solo la deja PEDIR
+    #               `qwen38-flash-next` y `tooling` (medido en `/key/list`), pero eso cierra
+    #               lo que puede pedir, no a donde puede DEGRADAR: medido en la ventana del
+    #               run cancelado 41647405969, el session router reescribio 42 de sus
+    #               peticiones a `alibaba-q38-flash` (valvula de capacidad, sticky, plan por
+    #               defecto) y la arista del Router hacia lo mismo con el residente caido.
+    #               Un veredicto de skill medido con un modelo distinto del registrado
+    #               (`qwen38-flash-next` es el que fija `docs/evaluacion.md` del catalogo) es
+    #               una medida falsa, igual que en `aurora-rca`: sellada, la llamada falla a
+    #               la vista y el job `evaluar` no saca ni «verificada» ni «retirada» con el
+    #               modelo equivocado. No toca a las demas keys ni al router global.
     NO_FALLBACK_KEY_ALIASES = frozenset(
-        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis", "agent-jake-cloudblue"}
+        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis", "agent-jake-cloudblue", "skills-eval"}
     )
 
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
@@ -13764,7 +13777,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f5b7ab20458f
+        config.k8s.e-dani.com/revision: config-9365a32d8d2c
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14698,7 +14711,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f5b7ab20458f
+        config.k8s.e-dani.com/revision: config-9365a32d8d2c
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
