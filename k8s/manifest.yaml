@@ -887,6 +887,26 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+    - model_name: gpt-6.1-terra
+      litellm_params:
+        model: chatgpt/gpt-6.1-terra
+      model_info:
+        name: GPT-6.1 Terra · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6.1 Terra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
+        disable_background_health_check: true
+    - model_name: gpt-6-luna
+      litellm_params:
+        model: chatgpt/gpt-6-luna
+      model_info:
+        name: GPT-6 Luna · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
+        disable_background_health_check: true
     - model_name: gpt-6-astra
       litellm_params:
         model: chatgpt/gpt-6-astra
@@ -903,16 +923,6 @@ data:
       model_info:
         name: GPT-6 Sol · cuenta ChatGPT Plus de Dani (OAuth)
         description: GPT-6 Sol via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
-        input_cost_per_token: 0
-        output_cost_per_token: 0
-        supported_reasoning_efforts: [low, medium, high, xhigh, max]
-        disable_background_health_check: true
-    - model_name: gpt-6-luna
-      litellm_params:
-        model: chatgpt/gpt-6-luna
-      model_info:
-        name: GPT-6 Luna · cuenta ChatGPT Plus de Dani (OAuth)
-        description: GPT-6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
@@ -13777,7 +13787,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9365a32d8d2c
+        config.k8s.e-dani.com/revision: config-6a3b85126849
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14716,7 +14726,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9365a32d8d2c
+        config.k8s.e-dani.com/revision: config-6a3b85126849
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
