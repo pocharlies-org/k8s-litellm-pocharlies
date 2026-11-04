@@ -1184,6 +1184,27 @@ contracts:
       LITELLM_UNCENSORED_ALLOWED_KEYS del Deployment con el default del hook mas
       este alias (sin tocar el codigo de litellm_strip_params.py). Renombrar o
       retirar el alias deja fuera la ruta abliterada para este consumidor.
+  - id: dgx.litellm.virtual-key.socialmedia.v1
+    # kind allowlist: la superficie es la key virtual por key_alias, listada en
+    # la puerta uncensored del hook (LITELLM_UNCENSORED_ALLOWED_KEYS).
+    kind: allowlist
+    value: socialmedia
+    anchor: openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania,socialmedia
+    role: consumer
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-11-04 (SC-4576). Clave virtual unica de socialmedia (alias
+      `socialmedia`, item litellm/SOCIALMEDIA_KEY de 1Password, creada el
+      02-10-2026): mcp-sse / mcp-server (summarize, search, drafts, digest),
+      consola dgx-messages y el CronJob whatsapp-mcp/sauvage-verificacion-diaria
+      (INFRA-745), que pide qwen38-flash-next-uncensored con vision y caia
+      denegada por la puerta uncensored desde su creacion (nunca tuvo un run
+      exitoso). El modelo se le anade a `models` via /key/update (vive en la
+      Postgres de LiteLLM) y el alias a la env LITELLM_UNCENSORED_ALLOWED_KEYS.
+      Retirar el alias de la puerta deja el job diario otra vez sin run
+      exitoso.
   - id: dgx.litellm.virtual-key.claude-casa.v1
     kind: allowlist
     value: claude-casa

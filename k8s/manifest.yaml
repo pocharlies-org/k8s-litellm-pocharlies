@@ -13983,7 +13983,12 @@ spec:
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania" }
+            # SC-4576 (04-11-2026): anadido `socialmedia`, la key unica de socialmedia
+            # (k8s-socialmedia-pocharlies). La pide el CronJob
+            # `whatsapp-mcp/sauvage-verificacion-diaria` (auditoria diaria de la cara
+            # visible, INFRA-745) con `qwen38-flash-next-uncensored`; sin ella el hook
+            # denegaba la ruta abliterada y el job fallaba desde su creacion.
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania,socialmedia" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
