@@ -970,6 +970,7 @@ contracts:
     note: >-
       DGX-1443 (2026-11-04), aditivo: `gpt-6.1-terra`, probado por Codex responses
       con la cuenta real (HTTP 200, output OK); los IDs web -wm no son de inferencia.
+      Revision del ConfigMap recalculada para que el proxy y su gateway carguen el alias.
       DGX-1053 (2026-10-18). Siete alias originales `gpt-6.1-sol`, `gpt-6-astra`,
       `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` y
       `gpt-5.6-luna` contra la cuenta ChatGPT Plus de Dani por el provider
