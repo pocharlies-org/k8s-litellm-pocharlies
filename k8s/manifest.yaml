@@ -887,6 +887,26 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+    - model_name: gpt-6.1-terra
+      litellm_params:
+        model: chatgpt/gpt-6.1-terra
+      model_info:
+        name: GPT-6.1 Terra · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6.1 Terra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
+        disable_background_health_check: true
+    - model_name: gpt-6-luna
+      litellm_params:
+        model: chatgpt/gpt-6-luna
+      model_info:
+        name: GPT-6 Luna · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
+        disable_background_health_check: true
     - model_name: gpt-6-astra
       litellm_params:
         model: chatgpt/gpt-6-astra
@@ -903,16 +923,6 @@ data:
       model_info:
         name: GPT-6 Sol · cuenta ChatGPT Plus de Dani (OAuth)
         description: GPT-6 Sol via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
-        input_cost_per_token: 0
-        output_cost_per_token: 0
-        supported_reasoning_efforts: [low, medium, high, xhigh, max]
-        disable_background_health_check: true
-    - model_name: gpt-6-luna
-      litellm_params:
-        model: chatgpt/gpt-6-luna
-      model_info:
-        name: GPT-6 Luna · cuenta ChatGPT Plus de Dani (OAuth)
-        description: GPT-6 Luna via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
         input_cost_per_token: 0
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
