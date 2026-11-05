@@ -168,6 +168,54 @@ def test_valkey_caida_usa_la_primera():
     assert _pick(_pod(v)) == ["info"]
 
 
+class FakeValkeyLenta(FakeValkey):
+    """Valkey vivo pero ocupado: cada comando contesta en 150 ms (DGX-1417 midio en
+    el slowlog que el MGET de cooldown del propio litellm bloquea su hilo unico
+    12-60 ms; con el presupuesto viejo de 100 ms eso era un fallo cada rafaga)."""
+
+    async def mget(self, keys):
+        await asyncio.sleep(0.15)
+        return await FakeValkey.mget(self, keys)
+
+    async def get(self, key):
+        await asyncio.sleep(0.15)
+        return await FakeValkey.get(self, key)
+
+    async def set(self, key, value, nx=False, ex=None):
+        await asyncio.sleep(0.15)
+        return await FakeValkey.set(self, key, value, nx=nx, ex=ex)
+
+    async def expire(self, key, seconds):
+        await asyncio.sleep(0.15)
+        return await FakeValkey.expire(self, key, seconds)
+
+
+def test_valkey_lenta_no_es_error_ni_pierde_el_pin():
+    """DGX-1417: el presupuesto del filtro es de 500 ms; una Valkey que tarda 150 ms
+    no es Valkey caída y la conversacion conserva su cuenta."""
+    mod = _pod(FakeValkeyLenta())
+    assert _pick(mod) == ["info"]
+    assert _pick(mod) == ["info"]  # segunda pasada: por pin, no por primera de la lista
+    assert mod.CLAUDE_ACCOUNT_STATS["redis_errors"] == 0
+    assert mod.CLAUDE_ACCOUNT_STATS["hits"] == 1
+
+
+def test_sin_alias_no_cuenta_como_key_sin_cuentas():
+    """DGX-1417: `empty` mide keys que se quedaron sin cuentas; una peticion sin
+    alias (master key, sonda) se deniega igual pero no entra en el contador."""
+    mod = _pod(FakeValkey())
+    antes = mod.CLAUDE_ACCOUNT_STATS["empty"]
+    assert asyncio.run(mod.claude_account_filter("claude-opus-5-5", _deps(), {})) == []
+    assert mod.CLAUDE_ACCOUNT_STATS["empty"] == antes
+
+
+def test_key_sin_politica_si_cuenta_empty():
+    mod = _pod(FakeValkey())
+    antes = mod.CLAUDE_ACCOUNT_STATS["empty"]
+    assert _pick(mod, alias="otra-key") == []
+    assert mod.CLAUDE_ACCOUNT_STATS["empty"] == antes + 1
+
+
 def test_otros_grupos_pasan_intactos():
     mod = _pod(FakeValkey())
     deps = [{"model_info": {"id": "alibaba-q38-max-k1"}}]
