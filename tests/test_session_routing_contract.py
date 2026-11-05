@@ -260,6 +260,21 @@ def test_timeouts_del_camino_de_peticion_hasta_100ms(router_src):
     # programa _sticky_set_bg y devuelve el control al instante. Con 100 ms en el
     # camino de la petición ~99% de las escrituras morían bajo carga.
     assert 0.1 < constantes["STICKY_WRITE_TIMEOUT_SECONDS"] <= 5.0
+    # 05-11 (DGX-1417): CLAUDE_REDIS_TIMEOUT_SECONDS puede ser holgado SOLO para
+    # las tres operaciones del filtro de cuentas de Claude (mget de lecturas, get
+    # y set del pin). Medido: Valkey sano (0 evictions) pero su hilo único encola
+    # los MGET de cooldown del propio litellm (slowlog 12-60 ms) y una conexión
+    # fría paga ~220 ms de handshake — con 100 ms morían 2728/24h y cada muerte
+    # perdía el pin de la conversación. Nada más del camino de la petición puede
+    # pasarse de 100 ms: la lista de holgados es esta y el filtro los usa los tres.
+    assert 0.1 < constantes["CLAUDE_REDIS_TIMEOUT_SECONDS"] <= 1.0
+    filtro = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.AsyncFunctionDef) and n.name == "claude_account_filter")
+    src_filtro = ast.get_source_segment(router_src, filtro)
+    assert src_filtro.count("CLAUDE_REDIS_TIMEOUT_SECONDS") == 2 and "REDIS_OP_TIMEOUT_SECONDS" not in src_filtro
+    lecturas = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "_claude_readings")
+    assert "CLAUDE_REDIS_TIMEOUT_SECONDS" in ast.get_source_segment(router_src, lecturas)
     sticky_set = next(n for n in tree.body
                       if isinstance(n, ast.AsyncFunctionDef) and n.name == "_sticky_set")
     src_sticky_set = ast.get_source_segment(router_src, sticky_set)

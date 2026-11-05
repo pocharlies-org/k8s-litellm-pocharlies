@@ -1776,4 +1776,8 @@ contracts:
       pone el kind counter); el nombre que se registra y fija el test es el de arriba sin
       sufijo. Cambiar el nombre o quitar una etiqueta es breaking: entra una entrada
       `.v2` y esta a `status: removed`. El squash de #326 dejo el embed del configmap viejo
-      (el colector solo en `dev/`); sincronizado con el revision `config-81effee777aa`.'
+      (el colector solo en `dev/`); sincronizado con el revision `config-81effee777aa`.
+      DGX-1417, 05-11-2026 (migrate, no breaking): `empty` pasa a contar solo keys con
+      politica; las peticiones sin alias (master key, sondas) se deniegan igual pero dejan
+      de entrar, porque no son una key quedose sin cuentas. Quien compare series antes/despues
+      de ese deploy descuenta ~200/dia de peticiones sin identificar.'

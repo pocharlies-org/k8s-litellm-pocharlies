@@ -1960,8 +1960,8 @@ async def warm_config():
     await _refresh_config()
 
 
-async def _pin_get(client, key):
-    return await asyncio.wait_for(client.get(key), timeout=REDIS_OP_TIMEOUT_SECONDS)
+async def _pin_get(client, key, timeout=REDIS_OP_TIMEOUT_SECONDS):
+    return await asyncio.wait_for(client.get(key), timeout=timeout)
 
 
 async def _pin_claim(client, key, account, ttl=None):
@@ -2151,6 +2151,14 @@ CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"
 # La cache de prompts de Anthropic que usa Claude Code vive 1 h: pasada la hora la
 # conversacion ya esta fria en todas las cuentas y re-elegir sale gratis.
 CLAUDE_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("CLAUDE_ACCOUNT_PIN_TTL_SECONDS", "3600"))
+# DGX-1417 (05-11): las operaciones Valkey del filtro de cuentas tienen presupuesto
+# propio. Los 100 ms del mandato (REDIS_OP_TIMEOUT_SECONDS) medidos aqui eran falsos
+# fallos: Valkey sano (0 evictions, 0 rejected) pero su hilo unico encola los comandos
+# del propio litellm (slowlog 04-11: MGET de cooldown de ~48 claves a 12-60 ms) y una
+# conexion fria paga ~220 ms de handshake (medido 21-09, ver _redis) — con 100 ms
+# morian en rafagas 2728/24h y cada muerte perdia ademas el pin de la conversacion.
+# 500 ms siguen siendo despreciables ante la llamada LLM que protegen.
+CLAUDE_REDIS_TIMEOUT_SECONDS = 0.5
 CLAUDE_ACCOUNT_STATS = {"hits": 0, "claims": 0, "moves": 0, "empty": 0, "redis_errors": 0}
 
 
@@ -2343,7 +2351,7 @@ async def _claude_readings(client, ids):
     try:
         raw = await asyncio.wait_for(
             client.mget([f"{CLAUDE_QUOTA_PREFIX}:{i}" for i in ids]),
-            timeout=REDIS_OP_TIMEOUT_SECONDS)
+            timeout=CLAUDE_REDIS_TIMEOUT_SECONDS)
     except Exception:
         CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
         return {}
@@ -2382,9 +2390,16 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
         policies = _config_cache["config"].get("claude_accounts") or {}
     order = [e for e in policies.get(alias) or () if e["id"] in by_account]
     if not order:
-        CLAUDE_ACCOUNT_STATS["empty"] += 1
+        # DGX-1417: `empty` tiene que decir «una key con politica se ha quedado sin
+        # cuentas». Una peticion sin alias (master key, sonda sin identificar) no es
+        # una key: se deniega igual ([]) pero no contamina el contador que mide el
+        # salto. El aviso deja que buckets de metadata traia, para identificarla.
+        if alias is not None:
+            CLAUDE_ACCOUNT_STATS["empty"] += 1
+        vistos = [n for n in ("metadata", "litellm_metadata") if isinstance(request_kwargs.get(n), dict)]
         _warn_throttled(f"claude-sin-politica:{alias}",
-                        f"claude: la key {alias!r} no tiene cuentas disponibles para {model}")
+                        f"claude: la key {alias!r} no tiene cuentas disponibles para {model} "
+                        f"(buckets: {', '.join(vistos) or 'ninguno'})")
         return []
     client = None
     try:
@@ -2398,7 +2413,7 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
     pinned = None
     if key and client is not None:
         try:
-            pinned = await _pin_get(client, key)
+            pinned = await _pin_get(client, key, CLAUDE_REDIS_TIMEOUT_SECONDS)
         except Exception:
             CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
     entry = next((e for e in order if e["id"] == pinned), None)
@@ -2420,7 +2435,7 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
     if key and client is not None:
         try:
             await asyncio.wait_for(client.set(key, choice, ex=CLAUDE_ACCOUNT_PIN_TTL_SECONDS),
-                                   timeout=REDIS_OP_TIMEOUT_SECONDS)
+                                   timeout=CLAUDE_REDIS_TIMEOUT_SECONDS)
         except Exception:
             CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
     return [by_account[choice]]
