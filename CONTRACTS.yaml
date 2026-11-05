@@ -971,6 +971,9 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
+      DGX-1454 (2026-11-05), aditivo: `gpt-image-2.6-flare` y
+      `gpt-image-2.6-sunburst` por el mismo provider OAuth, solo seleccion
+      manual y sin health checks generativos; se conservan los alias 2.5 y 2.
       DGX-1443 (2026-11-04), aditivo: `gpt-6.1-terra`, probado por Codex responses
       con la cuenta real (HTTP 200, output OK); los IDs web -wm no son de inferencia.
       Revision del ConfigMap recalculada para que el proxy y su gateway carguen el alias.

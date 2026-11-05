@@ -1,5 +1,5 @@
-"""La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): ocho alias de chat, tres de imagen
-(DGX-1077), un gate y un renovador.
+"""La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): ocho alias de chat, cinco de imagen
+(DGX-1077, DGX-1454), un gate y un renovador.
 
 POR QUE EXISTE ESTE FICHERO (18-10-2026). Los alias `gpt-*` vuelven al model_list tras
 su lapida del 03-09: aquella cuenta cayo baneada dos veces porque el catalogo de
@@ -32,7 +32,8 @@ KEEPER = ROOT / "k8s" / "chatgpt-token-keeper.yaml"
 
 ALIASES = {"gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
-IMAGE_ALIASES = {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
+IMAGE_ALIASES = {"gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
+                 "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
 ALLOWED_KEYS = ("hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic", "claude-atlantic-compania")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic); 02-11 DGX-1395: claude-atlantic-compania (compania asincrona, renombrada desde claude-x86, que sale con la limpieza)
 WANT_FN = {"_chatgpt_access_denied"}
 WANT_CONST = {"CHATGPT_ALIAS_PREFIX", "CHATGPT_ALLOWED_KEY_ALIASES"}
