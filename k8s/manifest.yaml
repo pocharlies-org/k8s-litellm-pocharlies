@@ -959,6 +959,24 @@ data:
         disable_background_health_check: true
     # DGX-1077: imagen por la misma cuenta, para los motores `chatgpt-*` del DGX Studio
     # (key `studio-chatgpt`). Mismo gate `gpt-` y misma regla: solo seleccion manual.
+    - model_name: gpt-image-2.6-flare
+      litellm_params:
+        model: chatgpt/gpt-image-2.6-flare
+      model_info:
+        name: GPT Image 2.6 Flare · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT Image 2.6 Flare - generacion y edicion rapida, SVG y GIF via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
+        mode: image_generation
+        input_cost_per_image: 0
+        disable_background_health_check: true
+    - model_name: gpt-image-2.6-sunburst
+      litellm_params:
+        model: chatgpt/gpt-image-2.6-sunburst
+      model_info:
+        name: GPT Image 2.6 Sunburst · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT Image 2.6 Sunburst - composiciones y edicion de precision, SVG y GIF via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
+        mode: image_generation
+        input_cost_per_image: 0
+        disable_background_health_check: true
     - model_name: gpt-image-2.5-flare
       litellm_params:
         model: chatgpt/gpt-image-2.5-flare
@@ -13802,7 +13820,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b0220542bf3a
+        config.k8s.e-dani.com/revision: config-e281e6c82e78
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14741,7 +14759,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-b0220542bf3a
+        config.k8s.e-dani.com/revision: config-e281e6c82e78
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
