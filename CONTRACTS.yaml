@@ -590,6 +590,9 @@ contracts:
       CLI se reporta "(external, sdk-cli)" y fijamos "(external, cli)", que es el
       modo interactivo. Lector: la auditoria de deteccion de Anthropic. No lo
       cubre: el fingerprint TLS (httpx, no Node) y la cadencia del pool.
+      2026-11-05 (SC-4629, Dani): la cuenta tercera pasa a llamarse
+      work-personal (claude-acct-work-personal, CLAUDE_OAT_WORK_PERSONAL); su
+      perfil de maquina no cambia. Mismo valor y forma: sin .vN+1.
       Pinned by tests/test_claude_official_headers_contract.py.
   - id: dgx.session-router.claude-account-pin.v1
     kind: schema

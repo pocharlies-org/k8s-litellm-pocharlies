@@ -27,7 +27,7 @@ CUENTAS = (
     ("INFO", "claude-acct-info", ("Linux", "x64", "v26.12.1", "0.128.0", "600")),  # medida el 31-10
     ("CORREO", "claude-acct-correo", ("Linux", "x64", "v24.10.0", "0.126.0", "600")),
     ("EDANI", "claude-acct-edani", ("MacOS", "arm64", "v22.14.0", "0.128.0", "600")),
-    ("TERCERA", "claude-acct-tercera", ("Linux", "arm64", "v26.2.0", "0.127.0", "900")),
+    ("WORK_PERSONAL", "claude-acct-work-personal", ("Linux", "arm64", "v26.2.0", "0.127.0", "900")),
     ("WORKS_SHARED", "claude-acct-works-shared", ("Linux", "x64", "v26.1.0", "0.124.0", "600")),
     ("FLASH", "claude-acct-flash", ("MacOS", "x64", "v24.9.0", "0.125.0", "600")),
     ("MAX", "claude-acct-max", ("Linux", "x64", "v26.3.0", "0.127.0", "900")),

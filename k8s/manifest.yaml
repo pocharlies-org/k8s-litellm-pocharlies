@@ -2216,7 +2216,7 @@ data:
     - model_name: "claude-*"
       litellm_params:
         model: "anthropic/claude-*"
-        api_key: os.environ/CLAUDE_OAT_TERCERA
+        api_key: os.environ/CLAUDE_OAT_WORK_PERSONAL
         # DGX-1189: la peticion debe parecer del cliente oficial; `anthropic-beta` y
         # `x-app` los reenvia el proxy desde el cliente, `user-agent` y la familia
         # `x-stainless-*` los fija dev/claude_fingerprints.py (un perfil por cuenta;
@@ -2234,7 +2234,7 @@ data:
           x-stainless-runtime-version: v26.2.0
           x-stainless-timeout: "900"
       model_info:
-        id: claude-acct-tercera
+        id: claude-acct-work-personal
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -13787,7 +13787,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6a3b85126849
+        config.k8s.e-dani.com/revision: config-e446f349d0ef
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14655,8 +14655,8 @@ spec:
       remoteRef: { key: nffams536xdgzykcsluhpz6bq4, property: token }  # claude-cuenta-correo
     - secretKey: CLAUDE_OAT_EDANI
       remoteRef: { key: m5lhm5zk6afxaxr5m3hsugygna, property: token }  # claude-cuenta-edani
-    - secretKey: CLAUDE_OAT_TERCERA
-      remoteRef: { key: 4zunsicb4usmzco4apt7kubcmm, property: token }  # claude-cuenta-tercera
+    - secretKey: CLAUDE_OAT_WORK_PERSONAL
+      remoteRef: { key: 4zunsicb4usmzco4apt7kubcmm, property: token }  # claude-cuenta-work-personal
     - secretKey: CLAUDE_OAT_WORKS_SHARED
       remoteRef: { key: kwmqy7ahe6avilv2vki5nmjipe, property: token }  # claude-cuenta-works-shared
     - secretKey: CLAUDE_OAT_FLASH
@@ -14726,7 +14726,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6a3b85126849
+        config.k8s.e-dani.com/revision: config-e446f349d0ef
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
