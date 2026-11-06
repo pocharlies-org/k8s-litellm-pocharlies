@@ -115,6 +115,7 @@ def test_conversacion_empezada_salta_al_pasar_el_salto_de_su_cuenta():
     v = FakeValkey()
     mod = _pod(v, policy={"claude-x86": [{"id": "info", "salto_7d": 50, "salto_5h": 50},
                                            {"id": "correo", "salto_7d": 90, "salto_5h": 90}]})
+    _quota(v, "correo", u7=0.89)  # INFRA-1204: sin lecturas correo (salto 90) tendria mas margen que info (50)
     assert _pick(mod, sid="s1") == ["info"]
     _quota(v, "info", u7=0.49)
     assert _pick(mod, sid="s1") == ["info"]
@@ -379,3 +380,44 @@ def test_plan_claude_de_la_compania_respeta_el_interruptor():
     data = _company_data("qwen38-flash-next")
     assert on._claude_plan_allowed(on._config_cache["config"], data)
     assert not off._claude_plan_allowed(off._config_cache["config"], data)
+
+
+def _quota7(v, acct, u7, reset_h):
+    now = time.time()
+    v.data[f"claude:quota:{acct}"] = json.dumps({
+        "observed_at": now, "status": "allowed", "reset": int(now + 3600),
+        "five_hour": {"utilization": 0.0, "resets_at": int(now + 3600)},
+        "seven_day": {"utilization": u7, "resets_at": int(now + reset_h * 3600)},
+        "overage_in_use": False})
+
+
+def test_nueva_va_a_la_de_mas_margen_por_hora_hasta_su_reinicio():
+    """INFRA-1204 (Dani 06-11): correo 41 % con 138 h por delante pierde frente a edani
+    32 % que reinicia en 12 h, aunque correo vaya antes en la lista."""
+    v = FakeValkey()
+    _quota7(v, "info", 1.0, 40)
+    _quota7(v, "correo", 0.41, 138)
+    _quota7(v, "edani", 0.32, 12)
+    mod = _pod(v, policy={"claude-atlantic": [{"id": e, "salto_7d": 100, "salto_5h": 100}
+                                                for e in ("info", "correo", "edani")]})
+    assert _pick(mod, alias="claude-atlantic", sid="nueva") == ["edani"]
+
+
+def test_la_lista_sigue_mandando_que_cuentas_y_su_salto():
+    v = FakeValkey()
+    _quota7(v, "correo", 0.41, 138)
+    _quota7(v, "edani", 0.32, 12)
+    _quota7(v, "flash", 0.0, 1)  # la de mas margen, pero fuera de la lista de la key
+    mod = _pod(v, policy={"claude-x86": [{"id": "correo", "salto_7d": 100, "salto_5h": 100},
+                                         {"id": "edani", "salto_7d": 30, "salto_5h": 100}]})
+    assert _pick(mod, sid="nueva") == ["correo"]  # edani paso su salto (30)
+
+
+def test_empezada_no_se_muda_aunque_otra_tenga_mas_margen():
+    v = FakeValkey()
+    mod = _pod(v)
+    assert _pick(mod, sid="s1") == ["info"]
+    _quota7(v, "info", 0.5, 100)
+    _quota7(v, "correo", 0.0, 2)
+    assert _pick(mod, sid="s1") == ["info"]
+    assert _pick(mod, sid="otra") == ["correo"]

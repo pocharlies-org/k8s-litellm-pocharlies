@@ -610,7 +610,10 @@ contracts:
       de la cache de Anthropic), renovado en cada acierto. Se reescribe
       cuando la cuenta pasa su salto (desde 2026-10-19), queda rechazada (429
       de suscripcion o creditos) o sale del Router. Publisher y lector:
-      session_router.claude_account_filter.
+      session_router.claude_account_filter. INFRA-1204 (2026-11-06): el valor
+      que se escribe al reclamar o mudar es, de las cuentas de la lista por
+      debajo de su salto, la de mas margen por hora hasta su reinicio de 7 d
+      (empate: orden de la lista); forma y TTL de la clave sin cambios.
   - id: dgx.litellm.service-alias.chatgpt.v1
     kind: http-route
     value: litellm-chatgpt

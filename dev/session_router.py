@@ -2128,17 +2128,19 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 # /api/model-routing/config:  {"<alias>": [{"id", "salto_7d", "salto_5h"}, ...]}.
 #
 # Reglas (las del panel, que ya regian accountsd):
-#   - Conversacion NUEVA -> la primera cuenta de la lista por debajo de sus dos
-#     saltos (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py).
+#   - Conversacion NUEVA -> de las cuentas de la lista por debajo de sus dos saltos
+#     (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py), la de mas
+#     margen por hora hasta su reinicio de 7 d (Dani, 06-11, INFRA-1204: gastar
+#     antes lo que se pierde antes). Empate (sin lecturas) -> orden de la lista.
 #   - Conversacion EMPEZADA -> se queda en su cuenta (pin) mientras esa cuenta
 #     este por debajo de SU salto (90 %, 50 %… el de la lista). Al pasarlo, o si
 #     queda rechazada (429 de suscripcion o creditos) o el Router la aparto, se
-#     muda a la siguiente por debajo del suyo (Dani, 19-10: el salto vale tambien
+#     muda a otra por debajo del suyo, elegida igual que una nueva (Dani, 19-10: el salto vale tambien
 #     para las abiertas, aunque cambiar a mitad tire la cache de prompts).
 #   - Key sin politica, o todas sus cuentas pasadas de salto -> lista vacia: el
 #     Router contesta «no deployments» y no se usa NINGUNA cuenta fuera de la
 #     lista de la key. Nunca fail-open aqui: abrir seria saltar de empresa.
-#   - Valkey caido -> sin lecturas ni pin: la primera de la lista (determinista,
+#   - Valkey caido -> sin lecturas ni pin: todas empatan y va la primera de la lista (determinista,
 #     la misma en las dos replicas).
 CLAUDE_PREFIX = "claude-"
 _CLAUDE_ACCOUNT_ID_RE = re.compile(r"^claude-acct-([a-z0-9][a-z0-9-]*)$")
@@ -2286,6 +2288,17 @@ def _claude_rejected(reading, now):
     return now - float(reading.get("observed_at") or 0) < 600
 
 
+def _claude_margen_por_hora(reading, entry, now):
+    """Puntos de % que le quedan a la cuenta hasta su salto de 7 d, por hora hasta su
+    reinicio. Sin lectura, o con la ventana ya reiniciada: la semana entera."""
+    win = (reading or {}).get("seven_day") or {}
+    r = win.get("resets_at")
+    if not isinstance(r, (int, float)) or r <= now:
+        return entry["salto_7d"] / 168.0
+    margen = entry["salto_7d"] - float(win.get("utilization") or 0) * 100
+    return margen / (max(r - now, 60.0) / 3600.0)
+
+
 def _claude_over_salto(reading, entry, now):
     """La cuenta pasa de alguno de sus saltos (ventanas aun vigentes) o esta rechazada."""
     if _claude_rejected(reading, now):
@@ -2421,7 +2434,9 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
         CLAUDE_ACCOUNT_STATS["hits"] += 1
         _schedule(_pin_keepalive(client, key, CLAUDE_ACCOUNT_PIN_TTL_SECONDS, CLAUDE_ACCOUNT_STATS))
         return [by_account[pinned]]
-    choice = next((e["id"] for e in order if not _claude_over_salto(readings.get(e["id"]), e, now)), None)
+    libres = [e for e in order if not _claude_over_salto(readings.get(e["id"]), e, now)]
+    # max() se queda con la primera en empate: el orden de la lista desempata.
+    choice = max(libres, key=lambda e: _claude_margen_por_hora(readings.get(e["id"]), e, now))["id"] if libres else None
     if choice is None:
         CLAUDE_ACCOUNT_STATS["empty"] += 1
         _warn_throttled(f"claude-sin-cupo:{alias}",
