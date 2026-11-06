@@ -14069,7 +14069,9 @@ spec:
             # del DGX Studio por `studio-chatgpt` (DGX-1077); Hindsight (solo texto) por
             # `hindsight` (INFRA-942). `claude-x86` fuera: renombrada a
             # `claude-atlantic-compania` (DGX-1395), ya no hay key con ese alias.
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania" }
+            # SC-4822 (Dani 06-11): `sugiere-prod`, el servicio de sugerencias, sugiere a una sesión de
+            # Paseo con el mismo modelo que ella ya eligió a mano; no elige un `gpt-*` por su cuenta.
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
             # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
