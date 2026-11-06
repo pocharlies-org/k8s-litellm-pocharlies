@@ -3175,6 +3175,11 @@ data:
     # asi que el alias existe pero la respuesta no llega. Las dos keys tienen
     # `models: []` (= todos los modelos), luego esto no abre superficie de catalogo:
     # solo quita el candado de la ruta abliterada a dos keys del propio owner.
+    # `claude-cloudblue` entra (2026-11-06, pedido explicito del owner): es la key de
+    # Claude Code/Paseo del Mac para trabajo CloudBlue, y su allowlist de la BD ya lista
+    # modelos concretos — no es una key con `models: []`, o sea que aqui no se abre una
+    # superficie accidental: entra exactamente el `qwen38-flash-next-uncensored` pedido,
+    # y nada mas.
     # Vacio = sin restriccion, y es DELIBERADO que el default NO sea vacio.
     UNCENSORED_ALLOWED_KEY_ALIASES = frozenset(
         alias.strip()
@@ -13820,7 +13825,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e281e6c82e78
+        config.k8s.e-dani.com/revision: config-cd7b5f74e351
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14026,12 +14031,13 @@ spec:
             # explicita aqui para anadir `hermes-cloudblue` sin tocar el codigo del hook,
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
+            # CONTRACT: dgx.litellm.virtual-key.claude-cloudblue.v1
             # SC-4576 (04-11-2026): anadido `socialmedia`, la key unica de socialmedia
             # (k8s-socialmedia-pocharlies). La pide el CronJob
             # `whatsapp-mcp/sauvage-verificacion-diaria` (auditoria diaria de la cara
             # visible, INFRA-745) con `qwen38-flash-next-uncensored`; sin ella el hook
             # denegaba la ruta abliterada y el job fallaba desde su creacion.
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania,socialmedia" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania,socialmedia,claude-cloudblue" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -14759,7 +14765,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e281e6c82e78
+        config.k8s.e-dani.com/revision: config-cd7b5f74e351
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
