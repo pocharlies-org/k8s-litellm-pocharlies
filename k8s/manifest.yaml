@@ -78,7 +78,7 @@ data:
     - model_name: bge-reranker
       litellm_params:
         model: infinity/bge-reranker
-        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_base: http://bge-reranker-failover.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
@@ -86,7 +86,7 @@ data:
     - model_name: bge-reranker-v2-m3
       litellm_params:
         model: infinity/bge-reranker
-        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_base: http://bge-reranker-failover.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
@@ -13847,7 +13847,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9a70021113d8
+        config.k8s.e-dani.com/revision: config-abd5e79ded14
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14789,7 +14789,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9a70021113d8
+        config.k8s.e-dani.com/revision: config-abd5e79ded14
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
