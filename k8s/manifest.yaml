@@ -2805,6 +2805,10 @@ data:
     priority_by_alias:
       open-webui-v3: -10  # chat interactivo: por delante del lote
       hermes: -10         # turnos de los bots: por delante del lote
+      # SKIRM-400 (07-11-2026, Dani): las facturas de Skirmbooks no se cuelgan detras del lote. Backend (OCR del
+      # adapter invoicing y fiscal-validator) con su key propia y la UI con la suya, a la par que el chat.
+      skirmbooks: -10
+      skirmbooks-ui: -10
       # DGX-601 (06-10-2026, Dani): un alias puede valer ENTERO (lo de siempre) o
       # MAPA por clase de sesion (`x-claude-class`, que estampa el lanzador de la
       # compania). Las keys de maquina de Dani comparten la misma key para el Claude
@@ -5108,7 +5112,7 @@ data:
     #               la vista y el job `evaluar` no saca ni «verificada» ni «retirada» con el
     #               modelo equivocado. No toca a las demas keys ni al router global.
     NO_FALLBACK_KEY_ALIASES = frozenset(
-        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis", "agent-jake-cloudblue", "skills-eval"}
+        {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis", "agent-jake-cloudblue", "skills-eval", "skirmbooks"}
     )
 
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
@@ -13840,7 +13844,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-0d2d67e79e60
+        config.k8s.e-dani.com/revision: config-7cda9cc0ddc7
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14782,7 +14786,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-0d2d67e79e60
+        config.k8s.e-dani.com/revision: config-7cda9cc0ddc7
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
