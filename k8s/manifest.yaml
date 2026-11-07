@@ -78,7 +78,7 @@ data:
     - model_name: bge-reranker
       litellm_params:
         model: infinity/bge-reranker
-        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_base: http://bge-reranker-failover.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
@@ -86,7 +86,7 @@ data:
     - model_name: bge-reranker-v2-m3
       litellm_params:
         model: infinity/bge-reranker
-        api_base: http://bge-reranker.llm.svc.cluster.local:8000
+        api_base: http://bge-reranker-failover.llm.svc.cluster.local:8000
         api_key: not-used
       model_info:
         mode: rerank
