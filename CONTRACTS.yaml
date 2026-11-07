@@ -526,6 +526,7 @@ contracts:
       (_estimate_prompt_tokens) divide ya por la proporcion aprendida DEL
       ALIAS (tracker.cpc_for) en vez del EMA global; sin tracker o alias sin
       muestra, 3,5 como antes. Ningun campo ni umbral cambia: sin .vN+1.
+      SC-4304 (07-11): las entradas de rerank (bge-reranker, bge-reranker-v2-m3) cambian su api_base a bge-reranker-failover (GPU con relevo CPU); la forma de la config no cambia.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>
