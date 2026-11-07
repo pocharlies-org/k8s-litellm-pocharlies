@@ -318,6 +318,7 @@ def test_el_mapa_vive_en_config_yaml():
         "open-webui-v3": -10, "hermes": -10, "hermes-batch": 10, "brain": 20,
         "hindsight": 20,  # INFRA-940: sustituye al brain, misma prioridad
         "analisis": 20,  # INFRA-988: extraccion y resumen de CDM, misma prioridad
+        "skirmbooks": -10, "skirmbooks-ui": -10,  # SKIRM-400: facturas, a la par que el chat
         # DGX-601 (Dani): las keys de maquina de Dani son la misma key para la compania y
         # para el uso personal, asi que su nivel va MAPA por clase, no entero.
         "claude-mac": -5,  # DGX-1099: el MacBook de casa con su propia key
