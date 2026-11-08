@@ -320,6 +320,7 @@ def test_el_mapa_vive_en_config_yaml():
         "analisis": 20,  # INFRA-988: extraccion y resumen de CDM, misma prioridad
         "skirmbooks": -10, "skirmbooks-ui": -10,  # SKIRM-400: facturas, a la par que el chat
         "synapse": -5,  # SKIRM-400 (Dani): adapters de Synapse, detras del chat y de las facturas
+        "voz-duplex": -30,  # SC-5043 (Dani): voz en tiempo real, la primera de todas
         # DGX-601 (Dani): las keys de maquina de Dani son la misma key para la compania y
         # para el uso personal, asi que su nivel va MAPA por clase, no entero.
         "claude-mac": -5,  # DGX-1099: el MacBook de casa con su propia key
