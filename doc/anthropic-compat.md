@@ -43,7 +43,7 @@ Salvo donde se indique, todos los `curl` van a `https://litellm.lan.e-dani.com/v
 | Streaming con thinking `enabled` | **ROJO** | mismo defecto #29518 |
 | Visión | VERDE | — |
 | `count_tokens` | VERDE con caveat | #29764 no se reproduce, pero es estimación local que ignora system y tools |
-| WebSearch (`web_search_20250305`, PR #66) | VERDE | caveat: las peticiones interceptadas pierden streaming |
+| WebSearch (`web_search_20250305`, PR #66) | VERDE, por dos caminos | con otras tools: loop agéntico, síntesis y gasto. **solo-búsqueda: short-circuit de upstream → texto crudo y 0 tokens** (ver el apartado) |
 
 ## Por capability
 
@@ -257,17 +257,43 @@ curl -sS https://litellm.lan.e-dani.com/v1/messages/count_tokens \
 `usage.input_tokens` de la primera llamada real como referencia, o estimación en cliente
 sabiendo que system y tools no se cuentan.
 
-### WebSearch (`web_search_20250305`) — VERDE, con caveat de streaming
+### WebSearch (`web_search_20250305`) — dos caminos, y no son el mismo (INFRA-983)
 
-Desde el PR #66, Claude Code puede usar WebSearch contra residentes locales: Claude
-Code manda la server tool nativa `web_search_20250305`, LiteLLM la traduce a la function
-tool `litellm_web_search`, el residente la invoca como tool_use normal y el callback
-`websearch_interception` ejecuta la búsqueda (loop agéntico, máx. 3 rondas) contra el
+Desde el PR #66 Claude Code puede usar WebSearch contra residentes locales: manda la
+server tool nativa `web_search_20250305`, LiteLLM la traduce a la function tool
+`litellm_web_search` y el callback `websearch_interception` ejecuta la búsqueda contra el
 `search_tools` SearXNG local (`http://searxng.chat.svc.cluster.local:8080`, provider
 `openai` habilitado explícitamente — el default de upstream es solo `["bedrock"]`).
 
-**Caveat: las peticiones websearch interceptadas pierden el streaming.** La respuesta
-final llega completa, no en deltas.
+Lo que el apartado no decía es que **hay dos caminos y el resultado no es el mismo**.
+Medido el 2026-10-23 contra el pin `v1.105.1`, misma pregunta, misma key:
+
+| petición | resultado |
+|---|---|
+| **solo** tools de búsqueda | 200 en **0.8 s**, `usage {input: 0, output: 0}`, un bloque `text` que es el resultado crudo (`Title: … URL: … Snippet: …`). **El modelo no llega a ejecutarse.** |
+| búsqueda + cualquier otra tool | 200 en **11.4 s**, `usage {input: 1575, output: 206}`, bloques `thinking` + `text` con la respuesta sintetizada y sus fuentes. |
+
+El primero es el **short-circuit de upstream** (`try_short_circuit_search`,
+`litellm/integrations/websearch_interception/handler.py:291`): si la petición trae
+únicamente tools de búsqueda y el provider no trata `web_search` de forma nativa (todos
+nuestros locales son `openai/`), LiteLLM ejecuta la búsqueda y devuelve una respuesta
+Anthropic sintética — está pensado para el sub-request de búsqueda que clientes como
+Claude Code mandan solos, con `usage` a cero escrito a mano en el propio handler. No hay
+knob de config para apagarlo: `WebSearchInterceptionConfig` (`types/integrations/
+websearch_interception.py:75`) solo expone `enabled_providers`, `search_tool_name` y
+`max_agentic_loops`.
+
+**Lo que implica cada uno.** El camino corto es barato y rápido, y deja el resultado sin
+síntesis y **sin gasto registrado** (0 tokens: ni spend log ni Langfuse ven ese turno). El
+camino largo sintetiza y se factura, y es el que hace Claude Code en un turno normal —
+porque un turno normal siempre lleva además sus tools de función. Es decir: en la sesión
+real suele tocar el bueno; el corto aparece justo en el sub-request de búsqueda.
+
+**Caveat de las peticiones interceptadas: pierden el streaming.** La respuesta llega
+completa, no en deltas.
+
+Fijado por `tests/test_websearch_short_circuit_contract.py`: si upstream cambia el
+short-circuit, salta ahí, no en producción.
 
 ## Decisión de arquitectura (CTO, 07-09-2026, épica SC-324)
 

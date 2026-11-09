@@ -1,4 +1,4 @@
-"""GET /openrouter/account: saldo, cupo y fallo degradado de la cuenta de OpenRouter.
+"""GET /admin/openrouter-account: saldo, cupo y fallo degradado de OpenRouter.
 
 POR QUE EXISTE ESTE FICHERO. El saldo se puede leer a mano con la key del secret
 (`GET https://openrouter.ai/api/v1/credits` responde 200 con `is_management_key:false`
@@ -376,7 +376,7 @@ def test_an_unreachable_result_is_cached_for_much_less_than_the_ttl(hook):
 # ---------------------------------------------------------------- registro de la ruta
 
 def test_the_route_is_get_only_and_registered_once():
-    """`GET /openrouter/account`, protegida contra doble registro con un flag en app.state.
+    """`GET /admin/openrouter-account`, protegida contra doble registro con un flag en app.state.
 
     El hook puede reimportarse al recargar la configuracion y Starlette NO
     deduplica rutas: sin el flag se apilan copias identitas.
@@ -420,12 +420,15 @@ def test_the_registration_is_wrapped_so_it_cannot_stop_the_proxy():
 
 
 def test_the_endpoint_path_is_the_one_the_dashboard_calls():
-    """El contrato con el panel: `GET /openrouter/account` en el puerto 4000.
+    """El contrato con el panel: `GET /admin/openrouter-account` en el puerto 4000.
 
-    El 4001 es el sidecar `active-requests-api` y ahi esto da 404 — el gotcha que ya
-    esta documentado en `routes_llm_uncensored.py` del dashboard.
+    Bajo `/admin/` y NO bajo `/openrouter/`: LiteLLM registra un pass-through
+    `/openrouter/{path}` del proveedor que eclipseaba la ruta y cuyo guardrail vetaba
+    la master key (403). Con `Depends(user_api_key_auth)` — como `/admin/refusal-*` —
+    el panel la lee con la master sin correr el veto de inferencia.
     """
     source = _hook_source()
-    assert 'OPENROUTER_ACCOUNT_PATH = "/openrouter/account"' in source
+    assert 'OPENROUTER_ACCOUNT_PATH = "/admin/openrouter-account"' in source
+    assert "dependencies=[Depends(user_api_key_auth)]" in source
     assert "https://openrouter.ai/api/v1/credits" in source
     assert "https://openrouter.ai/api/v1/key" in source

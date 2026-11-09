@@ -33,7 +33,7 @@ def _tracker(temp_dir, clock):
 
 def _start(tracker, rid="r1", model="qwen38-flash-next", **route):
     tracker.start(
-        rid, trace_id="t", key_alias="claude-local", model=model,
+        rid, trace_id="t", key_alias="claude-x86", model=model,
         call_type="anthropic_messages", api_base=None, **route,
     )
 

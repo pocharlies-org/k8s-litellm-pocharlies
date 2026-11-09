@@ -116,6 +116,47 @@ import httpx
 
 log = logging.getLogger("session_router")
 
+# DGX-1189: el proxy filtra `anthropic-beta` contra la lista de litellm
+# (anthropic_beta_headers_manager) justo antes de enviar a Anthropic: lo que no
+# está en la lista se descarta (medido 20-10: `claude-code-20250219` no llegaba).
+# Son las betas que manda Claude Code y litellm aún no conoce; sin ellas, las
+# funciones que activan (modo Claude Code, thinking por tokens, herramientas
+# inline) no llegan a Anthropic. Se amplía la config cargada IN PROCESO; el hook
+# de reload es porque el endpoint /reload/anthropic_beta_headers (y el repaso
+# periódico del proxy) vacía la caché y volvería a dejarlas fuera.
+# CONTRACT: dgx.litellm.claude-official-headers.v1
+CLAUDE_OFFICIAL_BETAS = (
+    "claude-code-20250219",
+    "thinking-token-count-2026-05-13",
+    "inline-tools-2026-09-15",
+)
+
+
+def _extend_anthropic_beta_allowlist():
+    try:
+        from litellm import anthropic_beta_headers_manager as _m
+
+        mapping = _m._load_beta_headers_config().setdefault("anthropic", {})
+        mapping.update({beta: beta for beta in CLAUDE_OFFICIAL_BETAS})
+    except Exception as exc:  # fail-open: sin extensión no llegan las betas, nada más
+        log.warning("session_router: no se pudo ampliar la lista de betas (%s)", exc)
+
+
+try:
+    from litellm import anthropic_beta_headers_manager as _beta_manager
+
+    _orig_reload_beta_headers = _beta_manager.reload_beta_headers_config
+
+    def _reload_beta_headers_and_extend():
+        result = _orig_reload_beta_headers()
+        _extend_anthropic_beta_allowlist()
+        return result
+
+    _beta_manager.reload_beta_headers_config = _reload_beta_headers_and_extend
+except Exception as _exc:
+    log.warning("session_router: no se pudo enganchar el reload de betas (%s)", _exc)
+_extend_anthropic_beta_allowlist()
+
 RESIDENT_MODEL = os.environ.get("SESSION_ROUTER_RESIDENT_MODEL", "qwen38-flash-next")
 OVERFLOW_MODEL = os.environ.get("SESSION_ROUTER_OVERFLOW_MODEL", "alibaba-q38-flash")
 # Los únicos dos nombres sobre los que este módulo decide. Todo lo demás
@@ -234,7 +275,7 @@ DEFAULT_SESSION_IDLE_S = 600
 DEFAULT_RETURN_MAX_TOKENS = 30000
 DEFAULT_ALIBABA_RETURN_AFTER_S = 600
 # Bots por alias de virtual key (medido en SpendLogs; los interactivos —
-# claude-local SIN clase company, opencode-*, open-webui — NO están). La
+# claude-x86 SIN clase company, opencode-*, open-webui — NO están). La
 # identificación es fiable para los listados: cada bot usa su key. Una key
 # nueva sin listar se trata como interactiva (fail-open hacia local).
 DEFAULT_BOT_KEYS = ("hermes-batch", "aurora-rca", "brain")
@@ -367,6 +408,9 @@ _vllm_queue = {"waiting": None, "running": None, "since": None, "read_at": None}
 # (k8s-ai-pocharlies#197): el desborde salta a 13, la capacidad REAL del residente;
 # con el 24 viejo se admitían 11 peticiones más de las que cabían y encolaban dentro
 # del motor (lento sin desbordar).
+# DGX-1291 (25-10-2026, Dani): 8,5 -> 10,5 con el TP=2 a 10 secuencias a prueba con
+# auditoría a 24 h (k8s-ai-pocharlies#217); el desborde salta a 15 y `local_slots` del
+# panel con él — manda el menor, así que con el 13 viejo las 3 plazas nuevas no se usan.
 
 
 def _parse_slots(raw):
@@ -376,7 +420,7 @@ def _parse_slots(raw):
         return ()
 
 
-VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "8,5"))
+VLLM_SLOTS = _parse_slots(os.environ.get("SESSION_ROUTER_VLLM_SLOTS", "10,5"))
 _vllm_up = {}  # url -> time.monotonic() de su ultima lectura buena de /metrics
 # DGX-974: la ultima lectura de CADA motor, url -> (waiting, running, read_at), y
 # cuantas peticiones nuevas le ha dado ESTE pod desde esa lectura: el reparto de
@@ -397,7 +441,7 @@ _sidecar_poller = None
 # en segundo plano puede esperar en la cola del Spark; quien no debe esperar es el
 # operador interactivo. Campo ADITIVO `overflow_exempt` de /api/model-routing/config:
 #   classes — valores de x-claude-class (hoy solo `company`)
-#   keys    — alias de virtual key de LiteLLM (opencode-20260630-local, hermes, ...)
+#   keys    — alias de virtual key de LiteLLM (claude-x86, hermes, ...)
 # Una petición exenta (a) no pasa por la válvula (ni instant_reject ni la de la
 # compañía): encola en el residente; y (b) si trae un binding sticky a Alibaba que no
 # es una orden del operador (plan explícito o default_plan=alibaba), se re-vincula al
@@ -1053,18 +1097,18 @@ def _ensure_vllm_poller():
 # ── Presupuesto KV: HASH de sesiones (27-09-2026) ───────────────────────────
 
 
-def _estimate_prompt_tokens(data, tracker=None):
+def _estimate_prompt_tokens(data, tracker=None, alias=None):
     """Tokens del prompt, ESTIMADOS: caracteres / chars_per_token. El número
     real lo manda vLLM al acabar el prefill — tarde para decidir dónde se
     sirve. Mismo criterio que prompt_chars() del tracker
     (active_request_tracking.py, duplicado a propósito para no acoplar el
     import): recorre el body sin serializarlo, no cuenta el base64 de los
     adjuntos (sus tokens no salen de sus caracteres) e ignora cache_control.
-    chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales
-    (arranca en 3,5); sin tracker o con dato roto, 3,5. Un turno de Claude
-    Code son ~300 KB: la misma vuelta que el tracker ya da por petición,
-    sub-milisegundos, dentro del presupuesto (mandato 10). Cualquier forma
-    rara => None => la válvula no bloquea (fail-open)."""
+    chars_per_token lo aporta el tracker APRENDIDO de las peticiones reales,
+    POR ALIAS (SC-2804); sin tracker o alias sin muestra, 3,5. Un turno de
+    Claude Code son ~300 KB: la misma vuelta que el tracker ya da por
+    petición, sub-milisegundos, dentro del presupuesto (mandato 10).
+    Cualquier forma rara => None => la válvula no bloquea (fail-open)."""
     try:
         if not isinstance(data, dict):
             return None
@@ -1096,7 +1140,8 @@ def _estimate_prompt_tokens(data, tracker=None):
                 stack.extend(node)
         if total <= 0:
             return None
-        cpc = getattr(tracker, "chars_per_token", None) or FALLBACK_CHARS_PER_TOKEN
+        cpc_fn = getattr(tracker, "cpc_for", None)
+        cpc = cpc_fn(alias) if cpc_fn is not None else FALLBACK_CHARS_PER_TOKEN
         return int(total / float(cpc)) + 1
     except Exception:
         return None
@@ -1560,7 +1605,7 @@ _affinity_redis_tried = False
 def ensure_alibaba_key2_active():
     """Una vez por proceso, dos estados:
 
-    - Con DASHSCOPE_API_KEY_2: sube los diez -k2 de order 2 a order 1 EN
+    - Con DASHSCOPE_API_KEY_2: sube los once -k2 de order 2 a order 1 EN
       MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
       por sesion decide cual).
     - Sin ella: RETIRA los -k2 del Router (delete_deployment). Motivo,
@@ -1706,7 +1751,8 @@ def stamp_alibaba_session_affinity(data):
 #   - Sin sid (ni cabecera ni prefijo) se sortea la cuenta por cupo con
 #     `draw_account` (DGX-619, octubre 2026): no hay sesion que clavar, pero el
 #     50/50 ciego del Router gastaba la cuenta sin cupo (k1 al 91,5 %). Sin pin,
-#     sin Valkey; cualquier excepcion deja la lista intacta (fail-open).
+#     sin Valkey; cualquier excepcion deja intactas las CANDIDATAS (fail-open):
+#     con pesos conocidos la cuenta sin cupo no vuelve a entrar (rework DGX-639).
 # CONTRACT: dgx.session-router.alibaba-account-pin.v1
 # (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
 ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
@@ -1853,13 +1899,40 @@ def preferred_account(user_key, sid, accounts, weights=None, epoch=0):
     return next(a for a in reversed(ordered) if tramos[a] > 0)
 
 
+def _sin_cupo_cuentas(accounts, weights):
+    """Cuentas con peso CONOCIDO <= 0 en `alibaba_account_weights` (rework
+    DGX-639): el panel declaro que no les queda cupo y no son candidatas — ni al
+    sorteo ponderado ni al fail-open. Un peso ausente o no numerico es
+    DESCONOCIDO y no se descarta: el reparto uniforme es solo para pesos
+    realmente sin leer. Sin pesos validos (dict vacio) = nada conocido = vacio."""
+    if not isinstance(weights, dict) or not weights:
+        return set()
+    return {a for a in accounts
+            if isinstance(weights.get(a), (int, float))
+            and not isinstance(weights.get(a), bool)
+            and weights[a] <= 0.0}
+
+
+# Ultimos pesos leidos (rework DGX-639): una cuenta que el panel declaro sin cupo
+# no puede volver a ser candidata porque un refresco posterior no conteste.
+# Medido 17-10 (criterio 6 de DGX-619): panel publicando k1=0,0 y k1 llevandose el
+# 23,1 % del gasto — la excepcion al leer los pesos se tragaba los conocidos.
+_pesos_ultimos = {}
+
+
 async def _account_weights():
-    """Pesos por cuenta de la config del panel (caché SWR, sin I/O en el camino). {} si no hay."""
+    """Pesos por cuenta de la config del panel (caché SWR, sin I/O en el camino).
+    {} solo mientras NUNCA se leyo ninguno: si la lectura falla, valen los
+    ultimos validos (rework DGX-639, ver `_pesos_ultimos`)."""
+    global _pesos_ultimos
     try:
         weights = (await _config()).get("alibaba_account_weights")
-        return weights if isinstance(weights, dict) else {}
     except Exception:
-        return {}
+        return _pesos_ultimos
+    if isinstance(weights, dict):
+        _pesos_ultimos = weights
+        return weights
+    return _pesos_ultimos
 
 
 async def draw_account(accounts):
@@ -1868,8 +1941,16 @@ async def draw_account(accounts):
     `alibaba_account_weights`) que una sesion nueva, sobre un id aleatorio.
     No escribe pin ni toca Valkey: no hay sesion que clavar. El gateway de media
     (DGX-621) llama LITERALMENTE esto; prohibido definir fórmula propia.
-    Sin pesos (config fria) = tramos iguales, la misma formula de siempre."""
-    return preferred_account("draw", uuid.uuid4().hex, accounts, await _account_weights())
+    Con pesos conocidos, las cuentas con peso <= 0 no son candidatas (rework
+    DGX-639); si todas lo estan, la lista se queda intacta (mejor intentarlo que
+    sorteo vacio). Sin pesos (config fria) = tramos iguales, la misma formula de
+    siempre."""
+    weights = await _account_weights()
+    candidatos = list(accounts)
+    sin_cupo = _sin_cupo_cuentas(candidatos, weights)
+    if sin_cupo and len(sin_cupo) < len(candidatos):
+        candidatos = [a for a in candidatos if a not in sin_cupo]
+    return preferred_account("draw", uuid.uuid4().hex, candidatos, weights)
 
 
 async def warm_config():
@@ -1879,8 +1960,8 @@ async def warm_config():
     await _refresh_config()
 
 
-async def _pin_get(client, key):
-    return await asyncio.wait_for(client.get(key), timeout=REDIS_OP_TIMEOUT_SECONDS)
+async def _pin_get(client, key, timeout=REDIS_OP_TIMEOUT_SECONDS):
+    return await asyncio.wait_for(client.get(key), timeout=timeout)
 
 
 async def _pin_claim(client, key, account, ttl=None):
@@ -1948,7 +2029,7 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
     # mueve a nadie (la afinidad de siempre), y si no queda otra cuenta la lista se
     # queda intacta: mejor intentarlo que dejar el grupo sin deployment.
     weights = await _account_weights()
-    sin_cupo = {a for a in by_account if weights.get(a, 1.0) <= 0.0} if weights else set()
+    sin_cupo = _sin_cupo_cuentas(by_account, weights)
     if sin_cupo and len(sin_cupo) < len(by_account):
         for a in sin_cupo:
             by_account.pop(a)
@@ -1958,12 +2039,14 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
     if not sid:
         # DGX-619: peticion anonima — no hay sesion que clavar, pero si cupo que
         # respetar. Sorteo ponderado sobre las cuentas con deployment sano con la
-        # MISMA formula que una sesion nueva, sin pin ni Valkey. Fail-open:
-        # cualquier excepcion deja la lista intacta (el 50/50 de antes).
+        # MISMA formula que una sesion nueva, sin pin ni Valkey. Fail-open (rework
+        # DGX-639): cualquier excepcion deja las CANDIDATAS — con pesos conocidos
+        # la cuenta sin cupo ya esta fuera de `by_account`; el 50/50 sobre TODAS
+        # queda solo para cuando los pesos nunca se leyeron.
         try:
             return by_account[await draw_account(by_account)]
         except Exception:
-            return healthy_deployments
+            return [dep for deps in by_account.values() for dep in deps]
     user_key = _affinity_user_key(request_kwargs)
     key = account_pin_key(user_key, sid)
 
@@ -2036,8 +2119,8 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 
 # ── Cuentas de Claude por virtual key (DGX-1099, 18-10-2026) ─────────────────
 #
-# Claude Code y Paseo llaman a LiteLLM con la key de su MAQUINA (claude-local en
-# el x86, claude-casa, claude-cloudblue) y LiteLLM pone el setup-token de la
+# Claude Code y Paseo llaman a LiteLLM con la key de su MAQUINA (claude-x86 en
+# el x86, claude-mac, claude-cloudblue) y LiteLLM pone el setup-token de la
 # cuenta. Hay UNA entrada `claude-*` por cuenta (model_info.id `claude-acct-<id>`,
 # api_key = su setup-token sk-ant-oat, que litellm manda como Bearer + beta oauth).
 # Que cuentas puede usar cada key, en que orden y con que salto lo decide Dani en
@@ -2045,17 +2128,19 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 # /api/model-routing/config:  {"<alias>": [{"id", "salto_7d", "salto_5h"}, ...]}.
 #
 # Reglas (las del panel, que ya regian accountsd):
-#   - Conversacion NUEVA -> la primera cuenta de la lista por debajo de sus dos
-#     saltos (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py).
+#   - Conversacion NUEVA -> de las cuentas de la lista por debajo de sus dos saltos
+#     (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py), la de mas
+#     margen por hora hasta su reinicio de 7 d (Dani, 06-11, INFRA-1204: gastar
+#     antes lo que se pierde antes). Empate (sin lecturas) -> orden de la lista.
 #   - Conversacion EMPEZADA -> se queda en su cuenta (pin) mientras esa cuenta
 #     este por debajo de SU salto (90 %, 50 %… el de la lista). Al pasarlo, o si
 #     queda rechazada (429 de suscripcion o creditos) o el Router la aparto, se
-#     muda a la siguiente por debajo del suyo (Dani, 19-10: el salto vale tambien
+#     muda a otra por debajo del suyo, elegida igual que una nueva (Dani, 19-10: el salto vale tambien
 #     para las abiertas, aunque cambiar a mitad tire la cache de prompts).
 #   - Key sin politica, o todas sus cuentas pasadas de salto -> lista vacia: el
 #     Router contesta «no deployments» y no se usa NINGUNA cuenta fuera de la
 #     lista de la key. Nunca fail-open aqui: abrir seria saltar de empresa.
-#   - Valkey caido -> sin lecturas ni pin: la primera de la lista (determinista,
+#   - Valkey caido -> sin lecturas ni pin: todas empatan y va la primera de la lista (determinista,
 #     la misma en las dos replicas).
 CLAUDE_PREFIX = "claude-"
 _CLAUDE_ACCOUNT_ID_RE = re.compile(r"^claude-acct-([a-z0-9][a-z0-9-]*)$")
@@ -2068,7 +2153,53 @@ CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"
 # La cache de prompts de Anthropic que usa Claude Code vive 1 h: pasada la hora la
 # conversacion ya esta fria en todas las cuentas y re-elegir sale gratis.
 CLAUDE_ACCOUNT_PIN_TTL_SECONDS = int(os.environ.get("CLAUDE_ACCOUNT_PIN_TTL_SECONDS", "3600"))
+# DGX-1417 (05-11): las operaciones Valkey del filtro de cuentas tienen presupuesto
+# propio. Los 100 ms del mandato (REDIS_OP_TIMEOUT_SECONDS) medidos aqui eran falsos
+# fallos: Valkey sano (0 evictions, 0 rejected) pero su hilo unico encola los comandos
+# del propio litellm (slowlog 04-11: MGET de cooldown de ~48 claves a 12-60 ms) y una
+# conexion fria paga ~220 ms de handshake (medido 21-09, ver _redis) — con 100 ms
+# morian en rafagas 2728/24h y cada muerte perdia ademas el pin de la conversacion.
+# 500 ms siguen siendo despreciables ante la llamada LLM que protegen.
+CLAUDE_REDIS_TIMEOUT_SECONDS = 0.5
 CLAUDE_ACCOUNT_STATS = {"hits": 0, "claims": 0, "moves": 0, "empty": 0, "redis_errors": 0}
+
+
+# DGX-1417 (02-11): los contadores a Prometheus. Es un colector de lectura: no toca los `return` del
+# filtro, lee el dict en cada scrape, así que nunca se queda desfasado ni hay que acordarse de llamarlo.
+# Vale para decidir la solución B: sin histórico no se puede separar «el salto automático no hace falta»
+# de «en estas 7 horas nadie tocó el techo» (los contadores morían con el pod).
+# CONTRACT: dgx.litellm.claude-account-stats.v1
+# (ancla: litellm_claude_account_stats) metrica del /metrics del proxy, consumida por VictoriaMetrics.
+def _registra_stats_prometheus():
+    """Expone CLAUDE_ACCOUNT_STATS en /metrics. Sin prometheus_client (el lock de contratos de CI es
+    mínimo: pytest, PyYAML y httpx) no registra nada y el dict sigue siendo la única fuente."""
+    try:
+        from prometheus_client import REGISTRY
+        from prometheus_client.core import CounterMetricFamily
+    except ImportError:
+        return None
+
+    class _StatsCuentasClaude:
+        def collect(self):
+            familia = CounterMetricFamily(
+                "litellm_claude_account_stats",
+                "Contadores de claude_account_filter: aciertos de pin, reclamaciones, mudanzas de "
+                "cuenta, keys sin cuentas y errores de Valkey",
+                labels=["contador"],
+            )
+            for nombre, valor in CLAUDE_ACCOUNT_STATS.items():
+                familia.add_metric([nombre], valor)
+            yield familia
+
+    colector = _StatsCuentasClaude()
+    try:
+        REGISTRY.register(colector)
+    except ValueError:
+        return None          # el módulo se recargó: el primer colector ya está registrado y es válido
+    return colector
+
+
+_claude_stats_prometheus = _registra_stats_prometheus()
 _claude_refresh_at = [float("-inf")]
 _U = "anthropic-ratelimit-unified-"
 
@@ -2157,6 +2288,17 @@ def _claude_rejected(reading, now):
     return now - float(reading.get("observed_at") or 0) < 600
 
 
+def _claude_margen_por_hora(reading, entry, now):
+    """Puntos de % que le quedan a la cuenta hasta su salto de 7 d, por hora hasta su
+    reinicio. Sin lectura, o con la ventana ya reiniciada: la semana entera."""
+    win = (reading or {}).get("seven_day") or {}
+    r = win.get("resets_at")
+    if not isinstance(r, (int, float)) or r <= now:
+        return entry["salto_7d"] / 168.0
+    margen = entry["salto_7d"] - float(win.get("utilization") or 0) * 100
+    return margen / (max(r - now, 60.0) / 3600.0)
+
+
 def _claude_over_salto(reading, entry, now):
     """La cuenta pasa de alguno de sus saltos (ventanas aun vigentes) o esta rechazada."""
     if _claude_rejected(reading, now):
@@ -2222,7 +2364,7 @@ async def _claude_readings(client, ids):
     try:
         raw = await asyncio.wait_for(
             client.mget([f"{CLAUDE_QUOTA_PREFIX}:{i}" for i in ids]),
-            timeout=REDIS_OP_TIMEOUT_SECONDS)
+            timeout=CLAUDE_REDIS_TIMEOUT_SECONDS)
     except Exception:
         CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
         return {}
@@ -2261,9 +2403,16 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
         policies = _config_cache["config"].get("claude_accounts") or {}
     order = [e for e in policies.get(alias) or () if e["id"] in by_account]
     if not order:
-        CLAUDE_ACCOUNT_STATS["empty"] += 1
+        # DGX-1417: `empty` tiene que decir «una key con politica se ha quedado sin
+        # cuentas». Una peticion sin alias (master key, sonda sin identificar) no es
+        # una key: se deniega igual ([]) pero no contamina el contador que mide el
+        # salto. El aviso deja que buckets de metadata traia, para identificarla.
+        if alias is not None:
+            CLAUDE_ACCOUNT_STATS["empty"] += 1
+        vistos = [n for n in ("metadata", "litellm_metadata") if isinstance(request_kwargs.get(n), dict)]
         _warn_throttled(f"claude-sin-politica:{alias}",
-                        f"claude: la key {alias!r} no tiene cuentas disponibles para {model}")
+                        f"claude: la key {alias!r} no tiene cuentas disponibles para {model} "
+                        f"(buckets: {', '.join(vistos) or 'ninguno'})")
         return []
     client = None
     try:
@@ -2277,7 +2426,7 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
     pinned = None
     if key and client is not None:
         try:
-            pinned = await _pin_get(client, key)
+            pinned = await _pin_get(client, key, CLAUDE_REDIS_TIMEOUT_SECONDS)
         except Exception:
             CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
     entry = next((e for e in order if e["id"] == pinned), None)
@@ -2285,7 +2434,9 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
         CLAUDE_ACCOUNT_STATS["hits"] += 1
         _schedule(_pin_keepalive(client, key, CLAUDE_ACCOUNT_PIN_TTL_SECONDS, CLAUDE_ACCOUNT_STATS))
         return [by_account[pinned]]
-    choice = next((e["id"] for e in order if not _claude_over_salto(readings.get(e["id"]), e, now)), None)
+    libres = [e for e in order if not _claude_over_salto(readings.get(e["id"]), e, now)]
+    # max() se queda con la primera en empate: el orden de la lista desempata.
+    choice = max(libres, key=lambda e: _claude_margen_por_hora(readings.get(e["id"]), e, now))["id"] if libres else None
     if choice is None:
         CLAUDE_ACCOUNT_STATS["empty"] += 1
         _warn_throttled(f"claude-sin-cupo:{alias}",
@@ -2299,7 +2450,7 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
     if key and client is not None:
         try:
             await asyncio.wait_for(client.set(key, choice, ex=CLAUDE_ACCOUNT_PIN_TTL_SECONDS),
-                                   timeout=REDIS_OP_TIMEOUT_SECONDS)
+                                   timeout=CLAUDE_REDIS_TIMEOUT_SECONDS)
         except Exception:
             CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
     return [by_account[choice]]
@@ -2763,7 +2914,7 @@ async def _apply(data, requested_model, tracker, resident_ready, info):
         _ensure_sessions_poller()
     est = None
     if config["sticky"] and sid and model == RESIDENT_MODEL:
-        est = _estimate_prompt_tokens(data, tracker)
+        est = _estimate_prompt_tokens(data, tracker, key_alias)
         info["est"] = est
     is_bot = _is_bot_session(config, claude_class, key_alias)
     # Interruptor global «Desborde del session-router» (25-09-2026): apagado, ninguna

@@ -33,7 +33,7 @@ def test_el_tracker_guarda_los_cached_tokens_y_un_fallback_los_borra():
     with tempfile.TemporaryDirectory() as temp_dir:
         active_file = Path(temp_dir) / "active.json"
         tracker = mod["ActiveRequestTracker"](str(active_file), clock=lambda: 100.0)
-        tracker.start("r1", trace_id=None, key_alias="claude-local", model="qwen38-flash-next",
+        tracker.start("r1", trace_id=None, key_alias="claude-x86", model="qwen38-flash-next",
                       call_type="acompletion", api_base=None)
         assert json.loads(active_file.read_text())["r1"]["cached_tokens"] is None
         tracker.update_usage("r1", prompt_tokens=50_143, completion_tokens=0)
@@ -49,7 +49,7 @@ def test_el_tracker_guarda_los_cached_tokens_y_un_fallback_los_borra():
 def test_el_sidecar_sirve_los_cached_tokens(monkeypatch):
     api = _exec_module(_config_data()["active_requests_api.py"], "active_requests_api_cached")
     monkeypatch.setattr(api["time"], "time", lambda: 102.0)
-    fila = {"alias": "claude-local", "model": "qwen38-flash-next", "server_id": "qwen38-flash-next",
+    fila = {"alias": "claude-x86", "model": "qwen38-flash-next", "server_id": "qwen38-flash-next",
             "prompt_tokens": 50_143, "cached_tokens": 45_120, "completion_tokens": 756, "ts": 100.0}
     assert api["_normalize"]({"r1": fila})[0]["cached_tokens"] == 45_120
     assert api["_normalize"]({"r1": {**fila, "cached_tokens": None}})[0]["cached_tokens"] is None

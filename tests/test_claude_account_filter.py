@@ -16,7 +16,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 DOCS = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
 CM = next(d for d in DOCS if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
 POLICY = {
-    "claude-local": [{"id": "info", "salto_7d": 90, "salto_5h": 90},
+    "claude-x86": [{"id": "info", "salto_7d": 90, "salto_5h": 90},
                      {"id": "correo", "salto_7d": 90, "salto_5h": 90}],
     "claude-cloudblue": [{"id": "flash", "salto_7d": 90, "salto_5h": 90}],
 }
@@ -71,7 +71,7 @@ def _deps(accounts=ACCOUNTS):
              "litellm_params": {"model": "anthropic/claude-*"}} for a in accounts]
 
 
-def _kw(alias="claude-local", sid="s1"):
+def _kw(alias="claude-x86", sid="s1"):
     md = {"user_api_key_alias": alias}
     if sid:
         md["session_id"] = sid
@@ -113,14 +113,15 @@ def test_conversacion_empezada_se_queda_por_debajo_de_su_salto():
 def test_conversacion_empezada_salta_al_pasar_el_salto_de_su_cuenta():
     """Dani, 19-10: una abierta salta en el % de SU cuenta (90 o 50), no solo al 429."""
     v = FakeValkey()
-    mod = _pod(v, policy={"claude-local": [{"id": "info", "salto_7d": 50, "salto_5h": 50},
+    mod = _pod(v, policy={"claude-x86": [{"id": "info", "salto_7d": 50, "salto_5h": 50},
                                            {"id": "correo", "salto_7d": 90, "salto_5h": 90}]})
+    _quota(v, "correo", u7=0.89)  # INFRA-1204: sin lecturas correo (salto 90) tendria mas margen que info (50)
     assert _pick(mod, sid="s1") == ["info"]
     _quota(v, "info", u7=0.49)
     assert _pick(mod, sid="s1") == ["info"]
     _quota(v, "info", u7=0.5)
     assert _pick(mod, sid="s1") == ["correo"]
-    assert v.data["claude_account_pin:v1:claude-local:s1"] == "correo"
+    assert v.data["claude_account_pin:v1:claude-x86:s1"] == "correo"
 
 
 def test_conversacion_empezada_muda_si_su_cuenta_esta_rechazada():
@@ -129,7 +130,7 @@ def test_conversacion_empezada_muda_si_su_cuenta_esta_rechazada():
     assert _pick(mod, sid="s1") == ["info"]
     _quota(v, "info", u5=1.0, status="rejected")
     assert _pick(mod, sid="s1") == ["correo"]
-    assert v.data["claude_account_pin:v1:claude-local:s1"] == "correo"
+    assert v.data["claude_account_pin:v1:claude-x86:s1"] == "correo"
 
 
 def test_creditos_cuentan_como_agotada():
@@ -166,6 +167,54 @@ def test_valkey_caida_usa_la_primera():
     v = FakeValkey()
     v.down = True
     assert _pick(_pod(v)) == ["info"]
+
+
+class FakeValkeyLenta(FakeValkey):
+    """Valkey vivo pero ocupado: cada comando contesta en 150 ms (DGX-1417 midio en
+    el slowlog que el MGET de cooldown del propio litellm bloquea su hilo unico
+    12-60 ms; con el presupuesto viejo de 100 ms eso era un fallo cada rafaga)."""
+
+    async def mget(self, keys):
+        await asyncio.sleep(0.15)
+        return await FakeValkey.mget(self, keys)
+
+    async def get(self, key):
+        await asyncio.sleep(0.15)
+        return await FakeValkey.get(self, key)
+
+    async def set(self, key, value, nx=False, ex=None):
+        await asyncio.sleep(0.15)
+        return await FakeValkey.set(self, key, value, nx=nx, ex=ex)
+
+    async def expire(self, key, seconds):
+        await asyncio.sleep(0.15)
+        return await FakeValkey.expire(self, key, seconds)
+
+
+def test_valkey_lenta_no_es_error_ni_pierde_el_pin():
+    """DGX-1417: el presupuesto del filtro es de 500 ms; una Valkey que tarda 150 ms
+    no es Valkey caída y la conversacion conserva su cuenta."""
+    mod = _pod(FakeValkeyLenta())
+    assert _pick(mod) == ["info"]
+    assert _pick(mod) == ["info"]  # segunda pasada: por pin, no por primera de la lista
+    assert mod.CLAUDE_ACCOUNT_STATS["redis_errors"] == 0
+    assert mod.CLAUDE_ACCOUNT_STATS["hits"] == 1
+
+
+def test_sin_alias_no_cuenta_como_key_sin_cuentas():
+    """DGX-1417: `empty` mide keys que se quedaron sin cuentas; una peticion sin
+    alias (master key, sonda) se deniega igual pero no entra en el contador."""
+    mod = _pod(FakeValkey())
+    antes = mod.CLAUDE_ACCOUNT_STATS["empty"]
+    assert asyncio.run(mod.claude_account_filter("claude-opus-5-5", _deps(), {})) == []
+    assert mod.CLAUDE_ACCOUNT_STATS["empty"] == antes
+
+
+def test_key_sin_politica_si_cuenta_empty():
+    mod = _pod(FakeValkey())
+    antes = mod.CLAUDE_ACCOUNT_STATS["empty"]
+    assert _pick(mod, alias="otra-key") == []
+    assert mod.CLAUDE_ACCOUNT_STATS["empty"] == antes + 1
 
 
 def test_otros_grupos_pasan_intactos():
@@ -229,9 +278,9 @@ def test_el_callback_guarda_la_cuota_de_un_stream_de_messages():
 def test_politica_basura_se_descarta():
     mod = _pod(FakeValkey())
     clean = mod._sanitize_claude_accounts({
-        "Claude-Local": [{"id": "info", "salto_7d": 150}, {"id": "info"}, {"id": "../x"}, "x"],
+        "Claude-X86": [{"id": "info", "salto_7d": 150}, {"id": "info"}, {"id": "../x"}, "x"],
         "otra": "no-lista"})
-    assert clean == {"claude-local": [{"id": "info", "salto_7d": 90.0, "salto_5h": 90.0}]}
+    assert clean == {"claude-x86": [{"id": "info", "salto_7d": 90.0, "salto_5h": 90.0}]}
 
 
 def test_las_entradas_claude_son_una_por_cuenta_sin_fallbacks():
@@ -277,7 +326,7 @@ def _company_pod(claude=True, gate=GATE, policy=None):
 def _company_data(model, max_tokens=64000):
     return {"model": model, "max_tokens": max_tokens,
             "litellm_metadata": {"headers": {"X-Claude-Class": "company"},
-                                 "user_api_key_alias": "claude-local"}}
+                                 "user_api_key_alias": "claude-x86"}}
 
 
 def test_compania_con_claude_apagado_va_al_target_del_gate_o_recibe_403():
@@ -306,7 +355,7 @@ def test_gate_block_es_403_y_sin_clase_no_se_toca():
     mod = _company_pod(gate={**GATE, "mode": "block"})
     denied, detail = asyncio.run(mod.apply_company_policy(_company_data("claude-haiku-5-5"), "claude-haiku-5-5"))
     assert denied and detail["error"] == "company_claude_gate"
-    dani = {"model": "claude-haiku-5-5", "litellm_metadata": {"user_api_key_alias": "claude-local"}}
+    dani = {"model": "claude-haiku-5-5", "litellm_metadata": {"user_api_key_alias": "claude-x86"}}
     assert asyncio.run(mod.apply_company_policy(dani, "claude-haiku-5-5")) == (False, None)
     assert dani["model"] == "claude-haiku-5-5"
 
@@ -319,7 +368,7 @@ def test_gate_con_target_claude_o_basura_queda_apagado():
 
 
 def test_la_compania_elige_cuenta_de_su_lista_y_no_de_la_key():
-    mod = _company_pod(policy={"compania": [{"id": "edani"}], "claude-local": [{"id": "info"}]})
+    mod = _company_pod(policy={"compania": [{"id": "edani"}], "claude-x86": [{"id": "info"}]})
     kw = _company_data("claude-opus-5-5")
     kw["litellm_metadata"]["session_id"] = "s-comp"
     out = asyncio.run(mod.claude_account_filter("claude-opus-5-5", _deps(), kw))
@@ -331,3 +380,44 @@ def test_plan_claude_de_la_compania_respeta_el_interruptor():
     data = _company_data("qwen38-flash-next")
     assert on._claude_plan_allowed(on._config_cache["config"], data)
     assert not off._claude_plan_allowed(off._config_cache["config"], data)
+
+
+def _quota7(v, acct, u7, reset_h):
+    now = time.time()
+    v.data[f"claude:quota:{acct}"] = json.dumps({
+        "observed_at": now, "status": "allowed", "reset": int(now + 3600),
+        "five_hour": {"utilization": 0.0, "resets_at": int(now + 3600)},
+        "seven_day": {"utilization": u7, "resets_at": int(now + reset_h * 3600)},
+        "overage_in_use": False})
+
+
+def test_nueva_va_a_la_de_mas_margen_por_hora_hasta_su_reinicio():
+    """INFRA-1204 (Dani 06-11): correo 41 % con 138 h por delante pierde frente a edani
+    32 % que reinicia en 12 h, aunque correo vaya antes en la lista."""
+    v = FakeValkey()
+    _quota7(v, "info", 1.0, 40)
+    _quota7(v, "correo", 0.41, 138)
+    _quota7(v, "edani", 0.32, 12)
+    mod = _pod(v, policy={"claude-atlantic": [{"id": e, "salto_7d": 100, "salto_5h": 100}
+                                                for e in ("info", "correo", "edani")]})
+    assert _pick(mod, alias="claude-atlantic", sid="nueva") == ["edani"]
+
+
+def test_la_lista_sigue_mandando_que_cuentas_y_su_salto():
+    v = FakeValkey()
+    _quota7(v, "correo", 0.41, 138)
+    _quota7(v, "edani", 0.32, 12)
+    _quota7(v, "flash", 0.0, 1)  # la de mas margen, pero fuera de la lista de la key
+    mod = _pod(v, policy={"claude-x86": [{"id": "correo", "salto_7d": 100, "salto_5h": 100},
+                                         {"id": "edani", "salto_7d": 30, "salto_5h": 100}]})
+    assert _pick(mod, sid="nueva") == ["correo"]  # edani paso su salto (30)
+
+
+def test_empezada_no_se_muda_aunque_otra_tenga_mas_margen():
+    v = FakeValkey()
+    mod = _pod(v)
+    assert _pick(mod, sid="s1") == ["info"]
+    _quota7(v, "info", 0.5, 100)
+    _quota7(v, "correo", 0.0, 2)
+    assert _pick(mod, sid="s1") == ["info"]
+    assert _pick(mod, sid="otra") == ["correo"]

@@ -34,7 +34,7 @@ MANIFEST = ROOT / "k8s" / "manifest.yaml"
 WANT_FN = {"_openrouter_access_denied"}
 WANT_CONST = {"OPENROUTER_ALIAS_PREFIX", "OPENROUTER_ALLOWED_KEY_ALIASES"}
 
-ALLOWED_KEY = "opencode-20260630-local"
+ALLOWED_KEY = "hermes"
 
 
 def _docs():

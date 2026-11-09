@@ -20,7 +20,7 @@ docker run -d --rm --name "$NET-valkey" --network "$NET" valkey/valkey:8-alpine 
 # mide exige pesos fijos. Con 1.0/1.0 se ejercita ADEMAS la rama ponderada
 # (sanitize -> _account_weights -> tramos) con el reparto 50/50 que el test ya
 # conadia; el reparto sesgado lo cubren los unitarios (ver static_routing_config.py).
-docker run -d --rm --name "$NET-cfg" --network "$NET" -v "$REPO:/repo:ro" \
+docker run -d --rm --name "$NET-cfg" --network "$NET" -v "$REPO:/repo:ro" -e LITELLM_LOCAL_MODEL_COST_MAP=True \
   --entrypoint python "$IMAGE" /repo/tests/integration/static_routing_config.py >/dev/null
 echo "imagen: $IMAGE"
 # LITELLM_LOCAL_MODEL_COST_MAP=True en todo lo que importa litellm: `import litellm` baja el
@@ -34,6 +34,8 @@ docker run --rm -v "$REPO:/repo:ro" -e REPO=/repo -e LITELLM_LOG=ERROR -e LITELL
 # DGX-1103: con el Router de esta imagen, un timeout no aparca a un gemelo del residente y un 500 si.
 docker run --rm -v "$REPO:/repo:ro" -e REPO=/repo -e LITELLM_LOG=ERROR -e LITELLM_LOCAL_MODEL_COST_MAP=True --entrypoint python "$IMAGE" \
   /repo/tests/integration/resident_twin_cooldown.py
+# INFRA-1204: mapa de costes local. Si el fetch remoto falla, el aviso de litellm
+# (v1.105.1) revienta en un import circular de rust_bridge y tumba el contenedor (06-11).
 OUTDIR=$(mktemp -d -p "${RUNNER_TEMP:-/tmp}")
 chmod 777 "$OUTDIR"
 

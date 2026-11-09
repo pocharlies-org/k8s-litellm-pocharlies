@@ -108,6 +108,9 @@ def test_tokens_por_consumidor_en_forma_connect():
     assert got == {
         "PLAN_GATEWAY_TOKEN_STUDIO": {"key": "plan-gateway-studio", "property": "password"},
         "PLAN_GATEWAY_TOKEN_OMNIVOICE": {"key": "plan-gateway-omnivoice", "property": "password"},
+        # SC-2498: consumidor aditivo (el contract lo permite: «un consumidor nuevo
+        # = una variable PLAN_GATEWAY_TOKEN_<NOMBRE> mas») — x86 OpenMontage.
+        "PLAN_GATEWAY_TOKEN_OPENMONTAGE": {"key": "plan-gateway-openmontage", "property": "password"},
     }
     env = {e["name"]: e for e in
            _doc("Deployment", "plan-gateway")["spec"]["template"]["spec"]["containers"][0]["env"]}

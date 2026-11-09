@@ -1,11 +1,11 @@
-"""La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): siete alias de chat, tres de imagen
-(DGX-1077), un gate y un renovador.
+"""La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): ocho alias de chat, cinco de imagen
+(DGX-1077, DGX-1454), un gate y un renovador.
 
 POR QUE EXISTE ESTE FICHERO (18-10-2026). Los alias `gpt-*` vuelven al model_list tras
 su lapida del 03-09: aquella cuenta cayo baneada dos veces porque el catalogo de
 airsoft le mandaba imagenes por el desvio de vision. Ahora van contra la cuenta
 personal de Dani y lo que impide repetirlo es esto: ningun camino automatico apunta a
-ellos y un gate fail-closed por prefijo solo deja pasar a `claude-local`, `hermes` y
+ellos y un gate fail-closed por prefijo solo deja pasar a `claude-x86`, `hermes` y
 `studio-chatgpt` (los motores de imagen del DGX Studio)
 (la key `sauvage-shield` lleva `gpt-5.6-luna` en su allowlist desde agosto).
 
@@ -30,10 +30,11 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "k8s" / "manifest.yaml"
 KEEPER = ROOT / "k8s" / "chatgpt-token-keeper.yaml"
 
-ALIASES = {"gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+ALIASES = {"gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
-IMAGE_ALIASES = {"gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
-ALLOWED_KEYS = ("claude-local", "hermes", "studio-chatgpt", "claude-casa", "hindsight")  # DGX-1099: claude-casa; INFRA-942: hindsight
+IMAGE_ALIASES = {"gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
+                 "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
+ALLOWED_KEYS = ("hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic", "claude-atlantic-compania", "sugiere-prod")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic); 02-11 DGX-1395: claude-atlantic-compania (compania asincrona, renombrada desde claude-x86, que sale con la limpieza); 06-11 SC-4822: sugiere-prod (sugerencia con el modelo de la sesion de Paseo)
 WANT_FN = {"_chatgpt_access_denied"}
 WANT_CONST = {"CHATGPT_ALIAS_PREFIX", "CHATGPT_ALLOWED_KEY_ALIASES"}
 
@@ -72,6 +73,15 @@ def test_the_seven_aliases_go_to_the_chatgpt_provider_for_free():
         # background_health_checks esta activo: sin esto cada ronda gastaria cuota de la cuenta.
         assert entry["model_info"]["disable_background_health_check"] is True
 
+
+
+@pytest.mark.parametrize("name", sorted(ALIASES))
+def test_chat_efforts_match_the_official_codex_catalog(name):
+    _, cfg = _config()
+    entry = next(m for m in cfg["model_list"] if m["model_name"] == name)
+    expected = ["low", "medium", "high", "xhigh", "max"]
+    assert entry["model_info"]["supported_reasoning_efforts"] == expected
+    assert "reasoning_effort" not in entry["litellm_params"]
 
 
 def test_the_image_aliases_go_to_the_chatgpt_provider_for_free_and_unprobed():

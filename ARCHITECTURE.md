@@ -21,11 +21,11 @@ Los clientes del router (Claude CLI del x86, Hermes, OpenClaw, document-intake, 
 `litellm-chatgpt-oauth`, item `litellm` campo `CHATGPT_OAUTH_AUTH_JSON`) y lo renueva con 72 h de margen sobre 240 h. Los pods
 de `litellm` lo montan en solo lectura en `CHATGPT_TOKEN_DIR`: el provider `chatgpt/` no tiene cerrojo y OpenAI rota el
 refresh token, así que dos réplicas renovando revocarían la sesión. Sin RWX/NFS (SC-381). Re-login: cabecera del fichero.
-Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-local,hermes,studio-chatgpt,claude-casa,hindsight`; solo selección manual).
+Contrato `dgx.litellm.chatgpt-oauth.v1` (alias `gpt-*`, también los de imagen `gpt-image-*` de DGX-1077; gate `claude-x86,hermes,studio-chatgpt,claude-mac,hindsight`; solo selección manual).
 
 **Claude por suscripción** (DGX-1099): ocho entradas `claude-*` (`model_info.id` `claude-acct-<id>`), una por cuenta, con
 su setup-token de `litellm-claude-cuentas` (ExternalSecret de los items `claude-cuenta-<id>` de `k8s-pocharlies`, por id; SC-2745). Las virtual keys
-de máquina (`claude-local` en el x86, `claude-casa` en el MacBook de casa, `claude-cloudblue` en el de CloudBlue) piden el
+de máquina (`claude-x86` en el x86, `claude-mac` en el MacBook de casa, `claude-cloudblue` en el de CloudBlue) piden el
 nombre de Anthropic y `session_router.claude_account_filter` elige la cuenta con la política por key que publica el panel
 (`claude_accounts` de `/api/model-routing/config`): la primera de su lista por debajo de su salto; una conversación empezada
 se queda en su cuenta hasta que esa cuenta pasa su salto (o da 429 o créditos), y entonces salta; sin política, ninguna. `claude_quota.py` guarda la cuota de cada respuesta en
@@ -90,6 +90,16 @@ tres parejas configmap/deployment/anotación; `python3 tests/test_configmap_revi
 un cambio de `session_router.py` rueda también el `plan-gateway`, que lo importa.
 Los modelos locales por defecto llevan `enable_thinking: false`: no cambiar sin pedirlo. Los pods Qwen pueden estar a 0/0
 réplicas según el perfil `llm-tp`: un servicio sin endpoints significa «no residente», no «roto».
+
+**Semántica del tope `max_parallel_requests` (SC-2917, medido 23-10-2026):** con la imagen pineada hoy
+(`v1.105.1-codex-e1cfa8cbd5`) el excedente sobre el tope **rechaza con 429 en el acto**; con el pin anterior
+(`ghcr.io/berriai/litellm:v1.100.0`) **encolaba FIFO** (DGX-874, en vivo el 20-09). El cambio vino con el bump
+DGX-1035 (17-10): `MaxParallelRequestsLimit.acquire` levanta `RateLimitError` y no hay control que restaure la
+espera ni en v1.105.1 ni en el main de upstream. Los topes 4/3 por pod de Dani presuponen ENCOLAR; hoy
+RECHAZA y así está **declarado** en `tests/integration/semaphore_queue_contract.py` — contrato de
+caracterización que mide con el Router real de la imagen pineada y deja el CI rojo si un bump cambia la
+semántica sin declararla o pinea una imagen sin medir. El parche del fork que restaura la espera (historia
+de SC-2917, dictamen del arquitecto 23-10) cambiará la declaración a ENCOLA en su propio PR.
 
 ## 6. Tests y validaciones
 

@@ -26,7 +26,7 @@ def test_el_body_del_cliente_no_deshace_el_sellado(hook):  # noqa: F811
     assert request == {"disable_fallbacks": True}
 
 
-@pytest.mark.parametrize("key_alias", ["claude-local", "hermes", "unknown"])
+@pytest.mark.parametrize("key_alias", ["claude-x86", "hermes", "unknown"])
 def test_otras_keys_no_quedan_selladas(hook, key_alias):  # noqa: F811
     request, disabled = _policy(hook, key_alias)
 
