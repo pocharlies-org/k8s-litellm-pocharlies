@@ -532,6 +532,7 @@ contracts:
       muestra, 3,5 como antes. Ningun campo ni umbral cambia: sin .vN+1.
       SC-4304 (07-11): las entradas de rerank (bge-reranker, bge-reranker-v2-m3) cambian su api_base a bge-reranker-failover (GPU con relevo CPU); la forma de la config no cambia.
       INFRA-1243 (09-11): entradas nuevas bge-m3-mac, bge-reranker-mac y stt-turbo-mac (respaldo en mac-casa) y seis aristas de router_settings.fallbacks hacia ellas desde bge-m3, bge-m3-embedding, bge-reranker, bge-reranker-v2-m3, stt-turbo y whisper-1; ningun alias existente cambia de nombre ni de forma.
+      INFRA-1243 (09-11, 2): alibaba.router_fallback=false ya no estampa fallbacks:[] sino router_settings.fallbacks sin los destinos alibaba-* (_fallbacks_sin_alibaba): corta qwen38-flash-next/correo-clasificador -> alibaba-q38-flash y deja las aristas *-mac. Mismo campo y mismos valores: sin .vN+1. Pinned by tests/test_router_fallback_switch_contract.py.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>
