@@ -5262,6 +5262,18 @@ data:
         sw = sw if isinstance(sw, dict) else {}
         return {k: sw.get(k) is not False for k in ALIBABA_SWITCH_DEFAULTS}
 
+    def _fallbacks_sin_alibaba(fallbacks):
+        """router_settings.fallbacks sin los destinos `alibaba-*`; las aristas locales
+        (`*-mac`, INFRA-1243) quedan. Un origen sin destino se omite: sin entrada, el
+        Router relanza el error original, igual que con `fallbacks: []`."""
+        out = []
+        for entry in fallbacks or ():
+            for group, targets in (entry.items() if isinstance(entry, dict) else ()):
+                keep = [t for t in targets or () if not str(t).startswith("alibaba-")]
+                if keep:
+                    out.append({group: keep})
+        return out
+
     def _apply_key_fallback_policy(data, user_api_key_dict):
         """Stamp the Router kill switch and return the effective per-request policy."""
         key = _resolve_key_label(user_api_key_dict)
@@ -7641,14 +7653,16 @@ data:
             )
             if key_fallbacks and not data.get("fallbacks"):
                 data["fallbacks"] = list(key_fallbacks)
-            # «Fallback del Router» apagado: `fallbacks: []` por petición pisa
+            # «Fallback del Router» apagado: la lista por petición pisa
             # router_settings.fallbacks (Router: kwargs.get("fallbacks", self.fallbacks)),
-            # así que qwen38-flash-next ya no cae a alibaba-q38-flash. NO se usa
-            # disable_fallbacks: eso sellaría la petición y apagaría también el
-            # desborde, que tiene su propio interruptor. Una lista por key (demos)
-            # que ya esté puesta gana: la gobierna su interruptor.
+            # así que se estampa el grafo del Router SIN los destinos alibaba-*:
+            # qwen38-flash-next ya no cae a alibaba-q38-flash y stt-turbo sigue cayendo
+            # a stt-turbo-mac. NO se usa disable_fallbacks: eso sellaría la petición y
+            # apagaría también el desborde, que tiene su propio interruptor. Una lista
+            # por key (demos) que ya esté puesta gana: la gobierna su interruptor.
             if not _alibaba_sw["router_fallback"] and "fallbacks" not in data:
-                data["fallbacks"] = []
+                from litellm.proxy.proxy_server import llm_router
+                data["fallbacks"] = _fallbacks_sin_alibaba(getattr(llm_router, "fallbacks", None))
 
             # Interruptor «Fallback Alibaba» de la compañía (23-09-2026, panel
             # dgx.e-dani.com/claude-sessions#settings -> campo `company` de
@@ -8787,7 +8801,7 @@ data:
     # `alibaba` de /api/model-routing/config. Uno por cada camino por el que el tráfico acaba
     # en Alibaba sin pedirlo por nombre:
     #   router_fallback  — el fallback del Router qwen38-flash-next -> alibaba-q38-flash
-    #                      (strip_params estampa `fallbacks: []` por petición)
+    #                      (strip_params estampa por petición los fallbacks sin destinos alibaba-*)
     #   tooling_fallback — TOOLING_FALLBACKS de strip_params (tooling sin residente Ready)
     #   demos_fallback   — KEY_TOOLING_FALLBACKS de strip_params (key `demos`)
     #   overflow         — TODA reescritura residente -> Alibaba de ESTE módulo (sticky,
@@ -13852,7 +13866,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-be77b23b1a10
+        config.k8s.e-dani.com/revision: config-d901cd3fa554
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14794,7 +14808,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-be77b23b1a10
+        config.k8s.e-dani.com/revision: config-d901cd3fa554
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
