@@ -277,10 +277,14 @@ contracts:
       sesion nueva puede recibir 429 en vez de hacer cola detras de las 4/3 por pod.
       Clave y valor del pin sin cambios.
 
-      DGX-1146 (2026-10-20, Dani): `model_info.cooldown_time` de los gemelos del residente
-      de 900 a 360 s. El OOM del 20-10 tumbo el TP=2, que volvio solo en ~220 s, y el pin
-      lo dejo aparcado 15 min con Alibaba en 429. Cuanto dura la expulsion, no cuando se
-      dispara ni a donde se muda. Clave y valor del pin sin cambios.
+      DGX-1147 (2026-10-20, Dani): la familia residente NUNCA aparca en el Router
+      (`cooldown_time: 0` y `allowed_fails_policy` a 1e9 en cada tipo de excepcion, ancla
+      `&resident_never_cools`: cuatro `-tpN`, `correo-clasificador` y los perfiles
+      `tooling*`, `qwen38-off`, `qwen38-u-off`). Sustituye al 360 s de DGX-1146: el OOM del
+      20-10 tumbo el TP=2, que volvio solo en ~220 s, y quedo aparcado 15 min con Alibaba en
+      429. Un motor caido sale de la rotacion solo por `live_backends` (/metrics mudo) y sus
+      sesiones mudan por este filtro. Clave y valor del pin sin cambios; cambia cuando una
+      sesion muda (ya no por cooldown del Router).
 
       DGX-1291 (2026-10-25, Dani): prueba a 10 secuencias en el TP=2 con auditoria a 24 h —
       el tope de 8 estaba puesto y apretaba (maximo 8 en 24 h, 10 peticiones en espera).

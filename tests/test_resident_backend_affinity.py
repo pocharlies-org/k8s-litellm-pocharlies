@@ -12,9 +12,9 @@ que la afinidad de cuenta (importada de ahí, no copiada): GET / SET(nx, ex) /
 EXPIRE sobre un reloj propio, y un módulo por «pod» — memoria separada, Valkey
 compartida, como las dos réplicas del proxy.
 
-Lo que NO se prueba aqui (porque no cabe en un unitario): que el Router deje de
-pasar el deployment en cooldown. Eso lo fija `allowed_fails` + `cooldown_time` del
-manifiesto y lo mide el job de integracion de Alibaba contra el Router real.
+Lo que NO se prueba aqui (porque no cabe en un unitario): que el Router no aparque
+el deployment. Eso lo fija el ancla `&resident_never_cools` (cooldown 0 y politica de
+fallos) y lo mide tests/integration/resident_twin_cooldown.py contra el Router real.
 """
 import random
 

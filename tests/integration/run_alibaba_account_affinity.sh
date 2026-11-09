@@ -23,6 +23,9 @@ docker run -d --rm --name "$NET-valkey" --network "$NET" valkey/valkey:8-alpine 
 docker run -d --rm --name "$NET-cfg" --network "$NET" -v "$REPO:/repo:ro" -e LITELLM_LOCAL_MODEL_COST_MAP=True \
   --entrypoint python "$IMAGE" /repo/tests/integration/static_routing_config.py >/dev/null
 echo "imagen: $IMAGE"
+# LITELLM_LOCAL_MODEL_COST_MAP=True en todo lo que importa litellm: `import litellm` baja el
+# mapa de costes remoto y, si esa descarga falla, el aviso que loguea choca con un import
+# circular de la imagen (rust_bridge.catalog) y mata la fase. El test no necesita red para eso.
 # DGX-621: el plan-gateway corre en ESTA imagen (misma que el proxy): httpx, uvicorn y
 # fastapi tienen que estar, y el gateway del manifiesto tiene que importar y contestar.
 docker run --rm --entrypoint python "$IMAGE" -c "import httpx, uvicorn, fastapi"

@@ -199,18 +199,13 @@ def test_proxy_fallbacks_never_leave_local_models():
             assert "/" not in target, target
 
 
-def test_el_cooldown_del_residente_aparca_mas_que_el_de_su_fallback():
-    """20-09-2026: cooldown ASIMETRICO, y a proposito.
+def test_la_familia_residente_nunca_aparca_y_el_fallback_sigue_corto():
+    """19-10-2026: el residente no aparca nunca (Dani). Un 500 del vLLM aparcaba 15 min y
+    todo el perfil daba 429 con /health en 200; el fallback a Alibaba no es un respaldo
+    real. Un motor caido sale de la rotacion por `live_backends`, no por cooldown.
 
-    El residente local aparca LARGO porque caerse cuesta dinero: el trafico se va
-    a un tercero de pago con la cache fria y se refactura el prompt entero (~81k
-    tokens). Lo caro no es estar en Alibaba, es LLEGAR a Alibaba, asi que un
-    residente que flapea con cooldown corto paga el prefijo en cada rebote.
-
-    El fallback aparca CORTO porque es el ULTIMO recurso: expulsarlo mientras el
-    residente sigue caido deja la peticion sin ningun sitio a donde ir.
-
-    Si alguien iguala los dos valores, o invierte el orden, este test cae.
+    El fallback (Alibaba) sigue aparcando corto: es de pago y el Router rota por cooldown.
+    Lo que NO puede pasar es que alguien vuelva a poner un cooldown largo en el residente.
     """
     docs = [doc for doc in yaml.safe_load_all(MANIFEST.read_text()) if doc]
     raw = next(
@@ -224,14 +219,10 @@ def test_el_cooldown_del_residente_aparca_mas_que_el_de_su_fallback():
 
     residente = (por_nombre["qwen38-flash-next"].get("model_info") or {}).get("cooldown_time")
     fallback = (por_nombre["alibaba-q38-flash"].get("model_info") or {}).get("cooldown_time")
-    router = config["router_settings"]["cooldown_time"]
 
-    assert residente is not None and fallback is not None, (
-        "los dos extremos del salto declaran su cooldown; si uno se cae al default "
-        "del router la asimetria desaparece sin que se note"
-    )
-    assert fallback < router < residente, (
-        f"orden esperado: fallback ({fallback}) < router ({router}) < residente ({residente})"
+    assert residente == 0, f"el residente no aparca nunca: cooldown_time {residente}"
+    assert fallback is not None and fallback < config["router_settings"]["cooldown_time"], (
+        "el fallback de pago sigue aparcando corto, por debajo del default del router"
     )
 
     # `litellm_params` se copia ENTERO en los kwargs de la llamada al proveedor
