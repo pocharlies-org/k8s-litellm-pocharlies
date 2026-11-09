@@ -81,6 +81,7 @@ data:
         model: openai/bge-m3
         api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
         api_key: not-used
+        num_retries: 0   # INFRA-1243: sin reintento, salta ya al respaldo de mac-casa
       model_info:
         mode: embedding
         max_tokens: 8192
@@ -89,6 +90,7 @@ data:
         model: openai/bge-m3
         api_base: http://bge-m3-embedding.llm.svc.cluster.local:8000/v1
         api_key: not-used
+        num_retries: 0   # INFRA-1243: sin reintento, salta ya al respaldo de mac-casa
       model_info:
         mode: embedding
         max_tokens: 8192
@@ -108,6 +110,7 @@ data:
         model: infinity/bge-reranker
         api_base: http://bge-reranker-failover.llm.svc.cluster.local:8000
         api_key: not-used
+        num_retries: 0   # INFRA-1243: sin reintento, salta ya al respaldo de mac-casa
       model_info:
         mode: rerank
         max_tokens: 8192
@@ -116,6 +119,7 @@ data:
         model: infinity/bge-reranker
         api_base: http://bge-reranker-failover.llm.svc.cluster.local:8000
         api_key: not-used
+        num_retries: 0   # INFRA-1243: sin reintento, salta ya al respaldo de mac-casa
       model_info:
         mode: rerank
         max_tokens: 8192
@@ -131,6 +135,10 @@ data:
     # endpoints da `Connection refused` al instante. El Mac puede estar dormido: entonces
     # el fallback falla en `timeout` y el error es el mismo que sin respaldo. Sin sondeo
     # de fondo: cada sondeo es inferencia real en el portatil (ver bge-m3-embedding).
+    # Los seis primarios llevan `num_retries: 0`: con el reintento global el salto llegaba
+    # tarde (medido 09-11 con el primario caido: STT +2,3 s, embed +5 s, rerank +2 s; sin
+    # reintento, +0 a +1,4 s). Reintentar un Service sin endpoints no arregla nada, y
+    # el rerank ya reintenta dentro de bge-failover (nginx, relevo CPU).
     - model_name: bge-m3-mac
       litellm_params:
         model: openai/bge-m3
@@ -168,6 +176,7 @@ data:
         model: openai/whisper-large-v3
         api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
         api_key: not-used
+        num_retries: 0   # INFRA-1243: sin reintento, salta ya al respaldo de mac-casa
       model_info:
         mode: audio_transcription
     - model_name: whisper-1            # OpenAI-SDK-compatible alias -> same Whisper backend
@@ -175,6 +184,7 @@ data:
         model: openai/whisper-large-v3
         api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
         api_key: not-used
+        num_retries: 0   # INFRA-1243: sin reintento, salta ya al respaldo de mac-casa
       model_info:
         mode: audio_transcription
     - model_name: omnivoice-tts
@@ -13842,7 +13852,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2d6cbc039873
+        config.k8s.e-dani.com/revision: config-be77b23b1a10
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14784,7 +14794,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-2d6cbc039873
+        config.k8s.e-dani.com/revision: config-be77b23b1a10
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
