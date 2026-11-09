@@ -123,6 +123,43 @@ data:
         # `bge-reranker`. Medido: 2626 llamadas en 30 h (~2101/dia), todas del
         # health check interno. `bge-reranker` conserva su sondeo.
         disable_background_health_check: true
+    # INFRA-1243 (09-11-2026): respaldo en mac-casa (MacBook Pro de casa, tailnet
+    # 100.82.219.103) de embedder, reranker y STT. Mismos server.py y mismos pesos que
+    # los pods, en CPU (fp32 en bge = el camino de los -cpu de atlantic); instalador en
+    # dgx-infra/services/mac-casa-ia-respaldo. Solo se alcanzan como `fallbacks` del
+    # Router (abajo): cuando ComfyUI coge la RTX, stt-turbo queda a 0/0 y su Service sin
+    # endpoints da `Connection refused` al instante. El Mac puede estar dormido: entonces
+    # el fallback falla en `timeout` y el error es el mismo que sin respaldo. Sin sondeo
+    # de fondo: cada sondeo es inferencia real en el portatil (ver bge-m3-embedding).
+    - model_name: bge-m3-mac
+      litellm_params:
+        model: openai/bge-m3
+        api_base: http://100.82.219.103:8700/v1
+        api_key: not-used
+        timeout: 60
+      model_info:
+        mode: embedding
+        max_tokens: 8192
+        disable_background_health_check: true
+    - model_name: bge-reranker-mac
+      litellm_params:
+        model: infinity/bge-reranker
+        api_base: http://100.82.219.103:8701
+        api_key: not-used
+        timeout: 120
+      model_info:
+        mode: rerank
+        max_tokens: 8192
+        disable_background_health_check: true
+    - model_name: stt-turbo-mac
+      litellm_params:
+        model: openai/whisper-large-v3
+        api_base: http://100.82.219.103:8702/v1
+        api_key: not-used
+        timeout: 120
+      model_info:
+        mode: audio_transcription
+        disable_background_health_check: true
     # ── Audio: Whisper STT + OmniVoice TTS (OSS passthrough; for CloudBlue & clients) ──
     # One LiteLLM key now covers chat + embeddings + STT + TTS. Backends are ClusterIP-only;
     # LiteLLM stays the single public, key-authed, budgeted front door (no separate exposure).
@@ -2732,6 +2769,14 @@ data:
       fallbacks:
         - qwen38-flash-next: ["alibaba-q38-flash"]
         - correo-clasificador: ["alibaba-q38-flash"]
+        # INFRA-1243: embedder, reranker y STT caen a mac-casa (ver sus entradas). No
+        # sale nada de casa: es hardware propio con los mismos pesos.
+        - bge-m3: ["bge-m3-mac"]
+        - bge-m3-embedding: ["bge-m3-mac"]
+        - bge-reranker: ["bge-reranker-mac"]
+        - bge-reranker-v2-m3: ["bge-reranker-mac"]
+        - stt-turbo: ["stt-turbo-mac"]
+        - whisper-1: ["stt-turbo-mac"]
         # INFRA-269: el grupo de prueba del model_list (infra1081-fallback-probe)
         # NO añade arista aqui: el grafo global es lista blanca del owner
         # (tests/test_tooling_profile_contract.py) y la ráfaga C1 declara su
@@ -13797,7 +13842,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c6c0927cee83
+        config.k8s.e-dani.com/revision: config-2d6cbc039873
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14739,7 +14784,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c6c0927cee83
+        config.k8s.e-dani.com/revision: config-2d6cbc039873
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

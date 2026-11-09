@@ -175,13 +175,22 @@ def test_proxy_fallbacks_never_leave_local_models():
     # (DGX-841); la ampliacion es la del plan de DGX-869 (aprobado por el architect) y
     # security la ratifica antes de que la key `synapse` alcance el alias (paso L1: hasta
     # entonces no mueve trafico).
+    #
+    # 09-11-2026 (INFRA-1243, pedido de Dani): embedder, reranker y STT caen a mac-casa.
+    # Destino local (hardware propio, mismos pesos): no saca nada a terceros.
     PERMITIDAS = {
         "qwen38-flash-next": ["alibaba-q38-flash"],
         "correo-clasificador": ["alibaba-q38-flash"],
+        "bge-m3": ["bge-m3-mac"],
+        "bge-m3-embedding": ["bge-m3-mac"],
+        "bge-reranker": ["bge-reranker-mac"],
+        "bge-reranker-v2-m3": ["bge-reranker-mac"],
+        "stt-turbo": ["stt-turbo-mac"],
+        "whisper-1": ["stt-turbo-mac"],
     }
     assert graph == PERMITIDAS, (
-        "el grafo de fallbacks solo admite las aristas aprobadas (20-09-2026 y "
-        f"13-10-2026); encontrado: {graph}"
+        "el grafo de fallbacks solo admite las aristas aprobadas (20-09-2026, "
+        f"13-10-2026 y 09-11-2026); encontrado: {graph}"
     )
 
     # Ninguna ruta sellada puede tener fallback: perderia el sello sin avisar.
