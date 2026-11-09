@@ -1548,13 +1548,15 @@ def test_alibaba_switches_lee_la_cache_y_hace_fail_open(router_mod):
 
 def test_strip_params_aplica_los_interruptores(strip_src):
     """Los tres de strip_params: demos vacía la lista por key, router estampa
-    fallbacks:[] (sin sellar: el desborde tiene su propio interruptor) y tooling
-    pasa base_fallbacks=() a la resolución del residente."""
+    el grafo sin destinos alibaba-* (sin sellar: el desborde tiene su propio
+    interruptor; test_router_fallback_switch_contract) y tooling pasa
+    base_fallbacks=() a la resolución del residente."""
     assert 'getattr(session_router, "alibaba_switches", None)' in strip_src
     assert 'not _alibaba_sw["demos_fallback"]' in strip_src
     i = strip_src.index('if not _alibaba_sw["router_fallback"] and "fallbacks" not in data:')
-    assert strip_src[i:].split("\n")[1].strip() == 'data["fallbacks"] = []'
-    assert "disable_fallbacks" not in strip_src[i:].split("\n")[1]
+    stamp = strip_src[i:].split("\n")[2].strip()
+    assert stamp == 'data["fallbacks"] = _fallbacks_sin_alibaba(getattr(llm_router, "fallbacks", None))'
+    assert "disable_fallbacks" not in stamp
     assert 'base_fallbacks=None if _alibaba_sw["tooling_fallback"] else ()' in strip_src
 
 
