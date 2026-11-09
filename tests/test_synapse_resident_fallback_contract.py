@@ -165,7 +165,7 @@ def test_las_keys_que_nunca_estuvieron_selladas_siguen_igual(hook, router_mod, k
     assert reescrita is True and data["model"] == NUBE
 
 
-def test_el_router_solo_tiene_las_aristas_del_residente_y_del_clasificador():
+def test_el_router_solo_manda_a_la_nube_las_aristas_del_residente_y_del_clasificador():
     """C3: ni `tooling` ni ninguna ruta abliterada tienen salto en el Router.
 
     13-10-2026 (DGX-874): segunda arista, `correo-clasificador` (el mismo residente con
