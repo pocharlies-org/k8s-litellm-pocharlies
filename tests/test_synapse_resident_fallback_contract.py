@@ -174,7 +174,11 @@ def test_el_router_solo_tiene_las_aristas_del_residente_y_del_clasificador():
     """
     graph = _router_fallbacks()
 
-    assert graph == {
+    # 09-11-2026 (INFRA-1243): las aristas a mac-casa (bge/STT, hardware propio) no
+    # salen de casa; lo que fija este contrato es lo que va a la NUBE.
+    assert {s: d for s, d in graph.items() if NUBE in d} == {
         RESIDENTE: [NUBE],
         ALIAS: [NUBE],
     }
+    assert "tooling" not in graph
+    assert not [s for s in graph if s.endswith("-uncensored")]

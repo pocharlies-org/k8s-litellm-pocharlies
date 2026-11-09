@@ -531,6 +531,7 @@ contracts:
       ALIAS (tracker.cpc_for) en vez del EMA global; sin tracker o alias sin
       muestra, 3,5 como antes. Ningun campo ni umbral cambia: sin .vN+1.
       SC-4304 (07-11): las entradas de rerank (bge-reranker, bge-reranker-v2-m3) cambian su api_base a bge-reranker-failover (GPU con relevo CPU); la forma de la config no cambia.
+      INFRA-1243 (09-11): entradas nuevas bge-m3-mac, bge-reranker-mac y stt-turbo-mac (respaldo en mac-casa) y seis aristas de router_settings.fallbacks hacia ellas desde bge-m3, bge-m3-embedding, bge-reranker, bge-reranker-v2-m3, stt-turbo y whisper-1; ningun alias existente cambia de nombre ni de forma.
   - id: dgx.litellm.claude-quota.v1
     kind: schema
     value: claude:quota:<account-id>

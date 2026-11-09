@@ -332,8 +332,6 @@ def test_grupo_de_prueba_en_config():
     # salto por petición con el parametro `fallbacks` del body
     edges = config["router_settings"]["fallbacks"]
     graph = {s: d for e in edges for s, d in e.items()}
+    # (la lista blanca entera la fija test_tooling_profile_contract)
     assert "infra1081-fallback-probe" not in graph
-    assert graph == {
-        "qwen38-flash-next": ["alibaba-q38-flash"],
-        "correo-clasificador": ["alibaba-q38-flash"],
-    }
+    assert "infra1081-fallback-mock" not in {t for d in graph.values() for t in d}

@@ -69,7 +69,17 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         #   alibaba-q38-flash no llegaba nunca (182 intentos fallidos para 37
         #   correos el 12-10). Va con num_retries 0; lo fija
         #   tests/test_correo_clasificador_alias_contract.py.
-        excepciones = {"qwen38-flash-next": 240, "correo-clasificador": 6}
+        #   bge-m3-mac = 60, bge-reranker-mac / stt-turbo-mac = 120 (09-11-2026,
+        #   INFRA-1243): respaldos en mac-casa, que puede estar dormido; con 600 s
+        #   el fallback colgaria al cliente diez minutos en vez de fallar como sin
+        #   respaldo. Mismos topes que el nginx de bge-failover y el rerank de Hindsight.
+        excepciones = {
+            "qwen38-flash-next": 240,
+            "correo-clasificador": 6,
+            "bge-m3-mac": 60,
+            "bge-reranker-mac": 120,
+            "stt-turbo-mac": 120,
+        }
         for entry in model_list:
             params = entry.get("litellm_params", {})
             if "timeout" not in params:
