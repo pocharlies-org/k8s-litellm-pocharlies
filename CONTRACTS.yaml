@@ -415,7 +415,7 @@ contracts:
       {router_fallback, tooling_fallback, demos_fallback, overflow} (bools,
       only an explicit false switches one off): overflow=false stops every
       session_router rewrite to Alibaba, and alibaba_switches() hands the
-      other three to litellm_strip_params.py (fallbacks:[] per request,
+      other three to litellm_strip_params.py (router fallbacks minus alibaba-* per request,
       TOOLING_FALLBACKS and KEY_TOOLING_FALLBACKS emptied).
       Since 2026-09-26 it also reads the ADDITIVE field overflow_exempt =
       {classes: [x-claude-class values], keys: [virtual key aliases]}: an
