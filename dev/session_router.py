@@ -350,7 +350,7 @@ BOT_BURST_KEYS = ("hermes-batch",)
 # `alibaba` de /api/model-routing/config. Uno por cada camino por el que el tráfico acaba
 # en Alibaba sin pedirlo por nombre:
 #   router_fallback  — el fallback del Router qwen38-flash-next -> alibaba-q38-flash
-#                      (strip_params estampa `fallbacks: []` por petición)
+#                      (strip_params estampa por petición los fallbacks sin destinos alibaba-*)
 #   tooling_fallback — TOOLING_FALLBACKS de strip_params (tooling sin residente Ready)
 #   demos_fallback   — KEY_TOOLING_FALLBACKS de strip_params (key `demos`)
 #   overflow         — TODA reescritura residente -> Alibaba de ESTE módulo (sticky,

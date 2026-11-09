@@ -8791,7 +8791,7 @@ data:
     # `alibaba` de /api/model-routing/config. Uno por cada camino por el que el tráfico acaba
     # en Alibaba sin pedirlo por nombre:
     #   router_fallback  — el fallback del Router qwen38-flash-next -> alibaba-q38-flash
-    #                      (strip_params estampa `fallbacks: []` por petición)
+    #                      (strip_params estampa por petición los fallbacks sin destinos alibaba-*)
     #   tooling_fallback — TOOLING_FALLBACKS de strip_params (tooling sin residente Ready)
     #   demos_fallback   — KEY_TOOLING_FALLBACKS de strip_params (key `demos`)
     #   overflow         — TODA reescritura residente -> Alibaba de ESTE módulo (sticky,
@@ -13856,7 +13856,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e23e591c1208
+        config.k8s.e-dani.com/revision: config-e77cae11ebc7
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14798,7 +14798,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e23e591c1208
+        config.k8s.e-dani.com/revision: config-e77cae11ebc7
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
