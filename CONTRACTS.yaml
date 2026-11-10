@@ -1786,6 +1786,19 @@ contracts:
       ya un segundo backend que enrutar. Sustituido por `omnivoice-tts` (el
       unico). Vivio un dia: anadido en DGX-1173 para el chip trained del
       playground, retirado por decision de Dani al quedar un solo motor.
+  - id: dgx.litellm.model-alias.anthropic-haiku-5-5.v1
+    kind: schema
+    value: anthropic-haiku-5-5
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    consumers:
+      - k8s-nova-pocharlies (nova/cerebros.py, MODELOS del cerebro rapido)
+    status: active
+    note: >-
+      ADD 2026-11-10 (INFRA-1223, Dani): Haiku 5.5 con la API key de pago de
+      Anthropic (no la suscripcion `claude-*`, que solo acepta Claude Code) para el
+      cerebro rapido de Nova. Renombrarlo rompe a Nova: mover MODELOS en el mismo push.
   - id: dgx.litellm.openrouter-account-upstream.v1
     kind: http-route
     value: /admin/openrouter-account
