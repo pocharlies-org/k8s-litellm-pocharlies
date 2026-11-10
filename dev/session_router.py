@@ -2130,10 +2130,10 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 # (`seven_day_fable`, cabeceras `7d_oi`); solo cuenta cuando el modelo pedido es Fable.
 #
 # Reglas (las del panel, que ya regian accountsd):
-#   - Conversacion NUEVA -> de las cuentas de la lista por debajo de sus dos saltos
-#     (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py), la de mas
-#     margen por hora hasta su reinicio de 7 d (Dani, 06-11, INFRA-1204: gastar
-#     antes lo que se pierde antes). Empate (sin lecturas) -> orden de la lista.
+#   - Conversacion NUEVA -> de las cuentas de la lista por debajo de sus saltos
+#     (% de la ventana de 7 d y de 5 h, y la de Fable si el modelo lo es, que ha leido
+#     claude_quota.py), la de mas margen por hora hasta su reinicio de 7 d (Dani, 06-11,
+#     INFRA-1204: gastar antes lo que se pierde antes). Empate (sin lecturas) -> orden de la lista.
 #   - Conversacion EMPEZADA -> se queda en su cuenta (pin) mientras esa cuenta
 #     este por debajo de SU salto (90 %, 50 %… el de la lista). Al pasarlo, o si
 #     queda rechazada (429 de suscripcion o creditos) o el Router la aparto, se

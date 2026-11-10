@@ -10636,10 +10636,10 @@ data:
     # (`seven_day_fable`, cabeceras `7d_oi`); solo cuenta cuando el modelo pedido es Fable.
     #
     # Reglas (las del panel, que ya regian accountsd):
-    #   - Conversacion NUEVA -> de las cuentas de la lista por debajo de sus dos saltos
-    #     (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py), la de mas
-    #     margen por hora hasta su reinicio de 7 d (Dani, 06-11, INFRA-1204: gastar
-    #     antes lo que se pierde antes). Empate (sin lecturas) -> orden de la lista.
+    #   - Conversacion NUEVA -> de las cuentas de la lista por debajo de sus saltos
+    #     (% de la ventana de 7 d y de 5 h, y la de Fable si el modelo lo es, que ha leido
+    #     claude_quota.py), la de mas margen por hora hasta su reinicio de 7 d (Dani, 06-11,
+    #     INFRA-1204: gastar antes lo que se pierde antes). Empate (sin lecturas) -> orden de la lista.
     #   - Conversacion EMPEZADA -> se queda en su cuenta (pin) mientras esa cuenta
     #     este por debajo de SU salto (90 %, 50 %… el de la lista). Al pasarlo, o si
     #     queda rechazada (429 de suscripcion o creditos) o el Router la aparto, se
@@ -13947,7 +13947,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c865c33f21a6
+        config.k8s.e-dani.com/revision: config-8ba6def13590
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14915,7 +14915,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-c865c33f21a6
+        config.k8s.e-dani.com/revision: config-8ba6def13590
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
