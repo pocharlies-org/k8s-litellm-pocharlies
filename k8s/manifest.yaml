@@ -2177,6 +2177,7 @@ data:
     # `anthropic-hindsight` de k8s-pocharlies, campo `api_key`; Secret
     # litellm-anthropic-api). Coste por uso: lo ve el panel /cuentas («Anthropic · API
     # key», DGX-1132). Sin fallbacks: quien la pide (Nova) ya corre su propia carrera.
+    # CONTRACT: dgx.litellm.model-alias.anthropic-haiku-5-5.v1 (Nova lo pide por este nombre)
     - model_name: anthropic-haiku-5-5
       litellm_params:
         model: anthropic/claude-haiku-5-5
@@ -13918,7 +13919,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a2600c0f2e7b
+        config.k8s.e-dani.com/revision: config-f60e9144ff8c
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14886,7 +14887,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-a2600c0f2e7b
+        config.k8s.e-dani.com/revision: config-f60e9144ff8c
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
