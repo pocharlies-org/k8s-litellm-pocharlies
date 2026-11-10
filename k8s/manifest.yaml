@@ -2169,6 +2169,21 @@ data:
         supports_vision: false
         supports_reasoning: true
         disable_background_health_check: true
+    # ── Haiku 5.5 por API key de pago (INFRA-1223, Dani 10-11) ─────────────────
+    # El cerebro rapido de Nova (voz en Meet): medido el 10-11 contra api.anthropic.com,
+    # primer token a 0,61 s de mediana (gpt-6-luna 1,25; alibaba-q38-flash 1,52; el
+    # residente 2,22 con picos de 17). La suscripcion (`claude-*`) no sirve: solo acepta
+    # peticiones de Claude Code. Key `sk-ant-api` de la organizacion (item
+    # `anthropic-hindsight` de k8s-pocharlies, campo `api_key`; Secret
+    # litellm-anthropic-api). Coste por uso: lo ve el panel /cuentas («Anthropic · API
+    # key», DGX-1132). Sin fallbacks: quien la pide (Nova) ya corre su propia carrera.
+    - model_name: anthropic-haiku-5-5
+      litellm_params:
+        model: anthropic/claude-haiku-5-5
+        api_key: os.environ/ANTHROPIC_API_KEY_PAGO
+        num_retries: 0
+      model_info:
+        disable_background_health_check: true
     # ── Claude por suscripcion (DGX-1099) ───────────────────────────────────
     # UNA entrada por cuenta, todas con el comodin `claude-*` (el cliente pide el
     # nombre de Anthropic tal cual: claude-opus-5-5, claude-sonnet-5-5...). Que cuenta
@@ -13866,7 +13881,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d901cd3fa554
+        config.k8s.e-dani.com/revision: config-f3c3d2a67a1c
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -13927,6 +13942,9 @@ spec:
           # claude-acct-*). optional: sin el Secret el pod arranca y las entradas fallan.
           envFrom:
             - secretRef: { name: litellm-claude-cuentas, optional: true }
+            # INFRA-1223: ANTHROPIC_API_KEY_PAGO (alias anthropic-haiku-5-5). optional: sin el
+            # Secret el pod arranca y solo falla ese alias.
+            - secretRef: { name: litellm-anthropic-api, optional: true }
           env:
             # 09-09-2026 (SC-352): tope de arenas del asignador de glibc.
             # HIPOTESIS, no causa raiz — la linea de diagnostica esta cerrada
@@ -14748,6 +14766,26 @@ spec:
     - secretKey: CLAUDE_OAT_SERGIO
       remoteRef: { key: ljmxrtej6z67hwgn25ob63sobq, property: token }  # claude-cuenta-sergio
 ---
+# INFRA-1223: la API key de pago de Anthropic (`sk-ant-api`) para el alias
+# anthropic-haiku-5-5. Forma Connect, por id: item `anthropic-hindsight` del vault
+# k8s-pocharlies, campo `api_key` (lo escribe security).
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-anthropic-api
+  namespace: litellm
+spec:
+  refreshInterval: 24h
+  refreshPolicy: OnChange
+  secretStoreRef: { kind: ClusterSecretStore, name: onepassword-connect }
+  target:
+    name: litellm-anthropic-api
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: ANTHROPIC_API_KEY_PAGO
+      remoteRef: { key: t47gmofqrfwhoojdf2uccufhni, property: api_key }  # anthropic-hindsight
+---
 # Un token por consumidor del gateway (items 1Password `plan-gateway-studio` y
 # `plan-gateway-omnivoice`), forma Connect (INFRA-511): `key: <item>` +
 # `property: <campo>`. Retain: un refresh fallido no deja al gateway sin tokens.
@@ -14808,7 +14846,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d901cd3fa554
+        config.k8s.e-dani.com/revision: config-f3c3d2a67a1c
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
