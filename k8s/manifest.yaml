@@ -3444,6 +3444,33 @@ data:
             "allowed": sorted(CHATGPT_ALLOWED_KEY_ALIASES),
         }
 
+    # INFRA-1223 (10-11-2026): gate de la API key de pago de Anthropic (alias
+    # `anthropic-*`). Mismo patron que grok-* y gpt-*: por PREFIJO y fail-closed,
+    # porque `models: []` en 7 de 10 keys abriria a todas una key que gasta dinero.
+    ANTHROPIC_ALIAS_PREFIX = "anthropic-"
+
+    ANTHROPIC_ALLOWED_KEY_ALIASES = frozenset(
+        alias.strip()
+        for alias in os.environ.get("LITELLM_ANTHROPIC_ALLOWED_KEYS", "").split(",")
+        if alias.strip()
+    )
+
+    def _anthropic_access_denied(requested, key_label):
+        """(bool, detalle) si esta key NO puede pedir un alias de la API key de Anthropic.
+
+        FALLA CERRADO: sin LITELLM_ANTHROPIC_ALLOWED_KEYS nadie pasa, ni la master.
+        """
+        if not str(requested or "").startswith(ANTHROPIC_ALIAS_PREFIX):
+            return False, None
+        if key_label in ANTHROPIC_ALLOWED_KEY_ALIASES:
+            return False, None
+        return True, {
+            "error": "this key may not request the Anthropic API key aliases",
+            "requested": requested,
+            "key": key_label,
+            "allowed": sorted(ANTHROPIC_ALLOWED_KEY_ALIASES),
+        }
+
     # (SC-384) El gate del lane barato `qwen35-4b-fast` se retira junto con el
     # alias: ya no existe `qwen35-4b` al que enrutar.
 
@@ -7647,6 +7674,16 @@ data:
             if _denied:
                 router_log.warning(
                     "chatgpt: key %r pidio %r y no esta en la lista",
+                    _detail["key"], _detail["requested"])
+                raise HTTPException(status_code=403, detail=_detail)
+
+            # Gate de la API key de pago de Anthropic (INFRA-1223), mismo motivo.
+            _denied, _detail = _anthropic_access_denied(
+                requested_model, _resolve_key_label(user_api_key_dict)
+            )
+            if _denied:
+                router_log.warning(
+                    "anthropic: key %r pidio %r y no esta en la lista",
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
 
@@ -13881,7 +13918,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f3c3d2a67a1c
+        config.k8s.e-dani.com/revision: config-a2600c0f2e7b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14116,6 +14153,9 @@ spec:
             # SC-4822 (Dani 06-11): `sugiere-prod`, el servicio de sugerencias, sugiere a una sesión de
             # Paseo con el mismo modelo que ella ya eligió a mano; no elige un `gpt-*` por su cuenta.
             - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod" }
+            # INFRA-1223: los alias `anthropic-*` (API key de pago de Anthropic, tope 150 USD/mes en
+            # la Console). Solo Nova: hoy por `voz-duplex`; `nova` es su key propia (INFRA-1251).
+            - { name: LITELLM_ANTHROPIC_ALLOWED_KEYS, value: "voz-duplex,nova" }
             - { name: CHATGPT_TOKEN_DIR, value: /var/run/chatgpt-oauth }
             # DGX-1053: sin token valido, el provider ya no lanza el device login (15 min esperando a un
             # humano, el pod no llegaba a Ready): el alias da 401 y el pod se recupera solo cuando el
@@ -14846,7 +14886,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-f3c3d2a67a1c
+        config.k8s.e-dani.com/revision: config-a2600c0f2e7b
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
