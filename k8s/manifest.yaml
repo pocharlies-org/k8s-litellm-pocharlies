@@ -2814,8 +2814,10 @@ data:
       # SKIRM-400 (07-11-2026, Dani): los adapters de Synapse (key `synapse`), por delante del lote y de la
       # compania y detras del chat y de las facturas.
       synapse: -5
-      # SC-5043 (08-11-2026, Dani): la voz en tiempo real (Nova en Meet, key `voz-duplex`) va la PRIMERA de
-      # todas: una persona espera la respuesta hablando. Delante incluso de lo uncensored (-20).
+      # SC-5043 (08-11-2026, Dani): la voz en tiempo real va la PRIMERA de todas: una persona espera la
+      # respuesta hablando. Delante incluso de lo uncensored (-20). `nova` es Nova (Meet y telefono, ns nova;
+      # INFRA-1251, 10-11, key propia); `voz-duplex`, las pruebas de voz full-duplex de mac-casa.
+      nova: -30
       voz-duplex: -30
       # DGX-601 (06-10-2026, Dani): un alias puede valer ENTERO (lo de siempre) o
       # MAPA por clase de sesion (`x-claude-class`, que estampa el lanzador de la
@@ -13866,7 +13868,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d901cd3fa554
+        config.k8s.e-dani.com/revision: config-7c7de73806bd
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14808,7 +14810,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d901cd3fa554
+        config.k8s.e-dani.com/revision: config-7c7de73806bd
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
