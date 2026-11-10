@@ -5,7 +5,9 @@ contra una Valkey de pega, con el modulo tal cual lo embebe el ConfigMap.
 """
 import asyncio
 import json
+import sys
 import time
+import types
 from pathlib import Path
 
 import yaml
@@ -242,10 +244,21 @@ def test_lectura_de_cabeceras_de_anthropic():
 def test_el_callback_guarda_la_cuota_de_un_stream_de_messages():
     """Claude Code pide /v1/messages en streaming: ahi litellm no rellena _hidden_params
     y las cabeceras solo viajan en kwargs["httpx_response"] (medido en v1.105.1)."""
-    import sys
-    import types
-
     valkey = FakeValkey()
+    cq = _claude_quota_module(valkey)
+    httpx_response = types.SimpleNamespace(headers={
+        "anthropic-ratelimit-unified-5h-utilization": "0.4",
+        "anthropic-ratelimit-unified-7d-utilization": "0.2"})
+    kwargs = {"litellm_params": {"model_info": {"id": "claude-acct-info"}},
+              "standard_logging_object": {"hidden_params": {"additional_headers": None}},
+              "httpx_response": httpx_response}
+    asyncio.run(cq.proxy_handler_instance.async_log_success_event(kwargs, object(), 0, 0))
+    reading = json.loads(valkey.data["claude:quota:info"])
+    assert reading["five_hour"]["utilization"] == 0.4
+
+
+def _claude_quota_module(valkey):
+    """claude_quota.py tal cual lo embebe el ConfigMap, con litellm de pega."""
     router = _pod(valkey)
     custom_logger = types.ModuleType("litellm.integrations.custom_logger")
     custom_logger.CustomLogger = object
@@ -264,15 +277,7 @@ def test_el_callback_guarda_la_cuota_de_un_stream_de_messages():
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = v
-    httpx_response = types.SimpleNamespace(headers={
-        "anthropic-ratelimit-unified-5h-utilization": "0.4",
-        "anthropic-ratelimit-unified-7d-utilization": "0.2"})
-    kwargs = {"litellm_params": {"model_info": {"id": "claude-acct-info"}},
-              "standard_logging_object": {"hidden_params": {"additional_headers": None}},
-              "httpx_response": httpx_response}
-    asyncio.run(cq.proxy_handler_instance.async_log_success_event(kwargs, object(), 0, 0))
-    reading = json.loads(valkey.data["claude:quota:info"])
-    assert reading["five_hour"]["utilization"] == 0.4
+    return cq
 
 
 def test_politica_basura_se_descarta():
@@ -280,7 +285,8 @@ def test_politica_basura_se_descarta():
     clean = mod._sanitize_claude_accounts({
         "Claude-X86": [{"id": "info", "salto_7d": 150}, {"id": "info"}, {"id": "../x"}, "x"],
         "otra": "no-lista"})
-    assert clean == {"claude-x86": [{"id": "info", "salto_7d": 90.0, "salto_5h": 90.0}]}
+    assert clean == {"claude-x86": [{"id": "info", "salto_7d": 90.0, "salto_5h": 90.0,
+                                      "salto_fable": 100.0}]}
 
 
 def test_las_entradas_claude_son_una_por_cuenta_sin_fallbacks():
@@ -421,3 +427,125 @@ def test_empezada_no_se_muda_aunque_otra_tenga_mas_margen():
     _quota7(v, "correo", 0.0, 2)
     assert _pick(mod, sid="s1") == ["info"]
     assert _pick(mod, sid="otra") == ["correo"]
+
+
+# ── DGX-1535: ventana semanal de Fable (`7d_oi`) y su salto por cuenta ───────────
+
+
+def test_lectura_trae_la_ventana_de_fable_si_viene_7d_oi():
+    mod = _pod(FakeValkey())
+    h = {"anthropic-ratelimit-unified-5h-utilization": "0.1",
+         "anthropic-ratelimit-unified-7d-utilization": "0.2",
+         "llm_provider-anthropic-ratelimit-unified-7d_oi-utilization": "0.73",
+         "llm_provider-anthropic-ratelimit-unified-7d_oi-reset": "1792908000"}
+    r = mod.claude_quota_from_headers(h, now=1.0)
+    assert r["seven_day_fable"] == {"utilization": 0.73, "resets_at": 1792908000}
+    assert r["seven_day"] == {"utilization": 0.2, "resets_at": None}
+
+
+def test_lectura_sin_7d_oi_deja_fable_a_none_y_lo_demas_igual():
+    mod = _pod(FakeValkey())
+    h = {"anthropic-ratelimit-unified-5h-utilization": "0.1",
+         "anthropic-ratelimit-unified-7d-utilization": "0.2"}
+    r = mod.claude_quota_from_headers(h, now=1.0)
+    assert r["seven_day_fable"] is None
+    assert set(r) == {"observed_at", "status", "reset", "representative_claim", "five_hour",
+                      "seven_day", "seven_day_fable", "overage_in_use"}
+    # Solo 7d_oi no es una lectura: siguen mandando 5h/7d.
+    assert mod.claude_quota_from_headers({"anthropic-ratelimit-unified-7d_oi-utilization": "0.5"}) is None
+
+
+def _capture(cq, headers, acct="info"):
+    kwargs = {"litellm_params": {"model_info": {"id": f"claude-acct-{acct}"}},
+              "httpx_response": types.SimpleNamespace(headers=headers)}
+    asyncio.run(cq.proxy_handler_instance.async_log_success_event(kwargs, object(), 0, 0))
+
+
+H_BASE = {"anthropic-ratelimit-unified-5h-utilization": "0.4",
+          "anthropic-ratelimit-unified-7d-utilization": "0.2"}
+
+
+def test_el_callback_conserva_la_ventana_de_fable_vigente():
+    valkey = FakeValkey()
+    cq = _claude_quota_module(valkey)
+    reset = int(time.time()) + 86400
+    _capture(cq, {**H_BASE, "anthropic-ratelimit-unified-7d_oi-utilization": "0.8",
+                  "anthropic-ratelimit-unified-7d_oi-reset": str(reset)})
+    _capture(cq, {**H_BASE, "anthropic-ratelimit-unified-5h-utilization": "0.5"})
+    reading = json.loads(valkey.data["claude:quota:info"])
+    assert reading["five_hour"]["utilization"] == 0.5          # la lectura nueva manda
+    assert reading["seven_day_fable"] == {"utilization": 0.8, "resets_at": reset}
+    # Una lectura nueva de Fable si la sustituye.
+    _capture(cq, {**H_BASE, "anthropic-ratelimit-unified-7d_oi-utilization": "0.1",
+                  "anthropic-ratelimit-unified-7d_oi-reset": str(reset)})
+    assert json.loads(valkey.data["claude:quota:info"])["seven_day_fable"]["utilization"] == 0.1
+
+
+def test_el_callback_no_conserva_la_ventana_de_fable_reiniciada():
+    valkey = FakeValkey()
+    cq = _claude_quota_module(valkey)
+    valkey.data["claude:quota:info"] = json.dumps({
+        "seven_day_fable": {"utilization": 0.9, "resets_at": int(time.time()) - 60}})
+    _capture(cq, H_BASE)
+    assert json.loads(valkey.data["claude:quota:info"])["seven_day_fable"] is None
+
+
+def test_el_callback_guarda_aunque_falle_el_get_de_fable():
+    class GetRoto(FakeValkey):
+        async def get(self, key):
+            raise ConnectionError("get roto")
+
+    valkey = GetRoto()
+    cq = _claude_quota_module(valkey)
+    _capture(cq, H_BASE)
+    reading = json.loads(valkey.data["claude:quota:info"])
+    assert reading["five_hour"]["utilization"] == 0.4 and reading["seven_day_fable"] is None
+
+
+def _quota_fable(v, acct, uf, reset_in=86400):
+    now = time.time()
+    v.data[f"claude:quota:{acct}"] = json.dumps({
+        "observed_at": now, "status": "allowed", "reset": int(now + 3600),
+        "five_hour": {"utilization": 0.1, "resets_at": int(now + 3600)},
+        "seven_day": {"utilization": 0.1, "resets_at": int(now + 86400)},
+        "seven_day_fable": {"utilization": uf, "resets_at": int(now + reset_in)},
+        "overage_in_use": False})
+
+
+FABLE_POLICY = {"claude-x86": [{"id": "info", "salto_7d": 90, "salto_5h": 90, "salto_fable": 50},
+                               {"id": "correo", "salto_7d": 90, "salto_5h": 90, "salto_fable": 50}]}
+
+
+def _pick_model(mod, model, sid):
+    out = asyncio.run(mod.claude_account_filter(model, _deps(), _kw(sid=sid)))
+    return [d["model_info"]["id"].removeprefix("claude-acct-") for d in out]
+
+
+def test_fable_por_encima_de_su_salto_salta_de_cuenta_y_opus_no():
+    v = FakeValkey()
+    mod = _pod(v, policy=FABLE_POLICY)
+    assert _pick_model(mod, "claude-fable-5", "f1") == ["info"]
+    assert _pick_model(mod, "claude-opus-5-5", "o1") == ["info"]
+    _quota_fable(v, "info", 0.6)                                    # 60 % >= salto_fable 50
+    assert _pick_model(mod, "claude-fable-5", "f1") == ["correo"]   # el pin se muda
+    assert _pick_model(mod, "claude-Fable-5", "f2") == ["correo"]   # nueva: info no es libre
+    assert _pick_model(mod, "claude-opus-5-5", "o1") == ["info"]    # a Opus no le afecta
+
+
+def test_fable_con_ventana_reiniciada_o_sin_salto_propio_no_salta():
+    v = FakeValkey()
+    _quota_fable(v, "info", 0.95, reset_in=-60)
+    mod = _pod(v, policy=FABLE_POLICY)
+    assert _pick_model(mod, "claude-fable-5", "f1") == ["info"]     # reset pasado: no cuenta
+    _quota_fable(v, "info", 0.95)
+    sin = _pod(v, policy=POLICY)                                    # sin salto_fable => 100
+    assert _pick_model(sin, "claude-fable-5", "f9") == ["info"]
+
+
+def test_salto_fable_ausente_o_basura_es_100():
+    mod = _pod(FakeValkey())
+    clean = mod._sanitize_claude_accounts({"claude-x86": [
+        {"id": "a"}, {"id": "b", "salto_fable": "x"}, {"id": "c", "salto_fable": 140},
+        {"id": "d", "salto_fable": True}, {"id": "e", "salto_fable": float("nan")},
+        {"id": "f", "salto_fable": 40}]})
+    assert [e["salto_fable"] for e in clean["claude-x86"]] == [100.0] * 5 + [40.0]

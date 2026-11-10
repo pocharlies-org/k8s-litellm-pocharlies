@@ -498,6 +498,10 @@ contracts:
       ninguna key puede usar claude-* (el filtro no abre nunca). Lo lee
       session_router.claude_account_filter. Sin .vN+1: aditivo. Productor:
       dgx-infra (panel «Sesiones de Dani · Cuentas de»).
+      2026-11-10 (DGX-1535): campo ADITIVO salto_fable en cada entrada de
+      claude_accounts (0-100; ausente o basura = 100, sin tope propio). Solo
+      cuenta para modelos Fable: la cuenta con seven_day_fable vigente
+      (dgx.litellm.claude-quota.v1) >= salto_fable pasa de salto. Sin .vN+1.
       Con DGX-1099 tambien cambia lo que hace session_plans[sid]=claude (y
       default_plan/sticky=claude): si la key de la peticion tiene cuentas en
       claude_accounts, el residente se reescribe a SESSION_ROUTER_CLAUDE_PLAN_MODEL
@@ -550,8 +554,13 @@ contracts:
       anthropic-ratelimit-unified-* de cada respuesta (tambien los 429 y los
       streams de /v1/messages, que solo las traen en httpx_response): JSON
       {observed_at, status, reset, representative_claim, five_hour,
-      seven_day, overage_in_use}, cada ventana {utilization (0-1), resets_at
-      (epoch s)}. TTL 8 dias. Lectores: session_router.claude_account_filter
+      seven_day, seven_day_fable, overage_in_use}, cada ventana {utilization
+      (0-1), resets_at (epoch s)}. TTL 8 dias. DGX-1535 (2026-11-10, aditivo):
+      seven_day_fable es la semanal propia de los modelos overage-included
+      (hoy Fable; cabeceras anthropic-ratelimit-unified-7d_oi-*), null si nunca
+      llego; una respuesta sin 7d_oi conserva la guardada hasta su reset. La
+      compara el filtro con salto_fable de claude_accounts solo para modelos
+      Fable. Lectores: session_router.claude_account_filter
       (salto) y dgx-infra services/dashboard (barras de cuota), solo GET.
       Pinned by tests/test_claude_account_filter.py.
   - id: dgx.litellm.claude-official-headers.v1

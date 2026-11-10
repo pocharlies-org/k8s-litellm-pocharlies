@@ -2125,13 +2125,15 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 # api_key = su setup-token sk-ant-oat, que litellm manda como Bearer + beta oauth).
 # Que cuentas puede usar cada key, en que orden y con que salto lo decide Dani en
 # el panel («Sesiones de Dani · Cuentas de») y llega en `claude_accounts` de
-# /api/model-routing/config:  {"<alias>": [{"id", "salto_7d", "salto_5h"}, ...]}.
+# /api/model-routing/config:  {"<alias>": [{"id", "salto_7d", "salto_5h", "salto_fable"}, ...]}.
+# DGX-1535 (10-11): `salto_fable` es el tope de la ventana semanal propia de Fable
+# (`seven_day_fable`, cabeceras `7d_oi`); solo cuenta cuando el modelo pedido es Fable.
 #
 # Reglas (las del panel, que ya regian accountsd):
-#   - Conversacion NUEVA -> de las cuentas de la lista por debajo de sus dos saltos
-#     (% de la ventana de 7 d y de 5 h que ha leido claude_quota.py), la de mas
-#     margen por hora hasta su reinicio de 7 d (Dani, 06-11, INFRA-1204: gastar
-#     antes lo que se pierde antes). Empate (sin lecturas) -> orden de la lista.
+#   - Conversacion NUEVA -> de las cuentas de la lista por debajo de sus saltos
+#     (% de la ventana de 7 d y de 5 h, y la de Fable si el modelo lo es, que ha leido
+#     claude_quota.py), la de mas margen por hora hasta su reinicio de 7 d (Dani, 06-11,
+#     INFRA-1204: gastar antes lo que se pierde antes). Empate (sin lecturas) -> orden de la lista.
 #   - Conversacion EMPEZADA -> se queda en su cuenta (pin) mientras esa cuenta
 #     este por debajo de SU salto (90 %, 50 %… el de la lista). Al pasarlo, o si
 #     queda rechazada (429 de suscripcion o creditos) o el Router la aparto, se
@@ -2205,8 +2207,9 @@ _U = "anthropic-ratelimit-unified-"
 
 
 def _sanitize_claude_accounts(raw):
-    """{"<alias>": [{"id", "salto_7d", "salto_5h"}]} con alias en minusculas, ids
-    `[a-z0-9-]` sin repetir y saltos en [0, 100] (90 si faltan). Basura => fuera."""
+    """{"<alias>": [{"id", "salto_7d", "salto_5h", "salto_fable"}]} con alias en
+    minusculas, ids `[a-z0-9-]` sin repetir y saltos en [0, 100] (90 si faltan;
+    `salto_fable` 100, sin tope propio, DGX-1535). Basura => fuera."""
     if not isinstance(raw, dict):
         return {}
     out = {}
@@ -2221,10 +2224,10 @@ def _sanitize_claude_accounts(raw):
             if not (isinstance(acct, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]*", acct)) or acct in seen:
                 continue
             saltos = {}
-            for k in ("salto_7d", "salto_5h"):
-                v = e.get(k, 90)
+            for k, defecto in (("salto_7d", 90.0), ("salto_5h", 90.0), ("salto_fable", 100.0)):
+                v = e.get(k, defecto)
                 ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and 0 <= v <= 100
-                saltos[k] = float(v) if ok else 90.0
+                saltos[k] = float(v) if ok else defecto
             seen.add(acct)
             clean.append({"id": acct, **saltos})
         out[alias.strip().lower()] = clean
@@ -2253,6 +2256,9 @@ def claude_quota_from_headers(headers, now=None):
         return {"utilization": u, "resets_at": r}
 
     five, seven = window("5h"), window("7d")
+    # DGX-1535: la semanal de los modelos «overage-included» (hoy Fable); el CLI la
+    # llama seven_day_overage_included y su prefijo de cabecera es `7d_oi`.
+    fable = window("7d_oi")
     if five is None and seven is None:
         return None
     try:
@@ -2267,6 +2273,7 @@ def claude_quota_from_headers(headers, now=None):
         "representative_claim": h.get("representative-claim"),
         "five_hour": five,
         "seven_day": seven,
+        "seven_day_fable": fable,
         # Lo que el CLI llama overageInUse: la respuesta se ha servido con creditos
         # de pago. Es dinero: la cuenta cuenta como agotada hasta su reset.
         "overage_in_use": h.get("overage-in-use") == "true"
@@ -2299,13 +2306,17 @@ def _claude_margen_por_hora(reading, entry, now):
     return margen / (max(r - now, 60.0) / 3600.0)
 
 
-def _claude_over_salto(reading, entry, now):
-    """La cuenta pasa de alguno de sus saltos (ventanas aun vigentes) o esta rechazada."""
+def _claude_over_salto(reading, entry, now, model=None):
+    """La cuenta pasa de alguno de sus saltos (ventanas aun vigentes) o esta rechazada.
+    Con un modelo Fable cuenta tambien su ventana propia contra `salto_fable` (DGX-1535)."""
     if _claude_rejected(reading, now):
         return True
     if not reading:
         return False
-    for w, k in (("five_hour", "salto_5h"), ("seven_day", "salto_7d")):
+    ventanas = [("five_hour", "salto_5h"), ("seven_day", "salto_7d")]
+    if "fable" in str(model or "").lower():
+        ventanas.append(("seven_day_fable", "salto_fable"))
+    for w, k in ventanas:
         win = reading.get(w) or {}
         r = win.get("resets_at")
         if isinstance(r, (int, float)) and r <= now:
@@ -2430,11 +2441,11 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
         except Exception:
             CLAUDE_ACCOUNT_STATS["redis_errors"] += 1
     entry = next((e for e in order if e["id"] == pinned), None)
-    if pinned in by_account and entry and not _claude_over_salto(readings.get(pinned), entry, now):
+    if pinned in by_account and entry and not _claude_over_salto(readings.get(pinned), entry, now, model):
         CLAUDE_ACCOUNT_STATS["hits"] += 1
         _schedule(_pin_keepalive(client, key, CLAUDE_ACCOUNT_PIN_TTL_SECONDS, CLAUDE_ACCOUNT_STATS))
         return [by_account[pinned]]
-    libres = [e for e in order if not _claude_over_salto(readings.get(e["id"]), e, now)]
+    libres = [e for e in order if not _claude_over_salto(readings.get(e["id"]), e, now, model)]
     # max() se queda con la primera en empate: el orden de la lista desempata.
     choice = max(libres, key=lambda e: _claude_margen_por_hora(readings.get(e["id"]), e, now))["id"] if libres else None
     if choice is None:
