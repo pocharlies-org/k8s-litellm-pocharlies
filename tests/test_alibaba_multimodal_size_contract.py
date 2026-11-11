@@ -124,7 +124,7 @@ def test_al_residente_local_le_puede_llegar_grande(hook, alias):
     assert not ok, f"{alias} es local y no debe rechazararse por tamano"
 
 
-@pytest.mark.parametrize("alias", ["alibaba-q38-flash", "alibaba-q38-max", "alibaba-q37-plus"])
+@pytest.mark.parametrize("alias", ["alibaba-q4-max", "alibaba-q38-flash", "alibaba-q38-max", "alibaba-q37-plus"])
 def test_toda_la_ruta_alibaba_esta_cubierta(hook, alias):
     ok, _ = hook._alibaba_multimodal_too_large(alias, _payload(alias, 12 * 1024 * 1024))
     assert ok, f"{alias} tambien descarga la imagen a su lado"

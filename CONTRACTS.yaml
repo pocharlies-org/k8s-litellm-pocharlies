@@ -1563,6 +1563,11 @@ contracts:
       `deepseek-v4.1-flash-1017`) con los tres precios de su familia
       `alibaba-dsv41-fl`; la k del pack no cambia y ningun literal de la
       superficie se renombra: sin .vN+1.
+      2026-11-11 (DGX-1551): publicado `alibaba-q4-max` (upstream
+      `qwen4-max-preview`, la gama alta del plan) con los tres precios de su
+      familia `alibaba-q38-max`; `qwen3.8-max` sigue servido como
+      `alibaba-q38-max`. Doce grupos, cada uno con su `-k2` espejo. La k del
+      pack no cambia y ningun literal de la superficie se renombra: sin .vN+1.
       El supuesto creditos~lista es inspeccionable en la cabecera de la
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
       cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
