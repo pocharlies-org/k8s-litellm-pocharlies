@@ -1568,6 +1568,11 @@ contracts:
       familia `alibaba-q38-max`; `qwen3.8-max` sigue servido como
       `alibaba-q38-max`. Doce grupos, cada uno con su `-k2` espejo. La k del
       pack no cambia y ningun literal de la superficie se renombra: sin .vN+1.
+      2026-11-11 (DGX-1551, segundo commit): los tres campos de
+      `alibaba-q4-max` llevan el -80 % de promo del preview leido en la consola
+      (Dani), no el prorrateo integro de la familia; son 0,2x sobre los de la familia. La k del
+      pack sigue sin cambiar para los demas once grupos. Quitar el factor cuando
+      acabe la promo del preview.
       El supuesto creditos~lista es inspeccionable en la cabecera de la
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
       cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
