@@ -13621,13 +13621,18 @@ data:
     # polling, sin salir a Internet y sin tocar el token (su unico renovador es el CronJob
     # chatgpt-token-keeper).
     #
-    # Solo se guardan los campos de cuota: `x-codex-turn-state` es estado opaco de la
-    # conversacion y no sale de la respuesta. Corre en el logging, fuera del camino de la
-    # peticion; un fallo de Valkey deja un warning y nada mas.
+    # Solo cuota y metadatos permitidos del id_token ya montado: nunca tokens ni turn-state.
+    # La vigencia es el ultimo periodo informado por OpenAI, no la caducidad OAuth.
+    # Corre en el logging; un fallo de metadatos no impide guardar la cuota.
     import asyncio
+    import base64
     import json
     import logging
+    import os
     import time
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from functools import lru_cache
 
     from litellm.integrations.custom_logger import CustomLogger
 
@@ -13640,6 +13645,40 @@ data:
     # Pasada la ventana semanal, la mas larga, nada de la lectura sigue vigente.
     CHATGPT_QUOTA_TTL_SECONDS = 8 * 86400
     WRITE_TIMEOUT_SECONDS = 2.0
+
+
+    def _date(value):
+        try:
+            date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return date.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if date.tzinfo else None
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+
+    @lru_cache(maxsize=1)
+    def _account_metadata(path, mtime_ns):
+        record = json.loads(path.read_text())
+        payload = record["id_token"].split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        # Informacion del login confiado ya montado; no se usa para autorizar peticiones.
+        auth = claims["https://api.openai.com/auth"]
+        account_id = auth.get("chatgpt_account_id")
+        if not isinstance(account_id, str) or not account_id:
+            return None
+        email = claims.get("email") if isinstance(claims.get("email"), str) else None
+        plan = auth.get("chatgpt_plan_type")
+        return {"id": account_id, "label": email or "ChatGPT", "email": email,
+                "plan_type": plan if isinstance(plan, str) else None,
+                "subscription_active_until": _date(auth.get("chatgpt_subscription_active_until")),
+                "subscription_last_checked": _date(auth.get("chatgpt_subscription_last_checked"))}
+
+
+    def account_metadata():
+        try:
+            path = Path(os.environ.get("CHATGPT_TOKEN_DIR", "/var/run/chatgpt-oauth")) / "auth.json"
+            return _account_metadata(path, path.stat().st_mtime_ns)
+        except Exception:  # Solo metadatos: nunca frenar la captura de cuota ni imprimir el token.
+            return None
 
 
     def codex_headers(*sources):
@@ -13709,6 +13748,9 @@ data:
                 reading = quota_from_headers(_headers_of(kwargs, response_obj))
                 if reading is None:
                     return
+                account = account_metadata()
+                if account:
+                    reading["accounts"] = [{**account, **{key: reading[key] for key in ("primary", "secondary")}}]
                 client = await session_router._redis()
                 if client is None:
                     return
@@ -14041,7 +14083,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-68e0ff6a80a1
+        config.k8s.e-dani.com/revision: config-ba881072a1b0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15012,7 +15054,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-68e0ff6a80a1
+        config.k8s.e-dani.com/revision: config-ba881072a1b0
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
