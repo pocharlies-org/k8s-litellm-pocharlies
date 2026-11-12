@@ -1058,7 +1058,14 @@ contracts:
       window_minutes, reset_at (epoch s)}; primary = 300 min, secondary =
       10080 min. TTL 8 dias. Consumidor: dgx-infra services/dashboard
       (/api/chatgpt/quota y /api/activity codex_quota), solo GET. Pinned by
-      tests/test_chatgpt_quota_contract.py.
+      tests/test_chatgpt_quota_contract.py. DGX-1567 (2026-11-12, aditivo):
+      accounts [{id, label, email, plan_type, subscription_active_until,
+      subscription_last_checked, primary, secondary}] identifica la unica cuenta
+      conectada por auth.json, con allowlist del id_token y fechas ISO UTC.
+      La vigencia es el ultimo periodo informado, no expires_at OAuth ni una baja
+      definitiva. Si falta el token o sus metadatos se guarda solo la cuota.
+      No se publican credenciales ni se atribuye SpendLogs agregado a una cuenta.
+      Misma clave y TTL; los campos v1 anteriores no cambian.
   - id: dgx.litellm.spendlogs-claude-class.v1
     # Clave que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de uso por consumidor. Mismo kind que

@@ -116,6 +116,40 @@ def test_valkey_caido_no_rompe():
     asyncio.run(mod.proxy_handler_instance.async_log_success_event({"response_headers": HEADERS}, None, None, None))
 
 
+def test_metadatos_solo_del_id_token_sin_credenciales(tmp_path, monkeypatch):
+    import base64
+
+    def jwt(payload):
+        return "header." + base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=") + ".signature"
+
+    claims = {"email": "cuenta@example.test", "https://api.openai.com/auth": {
+        "chatgpt_account_id": "cuenta-a", "chatgpt_plan_type": "prolite",
+        "chatgpt_subscription_active_until": "2026-11-17T16:53:49Z",
+        "chatgpt_subscription_last_checked": "2026-11-12T07:00:00Z",
+        "private_field": "no-publicar",
+    }}
+    (tmp_path / "auth.json").write_text(json.dumps({"id_token": jwt(claims),
+        "access_token": "no-publicar-access", "refresh_token": "no-publicar-refresh", "expires_at": 9999999999}))
+    monkeypatch.setenv("CHATGPT_TOKEN_DIR", str(tmp_path))
+    valkey = _Valkey()
+    mod = _module(valkey)
+    asyncio.run(mod.proxy_handler_instance.async_log_success_event({"response_headers": HEADERS}, None, None, None))
+    [account] = valkey.sets[0][1]["accounts"]
+    assert account["id"] == "cuenta-a" and account["email"] == "cuenta@example.test"
+    assert account["subscription_active_until"] == "2026-11-17T16:53:49Z"
+    assert account["subscription_last_checked"] == "2026-11-12T07:00:00Z"
+    assert account["primary"]["used_percent"] == 12.5
+    assert "no-publicar" not in json.dumps(account) and "expires_at" not in account
+
+
+def test_token_ausente_o_roto_no_impide_guardar_cuota(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHATGPT_TOKEN_DIR", str(tmp_path))
+    mod = _module(_Valkey())
+    assert mod.account_metadata() is None
+    (tmp_path / "auth.json").write_text('{"id_token":"invalido"}')
+    assert mod.account_metadata() is None
+
+
 def test_cableado_en_el_proxy():
     import yaml
     cfg = yaml.safe_load(config_data()["config.yaml"])
