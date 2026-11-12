@@ -34,7 +34,7 @@ ALIASES = {"gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-lu
            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 IMAGE_ALIASES = {"gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
                  "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
-ALLOWED_KEYS = ("hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic", "claude-atlantic-compania", "sugiere-prod")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic); 02-11 DGX-1395: claude-atlantic-compania (compania asincrona, renombrada desde claude-x86, que sale con la limpieza); 06-11 SC-4822: sugiere-prod (sugerencia con el modelo de la sesion de Paseo)
+ALLOWED_KEYS = ("hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic", "claude-atlantic-compania", "sugiere-prod", "claude-cloudblue")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic); 02-11 DGX-1395: claude-atlantic-compania (compania asincrona, renombrada desde claude-x86, que sale con la limpieza); 06-11 SC-4822: sugiere-prod (sugerencia con el modelo de la sesion de Paseo); 11-11 DGX-1053: claude-cloudblue (Claude Code del Mac CloudBlue usa los gpt-* del gateway, orden de Dani)
 WANT_FN = {"_chatgpt_access_denied"}
 WANT_CONST = {"CHATGPT_ALIAS_PREFIX", "CHATGPT_ALLOWED_KEY_ALIASES"}
 
