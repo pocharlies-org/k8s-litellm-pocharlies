@@ -14275,7 +14275,10 @@ spec:
             # `claude-atlantic-compania` (DGX-1395), ya no hay key con ese alias.
             # SC-4822 (Dani 06-11): `sugiere-prod`, el servicio de sugerencias, sugiere a una sesión de
             # Paseo con el mismo modelo que ella ya eligió a mano; no elige un `gpt-*` por su cuenta.
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod" }
+            # DGX-1053 (orden de Dani 11-11-2026): `claude-cloudblue`, la key del Claude Code/Paseo
+            # del Mac para trabajo CloudBlue, entra por pedido explicito del owner para usar los
+            # `gpt-*` del gateway; sus models de la BD ya se actualizaron por /key/update.
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod,claude-cloudblue" }
             # INFRA-1223: los alias `anthropic-*` (API key de pago de Anthropic, tope 150 USD/mes en
             # la Console). Solo Nova: hoy por `voz-duplex`; `nova` es su key propia (INFRA-1251).
             - { name: LITELLM_ANTHROPIC_ALLOWED_KEYS, value: "voz-duplex,nova" }

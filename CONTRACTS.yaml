@@ -1021,6 +1021,9 @@ contracts:
       SC-4822 (2026-11-06), aditivo: la key `sugiere-prod` (servicio de sugerencias,
       ns llm) entra por decision de Dani: sugiere a una sesion de Paseo con el
       mismo modelo que la sesion ya eligio a mano, nunca uno propio.
+      DGX-1053 (2026-11-11), aditivo: la key `claude-cloudblue` (Claude Code/Paseo
+      del Mac para trabajo CloudBlue) entra por orden de Dani: usa los `gpt-*` del
+      gateway desde el Mac; sus models de la BD ya se actualizaron por /key/update.
       Token: el pod de litellm lee CHATGPT_TOKEN_DIR=/var/run/chatgpt-oauth,
       el Secret litellm-chatgpt-token montado en solo lectura. Lo crea desde
       la semilla de 1Password (ExternalSecret litellm-chatgpt-oauth, item
