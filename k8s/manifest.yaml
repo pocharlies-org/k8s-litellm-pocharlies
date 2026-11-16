@@ -63,6 +63,18 @@ data:
         ServiceUnavailableErrorAllowedFails: 1000000000
         BadGatewayErrorAllowedFails: 1000000000
         NotFoundErrorAllowedFails: 1000000000
+    # 16-11-2026 (DGX-1649). Los `claude-acct-*` SI aparcan, y a proposito: un 429 de
+    # Anthropic llega SIN cabeceras `anthropic-ratelimit-unified-*` (medido el 16-11:
+    # las 8 cuentas, dos organizaciones, `x-should-retry: true`), asi que
+    # `session_router.claude_account_filter` no puede actualizar la lectura de cuota ni
+    # marcar la cuenta, y sin esto la sigue eligiendo en cada intento. Lo unico que la
+    # saca de la rotacion es el cooldown del Router: con la cuenta aparcada, el
+    # reintento de la misma peticion (y el del CLI) cae en otra cuenta. 60 s es lo que
+    # tarda en tener sentido volver a probarla; el camino del fallo toma el
+    # `cooldown_time` de `model_info`, no de `litellm_params` (ver la nota de
+    # `resident_never_cools` arriba). Lo fija tests/test_claude_accounts_cool_on_429.py.
+    claude_acct_park: &claude_acct_park
+      cooldown_time: 60
     model_list:
     # Los alias locales son ESTATICOS desde el 18-08-2026 (ver la lapida de
     # `litellm-dgx-backend-sync` mas abajo): no se registran ni se retiran en
@@ -2314,6 +2326,7 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-info
+        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2340,6 +2353,7 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-correo
+        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2366,6 +2380,7 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-edani
+        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2392,6 +2407,7 @@ data:
           x-stainless-timeout: "900"
       model_info:
         id: claude-acct-work-personal
+        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2418,6 +2434,7 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-works-shared
+        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2444,6 +2461,7 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-flash
+        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2470,6 +2488,7 @@ data:
           x-stainless-timeout: "900"
       model_info:
         id: claude-acct-max
+        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2496,6 +2515,7 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-sergio
+        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -14091,7 +14111,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7bf3a8e73bbc
+        config.k8s.e-dani.com/revision: config-3ec6648075a0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15062,7 +15082,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7bf3a8e73bbc
+        config.k8s.e-dani.com/revision: config-3ec6648075a0
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
