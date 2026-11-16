@@ -15,6 +15,9 @@ revocan la sesion. Los pods lo montan en solo lectura.
 """
 import base64
 import json
+import os
+import subprocess
+import sys
 import time
 import types
 import urllib.error
@@ -334,3 +337,26 @@ def test_refresh_sends_the_provider_body_and_keeps_the_old_refresh_token_if_none
     assert sent["body"] == {"client_id": "app_EMoamEEZ73f0CkXaXp7hrann", "grant_type": "refresh_token",
                             "refresh_token": "rt-old", "scope": "openid profile email"}
     assert out["refresh_token"] == "rt-old" and out["expires_at"] == new_exp and out["account_id"] == "acc"
+
+
+def test_the_keeper_watchdog_dumps_the_hang_and_exits_before_the_deadline(tmp_path):
+    """SC-5727: el timeout de urllib no acota la resolucion DNS (getaddrinfo), asi que una
+    DNS colgada deja el proceso esperando hasta que el activeDeadlineSeconds (300) lo mate
+    sin dejar rastro (job 29913077, 15-11). Con el watchdog, un cuelgue termina solo en
+    <30 s, sale con codigo != 0 y deja el Traceback por stderr. Con el script anterior a
+    SC-5727 este test falla: el proceso aguanta hasta el corte del `timeout` (exit 124)."""
+    src = next(d for d in _docs(KEEPER) if d["kind"] == "ConfigMap")["data"]["chatgpt_token_keeper.py"]
+    assert "dump_traceback_later" in src and "WATCHDOG_S" in src  # C1
+    # Cuelgue inyectado: urlopen no vuelve nunca, como un getaddrinfo colgado.
+    hang = "import time, urllib.request\nurllib.request.urlopen = lambda *a, **k: time.sleep(3600)\n"
+    script = tmp_path / "keeper_colgado.py"
+    script.write_text(hang + src)
+    t0 = time.time()
+    proc = subprocess.run([sys.executable, "-I", str(script)],
+                          env=dict(os.environ, WATCHDOG_S="10"),
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode != 0
+    # El vuelco de faulthandler es el traceback (formato «Timeout ...!» + hilos con frames);
+    # no imprime la palabra literal «Traceback» en ningun CPython.
+    assert "Timeout" in proc.stderr and "main" in proc.stderr
+    assert time.time() - t0 < 30
