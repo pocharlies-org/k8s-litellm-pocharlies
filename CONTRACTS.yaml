@@ -631,6 +631,13 @@ contracts:
       que se escribe al reclamar o mudar es, de las cuentas de la lista por
       debajo de su salto, la de mas margen por hora hasta su reinicio de 7 d
       (empate: orden de la lista); forma y TTL de la clave sin cambios.
+      DGX-1649 (2026-11-16): el 429 de Anthropic llega SIN cabeceras
+      `anthropic-ratelimit-unified-*`, asi que la cuenta no se puede marcar
+      leyendo. Lo que la saca de la rotacion es el cooldown del Router
+      (`cooldown_time: 60` en el `model_info` de los 8 `claude-acct-*`, ancla
+      `&claude_acct_park`), y con la cuenta aparcada el filtro muda el pin a
+      otra, igual que si hubiera pasado su salto. Valor, forma y TTL: sin
+      cambios.
   - id: dgx.litellm.service-alias.chatgpt.v1
     kind: http-route
     value: litellm-chatgpt
