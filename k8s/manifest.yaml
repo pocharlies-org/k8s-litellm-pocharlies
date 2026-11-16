@@ -2313,8 +2313,9 @@ data:
         # CLI: captura real con dev/capture_claude_cli_headers.py, sube
         # CLAUDE_CLI_VERSION y corre --write.
         headers:
-          user-agent: "claude-cli/2.1.316 (external, cli)"
+          user-agent: "claude-cli/2.1.325 (external, cli)"
           x-app: cli
+          anthropic-dangerous-direct-browser-access: "true"
           x-stainless-arch: x64
           x-stainless-lang: js
           x-stainless-os: Linux
@@ -2339,8 +2340,9 @@ data:
         # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
         # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.316 (external, cli)"
+          user-agent: "claude-cli/2.1.325 (external, cli)"
           x-app: cli
+          anthropic-dangerous-direct-browser-access: "true"
           x-stainless-arch: x64
           x-stainless-lang: js
           x-stainless-os: Linux
@@ -2365,8 +2367,9 @@ data:
         # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
         # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.316 (external, cli)"
+          user-agent: "claude-cli/2.1.325 (external, cli)"
           x-app: cli
+          anthropic-dangerous-direct-browser-access: "true"
           x-stainless-arch: arm64
           x-stainless-lang: js
           x-stainless-os: MacOS
@@ -2391,8 +2394,9 @@ data:
         # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
         # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.316 (external, cli)"
+          user-agent: "claude-cli/2.1.325 (external, cli)"
           x-app: cli
+          anthropic-dangerous-direct-browser-access: "true"
           x-stainless-arch: arm64
           x-stainless-lang: js
           x-stainless-os: Linux
@@ -2417,8 +2421,9 @@ data:
         # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
         # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.316 (external, cli)"
+          user-agent: "claude-cli/2.1.325 (external, cli)"
           x-app: cli
+          anthropic-dangerous-direct-browser-access: "true"
           x-stainless-arch: x64
           x-stainless-lang: js
           x-stainless-os: Linux
@@ -2443,8 +2448,9 @@ data:
         # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
         # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.316 (external, cli)"
+          user-agent: "claude-cli/2.1.325 (external, cli)"
           x-app: cli
+          anthropic-dangerous-direct-browser-access: "true"
           x-stainless-arch: x64
           x-stainless-lang: js
           x-stainless-os: MacOS
@@ -2469,8 +2475,9 @@ data:
         # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
         # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.316 (external, cli)"
+          user-agent: "claude-cli/2.1.325 (external, cli)"
           x-app: cli
+          anthropic-dangerous-direct-browser-access: "true"
           x-stainless-arch: x64
           x-stainless-lang: js
           x-stainless-os: Linux
@@ -2495,8 +2502,9 @@ data:
         # contract dgx.litellm.claude-official-headers.v2). Al subir el CLI: captura
         # real con dev/capture_claude_cli_headers.py, sube CLAUDE_CLI_VERSION y --write.
         headers:
-          user-agent: "claude-cli/2.1.316 (external, cli)"
+          user-agent: "claude-cli/2.1.325 (external, cli)"
           x-app: cli
+          anthropic-dangerous-direct-browser-access: "true"
           x-stainless-arch: arm64
           x-stainless-lang: js
           x-stainless-os: Linux
@@ -14103,7 +14111,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e705367f6d57
+        config.k8s.e-dani.com/revision: config-3ec6648075a0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15074,7 +15082,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e705367f6d57
+        config.k8s.e-dani.com/revision: config-3ec6648075a0
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
