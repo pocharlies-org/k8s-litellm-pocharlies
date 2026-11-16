@@ -2149,6 +2149,13 @@ _CLAUDE_ACCOUNT_ID_RE = re.compile(r"^claude-acct-([a-z0-9][a-z0-9-]*)$")
 # CONTRACT: dgx.litellm.claude-quota.v1
 # (ancla: claude:quota:) JSON de claude_quota_from_headers por cuenta, Valkey del router.
 CLAUDE_QUOTA_PREFIX = "claude:quota"
+# DGX-1649 (16-11-2026): los `claude-acct-*` sirven el grupo comodin `claude-*`, y
+# litellm mete esos deployments en `provider_default_deployment_ids`, donde el
+# cooldown del Router NO corre nunca (medido en vivo: 429s y `Cooldown
+# Deployments=[]` con `cooldown_time`/`allowed_fails` en el `model_info`). Un 429
+# sin cabeceras `anthropic-ratelimit-unified-*` lo aparca el callback
+# `claude_quota.py` escribiendo `cooldown_until` en la lectura de la cuenta.
+CLAUDE_PARK_SECONDS = 60
 # CONTRACT: dgx.session-router.claude-account-pin.v1
 # (ancla: claude_account_pin:v1:) valor = id de cuenta, Valkey del session router.
 CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"
@@ -2282,9 +2289,13 @@ def claude_quota_from_headers(headers, now=None):
 
 
 def _claude_rejected(reading, now):
-    """Rechazada (429 de suscripcion) o tirando de creditos, y su reset aun no llego."""
+    """Rechazada (429 de suscripcion) o tirando de creditos, y su reset aun no llego.
+    Un `cooldown_until` (429 sin cabeceras, DGX-1649) la aparca aunque no haya lectura."""
     if not reading:
         return False
+    until = reading.get("cooldown_until")
+    if isinstance(until, (int, float)) and until > now:
+        return True
     if not (reading.get("status") == "rejected" or reading.get("overage_in_use")):
         return False
     # `reset` es el de la ventana que manda (representative-claim). Sin el: 10 min,

@@ -257,6 +257,27 @@ def test_el_callback_guarda_la_cuota_de_un_stream_de_messages():
     assert reading["five_hour"]["utilization"] == 0.4
 
 
+def test_un_429_sin_cabeceras_aparca_la_cuenta_y_el_filtro_la_salta():
+    """DGX-1649: el 429 de Anthropic no trae `anthropic-ratelimit-unified-*`, y el Router no
+    aparca los deployments del comodin `claude-*`; la marca la pone el callback."""
+    valkey = FakeValkey()
+    mod = _pod(valkey)
+    _quota(valkey, "info", u5=0.1)
+    _quota(valkey, "correo", u5=0.5)  # sin el aparcado, info gana por margen
+    cq = _claude_quota_module(valkey)
+    kwargs = {"litellm_params": {"model_info": {"id": "claude-acct-info"}},
+              "exception": types.SimpleNamespace(status_code=429)}
+    asyncio.run(cq.proxy_handler_instance.async_log_failure_event(kwargs, None, 0, 0))
+    reading = json.loads(valkey.data["claude:quota:info"])
+    assert reading["cooldown_until"] > time.time()
+    assert reading["five_hour"]["utilization"] == 0.1  # las ventanas del panel se conservan
+    assert _pick(mod, sid="s1") == ["correo"]
+    # cumplido el minuto, info vuelve al sorteo para una conversacion nueva
+    reading.pop("cooldown_until")
+    valkey.data["claude:quota:info"] = json.dumps(reading)
+    assert _pick(mod, sid="s2") == ["info"]
+
+
 def _claude_quota_module(valkey):
     """claude_quota.py tal cual lo embebe el ConfigMap, con litellm de pega."""
     router = _pod(valkey)
