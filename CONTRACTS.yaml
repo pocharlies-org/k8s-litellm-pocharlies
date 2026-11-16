@@ -560,12 +560,12 @@ contracts:
       (hoy Fable; cabeceras anthropic-ratelimit-unified-7d_oi-*), null si nunca
       llego; una respuesta sin 7d_oi conserva la guardada hasta su reset. La
       compara el filtro con salto_fable de claude_accounts solo para modelos
-      Fable. DGX-1649 (2026-11-16, aditivo): un 429 SIN ninguna cabecera
-      unificada no deja lectura que guardar, y el Router no aparca los
-      deployments del comodin `claude-*`; el callback conserva la lectura
-      anterior (las ventanas del panel) y le pone cooldown_until = ahora + 60 s
-      (session_router.CLAUDE_PARK_SECONDS), que es lo unico que mira el filtro.
-      Campo nuevo opcional, resto igual: sin .vN+1.
+      Fable. DGX-1649 (2026-11-16, aditivo): un 429 de la cuenta la aparca aunque
+      traiga cabeceras (medido el 16-11: 16-90 % de la ventana de 5 h y status
+      allowed_warning, y Anthropic rechaza igual; el Router no aparca los
+      deployments del comodin `claude-*`): se conservan las ventanas y se pone
+      cooldown_until = ahora + 60 s (session_router.CLAUDE_PARK_SECONDS), que es
+      lo unico que mira el filtro. Campo nuevo opcional, resto igual: sin .vN+1.
       Lectores: session_router.claude_account_filter
       (salto) y dgx-infra services/dashboard (barras de cuota), solo GET.
       Pinned by tests/test_claude_account_filter.py.

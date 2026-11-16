@@ -2154,7 +2154,8 @@ CLAUDE_QUOTA_PREFIX = "claude:quota"
 # cooldown del Router NO corre nunca (medido en vivo: 429s y `Cooldown
 # Deployments=[]` con `cooldown_time`/`allowed_fails` en el `model_info`). Un 429
 # sin cabeceras `anthropic-ratelimit-unified-*` lo aparca el callback
-# `claude_quota.py` escribiendo `cooldown_until` en la lectura de la cuenta.
+# `claude_quota.py` escribiendo `cooldown_until` en la lectura de la cuenta (llega
+# con ventanas a medias y aun asi rechaza, asi que aparca todo 429).
 CLAUDE_PARK_SECONDS = 60
 # CONTRACT: dgx.session-router.claude-account-pin.v1
 # (ancla: claude_account_pin:v1:) valor = id de cuenta, Valkey del session router.
@@ -2290,7 +2291,7 @@ def claude_quota_from_headers(headers, now=None):
 
 def _claude_rejected(reading, now):
     """Rechazada (429 de suscripcion) o tirando de creditos, y su reset aun no llego.
-    Un `cooldown_until` (429 sin cabeceras, DGX-1649) la aparca aunque no haya lectura."""
+    Un `cooldown_until` (429 reciente, DGX-1649) la aparca aunque la lectura no lo diga."""
     if not reading:
         return False
     until = reading.get("cooldown_until")

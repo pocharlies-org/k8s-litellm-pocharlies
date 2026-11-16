@@ -257,25 +257,40 @@ def test_el_callback_guarda_la_cuota_de_un_stream_de_messages():
     assert reading["five_hour"]["utilization"] == 0.4
 
 
-def test_un_429_sin_cabeceras_aparca_la_cuenta_y_el_filtro_la_salta():
-    """DGX-1649: el 429 de Anthropic no trae `anthropic-ratelimit-unified-*`, y el Router no
-    aparca los deployments del comodin `claude-*`; la marca la pone el callback."""
+def test_un_429_aparca_la_cuenta_y_el_filtro_la_salta():
+    """DGX-1649: el Router no aparca los deployments del comodin `claude-*`; la marca la
+    pone el callback, tambien cuando el 429 trae ventanas con margen (status allowed_warning)."""
     valkey = FakeValkey()
     mod = _pod(valkey)
     _quota(valkey, "info", u5=0.1)
     _quota(valkey, "correo", u5=0.5)  # sin el aparcado, info gana por margen
     cq = _claude_quota_module(valkey)
+    # el 429 real: cabeceras unificadas con 16 % usado y aun asi rechaza
+    httpx_response = types.SimpleNamespace(headers={
+        "anthropic-ratelimit-unified-5h-utilization": "0.16",
+        "anthropic-ratelimit-unified-status": "allowed_warning"})
     kwargs = {"litellm_params": {"model_info": {"id": "claude-acct-info"}},
+              "httpx_response": httpx_response,
               "exception": types.SimpleNamespace(status_code=429)}
     asyncio.run(cq.proxy_handler_instance.async_log_failure_event(kwargs, None, 0, 0))
     reading = json.loads(valkey.data["claude:quota:info"])
     assert reading["cooldown_until"] > time.time()
-    assert reading["five_hour"]["utilization"] == 0.1  # las ventanas del panel se conservan
+    assert reading["five_hour"]["utilization"] == 0.16  # la ventana nueva del panel
     assert _pick(mod, sid="s1") == ["correo"]
-    # cumplido el minuto, info vuelve al sorteo para una conversacion nueva
-    reading.pop("cooldown_until")
-    valkey.data["claude:quota:info"] = json.dumps(reading)
-    assert _pick(mod, sid="s2") == ["info"]
+    # sin cabeceras: se aparca igual y se conservan las ventanas que ya habia
+    kwargs = {"litellm_params": {"model_info": {"id": "claude-acct-correo"}},
+              "exception": types.SimpleNamespace(status_code=429)}
+    asyncio.run(cq.proxy_handler_instance.async_log_failure_event(kwargs, None, 0, 0))
+    reading = json.loads(valkey.data["claude:quota:correo"])
+    assert reading["five_hour"]["utilization"] == 0.5
+    assert reading["cooldown_until"] > time.time()
+    # cumplido el minuto, info vuelve al sorteo
+    for acct in ("info", "correo"):
+        lectura = json.loads(valkey.data[f"claude:quota:{acct}"])
+        lectura.pop("cooldown_until")
+        valkey.data[f"claude:quota:{acct}"] = json.dumps(lectura)
+    entrada = {"id": "info", "salto_7d": 90.0, "salto_5h": 90.0}
+    assert not mod._claude_over_salto(json.loads(valkey.data["claude:quota:info"]), entrada, time.time())
 
 
 def _claude_quota_module(valkey):
