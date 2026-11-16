@@ -610,6 +610,11 @@ contracts:
       2026-11-05 (SC-4629, Dani): la cuenta tercera pasa a llamarse
       work-personal (claude-acct-work-personal, CLAUDE_OAT_WORK_PERSONAL); su
       perfil de maquina no cambia. Mismo valor y forma: sin .vN+1.
+      2026-11-16 (DGX-1649): el CLI instalado es 2.1.325 y el manifiesto fijaba
+      2.1.316, una version que no corria ninguna maquina de la casa (2.1.325 en
+      paseo, 2.1.302 en el Mac). Se sube CLAUDE_CLI_VERSION y se suma
+      `anthropic-dangerous-direct-browser-access: true`, que el CLI real manda y
+      nosotros no. Aditivo: misma forma, sin .vN+1.
       Pinned by tests/test_claude_official_headers_contract.py.
   - id: dgx.session-router.claude-account-pin.v1
     kind: schema
