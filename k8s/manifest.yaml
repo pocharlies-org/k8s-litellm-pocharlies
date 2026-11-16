@@ -63,23 +63,6 @@ data:
         ServiceUnavailableErrorAllowedFails: 1000000000
         BadGatewayErrorAllowedFails: 1000000000
         NotFoundErrorAllowedFails: 1000000000
-    # 16-11-2026 (DGX-1649). Los `claude-acct-*` SI aparcan, y a proposito: un 429 de
-    # Anthropic llega SIN cabeceras `anthropic-ratelimit-unified-*` (medido el 16-11:
-    # las 8 cuentas, dos organizaciones, `x-should-retry: true`), asi que
-    # `session_router.claude_account_filter` no puede actualizar la lectura de cuota ni
-    # marcar la cuenta, y sin esto la sigue eligiendo en cada intento. Lo unico que la
-    # saca de la rotacion es el cooldown del Router: con la cuenta aparcada, el
-    # reintento de la misma peticion (y el del CLI) cae en otra cuenta. 60 s es lo que
-    # tarda en tener sentido volver a probarla; el camino del fallo toma el
-    # `cooldown_time` de `model_info`, no de `litellm_params` (ver la nota de
-    # `resident_never_cools` arriba). `allowed_fails: 0` porque el `allowed_fails: 3` del
-    # `router_settings` cuenta por CUENTA y minuto, y con `simple-shuffle` sobre 8 cuentas
-    # ese umbral no se alcanza nunca (medido el 16-11: 429s y `Cooldown Deployments=[]`);
-    # con 0, el primer 429 de una cuenta la aparca. Lo fija
-    # tests/test_claude_accounts_cool_on_429.py.
-    claude_acct_park: &claude_acct_park
-      cooldown_time: 60
-      allowed_fails: 0
     model_list:
     # Los alias locales son ESTATICOS desde el 18-08-2026 (ver la lapida de
     # `litellm-dgx-backend-sync` mas abajo): no se registran ni se retiran en
@@ -2331,7 +2314,6 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-info
-        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2358,7 +2340,6 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-correo
-        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2385,7 +2366,6 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-edani
-        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2412,7 +2392,6 @@ data:
           x-stainless-timeout: "900"
       model_info:
         id: claude-acct-work-personal
-        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2439,7 +2418,6 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-works-shared
-        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2466,7 +2444,6 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-flash
-        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2493,7 +2470,6 @@ data:
           x-stainless-timeout: "900"
       model_info:
         id: claude-acct-max
-        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -2520,7 +2496,6 @@ data:
           x-stainless-timeout: "600"
       model_info:
         id: claude-acct-sergio
-        <<: *claude_acct_park
         input_cost_per_token: 0
         output_cost_per_token: 0
         disable_background_health_check: true
@@ -10782,6 +10757,13 @@ data:
     # CONTRACT: dgx.litellm.claude-quota.v1
     # (ancla: claude:quota:) JSON de claude_quota_from_headers por cuenta, Valkey del router.
     CLAUDE_QUOTA_PREFIX = "claude:quota"
+    # DGX-1649 (16-11-2026): los `claude-acct-*` sirven el grupo comodin `claude-*`, y
+    # litellm mete esos deployments en `provider_default_deployment_ids`, donde el
+    # cooldown del Router NO corre nunca (medido en vivo: 429s y `Cooldown
+    # Deployments=[]` con `cooldown_time`/`allowed_fails` en el `model_info`). Un 429
+    # sin cabeceras `anthropic-ratelimit-unified-*` lo aparca el callback
+    # `claude_quota.py` escribiendo `cooldown_until` en la lectura de la cuenta.
+    CLAUDE_PARK_SECONDS = 60
     # CONTRACT: dgx.session-router.claude-account-pin.v1
     # (ancla: claude_account_pin:v1:) valor = id de cuenta, Valkey del session router.
     CLAUDE_ACCOUNT_PIN_PREFIX = "claude_account_pin:v1"
@@ -10915,9 +10897,13 @@ data:
 
 
     def _claude_rejected(reading, now):
-        """Rechazada (429 de suscripcion) o tirando de creditos, y su reset aun no llego."""
+        """Rechazada (429 de suscripcion) o tirando de creditos, y su reset aun no llego.
+        Un `cooldown_until` (429 sin cabeceras, DGX-1649) la aparca aunque no haya lectura."""
         if not reading:
             return False
+        until = reading.get("cooldown_until")
+        if isinstance(until, (int, float)) and until > now:
+            return True
         if not (reading.get("status") == "rejected" or reading.get("overage_in_use")):
             return False
         # `reset` es el de la ventana que manda (representative-claim). Sin el: 10 min,
@@ -13571,6 +13557,7 @@ data:
     import asyncio
     import json
     import logging
+    import time
     from litellm.integrations.custom_logger import CustomLogger
     import session_router
     log = logging.getLogger("claude_quota")
@@ -13616,6 +13603,26 @@ data:
             return None
         r = win.get("resets_at") if isinstance(win, dict) else None
         return win if isinstance(r, (int, float)) and r > now else None
+    async def _aparca(client, key, now):
+        """DGX-1649: un 429 de Anthropic llega SIN cabeceras unificadas (medido el 16-11:
+        las 8 cuentas, dos organizaciones), asi que no hay lectura que guardar y la
+        cuenta sigue entrando en el sorteo. Se marca `cooldown_until` en la lectura que
+        ya hubiera (las ventanas se conservan: las pinta el panel) y el filtro la salta
+        CLAUDE_PARK_SECONDS. El Router no la aparca: el grupo es el comodin `claude-*` y
+        esos deployments no pasan por el cooldown. Fail-open: si el GET o el SET fallan,
+        la cuenta sigue como estaba."""
+        try:
+            prev = await asyncio.wait_for(client.get(key), timeout=WRITE_TIMEOUT_SECONDS)
+            reading = json.loads(prev) if prev else {}
+        except Exception:  # noqa: BLE001 - JSON roto o Valkey: se escribe solo el aparcado
+            reading = {}
+        if not isinstance(reading, dict):
+            reading = {}
+        reading.update({"observed_at": now, "cooldown_until": now + session_router.CLAUDE_PARK_SECONDS})
+        await asyncio.wait_for(
+            client.set(key, json.dumps(reading), ex=CLAUDE_QUOTA_TTL_SECONDS),
+            timeout=WRITE_TIMEOUT_SECONDS,
+        )
     class ClaudeQuota(CustomLogger):
         async def _capture(self, kwargs, response_obj):
             try:
@@ -13624,6 +13631,11 @@ data:
                     return
                 reading = _headers_of(kwargs, response_obj)
                 if reading is None:
+                    if getattr(kwargs.get("exception"), "status_code", None) == 429:
+                        client = await session_router._redis()
+                        if client is not None:
+                            await _aparca(client, f"{session_router.CLAUDE_QUOTA_PREFIX}:{acct}",
+                                          time.time())
                     return
                 client = await session_router._redis()
                 if client is None:
@@ -14116,7 +14128,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-0475b186254b
+        config.k8s.e-dani.com/revision: config-e9ecfe6562cb
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15087,7 +15099,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-0475b186254b
+        config.k8s.e-dani.com/revision: config-e9ecfe6562cb
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

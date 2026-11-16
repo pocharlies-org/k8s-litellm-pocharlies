@@ -560,7 +560,13 @@ contracts:
       (hoy Fable; cabeceras anthropic-ratelimit-unified-7d_oi-*), null si nunca
       llego; una respuesta sin 7d_oi conserva la guardada hasta su reset. La
       compara el filtro con salto_fable de claude_accounts solo para modelos
-      Fable. Lectores: session_router.claude_account_filter
+      Fable. DGX-1649 (2026-11-16, aditivo): un 429 SIN ninguna cabecera
+      unificada no deja lectura que guardar, y el Router no aparca los
+      deployments del comodin `claude-*`; el callback conserva la lectura
+      anterior (las ventanas del panel) y le pone cooldown_until = ahora + 60 s
+      (session_router.CLAUDE_PARK_SECONDS), que es lo unico que mira el filtro.
+      Campo nuevo opcional, resto igual: sin .vN+1.
+      Lectores: session_router.claude_account_filter
       (salto) y dgx-infra services/dashboard (barras de cuota), solo GET.
       Pinned by tests/test_claude_account_filter.py.
   - id: dgx.litellm.claude-official-headers.v1
@@ -638,14 +644,15 @@ contracts:
       (empate: orden de la lista); forma y TTL de la clave sin cambios.
       DGX-1649 (2026-11-16): el 429 de Anthropic llega SIN cabeceras
       `anthropic-ratelimit-unified-*`, asi que la cuenta no se puede marcar
-      leyendo. Lo que la saca de la rotacion es el cooldown del Router
-      (`cooldown_time: 60` en el `model_info` de los 8 `claude-acct-*`, ancla
-      `&claude_acct_park`), y con la cuenta aparcada el filtro muda el pin a
-      otra, igual que si hubiera pasado su salto. Valor, forma y TTL: sin
-      cambios. DGX-1649 (2026-11-16, misma fecha): `cooldown_time` solo no
-      aparca, porque el `allowed_fails: 3` de `router_settings` cuenta por
-      cuenta y minuto y con 8 cuentas en `simple-shuffle` no se alcanza; el
-      ancla lleva tambien `allowed_fails: 0`. Valor, forma y TTL: sin cambios.
+      leyendo. El cooldown del Router NO la aparca: los 8 `claude-acct-*`
+      sirven el grupo comodin `claude-*` y litellm los mete en
+      `provider_default_deployment_ids`, donde no corre nunca (medido en vivo
+      con `cooldown_time`/`allowed_fails` en el `model_info`:
+      `Cooldown Deployments=[]` en cada 429). La marca la pone el callback
+      `claude_quota.py` escribiendo `cooldown_until` (ver
+      dgx.litellm.claude-quota.v1); con la cuenta aparcada el filtro muda el
+      pin a otra, igual que si hubiera pasado su salto. Valor, forma y TTL de
+      la clave: sin cambios.
   - id: dgx.litellm.service-alias.chatgpt.v1
     kind: http-route
     value: litellm-chatgpt
