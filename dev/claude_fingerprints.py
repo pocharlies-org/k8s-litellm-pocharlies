@@ -20,7 +20,7 @@ import re
 import sys
 
 # CONTRACT: dgx.litellm.claude-official-headers.v2
-CLAUDE_CLI_VERSION = "2.1.316"  # la del CLI instalado; se comprueba con capture_claude_cli_headers.py
+CLAUDE_CLI_VERSION = "2.1.325"  # la del CLI instalado; se comprueba con capture_claude_cli_headers.py
 
 # (sufijo de CLAUDE_OAT_, id del deployment, (os, arch, node, sdk, timeout_s))
 CUENTAS = (
@@ -46,6 +46,8 @@ def headers(perfil: tuple[str, str, str, str, str], version: str = CLAUDE_CLI_VE
     return {
         "user-agent": f"claude-cli/{version} (external, cli)",
         "x-app": "cli",
+        # lo manda el CLI real (capturado 16-11 con 2.1.325) y nosotros no lo fijabamos
+        "anthropic-dangerous-direct-browser-access": "true",
         "x-stainless-arch": arch,
         "x-stainless-lang": "js",
         "x-stainless-os": os_,
@@ -62,7 +64,8 @@ def render(perfil: tuple[str, str, str, str, str], version: str = CLAUDE_CLI_VER
     for k, v in headers(perfil, version).items():
         # se citan solo los valores que YAML leeria como numero (0, 600) y el UA,
         # que lleva espacios: el resto queda como en el manifiesto de siempre
-        lineas.append(f'          {k}: "{v}"' if (k == "user-agent" or v.isdigit()) else f"          {k}: {v}")
+        lineas.append(f'          {k}: "{v}"' if (k == "user-agent" or v.isdigit() or v in ("true", "false"))
+                      else f"          {k}: {v}")
     return "\n".join(lineas) + "\n"
 
 
