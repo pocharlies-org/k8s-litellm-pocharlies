@@ -32,5 +32,8 @@ def test_las_ocho_cuentas_claude_aparcan_al_recibir_un_429():
         info = dep["model_info"]
         cooldown = info.get("cooldown_time")
         assert isinstance(cooldown, int) and cooldown > 0, f"{info['id']} sin cooldown_time positivo"
+        # el `allowed_fails: 3` del router_settings cuenta por cuenta y minuto, y sobre 8
+        # cuentas con simple-shuffle no se alcanza: sin esto no aparca nunca
+        assert info.get("allowed_fails") == 0, f"{info['id']} sin allowed_fails: 0"
         # el camino del fallo lee model_info, no litellm_params: ahí no vale
         assert "cooldown_time" not in (dep["litellm_params"].get("headers") or {}), info["id"]

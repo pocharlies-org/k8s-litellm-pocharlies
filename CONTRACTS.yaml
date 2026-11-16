@@ -642,7 +642,10 @@ contracts:
       (`cooldown_time: 60` en el `model_info` de los 8 `claude-acct-*`, ancla
       `&claude_acct_park`), y con la cuenta aparcada el filtro muda el pin a
       otra, igual que si hubiera pasado su salto. Valor, forma y TTL: sin
-      cambios.
+      cambios. DGX-1649 (2026-11-16, misma fecha): `cooldown_time` solo no
+      aparca, porque el `allowed_fails: 3` de `router_settings` cuenta por
+      cuenta y minuto y con 8 cuentas en `simple-shuffle` no se alcanza; el
+      ancla lleva tambien `allowed_fails: 0`. Valor, forma y TTL: sin cambios.
   - id: dgx.litellm.service-alias.chatgpt.v1
     kind: http-route
     value: litellm-chatgpt
