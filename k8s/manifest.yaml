@@ -1451,7 +1451,7 @@ data:
         model: openai/qwen4-max-preview
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -1489,7 +1489,7 @@ data:
         model: openai/qwen4-max-preview
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -1570,7 +1570,7 @@ data:
         model: openai/qwen3.8-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -1615,7 +1615,7 @@ data:
         model: openai/qwen3.8-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -1660,7 +1660,7 @@ data:
         model: openai/qwen3.8-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -1698,7 +1698,7 @@ data:
         model: openai/qwen3.8-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -1736,7 +1736,7 @@ data:
         model: openai/qwen3.7-plus
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -1766,7 +1766,7 @@ data:
         model: openai/qwen3.7-plus
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -1796,7 +1796,7 @@ data:
         model: openai/qwen3.7-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -1826,7 +1826,7 @@ data:
         model: openai/qwen3.7-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -1856,7 +1856,7 @@ data:
         model: openai/qwen3.6-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -1886,7 +1886,7 @@ data:
         model: openai/qwen3.6-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -1916,7 +1916,7 @@ data:
         model: openai/deepseek-v4.1-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -1946,7 +1946,7 @@ data:
         model: openai/deepseek-v4.1-flash
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -1980,7 +1980,7 @@ data:
         model: openai/deepseek-v4.1-flash-1017
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order 1 explicito: el minimo del Router se calcula solo entre orders
         # declarados (la razon entera, en `alibaba-q38-flash`).
@@ -2006,7 +2006,7 @@ data:
         model: openai/deepseek-v4.1-flash-1017
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         order: 2
       model_info:
@@ -2028,7 +2028,7 @@ data:
         model: openai/deepseek-v4-pro
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -2058,7 +2058,7 @@ data:
         model: openai/deepseek-v4-pro
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -2088,7 +2088,7 @@ data:
         model: openai/deepseek-v4-flash-0731
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -2118,7 +2118,7 @@ data:
         model: openai/deepseek-v4-flash-0731
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -2148,7 +2148,7 @@ data:
         model: openai/glm-5.3
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -2178,7 +2178,7 @@ data:
         model: openai/glm-5.3
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -2208,7 +2208,7 @@ data:
         model: openai/glm-5.2
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # order: 1 EXPLICITO a proposito: el filtro del Router hace el minimo
         # SOLO entre orders declarados — sin esto el unico order del grupo
@@ -2238,7 +2238,7 @@ data:
         model: openai/glm-5.2
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
-        timeout: 600
+        timeout: 60
         num_retries: 0
         # Failover puro en REPO (estado estatico seguro): el minimo de
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
@@ -14124,7 +14124,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-28dd1d0ce479
+        config.k8s.e-dani.com/revision: config-66c61174b58d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15095,7 +15095,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-28dd1d0ce479
+        config.k8s.e-dani.com/revision: config-66c61174b58d
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

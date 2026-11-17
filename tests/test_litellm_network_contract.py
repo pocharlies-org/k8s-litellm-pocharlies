@@ -73,12 +73,27 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         #   INFRA-1243): respaldos en mac-casa, que puede estar dormido; con 600 s
         #   el fallback colgaria al cliente diez minutos en vez de fallar como sin
         #   respaldo. Mismos topes que el nginx de bge-failover y el rerank de Hindsight.
+        #   alibaba-* = 60 (17-11-2026, Dani): token-plan.ap-southeast-1 tiene
+        #   stall medidos (ráfagas de "Connection error" sin fallback); con 600 s
+        #   un stall colgaba al cliente diez minutos. Sanos se miden 1.2-1.8 s.
         excepciones = {
             "qwen38-flash-next": 240,
             "correo-clasificador": 6,
             "bge-m3-mac": 60,
             "bge-reranker-mac": 120,
             "stt-turbo-mac": 120,
+            "alibaba-q4-max": 60,
+            "alibaba-q38-flash": 60,
+            "alibaba-q38-max": 60,
+            "alibaba-q37-plus": 60,
+            "alibaba-q37-max": 60,
+            "alibaba-q36-flash": 60,
+            "alibaba-dsv41-fl": 60,
+            "alibaba-ds41f1017": 60,
+            "alibaba-dsv4-pro": 60,
+            "alibaba-dsv4f0731": 60,
+            "alibaba-glm-53": 60,
+            "alibaba-glm-52": 60,
         }
         for entry in model_list:
             params = entry.get("litellm_params", {})
