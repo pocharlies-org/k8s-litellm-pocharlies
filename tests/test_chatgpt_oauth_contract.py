@@ -1,4 +1,4 @@
-"""La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): ocho alias de chat, cinco de imagen
+"""La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): diez alias de chat, cinco de imagen
 (DGX-1077, DGX-1454), un gate y un renovador.
 
 POR QUE EXISTE ESTE FICHERO (18-10-2026). Los alias `gpt-*` vuelven al model_list tras
@@ -30,7 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "k8s" / "manifest.yaml"
 KEEPER = ROOT / "k8s" / "chatgpt-token-keeper.yaml"
 
-ALIASES = {"gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+ALIASES = {"gpt-6.2-sol", "gpt-6.2-astra",
+           "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 IMAGE_ALIASES = {"gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
                  "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}

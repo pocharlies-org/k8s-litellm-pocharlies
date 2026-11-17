@@ -900,8 +900,29 @@ data:
     #
     # tests/test_retired_gpt5_bridge_contract.py sigue sosteniendo la lapida de los
     # nombres de enrutado automatico (router/auto/...), que no vuelven.
-    # Official Codex /models catalog, client_version=1.105.1 (2026-10-30).
+    # Official Codex /models catalog, client_version=1.105.1 (2026-11-17:
+    # gpt-6.2-sol y gpt-6.2-astra, pedidos por Dani).
     # ultra is a Codex delegation mode, not an API effort: upstream returns 400.
+    - model_name: gpt-6.2-sol
+      litellm_params:
+        model: chatgpt/gpt-6.2-sol
+      model_info:
+        name: GPT-6.2 Sol · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6.2 Sol - el mas nuevo (17-11-2026) via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
+        disable_background_health_check: true
+    - model_name: gpt-6.2-astra
+      litellm_params:
+        model: chatgpt/gpt-6.2-astra
+      model_info:
+        name: GPT-6.2 Astra · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-6.2 Astra via la suscripcion ChatGPT Plus de Dani (OAuth, sin API key). Solo seleccion manual.
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supported_reasoning_efforts: [low, medium, high, xhigh, max]
+        disable_background_health_check: true
     - model_name: gpt-6.1-sol
       litellm_params:
         model: chatgpt/gpt-6.1-sol
@@ -14124,7 +14145,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-66c61174b58d
+        config.k8s.e-dani.com/revision: config-e45cfa1e74e0
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15095,7 +15116,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-66c61174b58d
+        config.k8s.e-dani.com/revision: config-e45cfa1e74e0
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

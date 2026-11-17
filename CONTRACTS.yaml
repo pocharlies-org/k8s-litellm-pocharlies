@@ -1019,6 +1019,9 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
+      2026-11-17, aditivo: `gpt-6.2-sol` y `gpt-6.2-astra`, los dos en el catalogo
+      Codex de la cuenta real (`/backend-api/codex/models`) y probados por el proxy
+      (HTTP 200). Se conservan los alias anteriores.
       DGX-1454 (2026-11-05), aditivo: `gpt-image-2.6-flare` y
       `gpt-image-2.6-sunburst` por el mismo provider OAuth, solo seleccion
       manual y sin health checks generativos; se conservan los alias 2.5 y 2.
