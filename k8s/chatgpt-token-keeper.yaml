@@ -67,6 +67,7 @@ data:
     Nunca imprime el token. Un fallo sale != 0 con el motivo y deja el CronJob en rojo.
     """
     import base64
+    import faulthandler
     import json
     import os
     import ssl
@@ -204,6 +205,11 @@ data:
 
 
     if __name__ == "__main__":
+        # SC-5727: el timeout de urllib no acota la resolucion DNS (getaddrinfo), asi que una
+        # DNS colgada deja el proceso esperando hasta que el activeDeadlineSeconds (300) lo
+        # mate sin dejar rastro. A los WATCHDOG_S segundos (defecto 240, por debajo del
+        # deadline) el watchdog vierte el traceback por stderr y sale con codigo 1.
+        faulthandler.dump_traceback_later(int(os.environ.get("WATCHDOG_S", "240")), exit=True)
         sys.exit(main())
 ---
 apiVersion: v1
