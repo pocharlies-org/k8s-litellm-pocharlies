@@ -654,6 +654,47 @@ contracts:
       dgx.litellm.claude-quota.v1); con la cuenta aparcada el filtro muda el
       pin a otra, igual que si hubiera pasado su salto. Valor, forma y TTL de
       la clave: sin cambios.
+      DGX-1713 (2026-11-19): ante un modelo Mythos el pin de una cuenta que no
+      esta en LITELLM_CLAUDE_MYTHOS_ACCOUNTS (dgx.litellm.claude-mythos-accounts.v1)
+      no vale: el filtro re-elige entre las cuentas con Mythos de la lista de la
+      key y reescribe el pin (cuenta como `moves`), y la conversacion sigue en la
+      nueva cuenta tambien para modelos que no son Mythos. Valor, forma y TTL de
+      la clave: sin cambios.
+  - id: dgx.litellm.claude-mythos-accounts.v1
+    # kind 'allowlist': es una lista de ids de cuenta (el mismo tipo que las
+    # LITELLM_*_ALLOWED_KEYS), con consumidor fuera del manifiesto: lo que decide es a
+    # que suscripcion de Anthropic se manda un modelo.
+    kind: allowlist
+    value: LITELLM_CLAUDE_MYTHOS_ACCOUNTS
+    role: provider
+    files:
+      - dev/session_router.py
+      - k8s/manifest.yaml
+      - tests/test_claude_account_filter.py
+    status: active
+    note: >-
+      DGX-1713 (2026-11-19). Env del Deployment litellm: ids de cuenta de Claude
+      (las de las entradas claude-acct-<id>) separados por comas que TIENEN acceso al
+      modelo Mythos; hoy work-personal,works-shared,flash,max,sergio. Medido el 19-11
+      ~09:20Z con GET api.anthropic.com/v1/models/claude-mythos-5-2 y -5-1 y el OAT de
+      cada cuenta: 200 en esas cinco y 404 not_found_error en info, correo y edani
+      (control claude-opus-5-5: 200 en las 8). Antes el filtro elegia por la politica de
+      la key sin mirar el modelo y una key con info primera (claude-atlantic,
+      claude-atlantic-compania) daba 404 en cada Mythos nuevo. Ahora
+      session_router.claude_account_filter, ante un modelo cuyo nombre contiene `mythos`
+      (sin distinguir mayusculas), trabaja solo con la lista de la key INTERSECCION esta
+      env, ANTES del pin, de los saltos y del margen: la lista de la key sigue mandando
+      (nunca una cuenta fuera de ella), el orden/saltos/margen/parking son los de siempre
+      y un pin en una cuenta sin Mythos se re-elige (ver dgx.session-router.claude-account-pin.v1).
+      Se lee UNA vez al cargar el modulo: cambiarla es un rollout del Deployment. FALLA
+      CERRADO: sin definir, vacia o sin ids validos ([a-z0-9-]; lo que no lo es se
+      descarta con aviso de cuantos), ningun Mythos tiene cuenta (lista vacia, como una
+      key sin politica) y un log.warning lo dice; tambien la lista vacia por interseccion
+      (ninguna cuenta sana de la key esta en la env). Los demas modelos no la miran. La
+      ventana de Fable (salto_fable) sigue siendo solo de Fable: Mythos no trae las
+      cabeceras 7d_oi. No cuenta en CLAUDE_ACCOUNT_STATS (dgx.litellm.claude-account-stats.v1
+      sigue con sus cinco contadores). Si una suscripcion gana o pierde Mythos, se cambia
+      la env y esta nota. Pinned by tests/test_claude_account_filter.py.
   - id: dgx.litellm.service-alias.chatgpt.v1
     kind: http-route
     value: litellm-chatgpt

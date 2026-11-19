@@ -5,6 +5,7 @@ contra una Valkey de pega, con el modulo tal cual lo embebe el ConfigMap.
 """
 import asyncio
 import json
+import logging
 import sys
 import time
 import types
@@ -552,8 +553,8 @@ FABLE_POLICY = {"claude-x86": [{"id": "info", "salto_7d": 90, "salto_5h": 90, "s
                                {"id": "correo", "salto_7d": 90, "salto_5h": 90, "salto_fable": 50}]}
 
 
-def _pick_model(mod, model, sid):
-    out = asyncio.run(mod.claude_account_filter(model, _deps(), _kw(sid=sid)))
+def _pick_model(mod, model, sid, deps=None, alias="claude-x86"):
+    out = asyncio.run(mod.claude_account_filter(model, deps or _deps(), _kw(alias=alias, sid=sid)))
     return [d["model_info"]["id"].removeprefix("claude-acct-") for d in out]
 
 
@@ -585,3 +586,160 @@ def test_salto_fable_ausente_o_basura_es_100():
         {"id": "d", "salto_fable": True}, {"id": "e", "salto_fable": float("nan")},
         {"id": "f", "salto_fable": 40}]})
     assert [e["salto_fable"] for e in clean["claude-x86"]] == [100.0] * 5 + [40.0]
+
+
+# ── DGX-1713: un modelo Mythos solo va a las cuentas que lo tienen ───────────────
+#
+# Sonda 19-11-2026 ~09:20Z (GET /v1/models/claude-mythos-5-{1,2} con el OAT de cada cuenta): 200 en
+# work-personal, works-shared, flash, max y sergio; 404 en info, correo y edani. La lista vive en la env
+# LITELLM_CLAUDE_MYTHOS_ACCOUNTS (se lee al cargar el modulo, asi que cada test la fija ANTES de `_pod`).
+
+MYTHOS_ENV = "work-personal,works-shared,flash,max,sergio"
+TODAS = ("info", "correo", "edani", "flash", "works-shared", "work-personal", "max", "sergio")
+MYTHOS = "claude-mythos-5-2"
+MYTHOS_POLICY = {"claude-x86": [{"id": a, "salto_7d": 90, "salto_5h": 90, "salto_fable": 50}
+                                 for a in ("info", "correo", "sergio")],
+                 "claude-atlantic": [{"id": a, "salto_7d": 90, "salto_5h": 90}
+                                      for a in ("info", "correo", "edani", "flash", "works-shared", "max", "sergio")]}
+
+
+def _mythos_pod(monkeypatch, valkey, env=MYTHOS_ENV, policy=MYTHOS_POLICY):
+    if env is None:
+        monkeypatch.delenv("LITELLM_CLAUDE_MYTHOS_ACCOUNTS", raising=False)
+    else:
+        monkeypatch.setenv("LITELLM_CLAUDE_MYTHOS_ACCOUNTS", env)
+    return _pod(valkey, policy=policy)
+
+
+def test_mythos_con_politica_info_correo_sergio_solo_va_a_sergio(monkeypatch):
+    v = FakeValkey()
+    mod = _mythos_pod(monkeypatch, v)
+    assert _pick_model(mod, MYTHOS, "m1", deps=_deps(TODAS)) == ["sergio"]
+    assert v.data["claude_account_pin:v1:claude-x86:m1"] == "sergio"
+    # Opus, con la misma politica y la env puesta, sigue la regla de siempre: la primera de la lista.
+    assert _pick_model(mod, "claude-opus-5-5", "o1", deps=_deps(TODAS)) == ["info"]
+
+
+def test_mythos_nunca_sale_de_la_lista_de_la_key(monkeypatch):
+    # flash tiene Mythos pero no esta en la politica de claude-x86: no se usa.
+    mod = _mythos_pod(monkeypatch, FakeValkey(), policy={"claude-x86": MYTHOS_POLICY["claude-x86"][:2]})
+    assert _pick_model(mod, MYTHOS, "m1", deps=_deps(TODAS)) == []
+
+
+def test_mythos_con_la_cuenta_buena_sin_deployment_sano_no_cae_a_una_sin_mythos(monkeypatch):
+    mod = _mythos_pod(monkeypatch, FakeValkey())
+    assert _pick_model(mod, MYTHOS, "m1", deps=_deps(("info", "correo", "edani"))) == []
+    assert _pick_model(mod, MYTHOS, "m2", deps=_deps(("info", "correo"))) == []
+
+
+def test_mythos_entre_las_elegibles_manda_el_orden_el_salto_y_el_margen(monkeypatch):
+    v = FakeValkey()
+    mod = _mythos_pod(monkeypatch, v)
+    deps = _deps(TODAS)
+    # sin lecturas: empate -> orden de la politica de claude-atlantic (flash antes que works-shared, max, sergio)
+    assert _pick_model(mod, MYTHOS, "m1", deps=deps, alias="claude-atlantic") == ["flash"]
+    _quota(v, "flash", u7=0.95)                      # pasada de su salto de 90
+    assert _pick_model(mod, MYTHOS, "m2", deps=deps, alias="claude-atlantic") == ["works-shared"]
+    _quota(v, "max", u7=0.0)                         # mas margen por hora que works-shared (10 %)
+    _quota(v, "works-shared", u7=0.5)
+    assert _pick_model(mod, MYTHOS, "m3", deps=deps, alias="claude-atlantic") == ["max"]
+    _quota(v, "max", u5=1.0, status="rejected")      # rechazada: parada como siempre
+    _quota(v, "sergio", u7=0.95)
+    assert _pick_model(mod, MYTHOS, "m4", deps=deps, alias="claude-atlantic") == ["works-shared"]
+    _quota(v, "works-shared", u7=0.95)
+    assert _pick_model(mod, MYTHOS, "m5", deps=deps, alias="claude-atlantic") == []   # todas pasadas de salto
+
+
+def test_mythos_con_pin_en_cuenta_sin_mythos_se_reelige_y_el_pin_muda(monkeypatch):
+    v = FakeValkey()
+    mod = _mythos_pod(monkeypatch, v)
+    deps = _deps(TODAS)
+    assert _pick_model(mod, "claude-opus-5-5", "p1", deps=deps) == ["info"]
+    assert v.data["claude_account_pin:v1:claude-x86:p1"] == "info"
+    assert _pick_model(mod, MYTHOS, "p1", deps=deps) == ["sergio"]            # info no vale para Mythos
+    assert v.data["claude_account_pin:v1:claude-x86:p1"] == "sergio"
+    assert mod.CLAUDE_ACCOUNT_STATS["moves"] == 1
+    assert _pick_model(mod, MYTHOS, "p1", deps=deps) == ["sergio"]            # ahora acierta el pin
+    assert mod.CLAUDE_ACCOUNT_STATS["hits"] == 1
+    assert _pick_model(mod, "claude-opus-5-5", "p1", deps=deps) == ["sergio"]  # y la conversacion sigue ahi
+
+
+def test_mythos_con_pin_en_cuenta_con_mythos_se_queda_hasta_su_salto(monkeypatch):
+    v = FakeValkey()
+    mod = _mythos_pod(monkeypatch, v, policy={"claude-x86": [
+        {"id": a, "salto_7d": 90, "salto_5h": 90} for a in ("info", "sergio", "flash")]})
+    deps = _deps(TODAS)
+    assert _pick_model(mod, MYTHOS, "q1", deps=deps) == ["sergio"]
+    _quota(v, "flash", u7=0.0)                                                # flash tendria mas margen
+    assert _pick_model(mod, MYTHOS, "q1", deps=deps) == ["sergio"]            # el pin manda mientras valga
+    _quota(v, "sergio", u7=0.95)                                              # pasa su salto: muda a otra CON Mythos
+    assert _pick_model(mod, MYTHOS, "q1", deps=deps) == ["flash"]
+
+
+def test_mythos_sin_la_env_no_tiene_cuenta_y_opus_no_se_entera(monkeypatch, caplog):
+    v = FakeValkey()
+    mod = _mythos_pod(monkeypatch, v, env=None)
+    deps = _deps(TODAS)
+    with caplog.at_level(logging.WARNING, logger="session_router"):
+        assert _pick_model(mod, MYTHOS, "e1", deps=deps) == []
+    assert "LITELLM_CLAUDE_MYTHOS_ACCOUNTS" in caplog.text and "falla cerrado" in caplog.text
+    assert "claude_account_pin:v1:claude-x86:e1" not in v.data
+    assert _pick_model(mod, "claude-opus-5-5", "e2", deps=deps) == ["info"]
+    assert _pick_model(mod, "claude-fable-5", "e3", deps=deps) == ["info"]
+
+
+def test_env_vacia_o_basura_es_lo_mismo_que_sin_env(monkeypatch, caplog):
+    for env in ("", "  ,, ", "Sergio,work personal,!!", "sergio;flash"):
+        mod = _mythos_pod(monkeypatch, FakeValkey(), env=env)
+        assert mod.CLAUDE_MYTHOS_ACCOUNTS == frozenset(), env
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="session_router"):
+            assert _pick_model(mod, MYTHOS, "g1", deps=_deps(TODAS)) == [], env
+        assert "falla cerrado" in caplog.text
+        assert _pick_model(mod, "claude-opus-5-5", "g2", deps=_deps(TODAS)) == ["info"], env
+
+
+def test_env_con_algun_id_valido_descarta_solo_la_basura_y_no_vuelca_el_valor(monkeypatch, caplog):
+    with caplog.at_level(logging.WARNING, logger="session_router"):
+        mod = _mythos_pod(monkeypatch, FakeValkey(), env=" sergio , ,Flash,x y,flash")
+    assert mod.CLAUDE_MYTHOS_ACCOUNTS == frozenset({"sergio", "flash"})
+    assert "descarto 2 entrada" in caplog.text and "Flash" not in caplog.text
+    assert _pick_model(mod, MYTHOS, "g1", deps=_deps(TODAS)) == ["sergio"]
+
+
+def test_la_env_se_lee_una_vez_al_cargar_el_modulo(monkeypatch):
+    mod = _mythos_pod(monkeypatch, FakeValkey())
+    monkeypatch.setenv("LITELLM_CLAUDE_MYTHOS_ACCOUNTS", "flash")
+    assert _pick_model(mod, MYTHOS, "l1", deps=_deps(TODAS)) == ["sergio"]    # la de la carga, no la de ahora
+
+
+def test_mythos_no_distingue_mayusculas_ni_version(monkeypatch):
+    mod = _mythos_pod(monkeypatch, FakeValkey())
+    deps = _deps(TODAS)
+    for i, m in enumerate(("claude-Mythos-5-2", "claude-MYTHOS-5-1", "claude-mythos-5-2[1m]", "claude-mythos-6")):
+        assert _pick_model(mod, m, f"c{i}", deps=deps) == ["sergio"], m
+
+
+def test_opus_y_fable_se_comportan_igual_con_la_env_puesta(monkeypatch):
+    v = FakeValkey()
+    mod = _mythos_pod(monkeypatch, v, policy=FABLE_POLICY)
+    # Mismo guion que test_fable_por_encima_de_su_salto_salta_de_cuenta_y_opus_no: info no tiene Mythos
+    # y Fable/Opus la siguen usando.
+    assert _pick_model(mod, "claude-fable-5", "f1") == ["info"]
+    assert _pick_model(mod, "claude-opus-5-5", "o1") == ["info"]
+    _quota_fable(v, "info", 0.6)
+    assert _pick_model(mod, "claude-fable-5", "f1") == ["correo"]
+    assert _pick_model(mod, "claude-Fable-5", "f2") == ["correo"]
+    assert _pick_model(mod, "claude-opus-5-5", "o1") == ["info"]
+
+
+def test_la_ventana_de_fable_no_aplica_a_mythos(monkeypatch):
+    """Mythos no trae las cabeceras 7d_oi: una cuenta con la ventana de Fable por encima de salto_fable
+    sigue sirviendo Mythos, y Fable en la misma cuenta si salta."""
+    v = FakeValkey()
+    mod = _mythos_pod(monkeypatch, v)
+    deps = _deps(TODAS)
+    _quota_fable(v, "sergio", 0.9)                                           # 90 % >= salto_fable 50
+    assert _pick_model(mod, MYTHOS, "w1", deps=deps) == ["sergio"]
+    assert _pick_model(mod, "claude-fable-5", "w2", deps=deps) == ["info"]   # info, la primera; sergio ni cuenta
+    assert _pick_model(mod, "claude-fable-5", "w3", deps=_deps(("sergio",))) == []
