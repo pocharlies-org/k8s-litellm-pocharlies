@@ -2144,8 +2144,51 @@ async def alibaba_account_filter(model, healthy_deployments, request_kwargs):
 #     lista de la key. Nunca fail-open aqui: abrir seria saltar de empresa.
 #   - Valkey caido -> sin lecturas ni pin: todas empatan y va la primera de la lista (determinista,
 #     la misma en las dos replicas).
+#   - Modelo Mythos (DGX-1713, 19-11): no todas las suscripciones lo tienen. Antes del pin, de los saltos
+#     y del margen, las candidatas son las de la lista de la key QUE ESTAN en la env
+#     LITELLM_CLAUDE_MYTHOS_ACCOUNTS; un pin en una cuenta sin Mythos no vale y la conversacion se
+#     re-elige y muda. Sin la env (o sin ids validos) Mythos no tiene cuenta: falla cerrado.
 CLAUDE_PREFIX = "claude-"
 _CLAUDE_ACCOUNT_ID_RE = re.compile(r"^claude-acct-([a-z0-9][a-z0-9-]*)$")
+
+
+# DGX-1713 (19-11-2026): no todas las suscripciones de Claude tienen Mythos. Sonda GET
+# /v1/models/claude-mythos-5-2 y -5-1 con el OAT de cada cuenta (19-11 ~09:20Z): 200 en
+# work-personal, works-shared, flash, max y sergio; 404 not_found_error en info, correo y edani
+# (control claude-opus-5-5: 200 en las 8). Elegir una de esas tres para un Mythos devolvia el 404 al
+# cliente, y el cooldown del Router no corre en estos deployments (DGX-1649), asi que nada lo evitaba.
+# LITELLM_CLAUDE_MYTHOS_ACCOUNTS (env del Deployment litellm; ids de cuenta separados por comas) es la
+# lista de cuentas CON Mythos. Se lee UNA vez al cargar el modulo, como las demas LITELLM_*: cambiarla
+# es un rollout. FALLA CERRADO: sin definir, vacia o sin ids validos, ningun Mythos tiene cuenta. Los
+# modelos que no son Mythos no la miran nunca. (Mythos no trae las cabeceras 7d_oi de Fable: su ventana
+# propia no aplica aqui, ver _claude_over_salto.)
+# CONTRACT: dgx.litellm.claude-mythos-accounts.v1
+# (ancla: LITELLM_CLAUDE_MYTHOS_ACCOUNTS) ids de cuenta [a-z0-9-] separados por comas, env del Deployment.
+def _parse_claude_mythos_accounts(raw):
+    """frozenset de ids de cuenta de la env. Lo que no es un id valido se descarta con aviso (solo
+    cuantos: no se vuelca el valor al log); sin ningun id valido, vacio => Mythos sin cuenta."""
+    ids, malos = set(), 0
+    for token in str(raw or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]*", token):
+            ids.add(token)
+        else:
+            malos += 1
+    if malos:
+        log.warning("session_router: LITELLM_CLAUDE_MYTHOS_ACCOUNTS: descarto %d entrada(s) que no son ids de "
+                    "cuenta ([a-z0-9-])", malos)
+    return frozenset(ids)
+
+
+CLAUDE_MYTHOS_ACCOUNTS = _parse_claude_mythos_accounts(os.environ.get("LITELLM_CLAUDE_MYTHOS_ACCOUNTS"))
+
+
+def _claude_is_mythos(model):
+    return "mythos" in str(model or "").lower()
+
+
 # CONTRACT: dgx.litellm.claude-quota.v1
 # (ancla: claude:quota:) JSON de claude_quota_from_headers por cuenta, Valkey del router.
 CLAUDE_QUOTA_PREFIX = "claude:quota"
@@ -2405,7 +2448,11 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
 
     Lo llama el Router en cada eleccion, reintentos incluidos (un 429 aparta la
     cuenta por cooldown y el reintento cae aqui con la siguiente). Grupos que no
-    son `claude-*`, o sin ids `claude-acct-*`, pasan intactos."""
+    son `claude-*`, o sin ids `claude-acct-*`, pasan intactos.
+
+    Un modelo Mythos (DGX-1713) solo puede ir a las cuentas de la lista de la key que
+    estan en LITELLM_CLAUDE_MYTHOS_ACCOUNTS, y eso se aplica ANTES del pin, de los saltos y
+    del margen: un pin en una cuenta sin Mythos no vale y la conversacion muda."""
     if not str(model or "").startswith(CLAUDE_PREFIX) or not healthy_deployments:
         return healthy_deployments
     by_account = {}
@@ -2437,6 +2484,18 @@ async def claude_account_filter(model, healthy_deployments, request_kwargs):
                         f"claude: la key {alias!r} no tiene cuentas disponibles para {model} "
                         f"(buckets: {', '.join(vistos) or 'ninguno'})")
         return []
+    if _claude_is_mythos(model):
+        # DGX-1713: solo las cuentas con Mythos; la lista de la key manda (nunca una fuera de ella).
+        # Sin contar `empty`: ese contador mide el salto (DGX-1417), no una cuenta sin el modelo.
+        con_mythos = [e for e in order if e["id"] in CLAUDE_MYTHOS_ACCOUNTS]
+        if not con_mythos:
+            motivo = ("LITELLM_CLAUDE_MYTHOS_ACCOUNTS vacia, sin definir o sin ids validos (falla cerrado)"
+                      if not CLAUDE_MYTHOS_ACCOUNTS else
+                      "ninguna cuenta sana de su politica esta en LITELLM_CLAUDE_MYTHOS_ACCOUNTS")
+            _warn_throttled(f"claude-mythos-sin-cuenta:{alias}",
+                            f"claude: la key {alias!r} no tiene cuenta con Mythos para {model}: {motivo}")
+            return []
+        order = con_mythos
     client = None
     try:
         client = await _redis()
