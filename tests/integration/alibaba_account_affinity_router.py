@@ -8,7 +8,7 @@ el ConfigMap. Las llamadas llevan `mock_response`: no salen a Alibaba.
 Cada fase es un proceso distinto = un pod distinto (memoria propia, Valkey
 compartida). Lo lanza tests/integration/run_alibaba_account_affinity.sh:
 
-  mix   <pod>   carga aleatoria: 12 grupos, N sesiones, turnos mezclados
+  mix   <pod>   carga aleatoria: los grupos del manifiesto, N sesiones, turnos mezclados
   move  <pod>   la cuenta de UNA sesion entra en cooldown de verdad (429 del
                 deployment -> cooldown del Router) y se comprueba la mudanza
                 entera; al volver la cuenta, la sesion NO regresa
@@ -187,7 +187,12 @@ def phase_check():
                "pods": sorted(pods), "sessions_per_account": accounts, "mixed": mixed[:5]}
     print(json.dumps(summary))
     assert not mixed, f"{len(mixed)} sesiones mezclaron cuenta"
-    assert len(groups) == 12 and len(pods) >= 2
+    # Los grupos esperados, leidos del manifiesto: con el literal (12) este contrato
+    # se caia solo por anadir un alias nuevo, que es justo lo que no tenia que hacer.
+    esperado = {m["model_name"] for m in yaml.safe_load(_configmap()["data"]["config.yaml"])["model_list"]
+                if str(m["model_name"]).startswith("alibaba-")}
+    assert groups == esperado, f"grupos observados {sorted(groups ^ esperado)}"
+    assert len(pods) >= 2
     assert len(accounts) == 2 and min(accounts.values()) > 0.3 * len(by_session)
 
 

@@ -1650,6 +1650,13 @@ contracts:
       (Dani), no el prorrateo integro de la familia; son 0,2x sobre los de la familia. La k del
       pack sigue sin cambiar para los demas once grupos. Quitar el factor cuando
       acabe la promo del preview.
+      2026-11-20 (DGX-1551): publicado `alibaba-q4-max-ga` (upstream `qwen4-max`,
+      el GA que sustituye al preview) con los tres precios INTEGROS de la familia
+      `alibaba-q38-max`: comparte precio de lista con el preview pero NO lleva su
+      -80 % de promo (Dani), o sea 5x `alibaba-q4-max`. Va declarado justo detras
+      del preview, que es el barato de los dos. Trece grupos, cada uno con su `-k2`
+      espejo. La k del pack no cambia y ningun literal de la superficie se
+      renombra: sin .vN+1.
       El supuesto creditos~lista es inspeccionable en la cabecera de la
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
       cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
