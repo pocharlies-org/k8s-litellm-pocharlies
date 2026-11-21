@@ -885,7 +885,8 @@ data:
     #     (`claude-atlantic` Paseo, `claude-atlantic-compania` compania asincrona —
     #     renombrada desde `claude-x86`, DGX-1395 — y `claude-mac`), `hermes`,
     #     `hindsight`, `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077) y
-    #     `nova` y `jarvis` (voz GPT-Live, DGX-1779).
+    #     `nova`, `jarvis` y `voz-duplex` (voz GPT-Live, DGX-1779; Nova entra hoy con
+    #     `voz-duplex`, su key propia `nova` es la de INFRA-1251).
     #     La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
     #     desde antes de la purga del 21-08 y lo heredaria sola al volver el alias: el
     #     gate la para. Cualquier key nueva, igual.
@@ -14350,7 +14351,7 @@ spec:
         - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: litellm
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-e1cfa8cbd5@sha256:95c0120031f582c6eb2dc0650c91dafa7cd85ac69ce780ac79d3de24227cb387
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-4a608abea6@sha256:e46d7f4c2275d3b8a21e783ee997d7f676f0a21dd45e449ea78465f2ac639f6e
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -14539,7 +14540,7 @@ spec:
             # DGX-1053 (orden de Dani 11-11-2026): `claude-cloudblue`, la key del Claude Code/Paseo
             # del Mac para trabajo CloudBlue, entra por pedido explicito del owner para usar los
             # `gpt-*` del gateway; sus models de la BD ya se actualizaron por /key/update.
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod,claude-cloudblue,nova,jarvis" }
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod,claude-cloudblue,nova,jarvis,voz-duplex" }
             # INFRA-1223: los alias `anthropic-*` (API key de pago de Anthropic, tope 150 USD/mes en
             # la Console). Solo Nova: hoy por `voz-duplex`; `nova` es su key propia (INFRA-1251).
             - { name: LITELLM_ANTHROPIC_ALLOWED_KEYS, value: "voz-duplex,nova" }
@@ -15313,7 +15314,7 @@ spec:
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.105.1-codex-e1cfa8cbd5@sha256:95c0120031f582c6eb2dc0650c91dafa7cd85ac69ce780ac79d3de24227cb387
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-4a608abea6@sha256:e46d7f4c2275d3b8a21e783ee997d7f676f0a21dd45e449ea78465f2ac639f6e
           command:
             - python
             - -m
