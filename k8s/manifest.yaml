@@ -11602,8 +11602,8 @@ data:
             if denied is not None:
                 return True, denied
             # SC-2504 (Dani, 16-10): el interruptor es para el trabajo de la compañía (historias, épicas, Requests); el
-            # supervisor —el CTO de Hermes— conserva siempre su respaldo de Alibaba.
-            if _hermes_profile(data) in ALIBABA_SIEMPRE or _company_rol(data) in COMPANY_ROL_SIEMPRE:   # SC-6212: IT
+            # supervisor —el CTO de Hermes— y el rol IT (SC-6212) conservan siempre su respaldo de Alibaba.
+            if _hermes_profile(data) in ALIBABA_SIEMPRE or _company_rol(data) in COMPANY_ROL_SIEMPRE:
                 return False, None
             if (config.get("company") or {}).get("alibaba", True) is not False:
                 return False, None
@@ -14303,7 +14303,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1ca6155a5ec0
+        config.k8s.e-dani.com/revision: config-7f0be661f840
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15281,7 +15281,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1ca6155a5ec0
+        config.k8s.e-dani.com/revision: config-7f0be661f840
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false

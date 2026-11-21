@@ -2897,8 +2897,8 @@ async def apply_company_policy(data, requested_model):
         if denied is not None:
             return True, denied
         # SC-2504 (Dani, 16-10): el interruptor es para el trabajo de la compañía (historias, épicas, Requests); el
-        # supervisor —el CTO de Hermes— conserva siempre su respaldo de Alibaba.
-        if _hermes_profile(data) in ALIBABA_SIEMPRE or _company_rol(data) in COMPANY_ROL_SIEMPRE:   # SC-6212: IT
+        # supervisor —el CTO de Hermes— y el rol IT (SC-6212) conservan siempre su respaldo de Alibaba.
+        if _hermes_profile(data) in ALIBABA_SIEMPRE or _company_rol(data) in COMPANY_ROL_SIEMPRE:
             return False, None
         if (config.get("company") or {}).get("alibaba", True) is not False:
             return False, None
