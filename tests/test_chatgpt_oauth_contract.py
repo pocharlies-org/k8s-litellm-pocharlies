@@ -101,12 +101,14 @@ def test_the_image_aliases_go_to_the_chatgpt_provider_for_free_and_unprobed():
         assert entry["model_info"]["disable_background_health_check"] is True
 
 def test_the_live_alias_goes_to_the_chatgpt_provider_for_free_and_unprobed():
-    """DGX-1779: voz GPT-Live (WebRTC). Sin extra_headers: Live rechaza `OpenAI-Alpha`."""
+    """DGX-1779: voz GPT-Live (WebRTC). Sin extra_headers: Live rechaza `OpenAI-Alpha`. Con el
+    backend de Codex como api_base: sin el, la Live sale a api.openai.com y el OAuth da 403."""
     cfg = _config()[1]
     by_name = {m["model_name"]: m for m in cfg["model_list"]}
     for name in LIVE_ALIASES:
         entry = by_name[name]
-        assert entry["litellm_params"] == {"model": f"chatgpt/{name}"}, name
+        assert entry["litellm_params"] == {"model": f"chatgpt/{name}",
+                                           "api_base": "https://chatgpt.com/backend-api/codex"}, name
         assert entry["model_info"]["mode"] == "realtime"
         assert entry["model_info"]["input_cost_per_token"] == 0
         assert entry["model_info"]["output_cost_per_token"] == 0
