@@ -1,5 +1,5 @@
 """La cuenta ChatGPT Plus de Dani por litellm (DGX-1053): diez alias de chat, cinco de imagen
-(DGX-1077, DGX-1454), un gate y un renovador.
+(DGX-1077, DGX-1454), uno de voz (DGX-1779), un gate y un renovador.
 
 POR QUE EXISTE ESTE FICHERO (18-10-2026). Los alias `gpt-*` vuelven al model_list tras
 su lapida del 03-09: aquella cuenta cayo baneada dos veces porque el catalogo de
@@ -38,7 +38,8 @@ ALIASES = {"gpt-6.2-sol", "gpt-6.2-astra",
            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 IMAGE_ALIASES = {"gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
                  "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
-ALLOWED_KEYS = ("hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic", "claude-atlantic-compania", "sugiere-prod", "claude-cloudblue")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic); 02-11 DGX-1395: claude-atlantic-compania (compania asincrona, renombrada desde claude-x86, que sale con la limpieza); 06-11 SC-4822: sugiere-prod (sugerencia con el modelo de la sesion de Paseo); 11-11 DGX-1053: claude-cloudblue (Claude Code del Mac CloudBlue usa los gpt-* del gateway, orden de Dani)
+LIVE_ALIASES = {"gpt-live-1-codex"}
+ALLOWED_KEYS = ("hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic", "claude-atlantic-compania", "sugiere-prod", "claude-cloudblue", "nova", "jarvis")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic); 02-11 DGX-1395: claude-atlantic-compania (compania asincrona, renombrada desde claude-x86, que sale con la limpieza); 06-11 SC-4822: sugiere-prod (sugerencia con el modelo de la sesion de Paseo); 11-11 DGX-1053: claude-cloudblue (Claude Code del Mac CloudBlue usa los gpt-* del gateway, orden de Dani); 21-11 DGX-1779: nova y jarvis (voz GPT-Live, orden de Dani)
 WANT_FN = {"_chatgpt_access_denied"}
 WANT_CONST = {"CHATGPT_ALIAS_PREFIX", "CHATGPT_ALLOWED_KEY_ALIASES"}
 
@@ -99,6 +100,19 @@ def test_the_image_aliases_go_to_the_chatgpt_provider_for_free_and_unprobed():
         # un health check de imagen generaria una imagen por ronda contra la cuota de la cuenta
         assert entry["model_info"]["disable_background_health_check"] is True
 
+def test_the_live_alias_goes_to_the_chatgpt_provider_for_free_and_unprobed():
+    """DGX-1779: voz GPT-Live (WebRTC). Sin extra_headers: Live rechaza `OpenAI-Alpha`."""
+    cfg = _config()[1]
+    by_name = {m["model_name"]: m for m in cfg["model_list"]}
+    for name in LIVE_ALIASES:
+        entry = by_name[name]
+        assert entry["litellm_params"] == {"model": f"chatgpt/{name}"}, name
+        assert entry["model_info"]["mode"] == "realtime"
+        assert entry["model_info"]["input_cost_per_token"] == 0
+        assert entry["model_info"]["output_cost_per_token"] == 0
+        assert entry["model_info"]["disable_background_health_check"] is True
+
+
 def test_no_automatic_path_reaches_a_gpt_alias():
     _, cfg = _config()
     rs = cfg.get("router_settings", {}) or {}
@@ -117,7 +131,7 @@ def test_no_automatic_path_reaches_a_gpt_alias():
     for line in raw.splitlines():
         if "model_name:" in line or line.strip().startswith("#"):
             continue
-        for alias in ALIASES | IMAGE_ALIASES:
+        for alias in ALIASES | IMAGE_ALIASES | LIVE_ALIASES:
             if f"model: chatgpt/{alias}" in line:
                 continue
             assert f" {alias}" not in line and f"'{alias}'" not in line and f'"{alias}"' not in line, line
@@ -164,7 +178,7 @@ def test_a_deployment_without_the_variable_denies_everyone():
 
 
 def test_only_the_allowed_keys_get_through(open_gate):
-    for alias in ALIASES | IMAGE_ALIASES:
+    for alias in ALIASES | IMAGE_ALIASES | LIVE_ALIASES:
         for key in ALLOWED_KEYS:
             assert open_gate._chatgpt_access_denied(alias, key) == (False, None)
         for key in ("sauvage-shield", "master", "synapse", "document-intake", "hermes-batch", None):
