@@ -99,8 +99,8 @@ réplicas según el perfil `llm-tp`: un servicio sin endpoints significa «no re
 DGX-1035 (17-10): `MaxParallelRequestsLimit.acquire` levanta `RateLimitError` y no hay control que restaure la
 espera ni en v1.105.1 ni en el main de upstream. Los topes 4/3 por pod de Dani presuponen ENCOLAR; hoy
 RECHAZA y así está **declarado** en `tests/integration/semaphore_queue_contract.py` — contrato de
-caracterización que mide con el Router real de la imagen pineada y deja el CI rojo si un bump cambia la
-semántica sin declararla o pinea una imagen sin medir. El parche del fork que restaura la espera (historia
+caracterización que mide con el Router real de la imagen pineada en cada PR y deja el CI rojo si un bump
+cambia la semántica sin declararla (una sola semántica declarada, no una tabla por tag: DGX-1779). El parche del fork que restaura la espera (historia
 de SC-2917, dictamen del arquitecto 23-10) cambiará la declaración a ENCOLA en su propio PR.
 
 ## 6. Tests y validaciones

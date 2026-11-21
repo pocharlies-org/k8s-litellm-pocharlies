@@ -7,8 +7,8 @@ manifiesto, no copiado) apuntando a un upstream falso que retiene cada llamada 1
 "already has ... requests in flight" en el acto, es RECHAZA.
 
 TEST DE CARACTERIZACION TRANSITORIO (dictamen del arquitecto, SC-2917, opcion d): fija lo que
-HAY, no lo que se desea — verde mientras la imagen pineada mantenga su semantica declarada, ROJO
-si un bump cambia la semantica sin declararla o pinea una imagen sin medir. La semantica que los
+HAY, no lo que se desea — verde mientras la imagen pineada mantenga la semantica declarada, ROJO
+si un bump la cambia sin declararlo. Toda imagen pineada queda medida: esto corre en cada PR. La semantica que los
 topes 4/3 del residente presuponen es ENCOLA (asi estaba con v1.100.0); la imagen pineada hoy
 declara RECHAZA como REGRESION de SC-2917 (fallo del clasificador del 23-10). El parche del fork
 que restaure la espera cambia esta declaracion a ENCOLA en su propio PR.
@@ -29,14 +29,15 @@ MANIFEST = pathlib.Path(os.environ.get("REPO", ".")) / "k8s" / "manifest.yaml"
 DEPLOYMENT_ID = "qwen38-flash-next-tp2"
 HOLD_S = 1.5
 
-# Semantica DECLARADA por imagen pineada: {tag: "ENCOLA"|"RECHAZA"}. Cada valor es un hecho
-# MEDIDO con este mismo test contra esa imagen, no una sospecha. Imagen sin entrada, o cuya
-# semantica medida cambie sin actualizar la entrada = CI rojo.
+# Semantica DECLARADA de la imagen pineada: "ENCOLA" | "RECHAZA". Es un hecho MEDIDO con este
+# mismo test, que corre en el CI de CADA PR contra la imagen que pinea: un bump cuya semantica
+# medida no coincida con esta = CI rojo (CAMBIO SIN DECLARAR). No se declara por tag: con una
+# tabla por tag exacto (SHA incluido) cada repin nocturno nacia rojo aunque la semantica no
+# cambiara, y produccion se quedo un mes en v1.105.1 (DGX-1779, 21-11-2026).
 # SC-2917: RECHAZA es la REGRESION declarada (los topes 4/3 presuponen ENCOLA; DGX-874 midio
 # ENCOLA con v1.100.0). El parche del fork (historia de SC-2917) la cambiara a ENCOLA.
-SEMANTICA_DECLARADA = {
-    "v1.105.1-codex-e1cfa8cbd5": "RECHAZA",  # medido 23-10-2026: acquire() levanta RateLimitError
-}
+# Medido: v1.105.1-codex-e1cfa8cbd5 (23-10-2026) y v1.106.11-codex-5580e86f5d (20-11-2026).
+SEMANTICA_DECLARADA = "RECHAZA"  # acquire() levanta RateLimitError
 
 
 def _tope_del_manifiesto() -> int:
@@ -110,11 +111,9 @@ async def main() -> None:
 
     # "litellm:v1.105.1-codex-e1cfa8cbd5@sha256:95c..." -> "v1.105.1-codex-e1cfa8cbd5"
     tag = imagen.split("/")[-1].split("@")[0].split(":", 1)[-1]
-    esperada = SEMANTICA_DECLARADA.get(tag)
+    esperada = SEMANTICA_DECLARADA
     if marca == "PASAN-SIN-COLA":
         print("  INCONCLUYENTE: no hay ni rechazo ni espera medible; revisa el harness del test.")
-    elif esperada is None:
-        print(f"  SEMANTICA NO DECLARADA para {tag}: imagen pineada sin medir (o sin su entrada).")
     elif marca != esperada:
         nota = " (REGRESION SC-2917: los topes presuponen ENCOLA)" if esperada == "RECHAZA" else ""
         print(f"  CAMBIO SIN DECLARAR: {tag} declarada {esperada}, medida {marca}{nota}.")
