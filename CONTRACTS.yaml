@@ -75,6 +75,9 @@ contracts:
       supervisor: a company request whose x-hermes-profile is in ALIBABA_SIEMPRE (today {"cto"}) is neither sealed nor
       rejected, so the CTO of Hermes keeps its alibaba-* fallback with the switch off. Read from the same three header
       sources; forging it only costs Alibaba spend, attributed to the forger's key.
+      SC-6212 (2026-11-21, Dani): the same exemption for the company's IT role: a company request whose x-company-rol
+      is in COMPANY_ROL_SIEMPRE (today {"it"}) is neither sealed nor rejected (dgx.company.rol-header.v1), so an IT
+      Request that finds no room on the resident runs on Alibaba with the switch off. Every other role keeps it.
   - id: dgx.session-router.sticky-key.v1
     kind: schema
     value: session-router:sticky:<sid>
@@ -1003,6 +1006,25 @@ contracts:
       holds the same key); the only gain is Alibaba fallback for one request.
       Pinned by tests/test_active_request_profile_contract.py and
       tests/test_session_routing_contract.py::test_el_cto_de_hermes_conserva_alibaba_con_el_interruptor_apagado.
+  - id: dgx.company.rol-header.v1
+    # Mismo kind que dgx.claude.class-header.v1: cabecera entre procesos.
+    kind: schema
+    value: x-company-rol
+    role: consumer
+    files:
+      - k8s/manifest.yaml
+      - dev/session_router.py
+    status: active
+    note: >-
+      2026-11-21 (SC-6212, Dani: una Request de IT no espera capacidad). Request header stamped by the company
+      launcher of x86-host-runtime-pocharlies (company_env.ROL_HEADER, value = the role of the session, from its
+      agent `company-<rol>`; publisher note under jira.etiquetas.en-vivo-de-dani there). session_router
+      reads it like x-hermes-profile (case-insensitive key from headers, metadata.headers or
+      litellm_metadata.headers; value lowercased) in `_company_rol`, and apply_company_policy exempts a role in
+      COMPANY_ROL_SIEMPRE ({"it"}) from the company Alibaba switch (`company.alibaba=false` of
+      dgx.model-routing.config.v1): no 403 on an explicit alibaba-* and no disable_fallbacks seal. Every other role
+      keeps the switch. Forgeable like the class header: it only widens that one exception. Pinned by
+      tests/test_session_routing_contract.py::test_el_rol_it_de_la_compania_conserva_alibaba_con_el_interruptor_apagado.
   - id: dgx.litellm.refusal-probe-stamp.v1
     # Claves que el hook escribe en spend_logs_metadata de LiteLLM_SpendLogs y
     # que lee por SQL el panel de refusal. Mismo kind que class-header: es una
