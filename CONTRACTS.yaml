@@ -75,6 +75,9 @@ contracts:
       supervisor: a company request whose x-hermes-profile is in ALIBABA_SIEMPRE (today {"cto"}) is neither sealed nor
       rejected, so the CTO of Hermes keeps its alibaba-* fallback with the switch off. Read from the same three header
       sources; forging it only costs Alibaba spend, attributed to the forger's key.
+      SC-6212 (2026-11-21, Dani): the same exemption for the company's IT role: a company request whose x-company-rol
+      is in COMPANY_ROL_SIEMPRE (today {"it"}) is neither sealed nor rejected (dgx.company.rol-header.v1), so an IT
+      Request that finds no room on the resident runs on Alibaba with the switch off. Every other role keeps it.
   - id: dgx.session-router.sticky-key.v1
     kind: schema
     value: session-router:sticky:<sid>
@@ -1079,6 +1082,11 @@ contracts:
       - k8s/manifest.yaml
     status: active
     note: >-
+      DGX-1779 (2026-11-21), aditivo: alias de voz `gpt-live-1-codex` (mode realtime,
+      coste 0) por el mismo provider OAuth, para la API Live por WebRTC
+      (/v1/live/sessions, 201 medido con la cuenta real), con `api_base` el backend de
+      Codex (sin el sale a api.openai.com y el OAuth da 403); y las keys `nova` y `jarvis`
+      entran en LITELLM_CHATGPT_ALLOWED_KEYS por orden de Dani, para usar esa voz.
       2026-11-17, aditivo: `gpt-6.2-sol` y `gpt-6.2-astra`, los dos en el catalogo
       Codex de la cuenta real (`/backend-api/codex/models`) y probados por el proxy
       (HTTP 200). Se conservan los alias anteriores.

@@ -884,7 +884,8 @@ data:
     #     LITELLM_CHATGPT_ALLOWED_KEYS): las keys de maquina de Dani
     #     (`claude-atlantic` Paseo, `claude-atlantic-compania` compania asincrona —
     #     renombrada desde `claude-x86`, DGX-1395 — y `claude-mac`), `hermes`,
-    #     `hindsight` y `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077).
+    #     `hindsight`, `studio-chatgpt` (motores de imagen del DGX Studio, DGX-1077) y
+    #     `nova` y `jarvis` (voz GPT-Live, DGX-1779).
     #     La key `sauvage-shield` lleva `gpt-5.6-luna` escrito en su allowlist
     #     desde antes de la purga del 21-08 y lo heredaria sola al volver el alias: el
     #     gate la para. Cualquier key nueva, igual.
@@ -1049,6 +1050,27 @@ data:
         description: GPT Image 2 - texto-a-imagen via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
         mode: image_generation
         input_cost_per_image: 0
+        disable_background_health_check: true
+    # DGX-1779 (21-11-2026): voz GPT-Live por la misma cuenta, para Hermes, Nova y Jarvis.
+    # Medido con el token real contra chatgpt.com/backend-api/codex: la API publica Live
+    # por WebRTC (POST /v1/live/sessions, JSON {session, transport:{type:webrtc,sdp}}) da
+    # 201 con SDP answer; la ruta compat de Codex (POST /v1/live, SDP crudo) tambien, y ahi
+    # el CLIENTE manda `OpenAI-Alpha: quicksilver=v2` (Live rechaza esa cabecera: no va en
+    # extra_headers). Los websockets (WS /v1/live/sessions y /v1/realtime) dan 403 desde
+    # atlantic: solo WebRTC.
+    # `api_base` OBLIGATORIO: sin el, la Live del provider `chatgpt/` sale a
+    # api.openai.com/v1 (ChatGPTRealtime.get_api_base) y ahi el token OAuth recibe 403
+    # «Voice session access denied.» (medido 21-11, por el proxy y directo).
+    - model_name: gpt-live-1-codex
+      litellm_params:
+        model: chatgpt/gpt-live-1-codex
+        api_base: https://chatgpt.com/backend-api/codex
+      model_info:
+        name: GPT-Live 1 (voz) · cuenta ChatGPT Plus de Dani (OAuth)
+        description: GPT-Live 1 - voz en tiempo real (WebRTC, /v1/live/sessions) via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
+        mode: realtime
+        input_cost_per_token: 0
+        output_cost_per_token: 0
         disable_background_health_check: true
     # >>> openrouter-free — BLOQUE DE ALIAS `or-*` DEL CATALOGO `:free` DE OPENROUTER
     # ESTE BLOQUE SE MANTIENE A MANO, en este fichero, en este commit. No hay panel ni
@@ -14303,7 +14325,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7f0be661f840
+        config.k8s.e-dani.com/revision: config-821e822847ea
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14540,7 +14562,7 @@ spec:
             # DGX-1053 (orden de Dani 11-11-2026): `claude-cloudblue`, la key del Claude Code/Paseo
             # del Mac para trabajo CloudBlue, entra por pedido explicito del owner para usar los
             # `gpt-*` del gateway; sus models de la BD ya se actualizaron por /key/update.
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod,claude-cloudblue" }
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod,claude-cloudblue,nova,jarvis" }
             # INFRA-1223: los alias `anthropic-*` (API key de pago de Anthropic, tope 150 USD/mes en
             # la Console). Solo Nova: hoy por `voz-duplex`; `nova` es su key propia (INFRA-1251).
             - { name: LITELLM_ANTHROPIC_ALLOWED_KEYS, value: "voz-duplex,nova" }
@@ -15281,7 +15303,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-7f0be661f840
+        config.k8s.e-dani.com/revision: config-821e822847ea
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
