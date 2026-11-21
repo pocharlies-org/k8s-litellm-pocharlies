@@ -1256,6 +1256,22 @@ def test_el_cto_de_hermes_conserva_alibaba_con_el_interruptor_apagado(router_mod
         assert denegada is True and detalle["error"] == "company_alibaba_disabled"
 
 
+def test_el_rol_it_de_la_compania_conserva_alibaba_con_el_interruptor_apagado(router_mod):
+    """SC-6212 (Dani, 21-11): una Request de IT no espera; sin plaza en el local su sesión va a Alibaba aunque el
+    interruptor de la compañía esté apagado. El resto de roles sigue rechazado y sellado."""
+    cfg = _cfg(company={"alibaba": False})
+    assert router_mod.COMPANY_ROL_SIEMPRE == frozenset({"it"})
+    it = _data(model="alibaba-explicito-a", metadata={"headers": {"x-claude-class": "company", "X-Company-Rol": "it"}})
+    assert _policy(router_mod, cfg, it, requested="alibaba-explicito-a") == (False, None)
+    assert "disable_fallbacks" not in it
+    it_v1 = {"model": "alibaba-explicito-a", "litellm_metadata": {"headers": {"x-claude-class": "company", "x-company-rol": "it"}}}
+    assert _policy(router_mod, cfg, it_v1, requested="alibaba-explicito-a") == (False, None)
+    for otro in ("developer", "security", ""):
+        data = _data(model="alibaba-explicito-a", metadata={"headers": {"x-claude-class": "company", "x-company-rol": otro}})
+        denegada, detalle = _policy(router_mod, cfg, data, requested="alibaba-explicito-a")
+        assert denegada is True and detalle["error"] == "company_alibaba_disabled", otro
+
+
 def test_company_policy_fail_open(router_mod):
     async def revienta():
         raise RuntimeError("panel caído")
