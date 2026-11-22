@@ -625,6 +625,11 @@ contracts:
       paseo, 2.1.302 en el Mac). Se sube CLAUDE_CLI_VERSION y se suma
       `anthropic-dangerous-direct-browser-access: true`, que el CLI real manda y
       nosotros no. Aditivo: misma forma, sin .vN+1.
+      2026-11-22 (SC-6247): el CLI instalado es 2.1.327 y el manifiesto fijaba
+      2.1.325. Captura real con capture_claude_cli_headers.py: misma familia
+      x-stainless-* (node v26.12.1, sdk 0.128.0) y las 10 betas de 2.1.327 ya las
+      conoce el manager de litellm (CLAUDE_OFFICIAL_BETAS no cambia). Solo sube la
+      version del user-agent. Aditivo: misma forma, sin .vN+1.
       Pinned by tests/test_claude_official_headers_contract.py.
   - id: dgx.session-router.claude-account-pin.v1
     kind: schema

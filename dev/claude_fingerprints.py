@@ -20,7 +20,7 @@ import re
 import sys
 
 # CONTRACT: dgx.litellm.claude-official-headers.v2
-CLAUDE_CLI_VERSION = "2.1.325"  # la del CLI instalado; se comprueba con capture_claude_cli_headers.py
+CLAUDE_CLI_VERSION = "2.1.327"  # la del CLI instalado; se comprueba con capture_claude_cli_headers.py
 
 # (sufijo de CLAUDE_OAT_, id del deployment, (os, arch, node, sdk, timeout_s))
 CUENTAS = (
