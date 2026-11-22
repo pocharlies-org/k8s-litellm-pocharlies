@@ -1094,6 +1094,10 @@ contracts:
       entran en LITELLM_CHATGPT_ALLOWED_KEYS por orden de Dani, para usar esa voz.
       Con la imagen del parche (sesion Live sin supervisor si ChatGPT niega el attach, 403)
       entra tambien `voz-duplex`, la key con la que Nova llama hoy (INFRA-1251).
+      Aditivo: el audio solo conecta por la llamada quicksilver de Codex, asi que el
+      alias lleva `extra_query` intent/architecture y `extra_headers` OpenAI-Alpha y se
+      consume por POST /v1/realtime/calls (con la imagen que deja la llamada sin
+      supervisor si ChatGPT niega el sideband, 403).
       2026-11-17, aditivo: `gpt-6.2-sol` y `gpt-6.2-astra`, los dos en el catalogo
       Codex de la cuenta real (`/backend-api/codex/models`) y probados por el proxy
       (HTTP 200). Se conservan los alias anteriores.

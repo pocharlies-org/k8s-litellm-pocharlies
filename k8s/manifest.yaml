@@ -1054,11 +1054,14 @@ data:
         disable_background_health_check: true
     # DGX-1779 (21-11-2026): voz GPT-Live por la misma cuenta, para Hermes, Nova y Jarvis.
     # Medido con el token real contra chatgpt.com/backend-api/codex: la API publica Live
-    # por WebRTC (POST /v1/live/sessions, JSON {session, transport:{type:webrtc,sdp}}) da
-    # 201 con SDP answer; la ruta compat de Codex (POST /v1/live, SDP crudo) tambien, y ahi
-    # el CLIENTE manda `OpenAI-Alpha: quicksilver=v2` (Live rechaza esa cabecera: no va en
-    # extra_headers). Los websockets (WS /v1/live/sessions y /v1/realtime) dan 403 desde
-    # atlantic: solo WebRTC.
+    # (POST /v1/live/sessions) da 201 con SDP answer pero su media NUNCA conecta (ICE sin
+    # respuesta, directo y por el proxy). La que suena es la llamada quicksilver de Codex:
+    # POST realtime/calls?intent=quicksilver&architecture=avas con `OpenAI-Alpha:
+    # quicksilver=v2` -> WebRTC connected, session.started y audio. Por eso el alias lleva
+    # ese query y esa cabecera y los clientes llaman a POST /v1/realtime/calls (API
+    # Realtime WebRTC estandar: sdp + session.model). Con la cabecera, /v1/live/sessions da
+    # 400 (Live la rechaza): no importa, no tenia audio. Los websockets de voz (sideband,
+    # attach, /v1/realtime) dan 403 con el OAuth: la llamada va sin supervisor de uso.
     # `api_base` OBLIGATORIO: sin el, la Live del provider `chatgpt/` sale a
     # api.openai.com/v1 (ChatGPTRealtime.get_api_base) y ahi el token OAuth recibe 403
     # «Voice session access denied.» (medido 21-11, por el proxy y directo).
@@ -1066,9 +1069,14 @@ data:
       litellm_params:
         model: chatgpt/gpt-live-1-codex
         api_base: https://chatgpt.com/backend-api/codex
+        extra_query:
+          intent: quicksilver
+          architecture: avas
+        extra_headers:
+          OpenAI-Alpha: quicksilver=v2
       model_info:
         name: GPT-Live 1 (voz) · cuenta ChatGPT Plus de Dani (OAuth)
-        description: GPT-Live 1 - voz en tiempo real (WebRTC, /v1/live/sessions) via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
+        description: GPT-Live 1 - voz en tiempo real (WebRTC, POST /v1/realtime/calls) via la suscripcion ChatGPT Plus de Dani. Solo seleccion manual.
         mode: realtime
         input_cost_per_token: 0
         output_cost_per_token: 0
@@ -14326,7 +14334,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-bca1113f4333
+        config.k8s.e-dani.com/revision: config-e17e8c8ca5fe
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14374,7 +14382,7 @@ spec:
         - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: litellm
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-4a608abea6@sha256:e46d7f4c2275d3b8a21e783ee997d7f676f0a21dd45e449ea78465f2ac639f6e
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-e9b7d32263@sha256:62b640430a75294220f8e3cb528fd0f8e01375e13aaba2c2a0c617a75e0d9d21
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -15304,7 +15312,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-bca1113f4333
+        config.k8s.e-dani.com/revision: config-e17e8c8ca5fe
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
@@ -15337,7 +15345,7 @@ spec:
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-4a608abea6@sha256:e46d7f4c2275d3b8a21e783ee997d7f676f0a21dd45e449ea78465f2ac639f6e
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-e9b7d32263@sha256:62b640430a75294220f8e3cb528fd0f8e01375e13aaba2c2a0c617a75e0d9d21
           command:
             - python
             - -m
