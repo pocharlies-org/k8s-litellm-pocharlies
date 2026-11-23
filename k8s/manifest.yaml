@@ -8381,6 +8381,10 @@ data:
                     prompt_chars=_pchars,
                     prompt_has_media=_pmedia,
                     profile=_hermes_profile(data),
+                    # CLASE de sesion para el panel en vivo (DGX-1794): la misma
+                    # lectura que el sello de spend de arriba, session_router ya
+                    # la tiene; None si el modulo no esta o no trae cabecera.
+                    claude_class=session_router._claude_class(data) if session_router is not None else None,
                     priority=(data.get("extra_body") or {}).get("priority") if isinstance(data.get("extra_body"), dict) else None,
                 )
             except Exception as e:
@@ -12456,6 +12460,7 @@ data:
             prompt_chars: Optional[int] = None,
             prompt_has_media: bool = False,
             profile: Any = None,
+            claude_class: Any = None,
             priority: Any = None,
         ) -> Dict[str, Any]:
             now = self.clock()
@@ -12480,6 +12485,12 @@ data:
                     # key `hermes`; sin esto el panel solo decia "hermes". None =
                     # la peticion no la trae.
                     "profile": str(profile) if profile else None,
+                    # CLASE de sesion que estampa el wrapper (x-claude-class,
+                    # dgx.claude.class-header.v1; hoy solo "company"). DGX-1794:
+                    # las sesiones de la compania piden Claude con `claude-atlantic`,
+                    # la misma del Paseo, asi que la key ya no las distingue; el
+                    # panel las separa por esta clase. None = sin cabecera.
+                    "claude_class": str(claude_class).strip().lower() if claude_class else None,
                     # Prioridad de vLLM que apply_priority sello en extra_body
                     # (DGX-589): el panel ordena con ella la cola estimada del
                     # motor. None = sin prioridad (0) o destino que no es el
@@ -13189,6 +13200,7 @@ data:
                     "route_reason": raw.get("route_reason"),
                     "route_at": raw.get("route_at"),
                     "profile": raw.get("profile"),
+                    "claude_class": raw.get("claude_class"),
                     "priority": raw.get("priority"),
                     "prompt_tokens": raw.get("prompt_tokens"),
                     "prompt_tokens_estimate": raw.get("prompt_tokens_estimate"),
@@ -14334,7 +14346,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e17e8c8ca5fe
+        config.k8s.e-dani.com/revision: config-9b0a15118992
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15312,7 +15324,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-e17e8c8ca5fe
+        config.k8s.e-dani.com/revision: config-9b0a15118992
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
