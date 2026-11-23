@@ -3677,6 +3677,42 @@ data:
             "allowed": sorted(CHATGPT_ALLOWED_KEY_ALIASES),
         }
 
+    # DGX-1808 (Dani, 23-11-2026): GPT-Live sale con la voz `ember` y acento de Espana
+    # salvo que el cliente pida otra voz. Va aqui (architect, 23-11) y no en el fork ni en
+    # cada cliente: es el mismo patron que THINKING_TIERS, un default por alias en el
+    # sitio por el que pasan Jarvis, Hermes y Nova. Solo vale al CREAR la sesion: luego
+    # el servidor rechaza cambiar `instructions`. La voz tiene que ser de las de ChatGPT
+    # (arbor, breeze, cove, ember, juniper, maple, sol, spruce, vale): una de la API
+    # (marin, cedar) deja la llamada colgada sin error. La instruccion es la que Dani
+    # escucho en la muestra de ember, sin atar el idioma (Nova tambien habla ingles y ruso).
+    LIVE_SESSION_DEFAULTS = {
+        "gpt-live-1-codex": {
+            "voice": "ember",
+            "instructions": (
+                "Eres española, de Madrid. Cuando hables en español, usa castellano de España "
+                "con acento peninsular: distingue la z y la c de la s, usa vosotros y "
+                "expresiones de España. Nunca uses acento latinoamericano."
+            ),
+        },
+    }
+
+    def _apply_live_session_defaults(data):
+        """Voz e instruccion por defecto en la sesion de POST /v1/realtime/calls.
+
+        La voz del cliente gana. La instruccion de acento va SIEMPRE delante de las del
+        cliente: todos mandan su persona, y si solo valiera sin ella no se aplicaria nunca.
+        """
+        defaults = LIVE_SESSION_DEFAULTS.get(data.get("model"))
+        session = data.get("session")
+        if not defaults or not isinstance(session, dict):
+            return
+        audio = session.setdefault("audio", {})
+        output = audio.setdefault("output", {}) if isinstance(audio, dict) else None
+        if isinstance(output, dict):
+            output.setdefault("voice", defaults["voice"])
+        own = str(session.get("instructions") or "").strip()
+        session["instructions"] = defaults["instructions"] + ("\n\n" + own if own else "")
+
     # INFRA-1223 (10-11-2026): gate de la API key de pago de Anthropic (alias
     # `anthropic-*`). Mismo patron que grok-* y gpt-*: por PREFIJO y fail-closed,
     # porque `models: []` en 7 de 10 keys abriria a todas una key que gasta dinero.
@@ -7909,6 +7945,10 @@ data:
                     "chatgpt: key %r pidio %r y no esta en la lista",
                     _detail["key"], _detail["requested"])
                 raise HTTPException(status_code=403, detail=_detail)
+
+            # GPT-Live: voz y acento por defecto (DGX-1808), detras de sus gates.
+            if call_type == "arealtime_calls":
+                _apply_live_session_defaults(data)
 
             # Gate de la API key de pago de Anthropic (INFRA-1223), mismo motivo.
             _denied, _detail = _anthropic_access_denied(
@@ -14346,7 +14386,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9b0a15118992
+        config.k8s.e-dani.com/revision: config-247d6dac2be4
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15324,7 +15364,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-9b0a15118992
+        config.k8s.e-dani.com/revision: config-247d6dac2be4
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
