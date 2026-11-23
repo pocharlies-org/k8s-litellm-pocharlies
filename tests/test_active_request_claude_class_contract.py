@@ -12,20 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 
-import pytest
-import yaml
-
 from test_active_request_metrics_contract import _config_data, _exec_module
-
-MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
-
-
-def _hook_source():
-    return next(
-        d["data"]["litellm_strip_params.py"]
-        for d in (x for x in yaml.safe_load_all(MANIFEST.read_text()) if x)
-        if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config"
-    )
 
 
 def test_el_tracker_guarda_la_clase_en_la_fila():
@@ -56,7 +43,7 @@ def test_el_sidecar_sirve_la_clase():
 
 def test_el_hook_pasa_la_clase_al_tracker():
     """El start() del hook tiene que llevar claude_class=; si no, el panel nunca la ve en vuelo."""
-    tree = ast.parse(_hook_source())
+    tree = ast.parse(_config_data()["litellm_strip_params.py"])
     starts = [n for n in ast.walk(tree)
               if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
               and n.func.attr == "start"
