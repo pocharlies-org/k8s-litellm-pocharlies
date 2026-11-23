@@ -35,7 +35,9 @@ def test_el_tracker_guarda_la_prioridad_en_la_fila():
 def test_el_hook_pasa_la_prioridad_de_extra_body_al_tracker():
     hook = _config_data()["litellm_strip_params.py"]
     call = hook[hook.index("request_tracker.start("):]
-    call = call[:call.index("profile=_hermes_profile(data),") + 400]
+    # +800: desde DGX-1794 hay un kwarg (claude_class) entre profile y priority; la
+    # ventana tiene que cubrirlo para seguir comprobando que priority se pasa.
+    call = call[:call.index("profile=_hermes_profile(data),") + 800]
     assert 'priority=(data.get("extra_body") or {}).get("priority")' in call
 
 

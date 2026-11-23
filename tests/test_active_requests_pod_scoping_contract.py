@@ -677,6 +677,12 @@ def test_ac5_la_forma_del_agregado_es_identica_a_la_de_antes():
         for row in shape_new.get("active") or []:
             assert "completion_tokens_estimate" in row, "falta completion_tokens_estimate en la fila"
             row.pop("completion_tokens_estimate")
+        # Y para `claude_class` (23-11, DGX-1794): la clase de sesion de la cabecera
+        # x-claude-class (dgx.claude.class-header.v1). ADITIVA, el panel la lee con
+        # .get() para separar compania de Paseo cuando comparten la key claude-atlantic.
+        for row in shape_new.get("active") or []:
+            assert "claude_class" in row, "falta claude_class en la fila"
+            row.pop("claude_class")
         assert _shape(body_old) == shape_new, (
             f"la forma cambio:\nantes: {json.dumps(_shape(body_old))}\n"
             f"ahora: {json.dumps(shape_new)}"

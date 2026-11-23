@@ -939,6 +939,14 @@ contracts:
       Hermes profile from the x-hermes-profile header
       (dgx.hermes.profile-header.v1), null when the request has none. Pinned
       by tests/test_active_request_profile_contract.py.
+      Since 2026-11-23 (DGX-1794) each row also carries the additive `claude_class`: the
+      session class from the x-claude-class header (dgx.claude.class-header.v1, today only
+      "company"), normalized to lowercase, null when the request has none. Company sessions
+      now ask Claude with `claude-atlantic` — the same key as Paseo — so the key no longer
+      tells them apart; the /inferencia panel separates them by this class (label + scene
+      color), not by alias. Same value the spend_logs stamp writes (dgx.litellm.spendlogs-
+      claude-class.v1), just sealed on the live row too. Pinned by
+      tests/test_active_request_claude_class_contract.py.
       Since 2026-10-05 no field or value changed: the body walk that feeds
       `prompt_tokens_estimate` (prompt_chars in active_request_tracking.py,
       mirrored in session_router._estimate_prompt_tokens) skipped a node whose
