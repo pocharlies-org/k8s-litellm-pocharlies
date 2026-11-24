@@ -75,7 +75,7 @@ priority_by_alias:
   hermes: -10
   hermes-batch: 10
   neutra: 0
-  claude-x86:
+  claude-atlantic-compania:
     default: -5
     company: 5
   roto-por-clase:
@@ -136,17 +136,17 @@ def test_prioridad_cero_no_inyecta_nada(tmp_path):
 
 
 def test_alias_por_clase_sin_clave_uso_personal_sale_por_delante(tmp_path):
-    # `claude-x86` comparte key para la compania y para el uso personal: sin
-    # clase (la de Dani) sale con el `default` del mapa, por delante del resto.
+    # Alias con nivel MAPA por clase: sin clase (la de Dani) sale con el `default`
+    # del mapa, por delante del resto.
     mod, _ = _mod_with_config(tmp_path)
-    d = _data("qwen38-flash-next", "claude-x86")
+    d = _data("qwen38-flash-next", "claude-atlantic-compania")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == -5
 
 
 def test_alias_por_clase_company_sale_un_poco_por_detras_pero_antes_del_lote(tmp_path):
     mod, _ = _mod_with_config(tmp_path)
-    d = _data("qwen38-flash-next", "claude-x86", cls="company")
+    d = _data("qwen38-flash-next", "claude-atlantic-compania", cls="company")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == 5
     # el lote (hermes-batch: 10) sigue por detras: menor numero = antes
@@ -157,7 +157,7 @@ def test_alias_por_clase_company_sale_un_poco_por_detras_pero_antes_del_lote(tmp
 
 def test_alias_por_clase_con_clase_no_listada_usa_el_default(tmp_path):
     mod, _ = _mod_with_config(tmp_path)
-    d = _data("qwen38-flash-next", "claude-x86", cls="otra-cosa")
+    d = _data("qwen38-flash-next", "claude-atlantic-compania", cls="otra-cosa")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == -5
 
@@ -165,7 +165,7 @@ def test_alias_por_clase_con_clase_no_listada_usa_el_default(tmp_path):
 def test_alias_por_clase_compara_sin_importar_mayusculas(tmp_path):
     # El header llega con la caja del cable; _claude_class lo normaliza.
     mod, _ = _mod_with_config(tmp_path)
-    d = _data("qwen38-flash-next", "claude-x86", cls="COMPANY")
+    d = _data("qwen38-flash-next", "claude-atlantic-compania", cls="COMPANY")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == 5
 
@@ -185,8 +185,8 @@ def test_uncensored_manda_sobre_el_mapa_de_alias_con_qualquier_key(tmp_path):
     # El motivo: no tiene proveedor de alternativa, si espera no se sirve en otro
     # sitio. Da igual que la key sea la del lote (10) o la de la compania (5).
     mod, _ = _mod_with_config(tmp_path)
-    for alias, cls in (("hermes-batch", None), ("claude-x86", "company"),
-                       ("claude-x86", None), ("sin-mapear", None)):
+    for alias, cls in (("hermes-batch", None), ("claude-atlantic-compania", "company"),
+                       ("claude-atlantic-compania", None), ("sin-mapear", None)):
         d = _data("qwen38-flash-next-uncensored", alias, cls=cls)
         mod.apply_priority(d)
         assert d["extra_body"]["priority"] == -20, (alias, cls)
@@ -205,7 +205,7 @@ def test_uncensored_sin_nivel_configurado_no_inyecta_por_ser_uncensored(tmp_path
     # `priority_uncensored` ausente => se comporta como antes de DGX-601.
     mod, _ = _mod_with_config(
         tmp_path, content=CFG.replace("priority_uncensored: -20", ""))
-    d = _data("qwen38-flash-next-uncensored", "claude-x86")
+    d = _data("qwen38-flash-next-uncensored", "claude-atlantic-compania")
     mod.apply_priority(d)
     assert d["extra_body"]["priority"] == -5   # por alias, no por ser uncensored
 
@@ -328,8 +328,8 @@ def test_el_mapa_vive_en_config_yaml():
         # 31-10-2026 (Dani): el Paseo de atlantic con key propia; personal + compania.
         "claude-atlantic": {"default": -5, "company": 5},
         # 02-11-2026 (DGX-1395): la compania asincrona con key propia, renombrada desde
-        # claude-x86 (mismo token, mismo mapa). `claude-x86` ya no esta: la key fue
-        # renombrada via /key/update y ninguna key lleva ese alias (medido en la BD).
+        # un alias retirado (mismo token, mismo mapa). La key fue renombrada via
+        # /key/update y ninguna key lleva ya ese alias viejo (medido en la BD).
         "claude-atlantic-compania": {"default": -5, "company": 5},
     }
     # DGX-601: lo uncensored no tiene alternativa -> nivel propio, por delante.

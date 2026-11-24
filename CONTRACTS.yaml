@@ -1517,6 +1517,11 @@ contracts:
       pestana x86 y priority_by_alias la mapea {default: -5, company: 5}. Su
       valor vivia en ~/.config/claude-local/env del x86, nunca en git; desde el
       01-11 ese fichero lleva el token de `claude-atlantic` (medido por hash).
+
+      SC-6436 (2026-11-24): migradas las ultimas referencias vivas del repo
+      (default del hook LITELLM_UNCENSORED_ALLOWED_KEYS, tests y ARCHITECTURE.md)
+      a `claude-atlantic-compania`. La entrada no se toca: se retira tras su
+      remove_after (2026-12-01).
   - id: dgx.litellm.virtual-key.claude-atlantic-compania.v1
     kind: allowlist
     value: claude-atlantic-compania
