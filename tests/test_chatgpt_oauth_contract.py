@@ -5,7 +5,7 @@ POR QUE EXISTE ESTE FICHERO (18-10-2026). Los alias `gpt-*` vuelven al model_lis
 su lapida del 03-09: aquella cuenta cayo baneada dos veces porque el catalogo de
 airsoft le mandaba imagenes por el desvio de vision. Ahora van contra la cuenta
 personal de Dani y lo que impide repetirlo es esto: ningun camino automatico apunta a
-ellos y un gate fail-closed por prefijo solo deja pasar a `claude-x86`, `hermes` y
+ellos y un gate fail-closed por prefijo solo deja pasar a `claude-atlantic-compania`, `hermes` y
 `studio-chatgpt` (los motores de imagen del DGX Studio)
 (la key `sauvage-shield` lleva `gpt-5.6-luna` en su allowlist desde agosto).
 
@@ -39,7 +39,7 @@ ALIASES = {"gpt-6.2-sol", "gpt-6.2-astra",
 IMAGE_ALIASES = {"gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
                  "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2"}
 LIVE_ALIASES = {"gpt-live-1-codex"}
-ALLOWED_KEYS = ("hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic", "claude-atlantic-compania", "sugiere-prod", "claude-cloudblue", "nova", "jarvis", "voz-duplex")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic); 02-11 DGX-1395: claude-atlantic-compania (compania asincrona, renombrada desde claude-x86, que sale con la limpieza); 06-11 SC-4822: sugiere-prod (sugerencia con el modelo de la sesion de Paseo); 11-11 DGX-1053: claude-cloudblue (Claude Code del Mac CloudBlue usa los gpt-* del gateway, orden de Dani); 21-11 DGX-1779: nova, jarvis y voz-duplex (voz GPT-Live, orden de Dani; Nova entra hoy con voz-duplex)
+ALLOWED_KEYS = ("hermes", "studio-chatgpt", "claude-mac", "hindsight", "claude-atlantic", "claude-atlantic-compania", "sugiere-prod", "claude-cloudblue", "nova", "jarvis", "voz-duplex")  # DGX-1099: claude-mac; INFRA-942: hindsight; 31-10: claude-atlantic (Paseo de atlantic); 02-11 DGX-1395: claude-atlantic-compania (compania asincrona, renombrada desde el alias retirado, que sale con la limpieza); 06-11 SC-4822: sugiere-prod (sugerencia con el modelo de la sesion de Paseo); 11-11 DGX-1053: claude-cloudblue (Claude Code del Mac CloudBlue usa los gpt-* del gateway, orden de Dani); 21-11 DGX-1779: nova, jarvis y voz-duplex (voz GPT-Live, orden de Dani; Nova entra hoy con voz-duplex)
 WANT_FN = {"_chatgpt_access_denied"}
 WANT_CONST = {"CHATGPT_ALIAS_PREFIX", "CHATGPT_ALLOWED_KEY_ALIASES"}
 

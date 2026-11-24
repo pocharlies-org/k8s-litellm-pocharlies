@@ -19,7 +19,7 @@ MANIFEST = Path(__file__).resolve().parents[1] / "k8s" / "manifest.yaml"
 DOCS = [d for d in yaml.safe_load_all(MANIFEST.read_text()) if d]
 CM = next(d for d in DOCS if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "litellm-config")
 POLICY = {
-    "claude-x86": [{"id": "info", "salto_7d": 90, "salto_5h": 90},
+    "claude-atlantic-compania": [{"id": "info", "salto_7d": 90, "salto_5h": 90},
                      {"id": "correo", "salto_7d": 90, "salto_5h": 90}],
     "claude-cloudblue": [{"id": "flash", "salto_7d": 90, "salto_5h": 90}],
 }
@@ -74,7 +74,7 @@ def _deps(accounts=ACCOUNTS):
              "litellm_params": {"model": "anthropic/claude-*"}} for a in accounts]
 
 
-def _kw(alias="claude-x86", sid="s1"):
+def _kw(alias="claude-atlantic-compania", sid="s1"):
     md = {"user_api_key_alias": alias}
     if sid:
         md["session_id"] = sid
@@ -116,7 +116,7 @@ def test_conversacion_empezada_se_queda_por_debajo_de_su_salto():
 def test_conversacion_empezada_salta_al_pasar_el_salto_de_su_cuenta():
     """Dani, 19-10: una abierta salta en el % de SU cuenta (90 o 50), no solo al 429."""
     v = FakeValkey()
-    mod = _pod(v, policy={"claude-x86": [{"id": "info", "salto_7d": 50, "salto_5h": 50},
+    mod = _pod(v, policy={"claude-atlantic-compania": [{"id": "info", "salto_7d": 50, "salto_5h": 50},
                                            {"id": "correo", "salto_7d": 90, "salto_5h": 90}]})
     _quota(v, "correo", u7=0.89)  # INFRA-1204: sin lecturas correo (salto 90) tendria mas margen que info (50)
     assert _pick(mod, sid="s1") == ["info"]
@@ -124,7 +124,7 @@ def test_conversacion_empezada_salta_al_pasar_el_salto_de_su_cuenta():
     assert _pick(mod, sid="s1") == ["info"]
     _quota(v, "info", u7=0.5)
     assert _pick(mod, sid="s1") == ["correo"]
-    assert v.data["claude_account_pin:v1:claude-x86:s1"] == "correo"
+    assert v.data["claude_account_pin:v1:claude-atlantic-compania:s1"] == "correo"
 
 
 def test_conversacion_empezada_muda_si_su_cuenta_esta_rechazada():
@@ -133,7 +133,7 @@ def test_conversacion_empezada_muda_si_su_cuenta_esta_rechazada():
     assert _pick(mod, sid="s1") == ["info"]
     _quota(v, "info", u5=1.0, status="rejected")
     assert _pick(mod, sid="s1") == ["correo"]
-    assert v.data["claude_account_pin:v1:claude-x86:s1"] == "correo"
+    assert v.data["claude_account_pin:v1:claude-atlantic-compania:s1"] == "correo"
 
 
 def test_creditos_cuentan_como_agotada():
@@ -320,9 +320,9 @@ def _claude_quota_module(valkey):
 def test_politica_basura_se_descarta():
     mod = _pod(FakeValkey())
     clean = mod._sanitize_claude_accounts({
-        "Claude-X86": [{"id": "info", "salto_7d": 150}, {"id": "info"}, {"id": "../x"}, "x"],
+        "Claude-Atlantic-Compania": [{"id": "info", "salto_7d": 150}, {"id": "info"}, {"id": "../x"}, "x"],
         "otra": "no-lista"})
-    assert clean == {"claude-x86": [{"id": "info", "salto_7d": 90.0, "salto_5h": 90.0,
+    assert clean == {"claude-atlantic-compania": [{"id": "info", "salto_7d": 90.0, "salto_5h": 90.0,
                                       "salto_fable": 100.0}]}
 
 
@@ -369,7 +369,7 @@ def _company_pod(claude=True, gate=GATE, policy=None):
 def _company_data(model, max_tokens=64000):
     return {"model": model, "max_tokens": max_tokens,
             "litellm_metadata": {"headers": {"X-Claude-Class": "company"},
-                                 "user_api_key_alias": "claude-x86"}}
+                                 "user_api_key_alias": "claude-atlantic-compania"}}
 
 
 def test_compania_con_claude_apagado_va_al_target_del_gate_o_recibe_403():
@@ -398,7 +398,7 @@ def test_gate_block_es_403_y_sin_clase_no_se_toca():
     mod = _company_pod(gate={**GATE, "mode": "block"})
     denied, detail = asyncio.run(mod.apply_company_policy(_company_data("claude-haiku-5-5"), "claude-haiku-5-5"))
     assert denied and detail["error"] == "company_claude_gate"
-    dani = {"model": "claude-haiku-5-5", "litellm_metadata": {"user_api_key_alias": "claude-x86"}}
+    dani = {"model": "claude-haiku-5-5", "litellm_metadata": {"user_api_key_alias": "claude-atlantic-compania"}}
     assert asyncio.run(mod.apply_company_policy(dani, "claude-haiku-5-5")) == (False, None)
     assert dani["model"] == "claude-haiku-5-5"
 
@@ -411,7 +411,7 @@ def test_gate_con_target_claude_o_basura_queda_apagado():
 
 
 def test_la_compania_elige_cuenta_de_su_lista_y_no_de_la_key():
-    mod = _company_pod(policy={"compania": [{"id": "edani"}], "claude-x86": [{"id": "info"}]})
+    mod = _company_pod(policy={"compania": [{"id": "edani"}], "claude-atlantic-compania": [{"id": "info"}]})
     kw = _company_data("claude-opus-5-5")
     kw["litellm_metadata"]["session_id"] = "s-comp"
     out = asyncio.run(mod.claude_account_filter("claude-opus-5-5", _deps(), kw))
@@ -451,7 +451,7 @@ def test_la_lista_sigue_mandando_que_cuentas_y_su_salto():
     _quota7(v, "correo", 0.41, 138)
     _quota7(v, "edani", 0.32, 12)
     _quota7(v, "flash", 0.0, 1)  # la de mas margen, pero fuera de la lista de la key
-    mod = _pod(v, policy={"claude-x86": [{"id": "correo", "salto_7d": 100, "salto_5h": 100},
+    mod = _pod(v, policy={"claude-atlantic-compania": [{"id": "correo", "salto_7d": 100, "salto_5h": 100},
                                          {"id": "edani", "salto_7d": 30, "salto_5h": 100}]})
     assert _pick(mod, sid="nueva") == ["correo"]  # edani paso su salto (30)
 
@@ -549,11 +549,11 @@ def _quota_fable(v, acct, uf, reset_in=86400):
         "overage_in_use": False})
 
 
-FABLE_POLICY = {"claude-x86": [{"id": "info", "salto_7d": 90, "salto_5h": 90, "salto_fable": 50},
+FABLE_POLICY = {"claude-atlantic-compania": [{"id": "info", "salto_7d": 90, "salto_5h": 90, "salto_fable": 50},
                                {"id": "correo", "salto_7d": 90, "salto_5h": 90, "salto_fable": 50}]}
 
 
-def _pick_model(mod, model, sid, deps=None, alias="claude-x86"):
+def _pick_model(mod, model, sid, deps=None, alias="claude-atlantic-compania"):
     out = asyncio.run(mod.claude_account_filter(model, deps or _deps(), _kw(alias=alias, sid=sid)))
     return [d["model_info"]["id"].removeprefix("claude-acct-") for d in out]
 
@@ -581,11 +581,11 @@ def test_fable_con_ventana_reiniciada_o_sin_salto_propio_no_salta():
 
 def test_salto_fable_ausente_o_basura_es_100():
     mod = _pod(FakeValkey())
-    clean = mod._sanitize_claude_accounts({"claude-x86": [
+    clean = mod._sanitize_claude_accounts({"claude-atlantic-compania": [
         {"id": "a"}, {"id": "b", "salto_fable": "x"}, {"id": "c", "salto_fable": 140},
         {"id": "d", "salto_fable": True}, {"id": "e", "salto_fable": float("nan")},
         {"id": "f", "salto_fable": 40}]})
-    assert [e["salto_fable"] for e in clean["claude-x86"]] == [100.0] * 5 + [40.0]
+    assert [e["salto_fable"] for e in clean["claude-atlantic-compania"]] == [100.0] * 5 + [40.0]
 
 
 # ── DGX-1713: un modelo Mythos solo va a las cuentas que lo tienen ───────────────
@@ -597,7 +597,7 @@ def test_salto_fable_ausente_o_basura_es_100():
 MYTHOS_ENV = "work-personal,works-shared,flash,max,sergio"
 TODAS = ("info", "correo", "edani", "flash", "works-shared", "work-personal", "max", "sergio")
 MYTHOS = "claude-mythos-5-2"
-MYTHOS_POLICY = {"claude-x86": [{"id": a, "salto_7d": 90, "salto_5h": 90, "salto_fable": 50}
+MYTHOS_POLICY = {"claude-atlantic-compania": [{"id": a, "salto_7d": 90, "salto_5h": 90, "salto_fable": 50}
                                  for a in ("info", "correo", "sergio")],
                  "claude-atlantic": [{"id": a, "salto_7d": 90, "salto_5h": 90}
                                       for a in ("info", "correo", "edani", "flash", "works-shared", "max", "sergio")]}
@@ -615,14 +615,14 @@ def test_mythos_con_politica_info_correo_sergio_solo_va_a_sergio(monkeypatch):
     v = FakeValkey()
     mod = _mythos_pod(monkeypatch, v)
     assert _pick_model(mod, MYTHOS, "m1", deps=_deps(TODAS)) == ["sergio"]
-    assert v.data["claude_account_pin:v1:claude-x86:m1"] == "sergio"
+    assert v.data["claude_account_pin:v1:claude-atlantic-compania:m1"] == "sergio"
     # Opus, con la misma politica y la env puesta, sigue la regla de siempre: la primera de la lista.
     assert _pick_model(mod, "claude-opus-5-5", "o1", deps=_deps(TODAS)) == ["info"]
 
 
 def test_mythos_nunca_sale_de_la_lista_de_la_key(monkeypatch):
-    # flash tiene Mythos pero no esta en la politica de claude-x86: no se usa.
-    mod = _mythos_pod(monkeypatch, FakeValkey(), policy={"claude-x86": MYTHOS_POLICY["claude-x86"][:2]})
+    # flash tiene Mythos pero no esta en la politica de claude-atlantic-compania: no se usa.
+    mod = _mythos_pod(monkeypatch, FakeValkey(), policy={"claude-atlantic-compania": MYTHOS_POLICY["claude-atlantic-compania"][:2]})
     assert _pick_model(mod, MYTHOS, "m1", deps=_deps(TODAS)) == []
 
 
@@ -655,9 +655,9 @@ def test_mythos_con_pin_en_cuenta_sin_mythos_se_reelige_y_el_pin_muda(monkeypatc
     mod = _mythos_pod(monkeypatch, v)
     deps = _deps(TODAS)
     assert _pick_model(mod, "claude-opus-5-5", "p1", deps=deps) == ["info"]
-    assert v.data["claude_account_pin:v1:claude-x86:p1"] == "info"
+    assert v.data["claude_account_pin:v1:claude-atlantic-compania:p1"] == "info"
     assert _pick_model(mod, MYTHOS, "p1", deps=deps) == ["sergio"]            # info no vale para Mythos
-    assert v.data["claude_account_pin:v1:claude-x86:p1"] == "sergio"
+    assert v.data["claude_account_pin:v1:claude-atlantic-compania:p1"] == "sergio"
     assert mod.CLAUDE_ACCOUNT_STATS["moves"] == 1
     assert _pick_model(mod, MYTHOS, "p1", deps=deps) == ["sergio"]            # ahora acierta el pin
     assert mod.CLAUDE_ACCOUNT_STATS["hits"] == 1
@@ -666,7 +666,7 @@ def test_mythos_con_pin_en_cuenta_sin_mythos_se_reelige_y_el_pin_muda(monkeypatc
 
 def test_mythos_con_pin_en_cuenta_con_mythos_se_queda_hasta_su_salto(monkeypatch):
     v = FakeValkey()
-    mod = _mythos_pod(monkeypatch, v, policy={"claude-x86": [
+    mod = _mythos_pod(monkeypatch, v, policy={"claude-atlantic-compania": [
         {"id": a, "salto_7d": 90, "salto_5h": 90} for a in ("info", "sergio", "flash")]})
     deps = _deps(TODAS)
     assert _pick_model(mod, MYTHOS, "q1", deps=deps) == ["sergio"]
@@ -683,7 +683,7 @@ def test_mythos_sin_la_env_no_tiene_cuenta_y_opus_no_se_entera(monkeypatch, capl
     with caplog.at_level(logging.WARNING, logger="session_router"):
         assert _pick_model(mod, MYTHOS, "e1", deps=deps) == []
     assert "LITELLM_CLAUDE_MYTHOS_ACCOUNTS" in caplog.text and "falla cerrado" in caplog.text
-    assert "claude_account_pin:v1:claude-x86:e1" not in v.data
+    assert "claude_account_pin:v1:claude-atlantic-compania:e1" not in v.data
     assert _pick_model(mod, "claude-opus-5-5", "e2", deps=deps) == ["info"]
     assert _pick_model(mod, "claude-fable-5", "e3", deps=deps) == ["info"]
 
