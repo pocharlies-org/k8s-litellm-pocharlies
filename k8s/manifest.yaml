@@ -1537,7 +1537,10 @@ data:
     # los tres `wan*`, y han salido `qwen-image-3.0-pro`, `qwen-audio-3.0-asr-flash` y los
     # tres `happyhorse-1.1-*` que anunciaba). 11-11-2026: 21 servidos; entra
     # `qwen4-max-preview`, que sube a `alibaba-q4-max` y deja `qwen3.8-max` con los
-    # antiguos. Aqui entran los 12 de chat; el resto es
+    # antiguos. 25-11-2026: siguen 21, pero el preview YA no esta en la lista (entra el
+    # GA `qwen4-max`) y llamar a `qwen4-max-preview` responde 200 con `model: qwen4-max`:
+    # el nombre del preview es hoy un alias silencioso del GA. Aqui entran los 12 de
+    # chat; el resto es
     # imagen, video, audio o un pin de `deepseek-v4-pro` sin publicar (un alias a un
     # modelo inexistente es un 404 con nuestro nombre encima).
     #
@@ -1578,7 +1581,7 @@ data:
     # dashboard DGX (skills `dgx-image-apis` y `video-generation`), no del router de
     # LLM. Si algun dia entran, van con `mode: image_generation` como los
     # `grok-imagine*`.
-    # ── Qwen4 Max preview: la gama alta del plan desde el 11-11 ─────────────
+    # ── Qwen4 Max: la gama alta del plan ────────────────────────────────────
     #
     # Entra por `GET /models` del token plan (medido el 11-11-2026: 21 servidos, antes 18).
     # MEDIDO aqui, contra el plano OpenAI del plan, antes de declararlo (la regla de la
@@ -1593,12 +1596,12 @@ data:
     #   - `max_tokens: 131072` aceptado (el techo de la familia). La ventana de ENTRADA no
     #     esta medida: no va declarada en ningun sitio (la seccion no lleva cifras
     #     inventadas) y es Hermes quien la usa para compactar, no el proxy.
-    # Precios: el prorrateo de `alibaba-q38-max` con el -80 % de promo del preview (abajo,
-    # en cada deployment). La hoja internacional aun no lista el modelo; el -80 % esta
-    # leido en la consola el 11-11 por Dani.
+    # Precios: el prorrateo integro de `alibaba-q38-max` (abajo, en cada deployment). El
+    # -80 % de promo del preview (leido en la consola el 11-11 por Dani) se quita con la
+    # medida del 25-11: lo que se sirve ya es el GA.
     - model_name: alibaba-q4-max
       litellm_params:
-        model: openai/qwen4-max-preview
+        model: openai/qwen4-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY
         timeout: 60
@@ -1610,19 +1613,18 @@ data:
         order: 1
       model_info:
         id: alibaba-q4-max-k1
-        name: Qwen4 Max preview · gama alta (Alibaba)
-        description: Qwen4-Max-preview - texto + razonamiento + vision. El mayor del plan.
+        name: Qwen4 Max · gama alta (Alibaba)
+        description: Qwen4-Max - texto + razonamiento + vision. El mayor del plan.
         mode: chat
         backend: alibaba-model-studio
         # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
-        # Prorrateo de `alibaba-q38-max` (ver cabecera de la seccion) con el -80 % de
-        # promo del preview, leido en la consola el 11-11 (Dani: mismo precio de lista con
-        # 80 % de descuento ahora). NO es el descuento nocturno — ese no se modela porque
-        # LiteLLM no varia tarifa por hora; este es el precio vigente del modelo. Quitar
-        # el factor cuando la promo del preview acabe.
-        input_cost_per_token: 0.000000035278546
-        cache_read_input_token_cost: 0.00000000705571
-        output_cost_per_token: 0.000000105835636
+        # Prorrateo de `alibaba-q38-max` (ver cabecera de la seccion) SIN factor: el -80 %
+        # de promo del preview (leido en la consola el 11-11, Dani) se va con el preview,
+        # fuera del catalogo del plan desde el 25-11. NO es el descuento nocturno — ese no
+        # se modela porque LiteLLM no varia tarifa por hora; este es el precio vigente.
+        input_cost_per_token: 0.00000017639273
+        cache_read_input_token_cost: 0.00000003527855
+        output_cost_per_token: 0.00000052917818
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
@@ -1636,7 +1638,7 @@ data:
     # `order: 2` por `order: 1` en los trece `-k2`): ver litellm-alibaba-2.
     - model_name: alibaba-q4-max
       litellm_params:
-        model: openai/qwen4-max-preview
+        model: openai/qwen4-max
         api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
         api_key: os.environ/DASHSCOPE_API_KEY_2
         timeout: 60
@@ -1652,26 +1654,26 @@ data:
         order: 2
       model_info:
         id: alibaba-q4-max-k2
-        name: Qwen4 Max preview · gama alta (Alibaba)
-        description: Qwen4-Max-preview - texto + razonamiento + vision. El mayor del plan.
+        name: Qwen4 Max · gama alta (Alibaba)
+        description: Qwen4-Max - texto + razonamiento + vision. El mayor del plan.
         mode: chat
         backend: alibaba-model-studio
         # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
-        # Prorrateo de `alibaba-q38-max` (ver cabecera de la seccion) con el -80 % de
-        # promo del preview, leido en la consola el 11-11 (Dani: mismo precio de lista con
-        # 80 % de descuento ahora). NO es el descuento nocturno — ese no se modela porque
-        # LiteLLM no varia tarifa por hora; este es el precio vigente del modelo. Quitar
-        # el factor cuando la promo del preview acabe.
-        input_cost_per_token: 0.000000035278546
-        cache_read_input_token_cost: 0.00000000705571
-        output_cost_per_token: 0.000000105835636
+        # Prorrateo de `alibaba-q38-max` (ver cabecera de la seccion) SIN factor: el -80 %
+        # de promo del preview (leido en la consola el 11-11, Dani) se va con el preview,
+        # fuera del catalogo del plan desde el 25-11. NO es el descuento nocturno — ese no
+        # se modela porque LiteLLM no varia tarifa por hora; este es el precio vigente.
+        input_cost_per_token: 0.00000017639273
+        cache_read_input_token_cost: 0.00000003527855
+        output_cost_per_token: 0.00000052917818
         supports_function_calling: true
         supports_vision: true
         supports_reasoning: true
         supported_reasoning_efforts: [none, low, medium, xhigh]
         disable_background_health_check: true
-    # qwen4-max GA (20-11): sale del preview y entra el modelo definitivo del plan. Va
-    # JUNTO a su preview y despues de el, porque el preview es el barato de los dos.
+    # qwen4-max GA (20-11): sale del preview y entra el modelo definitivo del plan. Desde
+    # el 25-11 es SINONIMO de `alibaba-q4-max` (mismo modelo, misma tarifa): el alias se
+    # queda porque lo pinan `~/.claude/settings.json` y las sesiones que ya lo usan.
     # Medido el 20-11 contra el plano OpenAI del plan (mismo protocolo que el 20-09):
     # tools con `tool_choice: required` aceptado (a diferencia de `qwen3.8-max`, que lo
     # rechaza con 400), vision en limpio (cuadrado rojo de 64x64 -> «Rojo»; los que no
@@ -1698,8 +1700,8 @@ data:
         backend: alibaba-model-studio
         # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
         # Prorrateo de `alibaba-q38-max` (ver cabecera de la seccion) SIN factor: el GA
-        # comparte precio de lista con el preview pero NO lleva su -80 % de promo (Dani
-        # 20-11), o sea 5x lo que cuesta `alibaba-q4-max`.
+        # nunca llevo el -80 % de promo del preview (Dani 20-11), y desde el 25-11 es el
+        # precio que también declara `alibaba-q4-max`.
         input_cost_per_token: 0.00000017639273
         cache_read_input_token_cost: 0.00000003527855
         output_cost_per_token: 0.00000052917818
@@ -1736,8 +1738,8 @@ data:
         backend: alibaba-model-studio
         # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
         # Prorrateo de `alibaba-q38-max` (ver cabecera de la seccion) SIN factor: el GA
-        # comparte precio de lista con el preview pero NO lleva su -80 % de promo (Dani
-        # 20-11), o sea 5x lo que cuesta `alibaba-q4-max`.
+        # nunca llevo el -80 % de promo del preview (Dani 20-11), y desde el 25-11 es el
+        # precio que también declara `alibaba-q4-max`.
         input_cost_per_token: 0.00000017639273
         cache_read_input_token_cost: 0.00000003527855
         output_cost_per_token: 0.00000052917818
@@ -14479,7 +14481,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8f068ee6122b
+        config.k8s.e-dani.com/revision: config-47966427765d
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15461,7 +15463,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8f068ee6122b
+        config.k8s.e-dani.com/revision: config-47966427765d
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
