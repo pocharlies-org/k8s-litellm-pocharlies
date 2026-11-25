@@ -1953,6 +1953,30 @@ contracts:
       ADD 2026-11-10 (INFRA-1223, Dani): Haiku 5.5 con la API key de pago de
       Anthropic (no la suscripcion `claude-*`, que solo acepta Claude Code) para el
       cerebro rapido de Nova. Renombrarlo rompe a Nova: mover MODELOS en el mismo push.
+  - id: dgx.litellm.model-alias.cloudblue-gateway.v1
+    kind: schema
+    value: deepseek-v4.1-flash-1017
+    anchor: 'api_base: http://100.125.62.10:8720/v1'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+      - tests/test_cloudblue_gateway_aliases_contract.py
+    consumers:
+      - Paseo de mac-cb (~/.paseo/config.json, providers.claude.models; key claude-cloudblue)
+    status: active
+    note: >-
+      ADD 2026-11-25 (DGX-1826, pedido de Dani): cuatro alias nuevos del model_list,
+      deepseek-v4-flash-0731, deepseek-v4-flash-0731-loc, deepseek-v4.1-flash y
+      deepseek-v4.1-flash-1017, servidos por la pasarela LiteLLM de CloudBlue
+      (https://litellm.com.int.zone, virtual key daniel-openrouter, DO-32862) a traves
+      del puente de mac-cb en la tailnet (100.125.62.10:8720, LaunchAgent
+      com.dibanez.cloudblue-litellm-bridge, allowlist de 3 rutas). Credencial: env
+      CLOUDBLUE_LITELLM_KEY del Deployment litellm, del ExternalSecret litellm-secrets
+      (1Password item litellm, campo CLOUDBLUE_LITELLM_KEY). Solo funcionan con mac-cb
+      despierto y en la VPN; sin fallback, sin reintento y sin sondeo de fondo. Gasto y
+      topes en la pasarela de CloudBlue (coste 0 aqui). Ningun alias existente cambia de
+      nombre ni de forma. Renombrarlos rompe el Paseo de mac-cb: mover su config.json en
+      el mismo cambio.
   - id: dgx.litellm.openrouter-account-upstream.v1
     kind: http-route
     value: /admin/openrouter-account

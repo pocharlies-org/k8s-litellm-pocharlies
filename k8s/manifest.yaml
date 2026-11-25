@@ -168,6 +168,104 @@ data:
       model_info:
         mode: audio_transcription
         disable_background_health_check: true
+    # ── DGX-1826 (25-11-2026, Dani): modelos de la pasarela LiteLLM de CloudBlue ──
+    #
+    # Los cuatro alias de la virtual key `daniel-openrouter` de la pasarela de
+    # CloudBlue (https://litellm.com.int.zone, DO-32862), publicados aqui para que el
+    # Paseo de mac-cb (key `claude-cloudblue`, proveedor «Claude · cuenta del plugin»)
+    # los liste y los use por este LiteLLM. Al otro lado los cuatro van hoy a
+    # openrouter/deepseek/deepseek-v4.1-flash-1017.
+    #
+    # CAMINO: este pod -> tailnet -> 100.125.62.10:8720 (mac-cb; su tailscaled corre en
+    # userspace-networking y entrega la conexion al 127.0.0.1:8720 del Mac) -> puente
+    # Node sin dependencias `com.dibanez.cloudblue-litellm-bridge` (LaunchAgent,
+    # ~/.local/libexec/cloudblue-litellm-bridge.mjs) -> https://litellm.com.int.zone
+    # por la VPN de CloudBlue del Mac. La pasarela NO se alcanza desde la LAN de casa
+    # (curl 000 desde el x86): solo desde mac-cb.
+    #
+    # DEPENDE DE mac-cb DESPIERTO Y EN LA VPN. Si no, estos alias fallan a la vista
+    # (502 del puente, o timeout de conexion si el Mac no contesta): sin fallback, sin
+    # reintento (num_retries 0) y sin sondeo de fondo, porque cada sondeo seria una
+    # inferencia de pago. El puente no guarda secreto: reenvia el Authorization que
+    # pone este LiteLLM (CLOUDBLUE_LITELLM_KEY, item `litellm` de 1Password) y solo deja
+    # pasar GET /health/liveliness, GET /v1/models y POST /v1/chat/completions; el
+    # resto (p. ej. /key/*) es 403 del propio puente.
+    #
+    # GASTO Y TOPES viven en la pasarela de CloudBlue (key daniel-openrouter, 5 USD/dia,
+    # DO-32862), no aqui: coste 0 en este model_info para no contarlo dos veces.
+    # Nombres de MODELO, no de capacidad: ningun conjunto del hook (CAPABILITY_CHAINS,
+    # SWAPPABLE_ALIASES, THINKING_TIERS, RESIDENT_FAMILY) los nombra, asi que no se
+    # reescriben ni se desvian; y no chocan con los `alibaba-dsv4*` (otro nombre).
+    # CONTRACT: dgx.litellm.model-alias.cloudblue-gateway.v1 — renombrar un alias rompe el
+    # Paseo de mac-cb (~/.paseo/config.json): moverlo en el mismo cambio.
+    - model_name: deepseek-v4-flash-0731
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: http://100.125.62.10:8720/v1
+        api_key: os.environ/CLOUDBLUE_LITELLM_KEY
+        timeout: 300
+        stream_timeout: 300
+        num_retries: 0
+      model_info:
+        name: DeepSeek v4 flash 0731 (CloudBlue)
+        description: litellm.com.int.zone (key daniel-openrouter) via mac-cb; requiere mac-cb despierto y en la VPN de CloudBlue
+        mode: chat
+        backend: cloudblue-gateway
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supports_function_calling: true
+        disable_background_health_check: true
+    - model_name: deepseek-v4-flash-0731-loc
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731-loc
+        api_base: http://100.125.62.10:8720/v1
+        api_key: os.environ/CLOUDBLUE_LITELLM_KEY
+        timeout: 300
+        stream_timeout: 300
+        num_retries: 0
+      model_info:
+        name: DeepSeek v4 flash 0731 loc (CloudBlue)
+        description: litellm.com.int.zone (key daniel-openrouter) via mac-cb; requiere mac-cb despierto y en la VPN de CloudBlue
+        mode: chat
+        backend: cloudblue-gateway
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supports_function_calling: true
+        disable_background_health_check: true
+    - model_name: deepseek-v4.1-flash
+      litellm_params:
+        model: openai/deepseek-v4.1-flash
+        api_base: http://100.125.62.10:8720/v1
+        api_key: os.environ/CLOUDBLUE_LITELLM_KEY
+        timeout: 300
+        stream_timeout: 300
+        num_retries: 0
+      model_info:
+        name: DeepSeek v4.1 flash (CloudBlue)
+        description: litellm.com.int.zone (key daniel-openrouter) via mac-cb; requiere mac-cb despierto y en la VPN de CloudBlue
+        mode: chat
+        backend: cloudblue-gateway
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supports_function_calling: true
+        disable_background_health_check: true
+    - model_name: deepseek-v4.1-flash-1017
+      litellm_params:
+        model: openai/deepseek-v4.1-flash-1017
+        api_base: http://100.125.62.10:8720/v1
+        api_key: os.environ/CLOUDBLUE_LITELLM_KEY
+        timeout: 300
+        stream_timeout: 300
+        num_retries: 0
+      model_info:
+        name: DeepSeek v4.1 flash 1017 (CloudBlue)
+        description: litellm.com.int.zone (key daniel-openrouter) via mac-cb; requiere mac-cb despierto y en la VPN de CloudBlue
+        mode: chat
+        backend: cloudblue-gateway
+        input_cost_per_token: 0
+        output_cost_per_token: 0
+        supports_function_calling: true
+        disable_background_health_check: true
     # ── Audio: Whisper STT + OmniVoice TTS (OSS passthrough; for CloudBlue & clients) ──
     # One LiteLLM key now covers chat + embeddings + STT + TTS. Backends are ClusterIP-only;
     # LiteLLM stays the single public, key-authed, budgeted front door (no separate exposure).
@@ -14102,6 +14200,13 @@ spec:
     #   op item edit litellm OPENROUTER_API_KEY=sk-or-...
     - secretKey: OPENROUTER_API_KEY
       remoteRef: { key: litellm/OPENROUTER_API_KEY }
+    # DGX-1826: virtual key `daniel-openrouter` de la pasarela LiteLLM de CloudBlue
+    # (litellm.com.int.zone, DO-32862) para los alias deepseek-* que salen por el
+    # puente de mac-cb. Mismo ORDEN que arriba: el campo se sembro en 1Password
+    # (item `litellm`, campo CLOUDBLUE_LITELLM_KEY, version 10, 25-11-2026) ANTES de
+    # este merge; sin el campo, el ExternalSecret entero pasa a SecretSyncedError.
+    - secretKey: CLOUDBLUE_LITELLM_KEY
+      remoteRef: { key: litellm/CLOUDBLUE_LITELLM_KEY }
 # ── litellm-dgx-backend-sync: BORRADO 2026-09-07 ─────────────────────────────
 #
 # Aqui vivian su ServiceAccount, su Role/RoleBinding en el ns `llm`, el ConfigMap
@@ -14374,7 +14479,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-62289390f858
+        config.k8s.e-dani.com/revision: config-8f068ee6122b
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14540,6 +14645,10 @@ spec:
             # sale a Internet; el model_list lo consume como `os.environ/`.
             - name: OPENROUTER_API_KEY
               valueFrom: { secretKeyRef: { name: litellm-secrets, key: OPENROUTER_API_KEY } }
+            # DGX-1826: key de la pasarela LiteLLM de CloudBlue para los alias deepseek-*
+            # (api_base del puente de mac-cb); el model_list la consume como `os.environ/`.
+            - name: CLOUDBLUE_LITELLM_KEY
+              valueFrom: { secretKeyRef: { name: litellm-secrets, key: CLOUDBLUE_LITELLM_KEY } }
             # Credencial del plan Individual Pro de Alibaba Model Studio para los alias
             # `ali-*`. `optional: true` A PROPOSITO: mientras el Secret no exista
             # (campo aun sin sembrar en 1Password, o el rate limit de 1Password
@@ -15352,7 +15461,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-62289390f858
+        config.k8s.e-dani.com/revision: config-8f068ee6122b
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
