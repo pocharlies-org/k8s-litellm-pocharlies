@@ -76,6 +76,12 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
         #   alibaba-* = 60 (17-11-2026, Dani): token-plan.ap-southeast-1 tiene
         #   stall medidos (ráfagas de "Connection error" sin fallback); con 600 s
         #   un stall colgaba al cliente diez minutos. Sanos se miden 1.2-1.8 s.
+        #   deepseek-v4-flash-0731, -0731-loc, deepseek-v4.1-flash, -1017 = 300
+        #   (25-11-2026, DGX-1826, Dani): la pasarela LiteLLM de CloudBlue por el
+        #   puente de mac-cb (100.125.62.10:8720). El Mac puede estar dormido o sin
+        #   VPN: con 600 s el cliente esperaria diez minutos para el mismo error;
+        #   300 s sigue cubriendo un turno largo de Claude Code. Van con num_retries 0
+        #   y stream_timeout 300; lo fija tests/test_cloudblue_gateway_aliases_contract.py.
         excepciones = {
             "qwen38-flash-next": 240,
             "correo-clasificador": 6,
@@ -95,6 +101,10 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
             "alibaba-dsv4f0731": 60,
             "alibaba-glm-53": 60,
             "alibaba-glm-52": 60,
+            "deepseek-v4-flash-0731": 300,
+            "deepseek-v4-flash-0731-loc": 300,
+            "deepseek-v4.1-flash": 300,
+            "deepseek-v4.1-flash-1017": 300,
         }
         for entry in model_list:
             params = entry.get("litellm_params", {})
