@@ -4318,12 +4318,14 @@ data:
     def _track_live_chunk(stream, usage):
         """Uso acumulado del chunk -> tracker, desde el CustomStreamWrapper.
 
-        El hook de iterador del proxy NO basta para el USO: en /v1/messages lo que
-        itera son los BYTES SSE ya traducidos a Anthropic, sin `usage` hasta el
-        `message_delta` final. Aqui se ve el chunk OpenAI que manda vLLM, en las
-        dos vias (chat y messages). La ESTIMACION por caracteres no: esa va en el
-        hook genérico (DGX-1863), que es el unico que ve tambien a `chatgpt/*`,
-        que streaméea con su propio iterador y jamas pasa por aqui. El
+        El hook de iterador del proxy NO basta para el USO: en /v1/messages sus
+        chunks llegan ya traducidos a Anthropic y sin `usage` hasta el
+        `message_delta` final (por eso el texto del rechazo, que si se mide ahi,
+        sale con el extractor canonico y no con la forma OpenAI). Aqui se ve el
+        chunk OpenAI que manda vLLM, en las dos vias (chat y messages). La
+        ESTIMACION por caracteres no: esa va en el hook genérico (DGX-1863), que
+        es el unico que ve tambien a `chatgpt/*`, que streaméea con su propio
+        iterador y jamas pasa por aqui. El
         `_tracking_id` y el backend se buscan UNA vez por stream (el logging_obj
         lleva los mensajes enteros: recorrerlo por chunk seria O(prompt) por
         token). Telemetria: jamas rompe el stream.
@@ -14417,7 +14419,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1d68247c4e10
+        config.k8s.e-dani.com/revision: config-9db8ba274801
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15399,7 +15401,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-1d68247c4e10
+        config.k8s.e-dani.com/revision: config-9db8ba274801
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
