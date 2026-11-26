@@ -1708,6 +1708,16 @@ contracts:
       del preview, que es el barato de los dos. Trece grupos, cada uno con su `-k2`
       espejo. La k del pack no cambia y ningun literal de la superficie se
       renombra: sin .vN+1.
+      2026-11-25 (DGX-1839): `qwen4-max-preview` sale del catalogo del plan (medido
+      contra el plano OpenAI con las dos claves: 21 servidos sin el, y llamarlo da 200
+      con `model: qwen4-max`). `alibaba-q4-max` pasa a `openai/qwen4-max` con los tres
+      precios INTEGROS de la familia `alibaba-q38-max`: se quita el factor del -80 %
+      como pedia la nota del 11-11, que es lo que sigue vigente. Con el preview fuera,
+      los dos alias eran el mismo modelo a la misma tarifa, asi que
+      `alibaba-q4-max-ga` se RETIRA (Dani 25-11: «que solo este alibaba-q4-max») y con el
+      su entrada en `~/.claude/settings.json`: la gama alta del plan vuelve a ser UN
+      alias, `alibaba-q4-max`. Doce grupos, cada uno con su `-k2` espejo. Ningun literal
+      de la superficie se renombra: sin .vN+1.
       El supuesto creditos~lista es inspeccionable en la cabecera de la
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
       cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
