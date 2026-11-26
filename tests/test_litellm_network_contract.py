@@ -89,7 +89,6 @@ class TestLiteLLMNetworkContract(unittest.TestCase):
             "bge-reranker-mac": 120,
             "stt-turbo-mac": 120,
             "alibaba-q4-max": 60,
-            "alibaba-q4-max-ga": 60,
             "alibaba-q38-flash": 60,
             "alibaba-q38-max": 60,
             "alibaba-q37-plus": 60,
