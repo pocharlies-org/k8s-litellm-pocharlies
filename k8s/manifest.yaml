@@ -63,6 +63,28 @@ data:
         ServiceUnavailableErrorAllowedFails: 1000000000
         BadGatewayErrorAllowedFails: 1000000000
         NotFoundErrorAllowedFails: 1000000000
+    # 26-11-2026 (SC-6751, causa de SC-6675): la suscripcion ChatGPT (OAuth, sin API key)
+    # devuelve el rechazo AL PROMPT como ContentPolicyViolationError con status_code 200 (la
+    # respuesta del plan viene en el cuerpo, no como 4XX). `_is_cooldown_required` solo salva
+    # las 4XX (devuelve False para 400); con 200 cae en "cool down for all other errors" ->
+    # True, y como cada alias `chatgpt/*` es una UNICA deployment sin fallback, el
+    # `allowed_fails: 3` + `cooldown_time: 300` del router aparca 300 s a TODOS los
+    # consumidores por un prompt flagged de uno (medido: 545 «No deployments available
+    # ...gpt-6-luna» en 6 h el 26-11). Es el mismo defecto que la familia RESIDENTE se quito
+    # el 19-10, pero aqui NO vale el ancla `&resident_never_cools`: su `cooldown_time: 0`
+    # anularia tambien el cooldown real del motor. Se nombra SOLO
+    # ContentPolicyViolationErrorAllowedFails a un techo inalcanzable (la clave lleva sufijo
+    # por tipo de excepcion, asi que un prompt flagged ni siquiera sube el contador base que
+    # usa el motor): el error del prompt se devuelve AL llamador sin aparcar, y un
+    # 429/5xx/timeout (sin campo nombrado en la politica) sigue cayendo al
+    # `allowed_fails: 3` + `cooldown_time: 300` del router, que es el cooldown real pedido.
+    # La semantica es la del fuente pineado (160cffc07b) en
+    # litellm/router_utils/cooldown_handlers.py: `_should_cooldown_based_on_deployment_policy`
+    # + `should_cooldown_based_on_allowed_fails_policy`.
+    # Lo fija tests/test_subscription_prompt_error_never_cools_contract.py.
+    chatgpt_prompt_error_never_cools: &chatgpt_prompt_error_never_cools
+      allowed_fails_policy:
+        ContentPolicyViolationErrorAllowedFails: 1000000000
     model_list:
     # Los alias locales son ESTATICOS desde el 18-08-2026 (ver la lapida de
     # `litellm-dgx-backend-sync` mas abajo): no se registran ni se retiran en
@@ -1013,6 +1035,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-6.2-astra
       litellm_params:
         model: chatgpt/gpt-6.2-astra
@@ -1023,6 +1048,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-6.1-sol
       litellm_params:
         model: chatgpt/gpt-6.1-sol
@@ -1033,6 +1061,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-6.1-terra
       litellm_params:
         model: chatgpt/gpt-6.1-terra
@@ -1043,6 +1074,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-6-luna
       litellm_params:
         model: chatgpt/gpt-6-luna
@@ -1053,6 +1087,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-6-astra
       litellm_params:
         model: chatgpt/gpt-6-astra
@@ -1063,6 +1100,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-6-sol
       litellm_params:
         model: chatgpt/gpt-6-sol
@@ -1073,6 +1113,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-5.6-sol
       litellm_params:
         model: chatgpt/gpt-5.6-sol
@@ -1083,6 +1126,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-5.6-terra
       litellm_params:
         model: chatgpt/gpt-5.6-terra
@@ -1093,6 +1139,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     - model_name: gpt-5.6-luna
       litellm_params:
         model: chatgpt/gpt-5.6-luna
@@ -1103,6 +1152,9 @@ data:
         output_cost_per_token: 0
         supported_reasoning_efforts: [low, medium, high, xhigh, max]
         disable_background_health_check: true
+        # SC-6751: un prompt flagged (ContentPolicyViolation, status 200) no debe
+        # aparcar esta unica deployment; ver el ancla arriba. Mantiene cooldown 5xx/429.
+        <<: *chatgpt_prompt_error_never_cools
     # DGX-1077: imagen por la misma cuenta, para los motores `chatgpt-*` del DGX Studio
     # (key `studio-chatgpt`). Mismo gate `gpt-` y misma regla: solo seleccion manual.
     - model_name: gpt-image-2.6-flare
@@ -14404,7 +14456,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8918604c535e
+        config.k8s.e-dani.com/revision: config-132cbcda45be
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15386,7 +15438,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8918604c535e
+        config.k8s.e-dani.com/revision: config-132cbcda45be
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
