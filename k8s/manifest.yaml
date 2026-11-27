@@ -1699,13 +1699,51 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-q4-max-k2
+        name: Qwen4 Max · gama alta (Alibaba)
+        description: Qwen4-Max - texto + razonamiento + vision. El mayor del plan.
+        mode: chat
+        backend: alibaba-model-studio
+        # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
+        # Prorrateo de `alibaba-q38-max` (ver cabecera de la seccion) SIN factor: el -80 %
+        # de promo del preview (leido en la consola el 11-11, Dani) se va con el preview,
+        # fuera del catalogo del plan desde el 25-11. NO es el descuento nocturno — ese no
+        # se modela porque LiteLLM no varia tarifa por hora; este es el precio vigente.
+        input_cost_per_token: 0.00000017639273
+        cache_read_input_token_cost: 0.00000003527855
+        output_cost_per_token: 0.00000052917818
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        supported_reasoning_efforts: [none, low, medium, xhigh]
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-q4-max
+      litellm_params:
+        model: openai/qwen4-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q4-max-k3
         name: Qwen4 Max · gama alta (Alibaba)
         description: Qwen4-Max - texto + razonamiento + vision. El mayor del plan.
         mode: chat
@@ -1824,13 +1862,61 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-q38-flash-k2
+        name: Qwen3.8 Flash · gemelo cloud del residente
+        description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000001322945
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000004145229
+        # 20-09-2026: la otra mitad del cooldown asimetrico (ver `qwen38-flash-next`).
+        # Este aparca CORTO porque es el ULTIMO recurso: si se expulsa a este y el
+        # residente sigue caido, no queda a donde ir y la peticion muere. Un 429 o un
+        # corte de red de Alibaba no debe dejarnos 15 min sin red de seguridad. 60 s
+        # basta para no martillear a un upstream que dice que no, y es lo bastante
+        # corto para que la red vuelva enseguida.
+        # (Un `Retry-After` suyo manda sobre esto: si Alibaba pide mas, se le da.)
+        cooldown_time: 60
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # 12-10-2026 (DGX-842): al dia del menu que el 23-09 ya tenian el residente y
+        # su espejo del primer proxy: none/low/medium/xhigh, la receta oficial de Model
+        # Studio (help/en/model-studio/qwen-api-via-openai-responses). La sonda del 21-09
+        # trato ruido de 6 muestras como niveles y anunciaba `high` y `max`, que son
+        # `xhigh` (lo traduce THINKING_KWARGS aqui y Alibaba alla). Siguen ACEPTADOS:
+        # solo se retiran de la oferta, no de la traduccion.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-q38-flash
+      litellm_params:
+        model: openai/qwen3.8-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q38-flash-k3
         name: Qwen3.8 Flash · gemelo cloud del residente
         description: Qwen3.8-Flash en Alibaba - mismo modelo que el residente del Spark. Es su fallback.
         mode: chat
@@ -1907,13 +1993,54 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-q38-max-k2
+        name: Qwen3.8 Max · gama alta (Alibaba)
+        description: Qwen3.8-Max - texto + razonamiento + vision. El mayor del plan.
+        mode: chat
+        backend: alibaba-model-studio
+        # CONTRACT: dgx.litellm.alibaba-pack-pricing.v1
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000017639273
+        cache_read_input_token_cost: 0.00000003527855
+        output_cost_per_token: 0.00000052917818
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        # 12-10-2026 (DGX-842): al dia del menu que el 23-09 ya tenian el residente y
+        # su espejo del primer proxy: none/low/medium/xhigh, la receta oficial de Model
+        # Studio (help/en/model-studio/qwen-api-via-openai-responses). La sonda del 21-09
+        # trato ruido de 6 muestras como niveles y anunciaba `high` y `max`, que son
+        # `xhigh` (lo traduce THINKING_KWARGS aqui y Alibaba alla). Siguen ACEPTADOS:
+        # solo se retiran de la oferta, no de la traduccion.
+        supported_reasoning_efforts: [none, low, medium, xhigh]
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-q38-max
+      litellm_params:
+        model: openai/qwen3.8-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q38-max-k3
         name: Qwen3.8 Max · gama alta (Alibaba)
         description: Qwen3.8-Max - texto + razonamiento + vision. El mayor del plan.
         mode: chat
@@ -1975,13 +2102,46 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-q37-plus-k2
+        name: Qwen3.7 Plus (Alibaba)
+        description: Qwen3.7-Plus - texto + razonamiento + vision.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000003527855
+        cache_read_input_token_cost: 0.00000000705571
+        output_cost_per_token: 0.00000014111418
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-q37-plus
+      litellm_params:
+        model: openai/qwen3.7-plus
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q37-plus-k3
         name: Qwen3.7 Plus (Alibaba)
         description: Qwen3.7-Plus - texto + razonamiento + vision.
         mode: chat
@@ -2035,13 +2195,46 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-q37-max-k2
+        name: Qwen3.7 Max (Alibaba)
+        description: Qwen3.7-Max - texto + razonamiento. Sin vision.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000022049091
+        cache_read_input_token_cost: 0.00000004409818
+        output_cost_per_token: 0.00000066147272
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-q37-max
+      litellm_params:
+        model: openai/qwen3.7-max
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q37-max-k3
         name: Qwen3.7 Max (Alibaba)
         description: Qwen3.7-Max - texto + razonamiento. Sin vision.
         mode: chat
@@ -2095,13 +2288,46 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-q36-flash-k2
+        name: Qwen3.6 Flash (Alibaba)
+        description: Qwen3.6-Flash - texto + razonamiento + vision. Generacion anterior.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002204909
+        cache_read_input_token_cost: 0.00000000440982
+        output_cost_per_token: 0.00000013229454
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-q36-flash
+      litellm_params:
+        model: openai/qwen3.6-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-q36-flash-k3
         name: Qwen3.6 Flash (Alibaba)
         description: Qwen3.6-Flash - texto + razonamiento + vision. Generacion anterior.
         mode: chat
@@ -2155,13 +2381,46 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-dsv41-fl-k2
+        name: DeepSeek V4.1 Flash (Alibaba)
+        description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-dsv41-fl
+      litellm_params:
+        model: openai/deepseek-v4.1-flash
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-dsv41-fl-k3
         name: DeepSeek V4.1 Flash (Alibaba)
         description: DeepSeek-V4.1-Flash servido por Alibaba - texto + razonamiento.
         mode: chat
@@ -2226,6 +2485,31 @@ data:
         supports_vision: true
         supports_reasoning: true
         disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-ds41f1017
+      litellm_params:
+        model: openai/deepseek-v4.1-flash-1017
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        order: 2
+      model_info:
+        id: alibaba-ds41f1017-k3
+        name: DeepSeek V4.1 Flash 1017 (Alibaba)
+        description: DeepSeek-V4.1-Flash snapshot 1017 - pin de version.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000002645891
+        cache_read_input_token_cost: 0.00000000264589
+        output_cost_per_token: 0.00000010583564
+        supports_function_calling: true
+        supports_vision: true
+        supports_reasoning: true
+        disable_background_health_check: true
     - model_name: alibaba-dsv4-pro
       litellm_params:
         model: openai/deepseek-v4-pro
@@ -2267,13 +2551,46 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-dsv4-pro-k2
+        name: DeepSeek V4 Pro (Alibaba)
+        description: DeepSeek-V4-Pro servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000021167127
+        cache_read_input_token_cost: 0.00000004233425
+        output_cost_per_token: 0.00000042334254
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-dsv4-pro
+      litellm_params:
+        model: openai/deepseek-v4-pro
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-dsv4-pro-k3
         name: DeepSeek V4 Pro (Alibaba)
         description: DeepSeek-V4-Pro servido por Alibaba - texto + razonamiento.
         mode: chat
@@ -2327,13 +2644,46 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-dsv4f0731-k2
+        name: DeepSeek V4 Flash 0731 (Alibaba)
+        description: DeepSeek-V4-Flash snapshot 0731 - pin de version.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.0000000388064
+        cache_read_input_token_cost: 0.00000000776128
+        output_cost_per_token: 0.0000001164192
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-dsv4f0731
+      litellm_params:
+        model: openai/deepseek-v4-flash-0731
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-dsv4f0731-k3
         name: DeepSeek V4 Flash 0731 (Alibaba)
         description: DeepSeek-V4-Flash snapshot 0731 - pin de version.
         mode: chat
@@ -2387,13 +2737,46 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-glm-53-k2
+        name: GLM-5.3 · Zhipu (Alibaba)
+        description: GLM-5.3 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-glm-53
+      litellm_params:
+        model: openai/glm-5.3
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-glm-53-k3
         name: GLM-5.3 · Zhipu (Alibaba)
         description: GLM-5.3 de Zhipu AI servido por Alibaba - texto + razonamiento.
         mode: chat
@@ -2447,13 +2830,46 @@ data:
         # orders se calcula SOLO entre declarados (por eso el -k1 lleva
         # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
         # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
-        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_key2_active)
+        # DASHSCOPE_API_KEY_2 existe, el hook (ensure_alibaba_accounts_active)
         # lo cambia a 1 en memoria al arrancar y el -k2 entra al reparto
         # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
         # inercia: solo hereda trafico si el -k1 entra en cooldown.
         order: 2
       model_info:
         id: alibaba-glm-52-k2
+        name: GLM-5.2 · Zhipu (Alibaba)
+        description: GLM-5.2 de Zhipu AI servido por Alibaba - texto + razonamiento.
+        mode: chat
+        backend: alibaba-model-studio
+        # 25-09-2026: prorrateo del pack (ver cabecera de la seccion Alibaba).
+        input_cost_per_token: 0.00000012347491
+        cache_read_input_token_cost: 0.00000002469498
+        output_cost_per_token: 0.000000388064
+        supports_function_calling: true
+        supports_vision: false
+        supports_reasoning: true
+        disable_background_health_check: true
+    # Tercera cuenta del Token Plan (correo@e-dani.com, DASHSCOPE_API_KEY_3,
+    # DGX-1912). ESPEJO del -k2: mismo order 2 en repo; el hook lo activa con
+    # su key o lo retira sin ella. Ver litellm-alibaba-3.
+    - model_name: alibaba-glm-52
+      litellm_params:
+        model: openai/glm-5.2
+        api_base: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+        api_key: os.environ/DASHSCOPE_API_KEY_3
+        timeout: 60
+        num_retries: 0
+        # Failover puro en REPO (estado estatico seguro): el minimo de
+        # orders se calcula SOLO entre declarados (por eso el -k1 lleva
+        # order: 1 explicito; sin el, este 2 seria EL minimo y el reparto
+        # se iria entero aqui — medido 20/20 en la v1.100.0 pineada). Si
+        # DASHSCOPE_API_KEY_3 existe, el hook (ensure_alibaba_accounts_active)
+        # lo cambia a 1 en memoria al arrancar y el -k3 entra al reparto
+        # con afinidad por sesion. Sin la key —o sin el hook— este 2 es la
+        # inercia: solo hereda trafico si el -k1 entra en cooldown.
+        order: 2
+      model_info:
+        id: alibaba-glm-52-k3
         name: GLM-5.2 · Zhipu (Alibaba)
         description: GLM-5.2 de Zhipu AI servido por Alibaba - texto + razonamiento.
         mode: chat
@@ -2988,7 +3404,7 @@ data:
       # queda RETIRADO. Clavaba por GRUPO y soltaba la sesion a la otra cuenta
       # durante un cooldown (ida y vuelta). La afinidad la hace ahora
       # session_router.alibaba_account_filter: UN pin por sesion -> cuenta
-      # (k1/k2) para todos los grupos `alibaba-*`, en la Valkey del router
+      # (k1/k2/k3) para todos los grupos `alibaba-*`, en la Valkey del router
       # (contrato dgx.session-router.alibaba-account-pin.v1). No volver a
       # activar el nativo encima: filtrarian a la vez con pines distintos.
       # ── PUENTE de renombrado (20-09): los alias largos de Alibaba siguen viva ──
@@ -10476,9 +10892,9 @@ data:
 
 
     # ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026, rehecha 28-09) ──
-    # Cada grupo `alibaba-*` tiene dos deployments (dos planes Team). El cache
-    # de contexto de Model Studio es POR CUENTA: partir una conversacion entre
-    # las dos paga el prefijo entero en cada salto. Desde el 28-09 el filtro es
+    # Cada grupo `alibaba-*` tiene un deployment por cuenta del Token Plan
+    # (`-k1`, `-k2`, `-k3`). El cache de contexto de Model Studio es POR CUENTA:
+    # partir una conversacion entre cuentas paga el prefijo entero en cada salto. Desde el 28-09 el filtro es
     # PROPIO (alibaba_account_filter, mas abajo: un pin sesion -> cuenta para
     # todos los grupos); el session_affinity nativo por grupo quedo retirado.
     # Este modulo:
@@ -10488,14 +10904,14 @@ data:
     #       22 distintos por conversacion). Es la llave del pin de cuenta.
     #   (b) monta una vez la Valkey del namespace sobre el DualCache del
     #       Router (cooldowns compartidos entre replicas).
-    #   (c) activa la cuenta 2 SOLO si existe: ensure_alibaba_key2_active
-    #       sube los -k2 de order 2 a 1 en memoria cuando
-    #       DASHSCOPE_API_KEY_2 esta en el entorno. Sin la key RETIRA los -k2
-    #       del Router y no estampa sid (la afinidad corre antes que el filtro
-    #       de order: con un -k2 sin key cargado, una sesion nacida en un
-    #       cooldown del -k1 quedaba clavada a un 401). Si este hook no carga
-    #       (el fallo peor), el order: 2 del YAML sigue siendo la inercia:
-    #       sembrar + rollout = activado, sin paso manual.
+    #   (c) activa cada cuenta extra SOLO si existe: ensure_alibaba_accounts_active
+    #       sube los -k2/-k3 de order 2 a 1 en memoria cuando su key
+    #       (ALIBABA_EXTRA_KEY_ENVS) esta en el entorno. Sin la key RETIRA esos
+    #       deployments del Router; con una sola cuenta no estampa sid (la
+    #       afinidad corre antes que el filtro de order: con un -kN sin key
+    #       cargado, una sesion nacida en un cooldown del -k1 quedaba clavada a
+    #       un 401). Si este hook no carga (el fallo peor), el order: 2 del YAML
+    #       sigue siendo la inercia: sembrar + rollout = activado, sin paso manual.
     # Fail-open: sin sid no se filtra (shuffle puro); sin Valkey la cuenta de una
     # sesion nueva sigue siendo la misma en los dos pods (eleccion determinista).
 
@@ -10503,39 +10919,42 @@ data:
     # (ancla: deployment_affinity:v1:) Solo se LEE, para sembrar la cuenta de las
     # sesiones que ya tenian pin nativo por grupo; nadie las escribe ya.
 
-    _alibaba_key2_checked = False
+    # Cuenta extra del Token Plan -> env con su key (la cuenta 1, DASHSCOPE_API_KEY,
+    # es la base y no se retira nunca). k2 = me@e-dani.com (28-09), k3 =
+    # correo@e-dani.com (27-11, DGX-1912).
+    ALIBABA_EXTRA_KEY_ENVS = {"k2": "DASHSCOPE_API_KEY_2", "k3": "DASHSCOPE_API_KEY_3"}
+    _alibaba_accounts_checked = False
     _affinity_redis_tried = False
 
 
-    def ensure_alibaba_key2_active():
-        """Una vez por proceso, dos estados:
+    def ensure_alibaba_accounts_active():
+        """Una vez por proceso, por cada cuenta extra de ALIBABA_EXTRA_KEY_ENVS:
 
-        - Con DASHSCOPE_API_KEY_2: sube los once -k2 de order 2 a order 1 EN
+        - Con su key en el entorno: sube sus `-kN` de order 2 a order 1 EN
           MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
           por sesion decide cual).
-        - Sin ella: RETIRA los -k2 del Router (delete_deployment). Motivo,
+        - Sin ella: RETIRA sus `-kN` del Router (delete_deployment). Motivo,
           verificado en la fuente v1.100.0: el filtro de afinidad corre ANTES
           que el de `order` (router.py async_get_healthy_deployments) y el pin
           se reclama en el pre-call. Una sesion nueva que naciera durante un
-          cooldown del -k1 quedaba clavada al -k2 SIN key: 401 en cada vuelta,
+          cooldown del -k1 quedaba clavada al -kN SIN key: 401 en cada vuelta,
           y el pin se renovaba solo (keepalive) mientras la sesion viviera.
-          Sin -k2 cargado, un cooldown del -k1 sigue la cadena de fallback
+          Sin ese -kN cargado, un cooldown del -k1 sigue la cadena de fallback
           normal en vez de estrellarse contra un 401 seguro.
 
         Si este hook no carga, el order: 2 del YAML sigue siendo la inercia.
         La key llega por env del pod: sembrar en 1Password + rollout restart
         = activado, sin tocar git."""
-        global _alibaba_key2_checked
-        if _alibaba_key2_checked:
+        global _alibaba_accounts_checked
+        if _alibaba_accounts_checked:
             return
-        _alibaba_key2_checked = True
-        con_key = bool(os.environ.get("DASHSCOPE_API_KEY_2"))
+        _alibaba_accounts_checked = True
         try:
             from litellm.proxy.proxy_server import llm_router
             if llm_router is None:
-                _alibaba_key2_checked = False  # router aun sin montar: reintentar
+                _alibaba_accounts_checked = False  # router aun sin montar: reintentar
                 return
-            k2 = []
+            por_cuenta = {account: [] for account in ALIBABA_EXTRA_KEY_ENVS}
             for entry in list(getattr(llm_router, "model_list", [])):
                 if isinstance(entry, dict):
                     info = entry.get("model_info") or {}
@@ -10544,24 +10963,28 @@ data:
                     info = getattr(entry, "model_info", None)
                     params = getattr(entry, "litellm_params", None)
                 info_id = info.get("id") if isinstance(info, dict) else getattr(info, "id", None)
-                if isinstance(info_id, str) and info_id.endswith("-k2"):
-                    k2.append((info_id, params))
-            if con_key:
-                for _, params in k2:
-                    if isinstance(params, dict):
-                        params["order"] = 1
-                    elif params is not None:
-                        params.order = 1
-                log.warning("session_router: DASHSCOPE_API_KEY_2 presente -> %s deployments -k2 en el reparto (order 1)", len(k2))
-            else:
-                retirados = sum(1 for info_id, _ in k2 if llm_router.delete_deployment(id=info_id) is not None)
-                log.warning("session_router: sin DASHSCOPE_API_KEY_2 -> %s deployments -k2 retirados del Router", retirados)
+                m = _ACCOUNT_RE.search(info_id) if isinstance(info_id, str) else None
+                if m and m.group(1) in por_cuenta:
+                    por_cuenta[m.group(1)].append((info_id, params))
+            for account, env in ALIBABA_EXTRA_KEY_ENVS.items():
+                deps = por_cuenta[account]
+                if os.environ.get(env):
+                    for _, params in deps:
+                        if isinstance(params, dict):
+                            params["order"] = 1
+                        elif params is not None:
+                            params.order = 1
+                    log.warning("session_router: %s presente -> %s deployments -%s en el reparto (order 1)", env, len(deps), account)
+                else:
+                    retirados = sum(1 for info_id, _ in deps if llm_router.delete_deployment(id=info_id) is not None)
+                    log.warning("session_router: sin %s -> %s deployments -%s retirados del Router", env, retirados, account)
         except Exception as exc:
-            _warn_throttled("alibaba_k2", f"gestion -k2 fallida ({exc.__class__.__name__}); queda el order 2 del YAML")
+            _warn_throttled("alibaba_cuentas", f"gestion de cuentas extra fallida ({exc.__class__.__name__}); queda el order 2 del YAML")
 
 
-    def alibaba_key2_disponible():
-        return bool(os.environ.get("DASHSCOPE_API_KEY_2"))
+    def alibaba_varias_cuentas():
+        """Hay mas de una cuenta con key (la 1 siempre la tiene)."""
+        return any(os.environ.get(env) for env in ALIBABA_EXTRA_KEY_ENVS.values())
 
 
     def ensure_affinity_redis():
@@ -10600,14 +11023,14 @@ data:
     def stamp_alibaba_session_affinity(data):
         """metadata["session_id"] = sid del hook para peticiones `alibaba-*`
         (incluida la reescrita residente->Alibaba, que ya ve el nombre final).
-        Devuelve el sid estampado o None. Sin sid, o sin cuenta 2, no se toca nada."""
-        ensure_alibaba_key2_active()
+        Devuelve el sid estampado o None. Sin sid, o con una sola cuenta, no se toca nada."""
+        ensure_alibaba_accounts_active()
         if not str(data.get("model") or "").startswith(ALIBABA_PREFIX):
             return None
         # Con UNA cuenta la afinidad no aporta nada y es la que puede atrapar
-        # una sesion en el -k2 sin key (ver ensure_alibaba_key2_active): sin
-        # key no hay sid, no hay pin, y manda el filtro de `order`.
-        if not alibaba_key2_disponible():
+        # una sesion en un -kN sin key (ver ensure_alibaba_accounts_active): sin
+        # keys extra no hay sid, no hay pin, y manda el filtro de `order`.
+        if not alibaba_varias_cuentas():
             return None
         ensure_affinity_redis()
         sid = _session_id(data) or _prefix_affinity_key(data)
@@ -10639,7 +11062,7 @@ data:
     #      cuentas, asi que mudar sale gratis y repartir bien importa (DGX-592).
     #
     # Aqui:
-    #   - Clave `alibaba_account_pin:v1:<api-key-hash>:<sid>` -> "k1" | "k2" en la
+    #   - Clave `alibaba_account_pin:v1:<api-key-hash>:<sid>` -> "k1" | "k2" | "k3" en la
     #     Valkey del session router (misma URL/password). TTL de inactividad (el del
     #     vinculo de plan a Alibaba) renovado por keepalive en cada acierto.
     #   - Cuenta de una sesion NUEVA o CADUCADA = hash(api-key-hash, sid, epoca) por
@@ -10659,7 +11082,7 @@ data:
     #     sin Valkey; cualquier excepcion deja intactas las CANDIDATAS (fail-open):
     #     con pesos conocidos la cuenta sin cupo no vuelve a entrar (rework DGX-639).
     # CONTRACT: dgx.session-router.alibaba-account-pin.v1
-    # (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
+    # (ancla: alibaba_account_pin:v1:) valor "k1" | "k2" | "k3", Valkey del session router.
     ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
     # TTL DE INACTIVIDAD (se renueva en cada peticion), el MISMO tiempo que el
     # vinculo de plan a Alibaba (STICKY_TTL_ALIBABA_SECONDS, DGX-592): lo
@@ -10718,7 +11141,7 @@ data:
 
 
     def _deployment_account(deployment):
-        """"k1" / "k2" del id estable del deployment (`<grupo>-kN`), o None."""
+        """"k1" / "k2" / "k3" del id estable del deployment (`<grupo>-kN`), o None."""
         info = deployment.get("model_info") if isinstance(deployment, dict) else None
         model_id = info.get("id") if isinstance(info, dict) else None
         m = _ACCOUNT_RE.search(str(model_id or ""))
@@ -14354,7 +14777,7 @@ spec:
 ##
 ## ACTIVACION: sin paso manual ni PR. Cuando este Secret exista, el env
 ## DASHSCOPE_API_KEY_2 del pod tendra valor y el hook, al arrancar
-## (session_router.ensure_alibaba_key2_active), sube los once `-k2` de
+## (session_router.ensure_alibaba_accounts_active), sube los doce `-k2` de
 ## order 2 a order 1 EN MEMORIA: entran al reparto con afinidad por sesion.
 ## O sea: sembrar + `kubectl -n litellm rollout restart deploy/litellm` =
 ## activado. Las sesiones nuevas se clavan desde su primera peticion; las
@@ -14380,6 +14803,27 @@ spec:
   data:
     - secretKey: DASHSCOPE_API_KEY_2
       remoteRef: { key: alibaba-model-studio-2/password }
+---
+# Tercera cuenta del Token Plan (correo@e-dani.com, 27-11-2026, DGX-1912). Misma
+# activacion que la cuenta 2: con este Secret el env DASHSCOPE_API_KEY_3 tiene
+# valor y el hook (session_router.ensure_alibaba_accounts_active) mete los doce
+# `-k3` en el reparto al arrancar; sin el, los retira. Forma Connect (item por id).
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-alibaba-3
+  namespace: litellm
+spec:
+  refreshInterval: 24h
+  refreshPolicy: OnChange
+  secretStoreRef: { kind: ClusterSecretStore, name: onepassword-connect }
+  target:
+    name: litellm-alibaba-3
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: DASHSCOPE_API_KEY_3
+      remoteRef: { key: eiif3hcsfaemyqm53z5nqut42i, property: password }  # alibaba-model-studio-3
 ---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.
@@ -14495,7 +14939,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6724247e7801
+        config.k8s.e-dani.com/revision: config-8e536c8a25c7
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14685,6 +15129,9 @@ spec:
             - name: DASHSCOPE_API_KEY_2
               valueFrom:
                 secretKeyRef: { name: litellm-alibaba-2, key: DASHSCOPE_API_KEY_2, optional: true }
+            - name: DASHSCOPE_API_KEY_3
+              valueFrom:
+                secretKeyRef: { name: litellm-alibaba-3, key: DASHSCOPE_API_KEY_3, optional: true }
             # Keys autorizadas a pedir los alias `or-*`. Falla CERRADO, al reves que
             # el gate abliterado. Si la variable llega vacia
             # se deniega a todo el mundo, incluida la master. Hace falta porque el
@@ -15084,7 +15531,7 @@ data:
     MAX_CONCURRENT = 8
     TOKEN_ENV_PREFIX = "PLAN_GATEWAY_TOKEN_"
     # Cuenta -> env con su key. Los mismos Secrets que el Deployment `litellm`.
-    ACCOUNT_ENVS = {"k1": "DASHSCOPE_API_KEY", "k2": "DASHSCOPE_API_KEY_2"}
+    ACCOUNT_ENVS = {"k1": "DASHSCOPE_API_KEY", "k2": "DASHSCOPE_API_KEY_2", "k3": "DASHSCOPE_API_KEY_3"}
 
     # HIPOTESIS: ninguna de estas respuestas esta capturada del upstream real. La
     # medicion P0 (nota-devops-k2-medicion.md, 06-10-2026) hizo cinco llamadas sin
@@ -15478,8 +15925,8 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-6724247e7801
-        plan-gateway/revision: plan-gateway-4ec40f1bbb19
+        config.k8s.e-dani.com/revision: config-8e536c8a25c7
+        plan-gateway/revision: plan-gateway-a02fe0f10009
     spec:
       enableServiceLinks: false
       # uvicorn drena 120 s (--timeout-graceful-shutdown) y el pod tiene 150.
@@ -15535,15 +15982,18 @@ spec:
             # Pesos por cuenta del panel (session_router._config, SWR): los mismos
             # que reparten el chat.
             - { name: MODEL_ROUTING_CONFIG_URL, value: "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/model-routing/config" }
-            # Las dos keys del plan, de los MISMOS Secrets que el proxy
-            # (litellm-alibaba y litellm-alibaba-2). `optional`: sin una, el
-            # gateway sirve con la otra; sin ninguna responde 503 visible.
+            # Las tres keys del plan, de los MISMOS Secrets que el proxy
+            # (litellm-alibaba, litellm-alibaba-2 y litellm-alibaba-3). `optional`:
+            # sin una, el gateway sirve con las otras; sin ninguna responde 503 visible.
             - name: DASHSCOPE_API_KEY
               valueFrom:
                 secretKeyRef: { name: litellm-alibaba, key: DASHSCOPE_API_KEY, optional: true }
             - name: DASHSCOPE_API_KEY_2
               valueFrom:
                 secretKeyRef: { name: litellm-alibaba-2, key: DASHSCOPE_API_KEY_2, optional: true }
+            - name: DASHSCOPE_API_KEY_3
+              valueFrom:
+                secretKeyRef: { name: litellm-alibaba-3, key: DASHSCOPE_API_KEY_3, optional: true }
             # Tokens por consumidor. NO optional: sin ellos todo seria 401 con el
             # pod aparentemente sano; mejor que el pod no arranque y se vea.
             - name: PLAN_GATEWAY_TOKEN_STUDIO

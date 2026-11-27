@@ -157,8 +157,9 @@ contracts:
       Publisher y lector: session_router.alibaba_account_filter, llamado por el
       Router en cada eleccion de deployment a traves de
       StripUnsupportedParams.async_filter_deployments. Valkey del session router
-      (litellm-valkey, db de REDIS_URL); valor "k1" | "k2" (sufijo del
-      model_info.id estable `<grupo>-kN`); SET NX = gana el primero. <api-key-hash>
+      (litellm-valkey, db de REDIS_URL); valor "k1" | "k2" | "k3" (sufijo del
+      model_info.id estable `<grupo>-kN`; "k3" desde 2026-11-27, DGX-1912,
+      aditivo); SET NX = gana el primero. <api-key-hash>
       = user_api_key_hash (sha256).
 
       TTL DE INACTIVIDAD ALIBABA_ACCOUNT_PIN_TTL_SECONDS, default
@@ -377,11 +378,11 @@ contracts:
       (ensure_affinity_redis), sin lo cual el pin vive solo por pod.
       Valkey litellm-valkey db 0; valor {"model_id": "<grupo>-k1|<grupo>-k2"}
       — ids explicitos y estables del manifiesto, vigentes por
-      test_alibaba_second_key_affinity_contract; TTL =
+      test_alibaba_extra_keys_affinity_contract; TTL =
       deployment_affinity_ttl_seconds (3600 s de inactividad, renovado en
       cada peticion, claim first-writer-wins). Los -k2 nacen con `order: 2`
       (inertes): el hook los sube a order 1 en memoria SOLO si
-      DASHSCOPE_API_KEY_2 existe (ensure_alibaba_key2_active); sin la key
+      DASHSCOPE_API_KEY_2 existe (ensure_alibaba_accounts_active); sin la key
       el hook RETIRA los -k2 del Router y no estampa sid (la afinidad corre
       antes que el filtro de order: un pin nacido en un cooldown del -k1
       atrapaba la sesion en un -k2 sin key, 401 en bucle). Si el hook no
@@ -797,7 +798,7 @@ contracts:
       `low` and `high`/`max` to `xhigh`, so advertising those two painted two
       identical options in every client that reads the menu (opencode, the Hermes
       seed, Paseo). Guarded by
-      tests/test_alibaba_second_key_affinity_contract.py::test_el_menu_de_effort_de_los_qwen38_es_la_receta_oficial.
+      tests/test_alibaba_extra_keys_affinity_contract.py::test_el_menu_de_effort_de_los_qwen38_es_la_receta_oficial.
   - id: dgx.litellm.tooling-cloud-fallback.v1
     kind: schema
     value: TOOLING_FALLBACKS
@@ -1750,9 +1751,10 @@ contracts:
       seccion Alibaba del manifiesto; recalibrar si cambian plan, mezcla o
       cuota. 2026-09-26: cada alias tiene ademas un deployment `-k2`
       (segunda cuenta del plan) que ESPEJA estos tres campos — el espejo lo
-      vigila test_alibaba_second_key_affinity_contract; si el plan de la
+      vigila test_alibaba_extra_keys_affinity_contract; si el plan de la
       cuenta 2 se paga distinto, revisar los campos al activar (quitar
-      `order: 2`).
+      `order: 2`). 2026-11-27 (DGX-1912): y un `-k3` (tercera cuenta,
+      correo@e-dani.com) con el mismo espejo; ningun literal se renombra.
   - id: dgx.litellm.alibaba-second-account.v1
     kind: schema
     # `DASHSCOPE_API_KEY_2` es el literal que comparten las dos mitades de la
@@ -1768,7 +1770,7 @@ contracts:
       2026-09-26 (DGX-444). Superficie de la segunda cuenta del plan Team de
       Alibaba Model Studio: ExternalSecret `litellm-alibaba-2` -> Secret del
       mismo nombre -> env `DASHSCOPE_API_KEY_2` (optional: true) -> el hook
-      ensure_alibaba_key2_active sube los once `-k2` de order 2 a order 1 en
+      ensure_alibaba_accounts_active sube los `-k2` de order 2 a order 1 en
       memoria cuando la key existe (afinidad por sesion:
       dgx.session-router.deployment-affinity-key.v1). GATE DGX-444: el
       ExternalSecret queda COMENTADO FUERA del despliegue porque el item
@@ -1783,6 +1785,27 @@ contracts:
       forma (test_externalsecret_y_env_optional). Nombres congelados: Secret, env y titulo
       1Password (el provider onepasswordSDK convierte el titulo en op:// y
       solo admite [A-Za-z0-9_.-]).
+  - id: dgx.litellm.alibaba-third-account.v1
+    kind: schema
+    # `DASHSCOPE_API_KEY_3`: el literal que comparten el ExternalSecret que
+    # materializa el Secret `litellm-alibaba-3`, el env `optional: true` de los
+    # Deployments `litellm` y `plan-gateway` y el `os.environ/DASHSCOPE_API_KEY_3`
+    # de los doce `-k3`.
+    value: DASHSCOPE_API_KEY_3
+    role: publisher
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      2026-11-27 (DGX-1912). Tercera cuenta del Token Plan de Alibaba Model
+      Studio (correo@e-dani.com), mismo patron que
+      dgx.litellm.alibaba-second-account.v1: ExternalSecret `litellm-alibaba-3`
+      (forma Connect, item `alibaba-model-studio-3` del vault k8s-pocharlies, por id)
+      -> Secret del mismo nombre -> env `DASHSCOPE_API_KEY_3` (optional: true)
+      -> el hook ensure_alibaba_accounts_active sube los `-k3` a order 1 en
+      memoria si la key existe y los retira del Router si no. El plan-gateway
+      la lee en ACCOUNT_ENVS (`k3`) y la cuenta sale en `X-Plan-Account: k3`.
+      Nombres congelados: Secret, env y titulo 1Password.
   - id: dgx.litellm.tool-call-arguments-json.v1
     kind: schema
     # El `value` es el campo del wire de OpenAI que el hook garantiza, no un
@@ -1927,7 +1950,8 @@ contracts:
       CUENTA: la elige `session_router.draw_account` (la MISMA formula por pesos
       del cupo, `alibaba_account_weights`, que una sesion nueva de chat; el
       gateway no define formula propia, lo fija tests/test_plan_gateway_contract.py).
-      Toda respuesta proxied lleva `X-Plan-Account: k1|k2`. Sin estado: el
+      Toda respuesta proxied lleva `X-Plan-Account: k1|k2|k3` (k3 desde
+      2026-11-27, DGX-1912, aditivo). Sin estado: el
       cliente guarda la cabecera del POST de video y la reenvia en
       `GET /api/v1/tasks/{id}`; con cabecera va SOLO a esa cuenta (valor
       desconocido, 400), sin ella prueba las dos en el orden del sorteo y devuelve

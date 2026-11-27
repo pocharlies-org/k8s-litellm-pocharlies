@@ -1,18 +1,19 @@
-"""Contract de la segunda cuenta de Alibaba con afinidad por sesion (26-09-2026).
+"""Contract de las cuentas extra de Alibaba con afinidad por sesion (26-09-2026;
+tercera cuenta, correo@e-dani.com, 27-11-2026, DGX-1912).
 
-El cache de contexto de Model Studio es POR CUENTA (los dos planes Team no
-comparten prefijo): repartir una conversacion entre las dos cuentas pagaria el
+El cache de contexto de Model Studio es POR CUENTA (los planes Team no
+comparten prefijo): repartir una conversacion entre cuentas pagaria el
 prefijo entero en cada salto. El reparto es por sesion, no por peticion, con el
 mecanismo NATIVO del Router (DeploymentAffinityCheck, v1.100.0), y el hook le
 alimenta el `session_id` propio (el del cliente no es estable).
 
 Que vigila este contrato:
 
-  1. Forma: cada grupo `alibaba-*` tiene exactamente DOS deployments; el `-k2`
-     usa DASHSCOPE_API_KEY_2 y lleva `order: 2` (inerte hasta la activacion:
-     failover puro, no reparto); ids estables `<grupo>-k1/-k2`; los flags de
-     capacidad y los precios del pack van ESPEJADOS (un twin desincronizado es
-     el riesgo del patron).
+  1. Forma: cada grupo `alibaba-*` tiene exactamente TRES deployments; el `-k2`
+     usa DASHSCOPE_API_KEY_2 y el `-k3` DASHSCOPE_API_KEY_3, y los dos llevan
+     `order: 2` (inertes hasta la activacion: failover puro, no reparto); ids
+     estables `<grupo>-k1/-k2/-k3`; los flags de capacidad y los precios del
+     pack van ESPEJADOS (un twin desincronizado es el riesgo del patron).
   2. router_settings: el session_affinity NATIVO por grupo esta retirado
      (28-09-2026); la afinidad es por cuenta — ver
      tests/test_alibaba_account_affinity.py.
@@ -23,9 +24,10 @@ Que vigila este contrato:
      corto (el claim va en el camino de la peticion).
   5. Cableado: strip_params llama al stamp FUERA del gate de ROUTED_MODELS
      (un `alibaba-*` explicito nunca pasa por apply_session_routing).
-  6. Plomada: ExternalSecret `litellm-alibaba-2` propio (item 1Password
-     `alibaba-model-studio-2` sembrado el 28-09-2026) y env `optional: true`
-     — sin Secret el pod arranca y el `-k2` queda inerte.
+  6. Plomada: ExternalSecrets `litellm-alibaba-2` y `litellm-alibaba-3` propios
+     (items 1Password `alibaba-model-studio-2`, sembrado el 28-09-2026, y
+     `alibaba-model-studio-3`) y env `optional: true` — sin Secret el pod
+     arranca y su `-kN` queda inerte.
 """
 import ast
 import sys
@@ -45,7 +47,7 @@ MIRRORED_MODEL_INFO = (
     "mode", "backend", "supports_function_calling", "supports_vision",
     "supports_reasoning", "supported_reasoning_efforts", "cooldown_time",
     # Prorrateo del pack (dgx.litellm.alibaba-pack-pricing.v1): un twin sin
-    # precios dejaria de facturar las peticiones clavadas en la cuenta 2.
+    # precios dejaria de facturar las peticiones clavadas en las cuentas 2 y 3.
     "input_cost_per_token", "cache_read_input_token_cost", "output_cost_per_token",
 )
 
@@ -119,28 +121,30 @@ RECETA_OFICIAL_QWEN38 = ["none", "low", "medium", "xhigh"]
 
 @pytest.mark.parametrize("grupo", ["alibaba-q38-max", "alibaba-q38-flash"])
 def test_el_menu_de_effort_de_los_qwen38_es_la_receta_oficial(deployments_by_group, grupo):
-    """Ni un nivel mas: la escalera anunciada es la que honra el proveedor (k1 y k2)."""
+    """Ni un nivel mas: la escalera anunciada es la que honra el proveedor (k1, k2 y k3)."""
     for k, dep in enumerate(deployments_by_group[grupo]):
         assert (dep.get("model_info") or {}).get("supported_reasoning_efforts") == \
             RECETA_OFICIAL_QWEN38, f"{grupo}-k{k + 1}"
 
 
-def test_dos_deployments_por_grupo_y_espejo_exacto(deployments_by_group):
+def test_tres_deployments_por_grupo_y_espejo_exacto(deployments_by_group):
     for g in GROUPS:
         deps = deployments_by_group[g]
-        assert len(deps) == 2, f"{g}: se esperan 2 deployments (cuenta 1 y 2), hay {len(deps)}"
-        k1, k2 = deps
-        for p in MIRRORED_LITELLM_PARAMS:
-            assert k1["litellm_params"].get(p) == k2["litellm_params"].get(p), (g, p)
-        for f in MIRRORED_MODEL_INFO:
-            assert k1["model_info"].get(f) == k2["model_info"].get(f), (g, f)
+        assert len(deps) == 3, f"{g}: se esperan 3 deployments (cuentas 1, 2 y 3), hay {len(deps)}"
+        k1, *extra = deps
+        for kn in extra:
+            for p in MIRRORED_LITELLM_PARAMS:
+                assert k1["litellm_params"].get(p) == kn["litellm_params"].get(p), (g, p)
+            for f in MIRRORED_MODEL_INFO:
+                assert k1["model_info"].get(f) == kn["model_info"].get(f), (g, f)
 
 
-def test_k1_una_key_k2_la_segunda(deployments_by_group):
+def test_cada_cuenta_su_key(deployments_by_group):
     for g in GROUPS:
-        k1, k2 = deployments_by_group[g]
+        k1, k2, k3 = deployments_by_group[g]
         assert k1["litellm_params"]["api_key"] == "os.environ/DASHSCOPE_API_KEY", g
         assert k2["litellm_params"]["api_key"] == "os.environ/DASHSCOPE_API_KEY_2", g
+        assert k3["litellm_params"]["api_key"] == "os.environ/DASHSCOPE_API_KEY_3", g
 
 
 def test_k2_inerte_hasta_activacion_order2(deployments_by_group):
@@ -149,9 +153,10 @@ def test_k2_inerte_hasta_activacion_order2(deployments_by_group):
     unico order del grupo era el 2 y el reparto se iba 20/20 al -k2). Por eso
     el -k1 declara `order: 1` explicitamente."""
     for g in GROUPS:
-        k1, k2 = deployments_by_group[g]
+        k1, k2, k3 = deployments_by_group[g]
         assert k1["litellm_params"].get("order") == 1, f"{g}: k1 DEBE declarar order: 1 (el minimo solo mira orders declarados)"
         assert k2["litellm_params"].get("order") == 2, f"{g}: k2 debe nacer con order: 2"
+        assert k3["litellm_params"].get("order") == 2, f"{g}: k3 debe nacer con order: 2"
 
 
 def test_ids_de_deployments_estables_y_unicos(deployments_by_group):
@@ -159,18 +164,18 @@ def test_ids_de_deployments_estables_y_unicos(deployments_by_group):
     al reiniciar, cada pin muere huerfano. Ids explicitos y estables."""
     vistos = set()
     for g in GROUPS:
-        k1, k2 = deployments_by_group[g]
-        assert k1["model_info"]["id"] == f"{g}-k1", g
-        assert k2["model_info"]["id"] == f"{g}-k2", g
-        vistos |= {k1["model_info"]["id"], k2["model_info"]["id"]}
-    assert len(vistos) == 2 * len(GROUPS)
+        deps = deployments_by_group[g]
+        assert [d["model_info"]["id"] for d in deps] == [f"{g}-k1", f"{g}-k2", f"{g}-k3"], g
+        vistos |= {d["model_info"]["id"] for d in deps}
+    assert len(vistos) == 3 * len(GROUPS)
 
 
-def test_la_key_2_solo_aparece_en_los_k2(config):
+@pytest.mark.parametrize("n", [2, 3])
+def test_la_key_n_solo_aparece_en_los_kn(config, n):
     for m in config["model_list"]:
         key = m["litellm_params"].get("api_key")
-        if key == "os.environ/DASHSCOPE_API_KEY_2":
-            assert m["model_info"]["id"].endswith("-k2"), m["model_info"]["id"]
+        if key == f"os.environ/DASHSCOPE_API_KEY_{n}":
+            assert m["model_info"]["id"].endswith(f"-k{n}"), m["model_info"]["id"]
 
 
 # ── 2. router_settings ───────────────────────────────────────────────────────
@@ -205,15 +210,26 @@ def _cuenta2_por_defecto(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY_2", "sk-segunda-cuenta")
 
 
-def test_sin_cuenta2_no_estampa_ni_pinea(router_mod, monkeypatch):
-    """Sin key 2 no hay sid: el filtro de afinidad corre ANTES que el de order
-    y un pin nacido en un cooldown del -k1 atrapaba la sesion en el -k2."""
+def test_con_una_sola_cuenta_no_estampa_ni_pinea(router_mod, monkeypatch):
+    """Sin keys extra no hay sid: el filtro de afinidad corre ANTES que el de order
+    y un pin nacido en un cooldown del -k1 atrapaba la sesion en un -kN."""
     monkeypatch.delenv("DASHSCOPE_API_KEY_2", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY_3", raising=False)
     router_mod.ensure_affinity_redis = lambda: None
-    monkeypatch.setattr(router_mod, "ensure_alibaba_key2_active", lambda: None)
+    monkeypatch.setattr(router_mod, "ensure_alibaba_accounts_active", lambda: None)
     data = _data("alibaba-q38-flash", sid="sesion-abc")
     assert router_mod.stamp_alibaba_session_affinity(data) is None
     assert "session_id" not in (data.get("metadata") or {})
+
+
+def test_con_solo_la_cuenta3_tambien_estampa(router_mod, monkeypatch):
+    """k1 + k3 sin k2 siguen siendo dos cuentas: la sesion necesita su pin."""
+    monkeypatch.delenv("DASHSCOPE_API_KEY_2", raising=False)
+    monkeypatch.setenv("DASHSCOPE_API_KEY_3", "sk-tercera-cuenta")
+    router_mod.ensure_affinity_redis = lambda: None
+    monkeypatch.setattr(router_mod, "ensure_alibaba_accounts_active", lambda: None)
+    data = _data("alibaba-q38-flash", sid="sesion-abc")
+    assert router_mod.stamp_alibaba_session_affinity(data) == "sesion-abc"
 
 
 def test_estampa_sid_propio_en_alibaba(router_mod):
@@ -287,7 +303,7 @@ def test_stamp_llama_al_tier_antes_de_estampar(router_src):
     assert "ensure_affinity_redis" in llamados
 
 
-# ── 4b. activacion automatica de la cuenta 2 (solo si la key existe) ────────
+# ── 4b. activacion automatica de las cuentas 2 y 3 (solo si su key existe) ──
 
 
 class _RouterFalso:
@@ -299,6 +315,9 @@ class _RouterFalso:
             {"model_name": "alibaba-q36-flash",
              "litellm_params": {"model": "openai/qwen3.6-flash", "order": 2},
              "model_info": {"id": "alibaba-q36-flash-k2"}},
+            {"model_name": "alibaba-q36-flash",
+             "litellm_params": {"model": "openai/qwen3.6-flash", "order": 2},
+             "model_info": {"id": "alibaba-q36-flash-k3"}},
         ]
 
     def delete_deployment(self, id):
@@ -321,28 +340,42 @@ def _con_router_falso(monkeypatch, router):
         monkeypatch.setitem(sys.modules, nombre, modulo)
 
 
-def test_sin_key_los_k2_se_retiran_del_router(router_mod, monkeypatch):
+def test_sin_keys_los_kn_se_retiran_del_router(router_mod, monkeypatch):
     router = _RouterFalso()
     _con_router_falso(monkeypatch, router)
     monkeypatch.delenv("DASHSCOPE_API_KEY_2", raising=False)
-    router_mod._alibaba_key2_checked = False
-    router_mod.ensure_alibaba_key2_active()
+    monkeypatch.delenv("DASHSCOPE_API_KEY_3", raising=False)
+    router_mod._alibaba_accounts_checked = False
+    router_mod.ensure_alibaba_accounts_active()
     ids = [d["model_info"]["id"] for d in router.model_list]
-    assert ids == ["alibaba-q36-flash-k1"], "sin key, el -k2 no puede quedar cargado (trampa de afinidad -> 401)"
+    assert ids == ["alibaba-q36-flash-k1"], "sin key, un -kN no puede quedar cargado (trampa de afinidad -> 401)"
 
 
-def test_con_key_el_hook_activa_los_k2(router_mod, monkeypatch):
+def test_cada_cuenta_se_activa_solo_con_su_key(router_mod, monkeypatch):
     router = _RouterFalso()
     _con_router_falso(monkeypatch, router)
     monkeypatch.setenv("DASHSCOPE_API_KEY_2", "sk-segunda-cuenta")
-    router_mod._alibaba_key2_checked = False
-    router_mod.ensure_alibaba_key2_active()
+    monkeypatch.delenv("DASHSCOPE_API_KEY_3", raising=False)
+    router_mod._alibaba_accounts_checked = False
+    router_mod.ensure_alibaba_accounts_active()
+    ids = [d["model_info"]["id"] for d in router.model_list]
+    assert ids == ["alibaba-q36-flash-k1", "alibaba-q36-flash-k2"], "sin key 3, el -k3 se retira y el -k2 se queda"
     assert router.model_list[1]["litellm_params"]["order"] == 1, "con key, el -k2 entra al reparto"
-    assert router.model_list[0]["litellm_params"]["order"] == 1, "el -k1 no se toca"
+
+
+def test_con_las_dos_keys_el_hook_activa_k2_y_k3(router_mod, monkeypatch):
+    router = _RouterFalso()
+    _con_router_falso(monkeypatch, router)
+    monkeypatch.setenv("DASHSCOPE_API_KEY_2", "sk-segunda-cuenta")
+    monkeypatch.setenv("DASHSCOPE_API_KEY_3", "sk-tercera-cuenta")
+    router_mod._alibaba_accounts_checked = False
+    router_mod.ensure_alibaba_accounts_active()
+    assert [d["litellm_params"]["order"] for d in router.model_list] == [1, 1, 1], \
+        "con key, -k2 y -k3 entran al reparto y el -k1 no se toca"
     # una-sola-vez: una segunda llamada no vuelve a iterar (ni a loggear)
-    router.model_list[1]["litellm_params"]["order"] = 99
-    router_mod.ensure_alibaba_key2_active()
-    assert router.model_list[1]["litellm_params"]["order"] == 99, "la guarda de una-sola-vez no re-ejecuta"
+    router.model_list[2]["litellm_params"]["order"] = 99
+    router_mod.ensure_alibaba_accounts_active()
+    assert router.model_list[2]["litellm_params"]["order"] == 99, "la guarda de una-sola-vez no re-ejecuta"
 
 
 def test_tier_afinidad_anclado_al_mismo_nodo_que_litellm(docs):
@@ -374,7 +407,7 @@ def test_stamp_activa_antes_de_cualquier_cosa(router_src):
     primero = cuerpo[0]
     assert isinstance(primero, ast.Expr) and isinstance(primero.value, ast.Call) \
         and isinstance(primero.value.func, ast.Name) \
-        and primero.value.func.id == "ensure_alibaba_key2_active", \
+        and primero.value.func.id == "ensure_alibaba_accounts_active", \
         "la activacion debe ser la PRIMERA linea del stamp (se llama en toda peticion)"
 
 
@@ -415,3 +448,11 @@ def test_externalsecret_y_env_optional(docs):
     ref = envs["DASHSCOPE_API_KEY_2"]["valueFrom"]["secretKeyRef"]
     assert ref == {"name": "litellm-alibaba-2", "key": "DASHSCOPE_API_KEY_2", "optional": True}, \
         "sin Secret el env no existe y el -k2 queda inerte/401, nunca toca la key 1"
+    es3 = next(d for d in docs
+               if d.get("kind") == "ExternalSecret"
+               and d["metadata"]["name"] == "litellm-alibaba-3")
+    assert es3["spec"]["secretStoreRef"]["name"] == "onepassword-connect"
+    assert [x["secretKey"] for x in es3["spec"]["data"]] == ["DASHSCOPE_API_KEY_3"], \
+        "recurso propio y aislado: un campo que falte no puede romper las keys 1 y 2"
+    ref3 = envs["DASHSCOPE_API_KEY_3"]["valueFrom"]["secretKeyRef"]
+    assert ref3 == {"name": "litellm-alibaba-3", "key": "DASHSCOPE_API_KEY_3", "optional": True}

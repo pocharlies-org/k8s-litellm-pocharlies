@@ -42,12 +42,12 @@ despachado por `Agent` pide el `model:` de git).
 pasa la **media** (imagen, vídeo, voz) del Token Plan de Alibaba. Consumidores, uno por token
 (`PLAN_GATEWAY_TOKEN_<NOMBRE>`): **Studio** (dgx-infra, `control-nexus`) y **omnivoice** (k8s-ai, ns `llm`); galan no lo
 consume (cuelga de omnivoice). Depende de `session_router.draw_account` (selector), del panel (pesos `alibaba_account_weights`
-vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2` (las dos keys) y `plan-gateway-tokens`. Contrato
+vía `session_router`) y de los Secrets `litellm-alibaba`/`litellm-alibaba-2`/`litellm-alibaba-3` (las tres keys) y `plan-gateway-tokens`. Contrato
 `dgx.alibaba.plan-gateway.v1`. El chat sigue yendo por el proxy :4000, nunca por el gateway.
 
 ## 2. Dependencias, en ambos sentidos
 
-- **Depende de** — `k8s-ai-pocharlies` (modelos vLLM locales en `llm`, pools `tooling`…), Alibaba (dos cuentas, afinidad por
+- **Depende de** — `k8s-ai-pocharlies` (modelos vLLM locales en `llm`, pools `tooling`…), Alibaba (tres cuentas del Token Plan, afinidad por
   sesión), OpenRouter y otros proveedores de pago, Postgres compartido, `gpu-arbiter-state` (admisión por compute mode),
   Langfuse (callbacks), 1Password/ExternalSecrets.
 - **Dependen de él** — todo el estate: sesiones de la compañía (router local de Claude), Hermes, document-intake, auto-reply,

@@ -116,9 +116,10 @@ def test_tokens_por_consumidor_en_forma_connect():
            _doc("Deployment", "plan-gateway")["spec"]["template"]["spec"]["containers"][0]["env"]}
     for name in got:
         assert env[name]["valueFrom"]["secretKeyRef"]["name"] == "plan-gateway-tokens"
-    # las dos keys del plan: los mismos Secrets que el proxy
+    # las tres keys del plan: los mismos Secrets que el proxy
     assert env["DASHSCOPE_API_KEY"]["valueFrom"]["secretKeyRef"]["name"] == "litellm-alibaba"
     assert env["DASHSCOPE_API_KEY_2"]["valueFrom"]["secretKeyRef"]["name"] == "litellm-alibaba-2"
+    assert env["DASHSCOPE_API_KEY_3"]["valueFrom"]["secretKeyRef"]["name"] == "litellm-alibaba-3"
 
 
 # --------------------------------------------------------------------------- C2
@@ -199,6 +200,7 @@ def gw(tmp_path, monkeypatch):
             monkeypatch.delenv(k)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-k1")
     monkeypatch.setenv("DASHSCOPE_API_KEY_2", "sk-k2")
+    monkeypatch.delenv("DASHSCOPE_API_KEY_3", raising=False)
     monkeypatch.setenv("PLAN_GATEWAY_TOKEN_STUDIO", "tok-studio")
     monkeypatch.setenv("PLAN_GATEWAY_TOKEN_OMNIVOICE", "tok-omni")
     mod = _cargar(tmp_path, monkeypatch)
