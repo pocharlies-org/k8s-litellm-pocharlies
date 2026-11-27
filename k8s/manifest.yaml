@@ -4360,17 +4360,27 @@ data:
                 value = getattr(delta, attr, None)
                 if isinstance(value, str):
                     total += len(value)
-        return total
+        if total:
+            return total
+        # DGX-1863: el hook genérico del proxy ve TAMBIÉN los chunks ya
+        # normalizados de /v1/messages y de `chatgpt/*`, cuya texto no está en
+        # la forma OpenAI de arriba (mismo motivo que _extract_delta_text).
+        return len(_extract_delta_text(chunk) or "")
 
-    def _track_live_chunk(stream, usage, chunk=None):
+    def _track_live_chunk(stream, usage):
         """Uso acumulado del chunk -> tracker, desde el CustomStreamWrapper.
 
-        El hook de iterador del proxy NO basta: en /v1/messages lo que itera son
-        los BYTES SSE ya traducidos a Anthropic, sin `usage` hasta el
-        `message_delta` final. Aqui se ve el chunk OpenAI que manda vLLM, en las
-        dos vias (chat y messages). El `_tracking_id` y el backend se buscan UNA
-        vez por stream (el logging_obj lleva los mensajes enteros: recorrerlo por
-        chunk seria O(prompt) por token). Telemetria: jamas rompe el stream.
+        El hook de iterador del proxy NO basta para el USO: en /v1/messages sus
+        chunks llegan ya traducidos a Anthropic y sin `usage` hasta el
+        `message_delta` final (por eso el texto del rechazo, que si se mide ahi,
+        sale con el extractor canonico y no con la forma OpenAI). Aqui se ve el
+        chunk OpenAI que manda vLLM, en las dos vias (chat y messages). La
+        ESTIMACION por caracteres no: esa va en el hook genérico (DGX-1863), que
+        es el unico que ve tambien a `chatgpt/*`, que streaméea con su propio
+        iterador y jamas pasa por aqui. El
+        `_tracking_id` y el backend se buscan UNA vez por stream (el logging_obj
+        lleva los mensajes enteros: recorrerlo por chunk seria O(prompt) por
+        token). Telemetria: jamas rompe el stream.
         """
         try:
             state = getattr(stream, "_active_request_state", None)
@@ -4397,11 +4407,6 @@ data:
                     completion_tokens=completion_tokens,
                     cached_tokens=cached_from_response(snapshot),
                 )
-            else:
-                # SC-2675: chunk sin usage (Alibaba no lo manda hasta el
-                # final): el tracker estima la salida por caracteres.
-                request_tracker.tick_chunk(
-                    tracking_id, _chunk_delta_chars(chunk))
         except Exception as e:
             log.debug("track_live_chunk error: %s", e)
 
@@ -4419,8 +4424,7 @@ data:
             hidden_params = getattr(chunk, "_hidden_params", None)
             if usage is not None and isinstance(hidden_params, dict):
                 hidden_params["live_usage"] = _usage_snapshot(usage)
-            # SC-2675: también con usage None — el tracker estima el chunk.
-            _track_live_chunk(self, usage, chunk)
+            _track_live_chunk(self, usage)
             return chunk
 
         wrapped._active_request_usage_patch = True
@@ -8641,7 +8645,18 @@ data:
                     if not _probe_done:
                         _probe_done = _stamp_refusal_probe(request_data, chunk)
                     try:
-                        _update_tracking_from_payload(request_data, chunk)
+                        _tid = _update_tracking_from_payload(request_data, chunk)
+                        # DGX-1863: la estimacion por caracteres vive AQUI y no
+                        # en el CustomStreamWrapper, porque este si es el unico
+                        # punto que ve los chunks de TODOS los proveedores: el
+                        # `chatgpt/*` de la casa streaméea con su propio iterador
+                        # (ChatGPTToolCallNormalizer) y jamas pasa por el wrapper,
+                        # asi que gpt-6-luna salia 12 min en vuelo sin ttft ni
+                        # velocidad. Con usage ya fluyendo, tick_chunk no hace
+                        # nada: el real manda.
+                        if _tid:
+                            request_tracker.tick_chunk(
+                                _tid, _chunk_delta_chars(chunk))
                     except Exception as e:
                         log.debug("track_iterator_chunk error: %s", e)
                     if not _frozen:
@@ -14456,7 +14471,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-132cbcda45be
+        config.k8s.e-dani.com/revision: config-40bfe29a7762
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14504,7 +14519,7 @@ spec:
         - name: harbor-pull   # DGX-1035: la imagen con Codex vive en Harbor (ExternalSecret harbor-runtime-pull)
       containers:
         - name: litellm
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-e9b7d32263@sha256:62b640430a75294220f8e3cb528fd0f8e01375e13aaba2c2a0c617a75e0d9d21
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-e9d05e1d48@sha256:6e39a6e28f0c4611d62047fcf155fa55106a2c5863cff1e3517d34d1106e9ff2
           args:
             - --config=/config/config.yaml
             - --host=0.0.0.0
@@ -15438,7 +15453,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-132cbcda45be
+        config.k8s.e-dani.com/revision: config-40bfe29a7762
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
@@ -15471,7 +15486,7 @@ spec:
       containers:
         - name: plan-gateway
           # MISMO digest que el Deployment `litellm` (trae httpx y uvicorn).
-          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-e9b7d32263@sha256:62b640430a75294220f8e3cb528fd0f8e01375e13aaba2c2a0c617a75e0d9d21
+          image: harbor.lan.e-dani.com/homelab/litellm:v1.106.12-codex-e9d05e1d48@sha256:6e39a6e28f0c4611d62047fcf155fa55106a2c5863cff1e3517d34d1106e9ff2
           command:
             - python
             - -m

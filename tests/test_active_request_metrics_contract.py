@@ -221,10 +221,15 @@ def test_continuous_usage_rides_extra_body_for_messages():
 
 def test_hook_feeds_tracker_from_the_openai_chunk_and_restores_the_seal():
     hook = _config_data()["litellm_strip_params.py"]
-    # El parche de chunk_creator alimenta el tracker: en /v1/messages el hook del
-    # proxy itera bytes SSE sin usage. SC-2675: pasa tambien el chunk, para
-    # estimar la salida cuando el proveedor no manda usage hasta el final.
-    assert "_track_live_chunk(self, usage, chunk)" in hook
+    # El parche de chunk_creator alimenta el tracker con el USO: en /v1/messages el
+    # hook del proxy itera bytes SSE sin usage hasta el final.
+    assert "_track_live_chunk(self, usage)" in hook
+    # DGX-1863: la ESTIMACION por caracteres va en el hook genérico de streaming,
+    # que es el unico punto que ve los chunks de todos los proveedores (el
+    # `chatgpt/*` de la casa tiene su propio iterador y no pasa por el wrapper).
+    # Un solo tick: si volviera a estar en el wrapper, los caracteres irian dobles.
+    assert hook.count("request_tracker.tick_chunk(") == 1
+    assert "_tid, _chunk_delta_chars(chunk)" in hook
     assert "tracking_id, model=None, api_base=api_base)" in hook
     # El residente por nombre directo pide el uso continuo SIN la admision de
     # compute-mode (que le quitaria el fallback a Alibaba).
