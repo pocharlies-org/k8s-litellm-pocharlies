@@ -14823,7 +14823,7 @@ spec:
     deletionPolicy: Retain
   data:
     - secretKey: DASHSCOPE_API_KEY_3
-      remoteRef: { key: alibaba-model-studio-3, property: password }
+      remoteRef: { key: eiif3hcsfaemyqm53z5nqut42i, property: password }  # alibaba-model-studio-3
 ---
 # Un drain (los reinicios de Ansible de los ks5 son rutina) no debe poder dejar
 # el proxy a cero.

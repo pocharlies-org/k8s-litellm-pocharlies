@@ -1800,7 +1800,7 @@ contracts:
       2026-11-27 (DGX-1912). Tercera cuenta del Token Plan de Alibaba Model
       Studio (correo@e-dani.com), mismo patron que
       dgx.litellm.alibaba-second-account.v1: ExternalSecret `litellm-alibaba-3`
-      (forma Connect, item `alibaba-model-studio-3` del vault k8s-pocharlies)
+      (forma Connect, item `alibaba-model-studio-3` del vault k8s-pocharlies, por id)
       -> Secret del mismo nombre -> env `DASHSCOPE_API_KEY_3` (optional: true)
       -> el hook ensure_alibaba_accounts_active sube los `-k3` a order 1 en
       memoria si la key existe y los retira del Router si no. El plan-gateway
