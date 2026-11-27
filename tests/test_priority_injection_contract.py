@@ -332,6 +332,8 @@ def test_el_mapa_vive_en_config_yaml():
         # un alias retirado (mismo token, mismo mapa). La key fue renombrada via
         # /key/update y ninguna key lleva ya ese alias viejo (medido en la BD).
         "claude-atlantic-compania": {"default": -5, "company": 5},
+        # INFRA-1633: el segundo servidor Orca (Claude Code sobre el home de Paseo), mismo mapa.
+        "orca-atlantic": {"default": -5, "company": 5},
     }
     # DGX-601: lo uncensored no tiene alternativa -> nivel propio, por delante.
     assert CONFIG_YAML["priority_uncensored"] == -20
