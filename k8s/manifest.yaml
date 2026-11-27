@@ -3566,6 +3566,7 @@ data:
       # personal va por delante (-5) y el de la compania por detras (5), pero aun por
       # delante del lote (10).
       claude-mac: -5     # DGX-1099: el Claude Code del MacBook de casa, uso personal
+      codex-mac: -5      # DGX-1942: el Codex del MacBook de casa (Orca), uso personal
       # 31-10-2026 (Dani): el Paseo de atlantic (pod paseo-0) con key propia para que
       # el panel lo distinga del x86. Corre personal y compania: mismo mapa que claude-x86.
       claude-atlantic:
@@ -15156,12 +15157,15 @@ spec:
             # conservando todos los alias del default.
             # CONTRACT: dgx.litellm.virtual-key.hermes-cloudblue.v1
             # CONTRACT: dgx.litellm.virtual-key.claude-cloudblue.v1
+            # CONTRACT: dgx.litellm.virtual-key.codex-mac.v1
+            # DGX-1942 (Dani 27-11): `codex-mac`, la key del Codex del MacBook de casa (Orca), con los
+            # mismos models que `claude-atlantic`; entra aqui por sus dos alias uncensored.
             # SC-4576 (04-11-2026): anadido `socialmedia`, la key unica de socialmedia
             # (k8s-socialmedia-pocharlies). La pide el CronJob
             # `whatsapp-mcp/sauvage-verificacion-diaria` (auditoria diaria de la cara
             # visible, INFRA-745) con `qwen38-flash-next-uncensored`; sin ella el hook
             # denegaba la ruta abliterada y el job fallaba desde su creacion.
-            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania,socialmedia,claude-cloudblue" }
+            - { name: LITELLM_UNCENSORED_ALLOWED_KEYS, value: "openclaw-qwen36-prod,playground,open-webui-v3,hermes,hermes-batch,synapse,hermes-cloudblue,claude-mac,claude-atlantic,claude-atlantic-compania,socialmedia,claude-cloudblue,codex-mac" }
             # (SC-384) LITELLM_QWEN35_4B_FAST_ALLOWED_KEYS retirado: el lane
             # `qwen35-4b-fast` ya no existe.
             # Directorio del token OAuth de la cuenta Grok (alias grok-*, modulo
@@ -15183,7 +15187,9 @@ spec:
             # DGX-1053 (orden de Dani 11-11-2026): `claude-cloudblue`, la key del Claude Code/Paseo
             # del Mac para trabajo CloudBlue, entra por pedido explicito del owner para usar los
             # `gpt-*` del gateway; sus models de la BD ya se actualizaron por /key/update.
-            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod,claude-cloudblue,nova,jarvis,voz-duplex" }
+            # DGX-1942 (orden de Dani 27-11-2026): `codex-mac`, la key del Codex del MacBook de casa
+            # (Orca), con los mismos models que `claude-atlantic`, gpt-* incluidos.
+            - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod,claude-cloudblue,nova,jarvis,voz-duplex,codex-mac" }
             # INFRA-1223: los alias `anthropic-*` (API key de pago de Anthropic, tope 150 USD/mes en
             # la Console). Solo Nova: hoy por `voz-duplex`; `nova` es su key propia (INFRA-1251).
             # `hindsight` no esta y no lo pide: gasta la key solo como salto de `gpt-6-luna` (DGX-1904).

@@ -1465,6 +1465,22 @@ contracts:
       comparte con la de x86 (company_control.claude_accounts). Se crea por
       /key/generate; su valor vive en el home del pod
       (~/.config/claude-local/env en el PVC paseo-home), nunca en git.
+  - id: dgx.litellm.virtual-key.codex-mac.v1
+    kind: allowlist
+    value: codex-mac
+    anchor: claude-cloudblue,codex-mac
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    status: active
+    note: >-
+      DGX-1942 (27-11-2026, Dani). Clave virtual de LiteLLM del Codex del
+      MacBook de casa (mac-casa), el que lanza Orca; Codex habla la interfaz
+      OpenAI (/v1/responses). Mismos models que claude-atlantic; entra en
+      LITELLM_UNCENSORED_ALLOWED_KEYS, LITELLM_CHATGPT_ALLOWED_KEYS y
+      priority_by_alias (-5, uso personal). Se crea por /key/generate; su valor
+      vive en el Mac (~/.codex/auth.json, por codex login --with-api-key),
+      nunca en git.
   - id: dgx.litellm.virtual-key.agent-jake-cloudblue.v1
     # kind allowlist: allowlist `models` de la key virtual `agent-jake-cloudblue`
     # (fijada en el /key/generate, vive en la Postgres de LiteLLM) mas su sellado

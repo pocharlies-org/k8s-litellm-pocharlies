@@ -325,6 +325,7 @@ def test_el_mapa_vive_en_config_yaml():
         # DGX-601 (Dani): las keys de maquina de Dani son la misma key para la compania y
         # para el uso personal, asi que su nivel va MAPA por clase, no entero.
         "claude-mac": -5,  # DGX-1099: el MacBook de casa con su propia key
+        "codex-mac": -5,  # DGX-1942: el Codex del MacBook de casa (Orca), uso personal
         # 31-10-2026 (Dani): el Paseo de atlantic con key propia; personal + compania.
         "claude-atlantic": {"default": -5, "company": 5},
         # 02-11-2026 (DGX-1395): la compania asincrona con key propia, renombrada desde
