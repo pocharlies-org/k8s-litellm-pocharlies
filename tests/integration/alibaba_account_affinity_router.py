@@ -62,7 +62,7 @@ def _alibaba_model_list(config):
         params = m["litellm_params"]
         params["api_key"] = "sk-test"
         params["mock_response"] = "ok"
-        params["order"] = 1          # lo que hace ensure_alibaba_key2_active con la key 2
+        params["order"] = 1          # lo que hace ensure_alibaba_accounts_active con las keys 2 y 3
         params.pop("timeout", None)
         m["model_info"]["cooldown_time"] = 2
         out.append(m)
@@ -128,7 +128,6 @@ async def phase_move(pod):
     with open(OUT, "a") as out:
         first, _ = await _call(router, "alibaba-q38-max", MOVE_SID, MOVE_KEY, pod, out)
         home = _acct(first)
-        other = "k2" if home == "k1" else "k1"
         # La cuenta de la sesion devuelve 429 en q38-max: fallo real -> cooldown real.
         broken = next(d for d in router.model_list
                       if d["model_info"]["id"] == f"alibaba-q38-max-{home}")
@@ -136,7 +135,8 @@ async def phase_move(pod):
         _, ok = await _call(router, "alibaba-q38-max", MOVE_SID, MOVE_KEY, pod, out)
         assert not ok, "el 429 provocado tenia que fallar"
         moved, ok = await _call(router, "alibaba-q38-max", MOVE_SID, MOVE_KEY, pod, out)
-        assert ok and _acct(moved) == other, f"no se mudo: {moved}"
+        other = _acct(moved)  # con tres cuentas, la que sortee preferred_account entre las sanas
+        assert ok and other and other != home, f"no se mudo: {moved}"
         # La cuenta vieja se recupera (fin del cooldown, respuesta sana otra vez).
         broken["litellm_params"]["mock_response"] = "ok"
         await asyncio.sleep(3)
@@ -193,7 +193,8 @@ def phase_check():
                 if str(m["model_name"]).startswith("alibaba-")}
     assert groups == esperado, f"grupos observados {sorted(groups ^ esperado)}"
     assert len(pods) >= 2
-    assert len(accounts) == 2 and min(accounts.values()) > 0.3 * len(by_session)
+    # Tres cuentas (DGX-1912): ~1/3 cada una; 0,2 deja margen al azar del hash.
+    assert len(accounts) == 3 and min(accounts.values()) > 0.2 * len(by_session)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """Grupos `alibaba-*` del plan Team, compartida por los dos contratos de reparto
-(afinidad de cuenta y espejo del -k2): los dos miden el mismo conjunto de alias y
+(afinidad de cuenta y espejo de los -k2 y -k3): los dos miden el mismo conjunto de alias y
 mantenerla en un solo sitio es lo que evita que uno se quede sin el alias nuevo."""
 
 GROUPS = [

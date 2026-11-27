@@ -1594,9 +1594,9 @@ def _rewrite(data, sid, reason):
 
 
 # ── Afinidad de sesion por CUENTA de Alibaba (26-09-2026, rehecha 28-09) ──
-# Cada grupo `alibaba-*` tiene dos deployments (dos planes Team). El cache
-# de contexto de Model Studio es POR CUENTA: partir una conversacion entre
-# las dos paga el prefijo entero en cada salto. Desde el 28-09 el filtro es
+# Cada grupo `alibaba-*` tiene un deployment por cuenta del Token Plan
+# (`-k1`, `-k2`, `-k3`). El cache de contexto de Model Studio es POR CUENTA:
+# partir una conversacion entre cuentas paga el prefijo entero en cada salto. Desde el 28-09 el filtro es
 # PROPIO (alibaba_account_filter, mas abajo: un pin sesion -> cuenta para
 # todos los grupos); el session_affinity nativo por grupo quedo retirado.
 # Este modulo:
@@ -1606,14 +1606,14 @@ def _rewrite(data, sid, reason):
 #       22 distintos por conversacion). Es la llave del pin de cuenta.
 #   (b) monta una vez la Valkey del namespace sobre el DualCache del
 #       Router (cooldowns compartidos entre replicas).
-#   (c) activa la cuenta 2 SOLO si existe: ensure_alibaba_key2_active
-#       sube los -k2 de order 2 a 1 en memoria cuando
-#       DASHSCOPE_API_KEY_2 esta en el entorno. Sin la key RETIRA los -k2
-#       del Router y no estampa sid (la afinidad corre antes que el filtro
-#       de order: con un -k2 sin key cargado, una sesion nacida en un
-#       cooldown del -k1 quedaba clavada a un 401). Si este hook no carga
-#       (el fallo peor), el order: 2 del YAML sigue siendo la inercia:
-#       sembrar + rollout = activado, sin paso manual.
+#   (c) activa cada cuenta extra SOLO si existe: ensure_alibaba_accounts_active
+#       sube los -k2/-k3 de order 2 a 1 en memoria cuando su key
+#       (ALIBABA_EXTRA_KEY_ENVS) esta en el entorno. Sin la key RETIRA esos
+#       deployments del Router; con una sola cuenta no estampa sid (la
+#       afinidad corre antes que el filtro de order: con un -kN sin key
+#       cargado, una sesion nacida en un cooldown del -k1 quedaba clavada a
+#       un 401). Si este hook no carga (el fallo peor), el order: 2 del YAML
+#       sigue siendo la inercia: sembrar + rollout = activado, sin paso manual.
 # Fail-open: sin sid no se filtra (shuffle puro); sin Valkey la cuenta de una
 # sesion nueva sigue siendo la misma en los dos pods (eleccion determinista).
 
@@ -1621,39 +1621,42 @@ def _rewrite(data, sid, reason):
 # (ancla: deployment_affinity:v1:) Solo se LEE, para sembrar la cuenta de las
 # sesiones que ya tenian pin nativo por grupo; nadie las escribe ya.
 
-_alibaba_key2_checked = False
+# Cuenta extra del Token Plan -> env con su key (la cuenta 1, DASHSCOPE_API_KEY,
+# es la base y no se retira nunca). k2 = me@e-dani.com (28-09), k3 =
+# correo@e-dani.com (27-11, DGX-1912).
+ALIBABA_EXTRA_KEY_ENVS = {"k2": "DASHSCOPE_API_KEY_2", "k3": "DASHSCOPE_API_KEY_3"}
+_alibaba_accounts_checked = False
 _affinity_redis_tried = False
 
 
-def ensure_alibaba_key2_active():
-    """Una vez por proceso, dos estados:
+def ensure_alibaba_accounts_active():
+    """Una vez por proceso, por cada cuenta extra de ALIBABA_EXTRA_KEY_ENVS:
 
-    - Con DASHSCOPE_API_KEY_2: sube los once -k2 de order 2 a order 1 EN
+    - Con su key en el entorno: sube sus `-kN` de order 2 a order 1 EN
       MEMORIA (el minimo de orders las incluye en el reparto; la afinidad
       por sesion decide cual).
-    - Sin ella: RETIRA los -k2 del Router (delete_deployment). Motivo,
+    - Sin ella: RETIRA sus `-kN` del Router (delete_deployment). Motivo,
       verificado en la fuente v1.100.0: el filtro de afinidad corre ANTES
       que el de `order` (router.py async_get_healthy_deployments) y el pin
       se reclama en el pre-call. Una sesion nueva que naciera durante un
-      cooldown del -k1 quedaba clavada al -k2 SIN key: 401 en cada vuelta,
+      cooldown del -k1 quedaba clavada al -kN SIN key: 401 en cada vuelta,
       y el pin se renovaba solo (keepalive) mientras la sesion viviera.
-      Sin -k2 cargado, un cooldown del -k1 sigue la cadena de fallback
+      Sin ese -kN cargado, un cooldown del -k1 sigue la cadena de fallback
       normal en vez de estrellarse contra un 401 seguro.
 
     Si este hook no carga, el order: 2 del YAML sigue siendo la inercia.
     La key llega por env del pod: sembrar en 1Password + rollout restart
     = activado, sin tocar git."""
-    global _alibaba_key2_checked
-    if _alibaba_key2_checked:
+    global _alibaba_accounts_checked
+    if _alibaba_accounts_checked:
         return
-    _alibaba_key2_checked = True
-    con_key = bool(os.environ.get("DASHSCOPE_API_KEY_2"))
+    _alibaba_accounts_checked = True
     try:
         from litellm.proxy.proxy_server import llm_router
         if llm_router is None:
-            _alibaba_key2_checked = False  # router aun sin montar: reintentar
+            _alibaba_accounts_checked = False  # router aun sin montar: reintentar
             return
-        k2 = []
+        por_cuenta = {account: [] for account in ALIBABA_EXTRA_KEY_ENVS}
         for entry in list(getattr(llm_router, "model_list", [])):
             if isinstance(entry, dict):
                 info = entry.get("model_info") or {}
@@ -1662,24 +1665,28 @@ def ensure_alibaba_key2_active():
                 info = getattr(entry, "model_info", None)
                 params = getattr(entry, "litellm_params", None)
             info_id = info.get("id") if isinstance(info, dict) else getattr(info, "id", None)
-            if isinstance(info_id, str) and info_id.endswith("-k2"):
-                k2.append((info_id, params))
-        if con_key:
-            for _, params in k2:
-                if isinstance(params, dict):
-                    params["order"] = 1
-                elif params is not None:
-                    params.order = 1
-            log.warning("session_router: DASHSCOPE_API_KEY_2 presente -> %s deployments -k2 en el reparto (order 1)", len(k2))
-        else:
-            retirados = sum(1 for info_id, _ in k2 if llm_router.delete_deployment(id=info_id) is not None)
-            log.warning("session_router: sin DASHSCOPE_API_KEY_2 -> %s deployments -k2 retirados del Router", retirados)
+            m = _ACCOUNT_RE.search(info_id) if isinstance(info_id, str) else None
+            if m and m.group(1) in por_cuenta:
+                por_cuenta[m.group(1)].append((info_id, params))
+        for account, env in ALIBABA_EXTRA_KEY_ENVS.items():
+            deps = por_cuenta[account]
+            if os.environ.get(env):
+                for _, params in deps:
+                    if isinstance(params, dict):
+                        params["order"] = 1
+                    elif params is not None:
+                        params.order = 1
+                log.warning("session_router: %s presente -> %s deployments -%s en el reparto (order 1)", env, len(deps), account)
+            else:
+                retirados = sum(1 for info_id, _ in deps if llm_router.delete_deployment(id=info_id) is not None)
+                log.warning("session_router: sin %s -> %s deployments -%s retirados del Router", env, retirados, account)
     except Exception as exc:
-        _warn_throttled("alibaba_k2", f"gestion -k2 fallida ({exc.__class__.__name__}); queda el order 2 del YAML")
+        _warn_throttled("alibaba_cuentas", f"gestion de cuentas extra fallida ({exc.__class__.__name__}); queda el order 2 del YAML")
 
 
-def alibaba_key2_disponible():
-    return bool(os.environ.get("DASHSCOPE_API_KEY_2"))
+def alibaba_varias_cuentas():
+    """Hay mas de una cuenta con key (la 1 siempre la tiene)."""
+    return any(os.environ.get(env) for env in ALIBABA_EXTRA_KEY_ENVS.values())
 
 
 def ensure_affinity_redis():
@@ -1718,14 +1725,14 @@ def ensure_affinity_redis():
 def stamp_alibaba_session_affinity(data):
     """metadata["session_id"] = sid del hook para peticiones `alibaba-*`
     (incluida la reescrita residente->Alibaba, que ya ve el nombre final).
-    Devuelve el sid estampado o None. Sin sid, o sin cuenta 2, no se toca nada."""
-    ensure_alibaba_key2_active()
+    Devuelve el sid estampado o None. Sin sid, o con una sola cuenta, no se toca nada."""
+    ensure_alibaba_accounts_active()
     if not str(data.get("model") or "").startswith(ALIBABA_PREFIX):
         return None
     # Con UNA cuenta la afinidad no aporta nada y es la que puede atrapar
-    # una sesion en el -k2 sin key (ver ensure_alibaba_key2_active): sin
-    # key no hay sid, no hay pin, y manda el filtro de `order`.
-    if not alibaba_key2_disponible():
+    # una sesion en un -kN sin key (ver ensure_alibaba_accounts_active): sin
+    # keys extra no hay sid, no hay pin, y manda el filtro de `order`.
+    if not alibaba_varias_cuentas():
         return None
     ensure_affinity_redis()
     sid = _session_id(data) or _prefix_affinity_key(data)
@@ -1757,7 +1764,7 @@ def stamp_alibaba_session_affinity(data):
 #      cuentas, asi que mudar sale gratis y repartir bien importa (DGX-592).
 #
 # Aqui:
-#   - Clave `alibaba_account_pin:v1:<api-key-hash>:<sid>` -> "k1" | "k2" en la
+#   - Clave `alibaba_account_pin:v1:<api-key-hash>:<sid>` -> "k1" | "k2" | "k3" en la
 #     Valkey del session router (misma URL/password). TTL de inactividad (el del
 #     vinculo de plan a Alibaba) renovado por keepalive en cada acierto.
 #   - Cuenta de una sesion NUEVA o CADUCADA = hash(api-key-hash, sid, epoca) por
@@ -1777,7 +1784,7 @@ def stamp_alibaba_session_affinity(data):
 #     sin Valkey; cualquier excepcion deja intactas las CANDIDATAS (fail-open):
 #     con pesos conocidos la cuenta sin cupo no vuelve a entrar (rework DGX-639).
 # CONTRACT: dgx.session-router.alibaba-account-pin.v1
-# (ancla: alibaba_account_pin:v1:) valor "k1" | "k2", Valkey del session router.
+# (ancla: alibaba_account_pin:v1:) valor "k1" | "k2" | "k3", Valkey del session router.
 ALIBABA_ACCOUNT_PIN_PREFIX = "alibaba_account_pin:v1"
 # TTL DE INACTIVIDAD (se renueva en cada peticion), el MISMO tiempo que el
 # vinculo de plan a Alibaba (STICKY_TTL_ALIBABA_SECONDS, DGX-592): lo
@@ -1836,7 +1843,7 @@ ACCOUNT_AFFINITY_STATS = {"hits": 0, "claims": 0, "moves": 0, "seeded": 0, "weig
 
 
 def _deployment_account(deployment):
-    """"k1" / "k2" del id estable del deployment (`<grupo>-kN`), o None."""
+    """"k1" / "k2" / "k3" del id estable del deployment (`<grupo>-kN`), o None."""
     info = deployment.get("model_info") if isinstance(deployment, dict) else None
     model_id = info.get("id") if isinstance(info, dict) else None
     m = _ACCOUNT_RE.search(str(model_id or ""))
