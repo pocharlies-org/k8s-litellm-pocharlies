@@ -57,7 +57,8 @@ def test_las_excepciones_son_de_keys_selladas(hook):  # noqa: F811
 
 
 def test_la_unica_excepcion_de_synapse_es_el_alias_del_clasificador(hook):  # noqa: F811
-    assert hook.KEY_DIRECT_FALLBACK_MODELS == {"synapse": frozenset({ALIAS})}
+    # `()`: cae por la arista del Router, sin salto propio por peticion
+    assert hook.KEY_DIRECT_FALLBACK_MODELS["synapse"] == {ALIAS: ()}
 
 
 @pytest.mark.parametrize(

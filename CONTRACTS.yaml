@@ -851,6 +851,9 @@ contracts:
       that replaces the brain) joins the sealed set like `brain`: with no resident
       Ready its retain/reflect calls fail closed instead of reaching the cloud twin.
       Guarded by tests/test_hindsight_no_fallback_contract.py.
+      ADDITIVE (DGX-1904, 2026-11-27): `hindsight` keeps the seal except on
+      `gpt-6-luna`, which falls per request to `anthropic-haiku-5-5`
+      (dgx.litellm.key-fallbacks.hindsight.v1).
       ADDITIVE (SC-4384, 2026-11-03, epic SC-1823): `skills-eval` — the virtual
       key the skill-evaluation judge of k8s-skills-catalog (`tools/evaluar.py`,
       runner pool `arc-skills-eval`) calls LiteLLM with — joins the sealed set.
@@ -1299,6 +1302,31 @@ contracts:
       el panel /inferencia (ALIBABA · TOKEN PLAN, campo alibaba.demos_fallback
       de /api/model-routing/config): apagado, la key demos se queda sin salida
       externa. Por defecto y en fail-open: encendido.
+  - id: dgx.litellm.key-fallbacks.hindsight.v1
+    # kind 'allowlist': la key `hindsight` es la unica sellada cuyo `gpt-6-luna` cae
+    # a la API key de pago de Anthropic; Hindsight ya no lleva respaldo propio.
+    kind: allowlist
+    value: hindsight
+    anchor: '"hindsight": {"gpt-6-luna"'
+    role: provider
+    files:
+      - k8s/manifest.yaml
+    consumers:
+      - k8s-hindsight-pocharlies (k8s/values.yaml, HINDSIGHT_API_LLM_MODEL gpt-6-luna sin miembro de respaldo)
+    status: active
+    note: >-
+      ADD 2026-11-27 (DGX-1904, Dani: «el fallback debería tenerlo en litellm para
+      la clave de hindsight y no directo, si no no veo el tráfico»). La key
+      `hindsight` sigue en NO_FALLBACK_KEY_ALIASES salvo con `gpt-6-luna`
+      (KEY_DIRECT_FALLBACK_MODELS): el hook le estampa POR PETICION
+      data["fallbacks"] = [{"model": "anthropic-haiku-5-5", "thinking": {"type":
+      "disabled"}}], pisando los del cliente. Sustituye la cadena nativa de
+      Hindsight directo a api.anthropic.com (SC-6115). Sin arista `gpt-6-luna` en
+      router_settings.fallbacks: ninguna otra key llega asi a la key de pago. El
+      Router solo cae si la key tiene `anthropic-haiku-5-5` en su `models` de
+      Postgres (fallback_access_check); el gate `anthropic-*` le sigue negando
+      pedirlo por su nombre. Quitar la key del mapa deja a Hindsight sin respaldo
+      cuando Luna falla. Pinned by tests/test_hindsight_no_fallback_contract.py.
   - id: dgx.litellm.virtual-key.hermes-batch.v1
     # kind allowlist: la superficie es la key virtual por key_alias y las dos
     # puertas del hook que la listan igual que a su gemela de chat.
@@ -1958,6 +1986,7 @@ contracts:
       - k8s/manifest.yaml
     consumers:
       - k8s-nova-pocharlies (nova/cerebros.py, MODELOS del cerebro rapido)
+      - key hindsight, como salto de gpt-6-luna (dgx.litellm.key-fallbacks.hindsight.v1)
     status: active
     note: >-
       ADD 2026-11-10 (INFRA-1223, Dani): Haiku 5.5 con la API key de pago de
