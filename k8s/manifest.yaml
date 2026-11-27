@@ -3575,6 +3575,11 @@ data:
       claude-atlantic-compania:
         default: -5       # sin clase: uso personal de Dani
         company: 5        # sesion de la compania: por delante del lote, detras del resto
+      # INFRA-1633: el segundo servidor Orca (pod orca-paseo, ns paseo), que lanza Claude Code sobre el home de Paseo.
+      # Mismo mapa que claude-atlantic para que su gasto se pueda comparar con el de Paseo sin cambiar prioridades.
+      orca-atlantic:
+        default: -5
+        company: 5
       hermes-batch: 10    # trabajo por lotes: se aparta detras de todo
       brain: 20           # brain (resumenes y neuronas, INFRA-364): la mas baja de todas (Dani, 01-10-2026)
       hindsight: 20       # Hindsight (retain/reflect, INFRA-940): sustituye al brain, misma prioridad
@@ -14939,7 +14944,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8e536c8a25c7
+        config.k8s.e-dani.com/revision: config-36627243fd02
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15925,7 +15930,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-8e536c8a25c7
+        config.k8s.e-dani.com/revision: config-36627243fd02
         plan-gateway/revision: plan-gateway-a02fe0f10009
     spec:
       enableServiceLinks: false
