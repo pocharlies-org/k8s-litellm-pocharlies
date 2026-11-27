@@ -3404,7 +3404,7 @@ data:
       # queda RETIRADO. Clavaba por GRUPO y soltaba la sesion a la otra cuenta
       # durante un cooldown (ida y vuelta). La afinidad la hace ahora
       # session_router.alibaba_account_filter: UN pin por sesion -> cuenta
-      # (k1/k2) para todos los grupos `alibaba-*`, en la Valkey del router
+      # (k1/k2/k3) para todos los grupos `alibaba-*`, en la Valkey del router
       # (contrato dgx.session-router.alibaba-account-pin.v1). No volver a
       # activar el nativo encima: filtrarian a la vez con pines distintos.
       # ── PUENTE de renombrado (20-09): los alias largos de Alibaba siguen viva ──
@@ -14777,7 +14777,7 @@ spec:
 ##
 ## ACTIVACION: sin paso manual ni PR. Cuando este Secret exista, el env
 ## DASHSCOPE_API_KEY_2 del pod tendra valor y el hook, al arrancar
-## (session_router.ensure_alibaba_key2_active), sube los once `-k2` de
+## (session_router.ensure_alibaba_accounts_active), sube los doce `-k2` de
 ## order 2 a order 1 EN MEMORIA: entran al reparto con afinidad por sesion.
 ## O sea: sembrar + `kubectl -n litellm rollout restart deploy/litellm` =
 ## activado. Las sesiones nuevas se clavan desde su primera peticion; las
@@ -14939,7 +14939,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d343ef954033
+        config.k8s.e-dani.com/revision: config-8e536c8a25c7
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15925,7 +15925,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d343ef954033
+        config.k8s.e-dani.com/revision: config-8e536c8a25c7
         plan-gateway/revision: plan-gateway-a02fe0f10009
     spec:
       enableServiceLinks: false
@@ -15982,9 +15982,9 @@ spec:
             # Pesos por cuenta del panel (session_router._config, SWR): los mismos
             # que reparten el chat.
             - { name: MODEL_ROUTING_CONFIG_URL, value: "http://dgx-dashboard-backend.control-nexus.svc.cluster.local:9002/api/model-routing/config" }
-            # Las dos keys del plan, de los MISMOS Secrets que el proxy
-            # (litellm-alibaba y litellm-alibaba-2). `optional`: sin una, el
-            # gateway sirve con la otra; sin ninguna responde 503 visible.
+            # Las tres keys del plan, de los MISMOS Secrets que el proxy
+            # (litellm-alibaba, litellm-alibaba-2 y litellm-alibaba-3). `optional`:
+            # sin una, el gateway sirve con las otras; sin ninguna responde 503 visible.
             - name: DASHSCOPE_API_KEY
               valueFrom:
                 secretKeyRef: { name: litellm-alibaba, key: DASHSCOPE_API_KEY, optional: true }

@@ -1,8 +1,8 @@
 """Contract de las cuentas extra de Alibaba con afinidad por sesion (26-09-2026;
 tercera cuenta, correo@e-dani.com, 27-11-2026, DGX-1912).
 
-El cache de contexto de Model Studio es POR CUENTA (los dos planes Team no
-comparten prefijo): repartir una conversacion entre las dos cuentas pagaria el
+El cache de contexto de Model Studio es POR CUENTA (los planes Team no
+comparten prefijo): repartir una conversacion entre cuentas pagaria el
 prefijo entero en cada salto. El reparto es por sesion, no por peticion, con el
 mecanismo NATIVO del Router (DeploymentAffinityCheck, v1.100.0), y el hook le
 alimenta el `session_id` propio (el del cliente no es estable).
