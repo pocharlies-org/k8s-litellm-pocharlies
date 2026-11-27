@@ -11,6 +11,7 @@ top-level ``disable_fallbacks`` kwarg consumed by LiteLLM v1.96.0's Router. Othe
 keys retain the shared, availability-oriented fallback graph.
 """
 import ast
+import copy
 import types
 from pathlib import Path
 
@@ -73,6 +74,7 @@ def hook():
     }
     assert not missing, f"el hook ya no define: {sorted(missing)}"
     module = types.ModuleType("aurora_fallback_policy")
+    module.copy = copy  # import del hook que usa _apply_key_fallback_policy
     exec(
         compile(ast.Module(body=keep, type_ignores=[]), "<hook>", "exec"),
         module.__dict__,

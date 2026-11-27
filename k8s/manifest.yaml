@@ -2474,6 +2474,8 @@ data:
     # `anthropic-hindsight` de k8s-pocharlies, campo `api_key`; Secret
     # litellm-anthropic-api). Coste por uso: lo ve el panel /cuentas («Anthropic · API
     # key», DGX-1132). Sin fallbacks: quien la pide (Nova) ya corre su propia carrera.
+    # DGX-1904 (27-11): tambien es el respaldo de `gpt-6-luna` para la key `hindsight`,
+    # que no lo pide: le llega como salto por peticion (KEY_DIRECT_FALLBACK_MODELS).
     # CONTRACT: dgx.litellm.model-alias.anthropic-haiku-5-5.v1 (Nova lo pide por este nombre)
     - model_name: anthropic-haiku-5-5
       litellm_params:
@@ -3185,6 +3187,7 @@ data:
     # ConfigMap para que el contrato de tests/test_configmap_revision_bump_contract.py
     # dispare el rollout del pod.
     import asyncio
+    import copy
     import json
     import logging
     import math
@@ -5501,11 +5504,14 @@ data:
         {"aurora-rca", "synapse", "brain", "claude-cloudblue", "skirmbooks-ui", "hindsight", "analisis", "agent-jake-cloudblue", "skills-eval", "skirmbooks"}
     )
 
+    # Excepciones al sello, por key y por modelo pedido: ese modelo va sin
+    # `disable_fallbacks`. Valor `()` = cae por la arista del Router
+    # (router_settings.fallbacks); una tupla = el salto POR PETICION que estampa
+    # `_apply_key_fallback_policy`, pisando los `fallbacks` del cliente (una key sellada
+    # no elige a donde cae). Las claves de este mapa deben estar en NO_FALLBACK_KEY_ALIASES.
     # 12-10-2026 (Dani, DGX-841): «que usara el modelo local y de fallback el modelo
     # Alibaba». Con el sellado entero, el clasificador de correo de Synapse murio en
-    # 500 con el residente caido y estuvo 2 h sin clasificar. Las claves de este
-    # mapa deben estar en NO_FALLBACK_KEY_ALIASES; las otras tres keys no tienen
-    # excepcion.
+    # 500 con el residente caido y estuvo 2 h sin clasificar.
     # 13-10-2026 (DGX-874): entra `correo-clasificador`, el mismo residente con un
     # timeout de 6 s para el clasificador de correo (ver su entrada en el model_list).
     # Sellado, su respaldo a Alibaba no dispararia nunca.
@@ -5517,7 +5523,20 @@ data:
     # solo para el clasificador. `correo-clasificador` no esta en ROUTED_MODELS: el session
     # router no lo toca aunque vaya sin sello. Los demas tenants de Synapse piden
     # `qwen38-flash-next`: con el residente caido fallan a la vista y su bucle reintenta.
-    KEY_DIRECT_FALLBACK_MODELS = {"synapse": frozenset({"correo-clasificador"})}
+    # 27-11-2026 (Dani, DGX-1904): `hindsight` con `gpt-6-luna` cae a Haiku 5.5 por la API
+    # key de pago (`anthropic-haiku-5-5`) cuando Luna falla (sin cuota de ChatGPT, 429,
+    # cooldown), para que ese trafico pase por aqui y se vea; antes lo hacia la cadena
+    # nativa de Hindsight directo a api.anthropic.com (SC-6115). Por peticion y no arista
+    # del Router: con una arista `gpt-6-luna`, cualquier key con Luna gastaria la key de
+    # pago sin pasar por el gate `anthropic-*`. Thinking apagado, como lo pedia Hindsight:
+    # su `reasoning_effort: none` no apaga el de Haiku 5.5 (litellm 1.106 lo traduce a
+    # nada). El Router solo cae si la key tiene `anthropic-haiku-5-5` en su `models` de
+    # Postgres (fallback_access_check); el gate le sigue negando pedirlo por su nombre.
+    # CONTRACT: dgx.litellm.key-fallbacks.hindsight.v1
+    KEY_DIRECT_FALLBACK_MODELS = {
+        "synapse": {"correo-clasificador": ()},
+        "hindsight": {"gpt-6-luna": ({"model": "anthropic-haiku-5-5", "thinking": {"type": "disabled"}},)},
+    }
 
     # ── Línea de facturación de Claude Code (23-09-2026) ─────────────────────────
     # Claude Code pone como PRIMER bloque del system `x-anthropic-billing-header:
@@ -5653,10 +5672,15 @@ data:
         return out
 
     def _apply_key_fallback_policy(data, user_api_key_dict):
-        """Stamp the Router kill switch and return the effective per-request policy."""
+        """Stamp the Router kill switch (or a sealed key's own per-request fallback) and
+        return the effective per-request policy."""
         key = _resolve_key_label(user_api_key_dict)
-        if key in NO_FALLBACK_KEY_ALIASES and data.get("model") not in KEY_DIRECT_FALLBACK_MODELS.get(key, ()):
+        excepciones = KEY_DIRECT_FALLBACK_MODELS.get(key, {})
+        if key in NO_FALLBACK_KEY_ALIASES and data.get("model") not in excepciones:
             data["disable_fallbacks"] = True
+        elif excepciones.get(data.get("model")):
+            # copia: el Router funde cada destino en los kwargs de la llamada
+            data["fallbacks"] = copy.deepcopy(list(excepciones[data["model"]]))
         return data.get("disable_fallbacks") is True
 
     # ── Fallback de los alias de capacidad del residente ────────────────────────
@@ -14471,7 +14495,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-40bfe29a7762
+        config.k8s.e-dani.com/revision: config-6724247e7801
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -14715,6 +14739,7 @@ spec:
             - { name: LITELLM_CHATGPT_ALLOWED_KEYS, value: "hermes,studio-chatgpt,claude-mac,hindsight,claude-atlantic,claude-atlantic-compania,sugiere-prod,claude-cloudblue,nova,jarvis,voz-duplex" }
             # INFRA-1223: los alias `anthropic-*` (API key de pago de Anthropic, tope 150 USD/mes en
             # la Console). Solo Nova: hoy por `voz-duplex`; `nova` es su key propia (INFRA-1251).
+            # `hindsight` no esta y no lo pide: gasta la key solo como salto de `gpt-6-luna` (DGX-1904).
             - { name: LITELLM_ANTHROPIC_ALLOWED_KEYS, value: "voz-duplex,nova" }
             # DGX-1713 (19-11-2026): cuentas de Claude CON acceso a Mythos. Sonda GET /v1/models/claude-mythos-5-2
             # y -5-1 con el OAT de cada cuenta (19-11 ~09:20Z): 200 en work-personal, works-shared, flash, max y
@@ -15453,7 +15478,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-40bfe29a7762
+        config.k8s.e-dani.com/revision: config-6724247e7801
         plan-gateway/revision: plan-gateway-4ec40f1bbb19
     spec:
       enableServiceLinks: false
