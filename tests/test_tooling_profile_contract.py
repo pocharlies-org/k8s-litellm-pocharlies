@@ -187,6 +187,10 @@ def test_proxy_fallbacks_never_leave_local_models():
         "bge-reranker-v2-m3": ["bge-reranker-mac"],
         "stt-turbo": ["stt-turbo-mac"],
         "whisper-1": ["stt-turbo-mac"],
+        # DGX-1966: el alias nuevo del motor que transcribe hereda el mismo respaldo de
+        # mac-casa (hardware propio; allí corre Whisper — es un último recurso, no un
+        # gemelo idéntico). Misma clase de arista que las de INFRA-1243.
+        "stt-parakeet": ["stt-turbo-mac"],
     }
     assert graph == PERMITIDAS, (
         "el grafo de fallbacks solo admite las aristas aprobadas (20-09-2026, "
