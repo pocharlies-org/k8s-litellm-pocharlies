@@ -153,7 +153,7 @@ data:
     # 100.82.219.103) de embedder, reranker y STT. Mismos server.py y mismos pesos que
     # los pods, en CPU (fp32 en bge = el camino de los -cpu de atlantic); instalador en
     # dgx-infra/services/mac-casa-ia-respaldo. Solo se alcanzan como `fallbacks` del
-    # Router (abajo): cuando ComfyUI coge la RTX, stt-turbo queda a 0/0 y su Service sin
+    # Router (abajo): cuando el STT local no está en pie, su Service sin
     # endpoints da `Connection refused` al instante. El Mac puede estar dormido: entonces
     # el fallback falla en `timeout` y el error es el mismo que sin respaldo. Sin sondeo
     # de fondo: cada sondeo es inferencia real en el portatil (ver bge-m3-embedding).
@@ -291,20 +291,33 @@ data:
     # ── Audio: Whisper STT + OmniVoice TTS (OSS passthrough; for CloudBlue & clients) ──
     # One LiteLLM key now covers chat + embeddings + STT + TTS. Backends are ClusterIP-only;
     # LiteLLM stays the single public, key-authed, budgeted front door (no separate exposure).
-    - model_name: stt-turbo
+    # DGX-1966 (28-11): lo que transcribe es Parakeet-TDT 0.6B v3 (WER 0,213 y 36 ms de
+    # mediana contra 0,225 y 928 ms de Whisper, 48 frases). `stt-turbo` y `whisper-1` se
+    # QUEDAN con su nombre a proposito: son la superficie que piden los clientes (LibreChat,
+    # Studio, los scripts) — renombrarlos es un breaking change aparte. Son alias del mismo
+    # backend; el nombre del motor es `stt-parakeet`.
+    - model_name: stt-parakeet
       litellm_params:
-        model: openai/whisper-large-v3
-        api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
+        model: openai/nvidia/parakeet-tdt-0.6b-v3
+        api_base: http://stt-parakeet.llm.svc.cluster.local:8000/v1
         api_key: not-used
         num_retries: 0   # INFRA-1243: sin reintento, salta ya al respaldo de mac-casa
       model_info:
         mode: audio_transcription
-    - model_name: whisper-1            # OpenAI-SDK-compatible alias -> same Whisper backend
+    - model_name: stt-turbo             # alias histórico -> stt-parakeet (DGX-1966)
       litellm_params:
-        model: openai/whisper-large-v3
-        api_base: http://stt-turbo.llm.svc.cluster.local:8000/v1
+        model: openai/nvidia/parakeet-tdt-0.6b-v3
+        api_base: http://stt-parakeet.llm.svc.cluster.local:8000/v1
         api_key: not-used
-        num_retries: 0   # INFRA-1243: sin reintento, salta ya al respaldo de mac-casa
+        num_retries: 0
+      model_info:
+        mode: audio_transcription
+    - model_name: whisper-1             # alias OpenAI-SDK -> stt-parakeet (DGX-1966)
+      litellm_params:
+        model: openai/nvidia/parakeet-tdt-0.6b-v3
+        api_base: http://stt-parakeet.llm.svc.cluster.local:8000/v1
+        api_key: not-used
+        num_retries: 0
       model_info:
         mode: audio_transcription
     - model_name: omnivoice-tts
@@ -3524,6 +3537,9 @@ data:
         - bge-m3-embedding: ["bge-m3-mac"]
         - bge-reranker: ["bge-reranker-mac"]
         - bge-reranker-v2-m3: ["bge-reranker-mac"]
+        # DGX-1966: el respaldo de mac-casa sigue siendo Whisper (es lo que corre en el
+        # Mac: services/mac-casa-ia-respaldo). El alias nuevo hereda el mismo respaldo.
+        - stt-parakeet: ["stt-turbo-mac"]
         - stt-turbo: ["stt-turbo-mac"]
         - whisper-1: ["stt-turbo-mac"]
         # INFRA-269: el grupo de prueba del model_list (infra1081-fallback-probe)
@@ -14945,7 +14961,7 @@ spec:
         # al arrancar; que kubelet refresque los ficheros montados no actualiza el
         # router en memoria. El contrato y el --fix viven en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d21b12200ef1
+        config.k8s.e-dani.com/revision: config-38078fe23fbe
         active-requests-api/revision: "20260726-request-history-trace"
     spec:
       enableServiceLinks: false
@@ -15936,7 +15952,7 @@ spec:
         # arreglo del selector rueda tambien el gateway). Cada anotacion lleva el
         # HASH de su ConfigMap; contrato y --fix en
         # tests/test_configmap_revision_bump_contract.py.
-        config.k8s.e-dani.com/revision: config-d21b12200ef1
+        config.k8s.e-dani.com/revision: config-38078fe23fbe
         plan-gateway/revision: plan-gateway-a02fe0f10009
     spec:
       enableServiceLinks: false
